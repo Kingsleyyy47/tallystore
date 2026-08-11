@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -34,6 +34,8 @@ import {
   UserX,
   ToggleLeft,
   ToggleRight,
+  Star,
+  PhoneCall,
 } from 'lucide-react'
 import { PERMISSIONS, type PermissionKey } from '@/lib/staffPermissions'
 import Navbar from '@/components/NavbarAuth'
@@ -105,6 +107,33 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
+
+type AdminSmsProduct = {
+  service_id: string
+  service_code: string
+  service_name: string
+  provider_cost_usd: number
+  provider_cost_ngn: number
+  margin_ngn: number
+  exchange_rate: number
+  price_ngn: number
+  available_count: number
+  is_enabled: boolean
+  is_favorite: boolean
+  price_override_ngn: number | null
+  auto_markup_enabled: boolean
+  pricing_mode: 'auto_markup' | 'manual_margin' | 'override'
+}
+
+type AdminSmsCatalogResponse = {
+  success: boolean
+  data?: AdminSmsProduct[]
+  error?: string
+  global_margin_ngn?: number
+  exchange_rate?: number
+}
 
 // Mock admin stats
 const mockStats = {
@@ -220,6 +249,16 @@ export default function AdminPage() {
   const [smmTogglingId, setSmmTogglingId] = useState<number | null>(null)
   const [smmSyncing, setSmmSyncing] = useState(false)
   const [smmExpandedPlatforms, setSmmExpandedPlatforms] = useState<Set<string>>(new Set())
+
+  // DaisySMS product catalog curation
+  const [smsProducts, setSmsProducts] = useState<AdminSmsProduct[]>([])
+  const [smsProductsLoading, setSmsProductsLoading] = useState(false)
+  const [smsSavingKey, setSmsSavingKey] = useState<string | null>(null)
+  const [smsSearchQuery, setSmsSearchQuery] = useState('')
+  const [smsGlobalMargin, setSmsGlobalMargin] = useState('700')
+  const [smsKeepAutoApply, setSmsKeepAutoApply] = useState(true)
+  const [smsPriceInputs, setSmsPriceInputs] = useState<Record<string, string>>({})
+  const [smsMarginInputs, setSmsMarginInputs] = useState<Record<string, string>>({})
 
   // Email / Broadcast state
   const [emailSubject, setEmailSubject] = useState('TallyStore Notification')
@@ -796,6 +835,220 @@ export default function AdminPage() {
     } finally {
       setSmmSyncing(false)
     }
+  }
+
+  // ==================== DAISYSMS PRODUCT CATALOG ====================
+
+  const loadSmsProducts = useCallback(async () => {
+    setSmsProductsLoading(true)
+    try {
+      const { data, error } = await supabase.functions.invoke<AdminSmsCatalogResponse>('smsbus', {
+        body: { action: 'admin_sms_products' },
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to load SMS products')
+      const products = data.data || []
+      setSmsProducts(products)
+      if (typeof data.global_margin_ngn === 'number') setSmsGlobalMargin(String(data.global_margin_ngn))
+      setSmsPriceInputs(Object.fromEntries(products.map((product) => [
+        product.service_code,
+        product.price_override_ngn === null || product.price_override_ngn === undefined ? '' : String(product.price_override_ngn),
+      ])))
+      setSmsMarginInputs(Object.fromEntries(products.map((product) => [
+        product.service_code,
+        String(product.margin_ngn ?? data.global_margin_ngn ?? 700),
+      ])))
+    } catch (err: any) {
+      toast({
+        title: 'Failed to load SMS products',
+        description: err.message || 'Run the SMS product settings migration, then try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setSmsProductsLoading(false)
+    }
+  }, [toast])
+
+  useEffect(() => {
+    loadSmsProducts()
+  }, [loadSmsProducts])
+
+  const updateSmsProduct = async (serviceCode: string, updates: Record<string, unknown>, reload = false) => {
+    setSmsSavingKey(`${serviceCode}-${Object.keys(updates).join('-')}`)
+    try {
+      const product = smsProducts.find((item) => item.service_code === serviceCode)
+      const { data, error } = await supabase.functions.invoke<{ success: boolean; error?: string }>('smsbus', {
+        body: {
+          action: 'admin_update_sms_product',
+          service_code: serviceCode,
+          service_name: product?.service_name,
+          ...updates,
+        },
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to update SMS product')
+      setSmsProducts(prev => prev.map(item => item.service_code === serviceCode ? { ...item, ...updates } as AdminSmsProduct : item))
+      if (reload) await loadSmsProducts()
+    } catch (err: any) {
+      toast({ title: 'SMS product update failed', description: err.message || 'Please try again', variant: 'destructive' })
+    } finally {
+      setSmsSavingKey(null)
+    }
+  }
+
+  const saveSmsPriceOverride = async (product: AdminSmsProduct) => {
+    const raw = smsPriceInputs[product.service_code] ?? ''
+    const value = raw.trim() === '' ? null : Number(raw)
+    if (value !== null && (!Number.isFinite(value) || value < 0)) {
+      toast({ title: 'Invalid price', description: 'Enter a valid naira amount or leave it blank.', variant: 'destructive' })
+      return
+    }
+    await updateSmsProduct(product.service_code, { price_override_ngn: value === null ? null : Math.round(value) }, true)
+    toast({ title: value === null ? 'Override cleared' : 'Price override saved' })
+  }
+
+  const saveSmsMargin = async (product: AdminSmsProduct) => {
+    const value = Number(smsMarginInputs[product.service_code] ?? '')
+    if (!Number.isFinite(value) || value < 0) {
+      toast({ title: 'Invalid markup', description: 'Enter a valid naira markup.', variant: 'destructive' })
+      return
+    }
+    await updateSmsProduct(product.service_code, { margin_ngn: Math.round(value), auto_markup_enabled: true }, true)
+    toast({ title: 'Product markup saved' })
+  }
+
+  const applySmsGlobalMarkup = async () => {
+    const margin = Number(smsGlobalMargin)
+    if (!Number.isFinite(margin) || margin < 0) {
+      toast({ title: 'Invalid markup', description: 'Enter a valid naira markup.', variant: 'destructive' })
+      return
+    }
+    setSmsSavingKey('global-markup')
+    try {
+      const { data, error } = await supabase.functions.invoke<{ success: boolean; error?: string; count?: number }>('smsbus', {
+        body: { action: 'admin_apply_sms_markup', margin_ngn: Math.round(margin), keep_auto_applying: smsKeepAutoApply },
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to apply markup')
+      await loadSmsProducts()
+      toast({ title: 'SMS markup applied', description: `${data.count || 0} product(s) updated.` })
+    } catch (err: any) {
+      toast({ title: 'Markup failed', description: err.message || 'Please try again', variant: 'destructive' })
+    } finally {
+      setSmsSavingKey(null)
+    }
+  }
+
+  const bulkToggleSmsProducts = async (isEnabled: boolean) => {
+    setSmsSavingKey(isEnabled ? 'enable-all' : 'disable-all')
+    try {
+      const { data, error } = await supabase.functions.invoke<{ success: boolean; error?: string; count?: number }>('smsbus', {
+        body: { action: 'admin_bulk_sms_products', is_enabled: isEnabled },
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to update products')
+      await loadSmsProducts()
+      toast({ title: isEnabled ? 'SMS products enabled' : 'SMS products disabled', description: `${data.count || 0} product(s) updated.` })
+    } catch (err: any) {
+      toast({ title: 'Bulk update failed', description: err.message || 'Please try again', variant: 'destructive' })
+    } finally {
+      setSmsSavingKey(null)
+    }
+  }
+
+  const filteredSmsProducts = useMemo(() => {
+    const query = smsSearchQuery.trim().toLowerCase()
+    return smsProducts
+      .filter((product) => {
+        if (!query) return true
+        return [product.service_name, product.service_code, product.price_ngn, product.available_count]
+          .some((value) => String(value || '').toLowerCase().includes(query))
+      })
+      .sort((a, b) => Number(b.is_favorite) - Number(a.is_favorite) || a.service_name.localeCompare(b.service_name))
+  }, [smsProducts, smsSearchQuery])
+
+  const favoriteSmsProducts = useMemo(
+    () => filteredSmsProducts.filter((product) => product.is_favorite),
+    [filteredSmsProducts],
+  )
+
+  const renderSmsProductRow = (product: AdminSmsProduct) => {
+    const rowSaving = smsSavingKey?.startsWith(product.service_code)
+    return (
+      <div key={product.service_code} className="grid gap-4 border-b py-4 last:border-b-0 lg:grid-cols-[minmax(180px,1.3fr)_220px_minmax(240px,1fr)_90px] lg:items-center">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              title={product.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
+              disabled={rowSaving}
+              onClick={() => updateSmsProduct(product.service_code, { is_favorite: !product.is_favorite })}
+            >
+              <Star className={`h-4 w-4 ${product.is_favorite ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground'}`} />
+            </Button>
+            <div className="min-w-0">
+              <p className="truncate font-semibold">{product.service_name}</p>
+              <p className="text-xs text-muted-foreground">
+                {product.available_count.toLocaleString()} available · {product.service_code}
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 pl-10">
+            <Switch
+              checked={product.auto_markup_enabled}
+              disabled={rowSaving}
+              onCheckedChange={(checked) => updateSmsProduct(product.service_code, { auto_markup_enabled: checked }, true)}
+            />
+            <span className="text-sm text-muted-foreground">Auto-markup</span>
+            <Input
+              type="number"
+              min="0"
+              className="h-9 w-28"
+              value={smsMarginInputs[product.service_code] ?? ''}
+              onChange={(event) => setSmsMarginInputs(prev => ({ ...prev, [product.service_code]: event.target.value }))}
+            />
+            <Button type="button" variant="outline" size="sm" disabled={rowSaving} onClick={() => saveSmsMargin(product)}>
+              Save margin
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <p className="text-xs font-semibold uppercase text-muted-foreground">DaisySMS cost</p>
+          <p className="font-bold">${Number(product.provider_cost_usd || 0).toFixed(2)}</p>
+          <p className="text-xs text-muted-foreground">
+            NGN {Number(product.provider_cost_ngn || 0).toLocaleString()} at {Number(product.exchange_rate || 0).toLocaleString()} / USD
+          </p>
+        </div>
+
+        <div className="flex min-w-0 items-center gap-2">
+          <Input
+            type="number"
+            min="0"
+            placeholder={`Auto NGN ${Number(product.price_ngn || 0).toLocaleString()}`}
+            value={smsPriceInputs[product.service_code] ?? ''}
+            onChange={(event) => setSmsPriceInputs(prev => ({ ...prev, [product.service_code]: event.target.value }))}
+          />
+          <Button type="button" variant="outline" disabled={rowSaving} onClick={() => saveSmsPriceOverride(product)}>
+            {rowSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
+          </Button>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 lg:justify-end">
+          <Badge variant={product.pricing_mode === 'override' ? 'default' : 'secondary'} className="whitespace-nowrap">
+            NGN {Number(product.price_ngn || 0).toLocaleString()}
+          </Badge>
+          <Switch
+            checked={product.is_enabled}
+            disabled={rowSaving}
+            onCheckedChange={(checked) => updateSmsProduct(product.service_code, { is_enabled: checked })}
+          />
+        </div>
+      </div>
+    )
   }
 
   // ==================== BITREFILL GIFT CARD SETTINGS ====================
@@ -2734,8 +2987,9 @@ export default function AdminPage() {
           {/* Main Content */}
           <Tabs defaultValue="templates" className="space-y-6">
             <div className="w-full overflow-x-auto pb-2">
-              <TabsList className="inline-flex w-full min-w-max md:grid md:w-full md:grid-cols-9">
+              <TabsList className="inline-flex w-full min-w-max md:grid md:w-full md:grid-cols-10">
                 <TabsTrigger value="templates" className="flex-shrink-0">Templates</TabsTrigger>
+                <TabsTrigger value="sms-products" className="flex-shrink-0">SMS Products</TabsTrigger>
                 <TabsTrigger value="products" className="flex-shrink-0">Products</TabsTrigger>
                 <TabsTrigger value="add-product" className="flex-shrink-0">Add Product</TabsTrigger>
                 <TabsTrigger value="bulk-upload" className="flex-shrink-0">Bulk Upload</TabsTrigger>
@@ -2893,6 +3147,112 @@ export default function AdminPage() {
                             </div>
                           )
                         })
+                      )}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* DaisySMS Product Curation */}
+            <TabsContent value="sms-products" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <PhoneCall className="h-5 w-5 text-primary" />
+                        DaisySMS Products
+                      </CardTitle>
+                      <p className="text-muted-foreground">
+                        Enable what customers can buy, set favorites, and override naira pricing per product.
+                      </p>
+                    </div>
+                    <Button type="button" variant="outline" onClick={loadSmsProducts} disabled={smsProductsLoading}>
+                      {smsProductsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                      Sync DaisySMS
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Badge variant="outline" className="rounded-md px-3 py-2">
+                      Showing DaisySMS cost in NGN
+                    </Badge>
+                    <div className="relative min-w-[220px] flex-1">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={smsSearchQuery}
+                        onChange={(event) => setSmsSearchQuery(event.target.value)}
+                        placeholder="Search products..."
+                        className="pl-9"
+                      />
+                    </div>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={smsGlobalMargin}
+                      onChange={(event) => setSmsGlobalMargin(event.target.value)}
+                      placeholder="NGN e.g. 1000"
+                      className="w-40"
+                    />
+                    <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Checkbox
+                        checked={smsKeepAutoApply}
+                        onCheckedChange={(checked) => setSmsKeepAutoApply(checked === true)}
+                      />
+                      Keep auto-applying on future syncs
+                    </label>
+                    <Button type="button" variant="outline" disabled={smsSavingKey === 'global-markup'} onClick={applySmsGlobalMarkup}>
+                      {smsSavingKey === 'global-markup' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      Markup
+                    </Button>
+                    <Button type="button" variant="outline" disabled={smsSavingKey === 'enable-all'} onClick={() => bulkToggleSmsProducts(true)}>
+                      Enable all ({smsProducts.length})
+                    </Button>
+                    <Button type="button" variant="outline" disabled={smsSavingKey === 'disable-all'} onClick={() => bulkToggleSmsProducts(false)}>
+                      Disable all ({smsProducts.length})
+                    </Button>
+                  </div>
+
+                  <div className="rounded-lg border border-yellow-200 bg-yellow-50/40">
+                    <div className="flex items-center justify-between border-b border-yellow-200 px-4 py-3">
+                      <h3 className="flex items-center gap-2 font-semibold text-yellow-900">
+                        <Star className="h-4 w-4 fill-yellow-400 text-yellow-500" />
+                        Favorites ({favoriteSmsProducts.length})
+                      </h3>
+                    </div>
+                    <div className="px-4">
+                      {smsProductsLoading && smsProducts.length === 0 ? (
+                        <div className="flex items-center justify-center py-10 text-muted-foreground">
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Loading DaisySMS products...
+                        </div>
+                      ) : favoriteSmsProducts.length === 0 ? (
+                        <p className="py-6 text-sm text-muted-foreground">No favorites yet. Star products below to push them up on the customer list.</p>
+                      ) : (
+                        favoriteSmsProducts.map(renderSmsProductRow)
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border">
+                    <div className="grid gap-4 border-b bg-muted/40 px-4 py-3 text-xs font-semibold uppercase text-muted-foreground lg:grid-cols-[minmax(180px,1.3fr)_220px_minmax(240px,1fr)_90px]">
+                      <span>Product</span>
+                      <span>Cost</span>
+                      <span>Customer price override</span>
+                      <span className="lg:text-right">Enabled</span>
+                    </div>
+                    <div className="px-4">
+                      {smsProductsLoading && smsProducts.length === 0 ? (
+                        <div className="flex items-center justify-center py-12 text-muted-foreground">
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Syncing DaisySMS products...
+                        </div>
+                      ) : filteredSmsProducts.length === 0 ? (
+                        <p className="py-10 text-center text-sm text-muted-foreground">No SMS products match your search.</p>
+                      ) : (
+                        filteredSmsProducts.map(renderSmsProductRow)
                       )}
                     </div>
                   </div>

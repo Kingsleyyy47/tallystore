@@ -92,6 +92,12 @@ type SmsService = {
   exchange_rate: number
   price_ngn: number
   available_count: number
+  is_enabled?: boolean
+  is_favorite?: boolean
+  provider_cost_ngn?: number
+  margin_ngn?: number
+  price_override_ngn?: number | null
+  pricing_mode?: 'auto_markup' | 'manual_margin' | 'override'
 }
 
 type SmsRentalArea = {
@@ -544,6 +550,8 @@ function SmsNumbersSurface() {
     })
 
     return [...matches].sort((a, b) => {
+      const favoriteRank = Number(b.is_favorite === true) - Number(a.is_favorite === true)
+      if (favoriteRank !== 0) return favoriteRank
       if (serviceSort === 'price_low') return a.price_ngn - b.price_ngn
       if (serviceSort === 'stock') return b.available_count - a.available_count
       return b.available_count - a.available_count || a.price_ngn - b.price_ngn

@@ -42,11 +42,18 @@ class DaisySmsError extends Error {
 }
 
 async function daisyGet(apiKey: string, params: Record<string, string>): Promise<string> {
+  const { text } = await daisyRequest(apiKey, params)
+  return text
+}
+
+async function daisyRequest(apiKey: string, params: Record<string, string>): Promise<{ text: string; headers: Headers }> {
   const url = new URL(Deno.env.get('DAISYSMS_BASE_URL') || DEFAULT_DAISY_BASE)
   url.searchParams.set('api_key', apiKey)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
   const res = await fetch(url.toString())
-  return (await res.text()).trim()
+  const text = (await res.text()).trim()
+  if (!res.ok) throw new DaisySmsError('HTTP_ERROR', `DaisySMS request failed with HTTP ${res.status}`)
+  return { text, headers: res.headers }
 }
 
 async function daisyGetBalance(apiKey: string): Promise<number> {
@@ -189,15 +196,10 @@ async function daisyGetServicesWithDiagnostics(apiKey: string): Promise<{ servic
   return { services: [], diagnostics }
 }
 
-async function daisyGetServices(apiKey: string): Promise<DaisyService[]> {
-  const { services } = await daisyGetServicesWithDiagnostics(apiKey)
-  return services
-}
-
-async function daisyGetNumber(apiKey: string, serviceCode: string, maxPriceUsd?: number): Promise<{ activationId: string; phoneNumber: string }> {
+async function daisyGetNumber(apiKey: string, serviceCode: string, maxPriceUsd?: number): Promise<{ activationId: string; phoneNumber: string; priceUsd?: number }> {
   const params: Record<string, string> = { action: 'getNumber', service: serviceCode }
   if (maxPriceUsd !== undefined) params.max_price = maxPriceUsd.toFixed(4)
-  const text = await daisyGet(apiKey, params)
+  const { text, headers } = await daisyRequest(apiKey, params)
   if (text === 'NO_NUMBERS') throw new DaisySmsError('NO_NUMBERS', 'No numbers available for this service right now.')
   if (text === 'MAX_PRICE_EXCEEDED') throw new DaisySmsError('MAX_PRICE_EXCEEDED', 'Service price has changed. Please try again.')
   if (text === 'NO_MONEY') throw new DaisySmsError('NO_MONEY', 'SMS purchases are temporarily unavailable.')
@@ -205,7 +207,12 @@ async function daisyGetNumber(apiKey: string, serviceCode: string, maxPriceUsd?:
   if (text === 'BAD_KEY') throw new DaisySmsError('BAD_KEY', 'SMS service is temporarily unavailable.')
   const match = text.match(/^ACCESS_NUMBER:(\d+):(\d+)$/)
   if (!match) throw new DaisySmsError('PARSE_ERROR', `Unexpected rent response: ${text}`)
-  return { activationId: match[1], phoneNumber: match[2] }
+  const headerPrice = Number(headers.get('x-price') || headers.get('X-Price') || '')
+  return {
+    activationId: match[1],
+    phoneNumber: match[2],
+    priceUsd: Number.isFinite(headerPrice) && headerPrice >= 0 ? headerPrice : undefined,
+  }
 }
 
 type DaisyStatus = { status: 'ok'; code: string } | { status: 'waiting' } | { status: 'cancelled' }
@@ -256,10 +263,7 @@ function generateReference(prefix = 'SMS') {
 
 function getDaisyKey() { return Deno.env.get('DAISYSMS_API_KEY') || '' }
 
-function envNumber(name: string, fallback: number) {
-  const v = Number(Deno.env.get(name) ?? fallback)
-  return Number.isFinite(v) && v >= 0 ? v : fallback
-}
+const DEFAULT_SMS_MARGIN_NGN = 700
 
 function friendlyError(error: unknown): string {
   if (error instanceof DaisySmsError) {
@@ -278,6 +282,38 @@ function friendlyError(error: unknown): string {
 
 type SupabaseAdmin = ReturnType<typeof createClient>
 
+type SmsProductSetting = {
+  service_code: string
+  service_name?: string | null
+  is_enabled?: boolean | null
+  is_favorite?: boolean | null
+  price_override_ngn?: number | null
+  auto_markup_enabled?: boolean | null
+  margin_ngn?: number | null
+}
+
+type SmsCatalogItem = {
+  service_id: string
+  service_code: string
+  service_name: string
+  project_id: number
+  country_id: number
+  country_code: string
+  provider_cost_usd: number
+  provider_cost_ngn: number
+  margin_usd: number
+  margin_ngn: number
+  total_cost_usd: number
+  exchange_rate: number
+  price_ngn: number
+  available_count: number
+  is_enabled: boolean
+  is_favorite: boolean
+  price_override_ngn: number | null
+  auto_markup_enabled: boolean
+  pricing_mode: 'auto_markup' | 'manual_margin' | 'override'
+}
+
 async function requireAuth(req: Request) {
   const authHeader = req.headers.get('Authorization')
   if (!authHeader) throw new Error('Missing authorization header')
@@ -294,6 +330,103 @@ async function requireAuth(req: Request) {
     { auth: { persistSession: false } },
   )
   return { user, admin }
+}
+
+async function requireAdminUser(admin: SupabaseAdmin, userId: string) {
+  const { data, error } = await admin.from('profiles').select('is_admin').eq('id', userId).single()
+  if (error || !data?.is_admin) throw new Error('Admin access required')
+}
+
+async function getNumericAppSetting(admin: SupabaseAdmin, key: string, fallback: number) {
+  const { data } = await admin.from('app_settings').select('value').eq('key', key).maybeSingle()
+  const value = Number(data?.value)
+  return Number.isFinite(value) && value >= 0 ? value : fallback
+}
+
+function optionalNaira(value: unknown) {
+  if (value === null || value === '') return null
+  const number = Math.round(Number(value))
+  return Number.isFinite(number) && number >= 0 ? number : null
+}
+
+function priceSmsService(providerCostUsd: number, exchangeRate: number, setting: Partial<SmsProductSetting>, globalMarginNgn: number) {
+  const providerCostNgn = Math.ceil(providerCostUsd * exchangeRate)
+  const overrideNgn = optionalNaira(setting.price_override_ngn)
+  const marginNgn = optionalNaira(setting.margin_ngn) ?? Math.round(globalMarginNgn)
+  const priceNgn = overrideNgn !== null ? overrideNgn : Math.max(0, providerCostNgn + marginNgn)
+  const marginUsd = Math.max(0, (priceNgn - providerCostNgn) / exchangeRate)
+  return {
+    providerCostNgn,
+    marginNgn,
+    marginUsd,
+    priceNgn,
+    totalUsd: priceNgn / exchangeRate,
+    pricingMode: overrideNgn !== null
+      ? 'override'
+      : setting.auto_markup_enabled === false ? 'manual_margin' : 'auto_markup',
+  } as const
+}
+
+async function syncSmsProductSettings(admin: SupabaseAdmin, services: DaisyService[], exchangeRate: number) {
+  if (services.length === 0) return
+  const now = new Date().toISOString()
+  const rows = services.map((svc) => ({
+    service_code: svc.code,
+    service_name: svc.name,
+    provider_cost_usd: Number(svc.priceUsd.toFixed(4)),
+    exchange_rate: Number(exchangeRate.toFixed(4)),
+    available_count: svc.count,
+    last_synced_at: now,
+    updated_at: now,
+  }))
+  const { error } = await admin.from('sms_product_settings').upsert(rows, { onConflict: 'service_code' })
+  if (error) throw new Error(`Failed to sync SMS products: ${error.message}`)
+}
+
+async function buildSmsCatalog(admin: SupabaseAdmin) {
+  const key = getDaisyKey()
+  if (!key) return { products: [] as SmsCatalogItem[], diagnostics: null, exchangeRate: 0, globalMarginNgn: DEFAULT_SMS_MARGIN_NGN }
+
+  const exchangeRate = await getUsdToNgnRate()
+  const globalMarginNgn = await getNumericAppSetting(admin, 'sms_default_margin_ngn', DEFAULT_SMS_MARGIN_NGN)
+  const { services, diagnostics } = await daisyGetServicesWithDiagnostics(key)
+  await syncSmsProductSettings(admin, services, exchangeRate)
+
+  const { data: settingsRows, error } = await admin
+    .from('sms_product_settings')
+    .select('service_code, service_name, is_enabled, is_favorite, price_override_ngn, auto_markup_enabled, margin_ngn')
+    .in('service_code', services.map((svc) => svc.code))
+  if (error) throw new Error(`Failed to load SMS product settings: ${error.message}`)
+
+  const settings = new Map<string, SmsProductSetting>((settingsRows || []).map((row: SmsProductSetting) => [row.service_code, row]))
+  const products = services.map((svc, index) => {
+    const setting = settings.get(svc.code) || { service_code: svc.code }
+    const pricing = priceSmsService(svc.priceUsd, exchangeRate, setting, globalMarginNgn)
+    return {
+      service_id: svc.code,
+      service_code: svc.code,
+      service_name: setting.service_name || svc.name,
+      project_id: index + 1,
+      country_id: DAISY_COUNTRY,
+      country_code: 'us',
+      provider_cost_usd: Number(svc.priceUsd.toFixed(4)),
+      provider_cost_ngn: pricing.providerCostNgn,
+      margin_usd: Number(pricing.marginUsd.toFixed(4)),
+      margin_ngn: pricing.marginNgn,
+      total_cost_usd: Number(pricing.totalUsd.toFixed(4)),
+      exchange_rate: Number(exchangeRate.toFixed(4)),
+      price_ngn: pricing.priceNgn,
+      available_count: svc.count,
+      is_enabled: setting.is_enabled !== false,
+      is_favorite: setting.is_favorite === true,
+      price_override_ngn: optionalNaira(setting.price_override_ngn),
+      auto_markup_enabled: setting.auto_markup_enabled !== false,
+      pricing_mode: pricing.pricingMode,
+    }
+  })
+
+  products.sort((a, b) => Number(b.is_favorite) - Number(a.is_favorite) || b.available_count - a.available_count || a.price_ngn - b.price_ngn)
+  return { products, diagnostics, exchangeRate, globalMarginNgn }
 }
 
 async function debitWallet(admin: SupabaseAdmin, userId: string, amount: number) {
@@ -357,26 +490,92 @@ async function handleHealth() {
   }
 }
 
-async function handleServices() {
-  const key = getDaisyKey()
-  if (!key) return json({ success: true, data: [] })
-  const otpMarginUsd = envNumber('DAISYSMS_OTP_MARGIN_USD', 0.35)
-  const exchangeRate = await getUsdToNgnRate()
-  const { services, diagnostics } = await daisyGetServicesWithDiagnostics(key)
-  const enriched = services.map((svc, i) => {
-    const totalUsd = svc.priceUsd + otpMarginUsd
-    return {
-      service_id: svc.code, service_code: svc.code, service_name: svc.name,
-      project_id: i + 1, country_id: DAISY_COUNTRY, country_code: 'us',
-      provider_cost_usd: Number(svc.priceUsd.toFixed(4)),
-      margin_usd: Number(otpMarginUsd.toFixed(4)),
-      total_cost_usd: Number(totalUsd.toFixed(4)),
-      exchange_rate: Number(exchangeRate.toFixed(4)),
-      price_ngn: Math.ceil(totalUsd * exchangeRate),
-      available_count: svc.count,
-    }
+async function handleServices(admin: SupabaseAdmin) {
+  const { products, diagnostics } = await buildSmsCatalog(admin)
+  return json({
+    success: true,
+    data: products.filter((service) => service.is_enabled && service.available_count > 0 && service.price_ngn > 0),
+    diagnostics,
   })
-  return json({ success: true, data: enriched.filter(s => s.available_count > 0), diagnostics })
+}
+
+async function handleAdminSmsProducts(admin: SupabaseAdmin, userId: string) {
+  await requireAdminUser(admin, userId)
+  const { products, diagnostics, exchangeRate, globalMarginNgn } = await buildSmsCatalog(admin)
+  return json({
+    success: true,
+    data: products,
+    diagnostics,
+    exchange_rate: Number(exchangeRate.toFixed(4)),
+    global_margin_ngn: Math.round(globalMarginNgn),
+  })
+}
+
+async function handleAdminUpdateSmsProduct(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
+  await requireAdminUser(admin, userId)
+  const serviceCode = String(body.service_code || body.service_id || '').trim()
+  if (!serviceCode) throw new Error('service_code is required')
+
+  const updates: Record<string, unknown> = {
+    service_code: serviceCode,
+    updated_at: new Date().toISOString(),
+  }
+
+  if (typeof body.service_name === 'string') updates.service_name = body.service_name.trim()
+  if (typeof body.is_enabled === 'boolean') updates.is_enabled = body.is_enabled
+  if (typeof body.is_favorite === 'boolean') updates.is_favorite = body.is_favorite
+  if (typeof body.auto_markup_enabled === 'boolean') updates.auto_markup_enabled = body.auto_markup_enabled
+  if (Object.prototype.hasOwnProperty.call(body, 'price_override_ngn')) updates.price_override_ngn = optionalNaira(body.price_override_ngn)
+  if (Object.prototype.hasOwnProperty.call(body, 'margin_ngn')) updates.margin_ngn = optionalNaira(body.margin_ngn)
+
+  const { error } = await admin.from('sms_product_settings').upsert(updates, { onConflict: 'service_code' })
+  if (error) throw new Error(`Failed to update SMS product: ${error.message}`)
+  return json({ success: true })
+}
+
+async function handleAdminBulkSmsProducts(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
+  await requireAdminUser(admin, userId)
+  if (typeof body.is_enabled !== 'boolean') throw new Error('is_enabled is required')
+  const { products } = await buildSmsCatalog(admin)
+  const now = new Date().toISOString()
+  const rows = products.map((product) => ({
+    service_code: product.service_code,
+    service_name: product.service_name,
+    is_enabled: body.is_enabled,
+    updated_at: now,
+  }))
+  if (rows.length > 0) {
+    const { error } = await admin.from('sms_product_settings').upsert(rows, { onConflict: 'service_code' })
+    if (error) throw new Error(`Failed to update SMS products: ${error.message}`)
+  }
+  return json({ success: true, count: rows.length })
+}
+
+async function handleAdminApplySmsMarkup(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
+  await requireAdminUser(admin, userId)
+  const marginNgn = optionalNaira(body.margin_ngn)
+  if (marginNgn === null) throw new Error('Enter a valid markup amount')
+  const keepAutoApplying = body.keep_auto_applying !== false
+  const now = new Date().toISOString()
+
+  const { error: settingError } = await admin
+    .from('app_settings')
+    .upsert({ key: 'sms_default_margin_ngn', value: String(marginNgn), updated_at: now }, { onConflict: 'key' })
+  if (settingError) throw new Error(`Failed to save SMS markup: ${settingError.message}`)
+
+  const { products } = await buildSmsCatalog(admin)
+  const rows = products.map((product) => ({
+    service_code: product.service_code,
+    service_name: product.service_name,
+    margin_ngn: marginNgn,
+    auto_markup_enabled: keepAutoApplying,
+    updated_at: now,
+  }))
+  if (rows.length > 0) {
+    const { error } = await admin.from('sms_product_settings').upsert(rows, { onConflict: 'service_code' })
+    if (error) throw new Error(`Failed to apply SMS markup: ${error.message}`)
+  }
+  return json({ success: true, count: rows.length })
 }
 
 async function handleOrders(admin: SupabaseAdmin, userId: string) {
@@ -397,21 +596,22 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
   const { data: existing } = await admin.from('sms_orders').select('*').eq('user_id', userId).eq('idempotency_key', idempotencyKey).maybeSingle()
   if (existing) return json({ success: true, data: existing, idempotency_hit: true })
 
-  const otpMarginUsd = envNumber('DAISYSMS_OTP_MARGIN_USD', 0.35)
-  const exchangeRate = await getUsdToNgnRate()
-  const services = await daisyGetServices(key)
-  const svc = services.find(s => s.code === serviceCode)
-  if (!svc) throw new Error('Service not available')
+  const { products, exchangeRate, globalMarginNgn } = await buildSmsCatalog(admin)
+  const svc = products.find(s => s.service_code === serviceCode)
+  if (!svc || !svc.is_enabled || svc.available_count <= 0) throw new Error('Service not available')
 
-  const totalUsd = svc.priceUsd + otpMarginUsd
-  const priceNgn = Math.ceil(totalUsd * exchangeRate)
+  const estimatedPriceNgn = svc.price_ngn
 
   const { data: profile } = await admin.from('profiles').select('wallet_balance').eq('id', userId).single()
-  if (!profile || Number(profile.wallet_balance || 0) < priceNgn) {
-    throw new Error(`Insufficient wallet balance. Required: ₦${priceNgn.toLocaleString()}`)
+  if (!profile || Number(profile.wallet_balance || 0) < estimatedPriceNgn) {
+    throw new Error(`Insufficient wallet balance. Required: ₦${estimatedPriceNgn.toLocaleString()}`)
   }
 
-  const number = await daisyGetNumber(key, serviceCode, svc.priceUsd * 1.25)
+  const number = await daisyGetNumber(key, serviceCode, Math.max(svc.provider_cost_usd * 1.25, svc.provider_cost_usd + 0.05))
+  const effectiveProviderUsd = number.priceUsd ?? svc.provider_cost_usd
+  const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn)
+  const totalUsd = effectivePricing.totalUsd
+  const priceNgn = effectivePricing.priceNgn
   const reference = generateReference('SMS')
   let debit: { prev: number; next: number } | null = null
 
@@ -420,21 +620,28 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     const { data: order, error: orderErr } = await admin.from('sms_orders').insert({
       user_id: userId, reference, idempotency_key: idempotencyKey, order_type: 'otp',
       provider_request_id: number.activationId,
-      service_id: serviceCode, service_name: svc.name,
+      service_id: serviceCode, service_name: svc.service_name,
       country_id: DAISY_COUNTRY, country_code: 'us',
       phone_number: `+${number.phoneNumber}`, raw_phone_number: number.phoneNumber,
-      provider_cost_usd: svc.priceUsd, margin_usd: otpMarginUsd,
+      provider_cost_usd: effectiveProviderUsd, margin_usd: effectivePricing.marginUsd,
       total_cost_usd: totalUsd, exchange_rate: exchangeRate, price_ngn: priceNgn,
       status: 'active',
       expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
-      provider_payload: { activation_id: number.activationId, service: svc },
+      provider_payload: {
+        activation_id: number.activationId,
+        service: svc,
+        effective_provider_price_usd: number.priceUsd ?? null,
+        margin_ngn: effectivePricing.marginNgn,
+        price_override_ngn: svc.price_override_ngn,
+        pricing_mode: effectivePricing.pricingMode,
+      },
     }).select().single()
     if (orderErr || !order) throw new Error(`Failed to create order: ${orderErr?.message}`)
-    await recordPurchase(admin, userId, reference, priceNgn, debit.next, `SMS OTP: ${svc.name}`)
+    await recordPurchase(admin, userId, reference, priceNgn, debit.next, `SMS OTP: ${svc.service_name}`)
     return json({ success: true, data: order, new_balance: debit.next })
   } catch (err) {
     try { await daisyCancelNumber(key, number.activationId) } catch { /* ignore */ }
-    if (debit) await refundWallet(admin, { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: priceNgn }, `Auto-refund for failed SMS order: ${svc.name}`)
+    if (debit) await refundWallet(admin, { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: priceNgn }, `Auto-refund for failed SMS order: ${svc.service_name}`)
     throw err
   }
 }
@@ -528,7 +735,15 @@ serve(async (req) => {
 
     switch (action) {
       case 'health':       return await handleHealth()
-      case 'services':     return await handleServices()
+      case 'services':     return await handleServices(admin)
+      case 'admin_sms_products':
+        return await handleAdminSmsProducts(admin, user.id)
+      case 'admin_update_sms_product':
+        return await handleAdminUpdateSmsProduct(admin, user.id, body)
+      case 'admin_bulk_sms_products':
+        return await handleAdminBulkSmsProducts(admin, user.id, body)
+      case 'admin_apply_sms_markup':
+        return await handleAdminApplySmsMarkup(admin, user.id, body)
       case 'countries':    return json({ success: true, data: [{ id: DAISY_COUNTRY, name: 'United States', code: 'us' }] })
       case 'rental_areas': return json({ success: true, data: [] })
       case 'orders':       return await handleOrders(admin, user.id)
