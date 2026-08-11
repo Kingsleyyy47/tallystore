@@ -127,10 +127,26 @@ type AdminSmsProduct = {
   pricing_mode: 'auto_markup' | 'manual_margin' | 'override'
 }
 
+type AdminSmsDiagnostics = {
+  provider_host?: string
+  provider_base_configured?: boolean
+  configured?: boolean
+  country_id?: number
+  verification_ok?: boolean
+  verification_services?: number
+  verification_country_services?: number
+  prices_ok?: boolean
+  prices_services?: number
+  prices_country_services?: number
+  selected_source?: string
+}
+
 type AdminSmsCatalogResponse = {
   success: boolean
   data?: AdminSmsProduct[]
   error?: string
+  configured?: boolean
+  diagnostics?: AdminSmsDiagnostics | null
   global_margin_ngn?: number
   exchange_rate?: number
 }
@@ -259,6 +275,8 @@ export default function AdminPage() {
   const [smsKeepAutoApply, setSmsKeepAutoApply] = useState(true)
   const [smsPriceInputs, setSmsPriceInputs] = useState<Record<string, string>>({})
   const [smsMarginInputs, setSmsMarginInputs] = useState<Record<string, string>>({})
+  const [smsDiagnostics, setSmsDiagnostics] = useState<AdminSmsDiagnostics | null>(null)
+  const [smsCatalogNotice, setSmsCatalogNotice] = useState('')
 
   // Email / Broadcast state
   const [emailSubject, setEmailSubject] = useState('TallyStore Notification')
@@ -848,7 +866,20 @@ export default function AdminPage() {
       if (error) throw error
       if (!data?.success) throw new Error(data?.error || 'Failed to load SMS products')
       const products = data.data || []
+      const diagnostics = data.diagnostics || null
       setSmsProducts(products)
+      setSmsDiagnostics(diagnostics)
+      if (data.configured === false || diagnostics?.configured === false) {
+        setSmsCatalogNotice('DaisySMS API key is not configured on the deployed smsbus function.')
+      } else if (products.length === 0) {
+        const verification = diagnostics?.verification_services ?? 0
+        const verificationCountry = diagnostics?.verification_country_services ?? 0
+        const prices = diagnostics?.prices_services ?? 0
+        const pricesCountry = diagnostics?.prices_country_services ?? 0
+        setSmsCatalogNotice(`Daisy returned 0 USA products. Verification ${verification}/${verificationCountry}; prices ${prices}/${pricesCountry}; source ${diagnostics?.selected_source || 'none'}.`)
+      } else {
+        setSmsCatalogNotice('')
+      }
       if (typeof data.global_margin_ngn === 'number') setSmsGlobalMargin(String(data.global_margin_ngn))
       setSmsPriceInputs(Object.fromEntries(products.map((product) => [
         product.service_code,
@@ -864,6 +895,7 @@ export default function AdminPage() {
         description: err.message || 'Run the SMS product settings migration, then try again.',
         variant: 'destructive',
       })
+      setSmsCatalogNotice(err.message || 'Failed to load SMS products.')
     } finally {
       setSmsProductsLoading(false)
     }
@@ -3214,6 +3246,17 @@ export default function AdminPage() {
                       Disable all ({smsProducts.length})
                     </Button>
                   </div>
+
+                  {(smsCatalogNotice || smsDiagnostics) && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                      <p className="font-semibold">{smsCatalogNotice || 'DaisySMS sync diagnostics'}</p>
+                      {smsDiagnostics && (
+                        <p className="mt-1 text-xs opacity-90">
+                          Host: {smsDiagnostics.provider_host || 'unknown'} · Country: {smsDiagnostics.country_id || 'unknown'} · getPricesVerification: {smsDiagnostics.verification_services ?? 0} · getPrices: {smsDiagnostics.prices_services ?? 0}
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                   <div className="rounded-lg border border-yellow-200 bg-yellow-50/40">
                     <div className="flex items-center justify-between border-b border-yellow-200 px-4 py-3">

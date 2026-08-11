@@ -67,15 +67,61 @@ async function daisyGetBalance(apiKey: string): Promise<number> {
 type DaisyService = { code: string; name: string; count: number; priceUsd: number }
 type DaisyPriceEntry = {
   count?: number | string
+  quantity?: number | string
+  qty?: number | string
+  available?: number | string
+  total?: number | string
+  stock?: number | string
   price?: number | string
   cost?: number | string
   rate?: number | string
+  retail_price?: number | string
+  multipleMessages?: number | string | boolean
+  canGetAnotherSms?: number | string | boolean
 }
 
-function normalizeDaisyService(code: string, entry: DaisyPriceEntry | undefined): DaisyService | null {
+type ParsedDaisyPrice = { count: number; priceUsd: number }
+
+function numberFrom(value: unknown) {
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : null
+}
+
+function parseDaisyPriceEntry(entry: unknown): ParsedDaisyPrice | null {
   if (!entry || typeof entry !== 'object') return null
-  const count = Number(entry.count || 0)
-  const priceUsd = Number(entry.price ?? entry.cost ?? entry.rate ?? 0)
+  const record = entry as Record<string, unknown>
+  const directCount = numberFrom(record.count ?? record.quantity ?? record.qty ?? record.available ?? record.total ?? record.stock)
+  const directPrice = numberFrom(record.price ?? record.cost ?? record.rate ?? record.retail_price)
+  if (directCount !== null && directPrice !== null) return { count: directCount, priceUsd: directPrice }
+
+  let totalCount = 0
+  let lowestPrice: number | null = null
+  for (const [key, value] of Object.entries(record)) {
+    if (['multipleMessages', 'canGetAnotherSms'].includes(key)) continue
+
+    const keyPrice = numberFrom(key)
+    const valueCount = numberFrom(value)
+    if (keyPrice !== null && valueCount !== null) {
+      totalCount += valueCount
+      lowestPrice = lowestPrice === null ? keyPrice : Math.min(lowestPrice, keyPrice)
+      continue
+    }
+
+    const nested = parseDaisyPriceEntry(value)
+    if (nested) {
+      totalCount += nested.count
+      lowestPrice = lowestPrice === null ? nested.priceUsd : Math.min(lowestPrice, nested.priceUsd)
+    }
+  }
+
+  return totalCount > 0 && lowestPrice !== null ? { count: totalCount, priceUsd: lowestPrice } : null
+}
+
+function normalizeDaisyService(code: string, entry: unknown): DaisyService | null {
+  const parsed = parseDaisyPriceEntry(entry)
+  if (!parsed) return null
+  const count = parsed.count
+  const priceUsd = parsed.priceUsd
   if (!Number.isFinite(count) || count < 1) return null
   if (!Number.isFinite(priceUsd) || priceUsd < 0) return null
   return {
@@ -98,7 +144,7 @@ function parseServiceCountryPrices(raw: unknown): DaisyService[] {
 
   for (const [code, countries] of Object.entries(raw as Record<string, unknown>)) {
     if (!countries || typeof countries !== 'object') continue
-    const usa = (countries as Record<string, DaisyPriceEntry>)[String(DAISY_COUNTRY)]
+    const usa = (countries as Record<string, unknown>)[String(DAISY_COUNTRY)]
     collectDaisyService(services, normalizeDaisyService(code, usa))
   }
 
@@ -112,15 +158,27 @@ function parseCountryServicePrices(raw: unknown): DaisyService[] {
   const usa = (raw as Record<string, unknown>)[String(DAISY_COUNTRY)]
   if (!usa || typeof usa !== 'object') return []
 
-  for (const [code, entry] of Object.entries(usa as Record<string, DaisyPriceEntry>)) {
+  for (const [code, entry] of Object.entries(usa as Record<string, unknown>)) {
     collectDaisyService(services, normalizeDaisyService(code, entry))
   }
 
   return [...services.values()]
 }
 
-async function daisyGetPriceObject(apiKey: string, action: 'getPricesVerification' | 'getPrices'): Promise<unknown> {
-  const text = await daisyGet(apiKey, { action })
+function parseFlatServicePrices(raw: unknown): DaisyService[] {
+  const services = new Map<string, DaisyService>()
+  if (!raw || typeof raw !== 'object') return []
+
+  for (const [code, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (/^\d+$/.test(code) || code === 'status' || code === 'services') continue
+    collectDaisyService(services, normalizeDaisyService(code, entry))
+  }
+
+  return [...services.values()]
+}
+
+async function daisyGetPriceObject(apiKey: string, action: 'getPricesVerification' | 'getPrices', country?: number): Promise<unknown> {
+  const text = await daisyGet(apiKey, country ? { action, country: String(country) } : { action })
   if (text === 'BAD_KEY') throw new DaisySmsError('BAD_KEY', 'Invalid API key')
   try {
     return JSON.parse(text)
@@ -138,11 +196,14 @@ function uniqueSortedServices(candidates: DaisyService[]): DaisyService[] {
 type DaisyServiceDiagnostics = {
   provider_host: string
   provider_base_configured: boolean
+  configured: boolean
   country_id: number
   verification_ok: boolean
   verification_services: number
+  verification_country_services: number
   prices_ok: boolean
   prices_services: number
+  prices_country_services: number
   selected_source: 'getPricesVerification' | 'getPrices' | 'none'
 }
 
@@ -151,22 +212,34 @@ async function daisyGetServicesWithDiagnostics(apiKey: string): Promise<{ servic
   const diagnostics: DaisyServiceDiagnostics = {
     provider_host: new URL(baseUrl).host,
     provider_base_configured: !!Deno.env.get('DAISYSMS_BASE_URL'),
+    configured: !!apiKey,
     country_id: DAISY_COUNTRY,
     verification_ok: false,
     verification_services: 0,
+    verification_country_services: 0,
     prices_ok: false,
     prices_services: 0,
+    prices_country_services: 0,
     selected_source: 'none',
   }
 
   try {
     const rawVerification = await daisyGetPriceObject(apiKey, 'getPricesVerification')
+    const rawCountryVerification = await daisyGetPriceObject(apiKey, 'getPricesVerification', DAISY_COUNTRY).catch(() => null)
     const verificationServices = uniqueSortedServices([
       ...parseServiceCountryPrices(rawVerification),
       ...parseCountryServicePrices(rawVerification),
+      ...parseServiceCountryPrices(rawCountryVerification),
+      ...parseCountryServicePrices(rawCountryVerification),
+      ...parseFlatServicePrices(rawCountryVerification),
     ])
     diagnostics.verification_ok = true
     diagnostics.verification_services = verificationServices.length
+    diagnostics.verification_country_services = uniqueSortedServices([
+      ...parseServiceCountryPrices(rawCountryVerification),
+      ...parseCountryServicePrices(rawCountryVerification),
+      ...parseFlatServicePrices(rawCountryVerification),
+    ]).length
 
     if (verificationServices.length > 0) {
       diagnostics.selected_source = 'getPricesVerification'
@@ -178,12 +251,21 @@ async function daisyGetServicesWithDiagnostics(apiKey: string): Promise<{ servic
 
   try {
     const rawPrices = await daisyGetPriceObject(apiKey, 'getPrices')
+    const rawCountryPrices = await daisyGetPriceObject(apiKey, 'getPrices', DAISY_COUNTRY).catch(() => null)
     const priceServices = uniqueSortedServices([
       ...parseCountryServicePrices(rawPrices),
       ...parseServiceCountryPrices(rawPrices),
+      ...parseCountryServicePrices(rawCountryPrices),
+      ...parseServiceCountryPrices(rawCountryPrices),
+      ...parseFlatServicePrices(rawCountryPrices),
     ])
     diagnostics.prices_ok = true
     diagnostics.prices_services = priceServices.length
+    diagnostics.prices_country_services = uniqueSortedServices([
+      ...parseCountryServicePrices(rawCountryPrices),
+      ...parseServiceCountryPrices(rawCountryPrices),
+      ...parseFlatServicePrices(rawCountryPrices),
+    ]).length
 
     if (priceServices.length > 0) {
       diagnostics.selected_source = 'getPrices'
@@ -391,6 +473,7 @@ async function buildSmsCatalog(admin: SupabaseAdmin) {
   const globalMarginNgn = await getNumericAppSetting(admin, 'sms_default_margin_ngn', DEFAULT_SMS_MARGIN_NGN)
   const { services, diagnostics } = await daisyGetServicesWithDiagnostics(key)
   await syncSmsProductSettings(admin, services, exchangeRate)
+  if (services.length === 0) return { products: [] as SmsCatalogItem[], diagnostics, exchangeRate, globalMarginNgn }
 
   const { data: settingsRows, error } = await admin
     .from('sms_product_settings')
@@ -504,6 +587,7 @@ async function handleAdminSmsProducts(admin: SupabaseAdmin, userId: string) {
   const { products, diagnostics, exchangeRate, globalMarginNgn } = await buildSmsCatalog(admin)
   return json({
     success: true,
+    configured: !!getDaisyKey(),
     data: products,
     diagnostics,
     exchange_rate: Number(exchangeRate.toFixed(4)),
