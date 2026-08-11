@@ -1024,7 +1024,7 @@ export async function updateIndividualAccount(id: string, updates: Partial<Omit<
 }
 
 // === UTILITY FUNCTIONS ===
-export async function updateProductGroupStock(productGroupId: string): Promise<void> {
+export async function updateProductGroupStock(productGroupId: string): Promise<boolean> {
   try {
     // Count available accounts
     const { count, error } = await supabase
@@ -1035,7 +1035,7 @@ export async function updateProductGroupStock(productGroupId: string): Promise<v
 
     if (error) {
       console.error('❌ Error counting accounts:', error)
-      return
+      return false
     }
 
     // Update the product group stock
@@ -1046,12 +1046,14 @@ export async function updateProductGroupStock(productGroupId: string): Promise<v
 
     if (updateError) {
       console.error('❌ Error updating stock:', updateError)
-      return
+      return false
     }
 
     console.log('✅ Stock updated for product group:', productGroupId, 'New count:', count)
+    return true
   } catch (error) {
     console.error('❌ Failed to update stock:', error)
+    return false
   }
 }
 
@@ -1215,7 +1217,15 @@ export async function processBulkAccountUpload(
     }
 
     // Update product group stock count
-    await updateProductGroupStock(productGroupId)
+    const stockUpdated = await updateProductGroupStock(productGroupId)
+
+    if (!stockUpdated) {
+      return {
+        success: false,
+        accountsCreated: createdAccounts.length,
+        error: `${createdAccounts.length} accounts were added, but stock count failed to refresh`,
+      }
+    }
 
     console.log(`✅ Successfully created ${createdAccounts.length} accounts`)
     

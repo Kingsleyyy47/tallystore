@@ -90,7 +90,7 @@ export default function StaffAdminPage() {
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [bulkPgId, setBulkPgId] = useState('')
   const [bulkUploading, setBulkUploading] = useState(false)
-  const [bulkResult, setBulkResult] = useState<{ added: number; skipped: number } | null>(null)
+  const [bulkResult, setBulkResult] = useState<{ success: boolean; accountsCreated: number; error?: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Categories
@@ -235,10 +235,19 @@ export default function StaffAdminPage() {
     if (!addPgId || !addUsername || !addPassword) return
     setAddingAccount(true)
     try {
-      await createIndividualAccount({ product_group_id: addPgId, username: addUsername, password: addPassword, email: addEmail || undefined })
+      const account = await createIndividualAccount({ product_group_id: addPgId, username: addUsername, password: addPassword, email: addEmail || undefined, status: 'available' })
+      if (!account) throw new Error('Account was not added')
+      const updatedProductGroups = await getAllProductGroups()
+      setProductGroups(updatedProductGroups)
       toast({ title: 'Account added' })
       setAddUsername(''); setAddPassword(''); setAddEmail('')
-    } catch { toast({ variant: 'destructive', title: 'Failed to add account' }) }
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Failed to add account',
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
     finally { setAddingAccount(false) }
   }
 
@@ -250,11 +259,31 @@ export default function StaffAdminPage() {
     try {
       const text = await csvFile.text()
       const parsed = parseCSV(text)
-      const result = await processBulkAccountUpload(bulkPgId, parsed)
+
+      if (parsed.length === 0) {
+        const result = { success: false, accountsCreated: 0, error: 'CSV file is empty or invalid' }
+        setBulkResult(result)
+        toast({ variant: 'destructive', title: 'Upload failed', description: result.error })
+        return
+      }
+
+      const result = await processBulkAccountUpload(parsed, bulkPgId)
       setBulkResult(result)
-      toast({ title: `Done! Added ${result.added}, skipped ${result.skipped}` })
-      setCsvFile(null)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+
+      if (result.success) {
+        const updatedProductGroups = await getAllProductGroups()
+        setProductGroups(updatedProductGroups)
+        const updatedProduct = updatedProductGroups.find(pg => pg.id === bulkPgId)
+
+        toast({
+          title: `Successfully uploaded ${result.accountsCreated} accounts`,
+          description: updatedProduct ? `${updatedProduct.stock_count ?? 0} in stock now` : undefined,
+        })
+        setCsvFile(null)
+        if (fileInputRef.current) fileInputRef.current.value = ''
+      } else {
+        toast({ variant: 'destructive', title: 'Upload failed', description: result.error })
+      }
     } catch (e: any) {
       toast({ variant: 'destructive', title: 'Upload failed', description: e?.message })
     } finally { setBulkUploading(false) }
@@ -283,7 +312,6 @@ export default function StaffAdminPage() {
         code: newCode.toUpperCase(),
         percent_off: parseInt(newCodePct),
         max_uses: newCodeMaxUses ? parseInt(newCodeMaxUses) : undefined,
-        is_active: true,
       })
       toast({ title: 'Code created' })
       setNewCode(''); setNewCodePct('10'); setNewCodeMaxUses('')
@@ -344,11 +372,11 @@ export default function StaffAdminPage() {
       const su = users.find(u => u.id === adjustUserId)
       const label = `${adjustType === 'add' ? 'Add' : 'Subtract'} ₦${amount.toLocaleString()} ${adjustType === 'add' ? 'to' : 'from'} ${su?.email || adjustUserId}`
       if (autoApproves(perms, key)) {
-        const result = await adminAdjustBalance(adjustUserId, adjustType === 'add' ? amount : -amount, adjustReason || 'Staff adjustment')
+        const result = await adminAdjustBalance(adjustUserId, adjustType === 'add' ? amount : -amount, adjustReason || 'Staff adjustment', user?.email || 'staff')
         if (result.success) {
           toast({ title: 'Balance adjusted' })
           setAdjustUserId(''); setAdjustAmount(''); setAdjustReason('')
-        } else toast({ variant: 'destructive', title: result.error })
+        } else toast({ variant: 'destructive', title: 'Balance adjustment failed' })
       } else {
         const res = await submitPendingAction(key, 'adjust_balance', label, {
           user_id: adjustUserId, amount: adjustType === 'add' ? amount : -amount, reason: adjustReason,
@@ -601,8 +629,14 @@ export default function StaffAdminPage() {
                         />
                       </div>
                       {bulkResult && (
-                        <div className="p-3 bg-green-50 dark:bg-green-950 rounded-lg text-sm text-green-700 dark:text-green-300">
-                          ✓ Added {bulkResult.added} accounts, skipped {bulkResult.skipped} duplicates
+                        <div className={`p-3 rounded-lg text-sm ${
+                          bulkResult.success
+                            ? 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300'
+                            : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300'
+                        }`}>
+                          {bulkResult.success
+                            ? `Added ${bulkResult.accountsCreated} accounts.`
+                            : `Upload failed: ${bulkResult.error || 'No accounts were added.'}`}
                         </div>
                       )}
                       <Button onClick={handleBulkUpload} disabled={bulkUploading || !csvFile || !bulkPgId}>
@@ -672,7 +706,7 @@ export default function StaffAdminPage() {
                         <div key={dc.id} className="flex items-center justify-between p-3 rounded-lg border text-sm">
                           <div>
                             <p className="font-mono font-medium">{dc.code}</p>
-                            <p className="text-muted-foreground text-xs">{dc.percent_off}% off · {dc.times_used}/{dc.max_uses ?? '∞'} uses</p>
+                            <p className="text-muted-foreground text-xs">{dc.percent_off}% off · {dc.used_count}/{dc.max_uses ?? '∞'} uses</p>
                           </div>
                           <Button
                             size="sm"

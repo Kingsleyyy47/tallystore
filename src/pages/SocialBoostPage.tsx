@@ -385,7 +385,13 @@ export default function SocialBoostPage() {
         .order('created_at', { ascending: false })
         .limit(20);
       if (error) throw error;
-      setOrders(data || []);
+      const normalizedOrders = (data || []).map(order => ({
+        ...order,
+        smm_services: Array.isArray(order.smm_services)
+          ? order.smm_services[0]
+          : order.smm_services,
+      }));
+      setOrders(normalizedOrders);
     } catch (err) {
       console.error('Error fetching orders:', err);
     } finally {

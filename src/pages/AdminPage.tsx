@@ -685,7 +685,7 @@ export default function AdminPage() {
         await upsertAppSetting(setting_key, value)
       } else if (action.action_type === 'adjust_balance') {
         const { user_id, amount, reason } = action.action_data
-        await adminAdjustBalance(user_id, amount, reason || 'Approved staff action')
+        await adminAdjustBalance(user_id, amount, reason || 'Approved staff action', user?.email || 'admin')
       }
       await supabase
         .from('staff_pending_actions')
