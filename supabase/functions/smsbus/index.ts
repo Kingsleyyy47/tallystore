@@ -128,22 +128,70 @@ function uniqueSortedServices(candidates: DaisyService[]): DaisyService[] {
   return [...services.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
-async function daisyGetServices(apiKey: string): Promise<DaisyService[]> {
-  const rawVerification = await daisyGetPriceObject(apiKey, 'getPricesVerification')
-  const verificationServices = uniqueSortedServices([
-    ...parseServiceCountryPrices(rawVerification),
-    ...parseCountryServicePrices(rawVerification),
-  ])
+type DaisyServiceDiagnostics = {
+  provider_host: string
+  provider_base_configured: boolean
+  country_id: number
+  verification_ok: boolean
+  verification_services: number
+  prices_ok: boolean
+  prices_services: number
+  selected_source: 'getPricesVerification' | 'getPrices' | 'none'
+}
 
-  if (verificationServices.length > 0) {
-    return verificationServices
+async function daisyGetServicesWithDiagnostics(apiKey: string): Promise<{ services: DaisyService[]; diagnostics: DaisyServiceDiagnostics }> {
+  const baseUrl = Deno.env.get('DAISYSMS_BASE_URL') || DEFAULT_DAISY_BASE
+  const diagnostics: DaisyServiceDiagnostics = {
+    provider_host: new URL(baseUrl).host,
+    provider_base_configured: !!Deno.env.get('DAISYSMS_BASE_URL'),
+    country_id: DAISY_COUNTRY,
+    verification_ok: false,
+    verification_services: 0,
+    prices_ok: false,
+    prices_services: 0,
+    selected_source: 'none',
   }
 
-  const rawPrices = await daisyGetPriceObject(apiKey, 'getPrices')
-  return uniqueSortedServices([
-    ...parseCountryServicePrices(rawPrices),
-    ...parseServiceCountryPrices(rawPrices),
-  ])
+  try {
+    const rawVerification = await daisyGetPriceObject(apiKey, 'getPricesVerification')
+    const verificationServices = uniqueSortedServices([
+      ...parseServiceCountryPrices(rawVerification),
+      ...parseCountryServicePrices(rawVerification),
+    ])
+    diagnostics.verification_ok = true
+    diagnostics.verification_services = verificationServices.length
+
+    if (verificationServices.length > 0) {
+      diagnostics.selected_source = 'getPricesVerification'
+      return { services: verificationServices, diagnostics }
+    }
+  } catch (error) {
+    console.warn('Daisy getPricesVerification did not produce services:', error)
+  }
+
+  try {
+    const rawPrices = await daisyGetPriceObject(apiKey, 'getPrices')
+    const priceServices = uniqueSortedServices([
+      ...parseCountryServicePrices(rawPrices),
+      ...parseServiceCountryPrices(rawPrices),
+    ])
+    diagnostics.prices_ok = true
+    diagnostics.prices_services = priceServices.length
+
+    if (priceServices.length > 0) {
+      diagnostics.selected_source = 'getPrices'
+      return { services: priceServices, diagnostics }
+    }
+  } catch (error) {
+    console.warn('Daisy getPrices did not produce services:', error)
+  }
+
+  return { services: [], diagnostics }
+}
+
+async function daisyGetServices(apiKey: string): Promise<DaisyService[]> {
+  const { services } = await daisyGetServicesWithDiagnostics(apiKey)
+  return services
 }
 
 async function daisyGetNumber(apiKey: string, serviceCode: string, maxPriceUsd?: number): Promise<{ activationId: string; phoneNumber: string }> {
@@ -314,7 +362,7 @@ async function handleServices() {
   if (!key) return json({ success: true, data: [] })
   const otpMarginUsd = envNumber('DAISYSMS_OTP_MARGIN_USD', 0.35)
   const exchangeRate = await getUsdToNgnRate()
-  const services = await daisyGetServices(key)
+  const { services, diagnostics } = await daisyGetServicesWithDiagnostics(key)
   const enriched = services.map((svc, i) => {
     const totalUsd = svc.priceUsd + otpMarginUsd
     return {
@@ -328,7 +376,7 @@ async function handleServices() {
       available_count: svc.count,
     }
   })
-  return json({ success: true, data: enriched.filter(s => s.available_count > 0) })
+  return json({ success: true, data: enriched.filter(s => s.available_count > 0), diagnostics })
 }
 
 async function handleOrders(admin: SupabaseAdmin, userId: string) {

@@ -60,6 +60,18 @@ type SmsApiResponse<T> = {
   new_balance?: number
   refund?: unknown
   messages?: SmsMessage[]
+  diagnostics?: SmsDiagnostics
+}
+
+type SmsDiagnostics = {
+  provider_host?: string
+  provider_base_configured?: boolean
+  country_id?: number
+  verification_ok?: boolean
+  verification_services?: number
+  prices_ok?: boolean
+  prices_services?: number
+  selected_source?: string
 }
 
 type SmsProviderBalance = {
@@ -488,6 +500,7 @@ function SmsMessageSupportCard() {
 function SmsNumbersSurface() {
   const [activeTab, setActiveTab] = useState<SmsTab>('otp')
   const [health, setHealth] = useState<SmsApiResponse<never> | null>(null)
+  const [smsDiagnostics, setSmsDiagnostics] = useState<SmsDiagnostics | null>(null)
   const [services, setServices] = useState<SmsService[]>([])
   const [areas, setAreas] = useState<SmsRentalArea[]>([])
   const [orders, setOrders] = useState<SmsOrder[]>([])
@@ -538,6 +551,14 @@ function SmsNumbersSurface() {
   }, [services, serviceQuery, serviceSort])
 
   const visibleServices = filteredServices.slice(0, visibleServiceCount)
+  const smsDiagnosticText = useMemo(() => {
+    if (!smsDiagnostics) return ''
+    const host = smsDiagnostics.provider_host ? `Provider: ${smsDiagnostics.provider_host}` : ''
+    const country = smsDiagnostics.country_id ? `Country: ${smsDiagnostics.country_id}` : ''
+    const verification = `getPricesVerification: ${smsDiagnostics.verification_services ?? 0}`
+    const prices = `getPrices: ${smsDiagnostics.prices_services ?? 0}`
+    return [host, country, verification, prices].filter(Boolean).join(' · ')
+  }, [smsDiagnostics])
 
   const filteredAreas = useMemo(() => {
     const query = normalize(rentalQuery)
@@ -588,6 +609,7 @@ function SmsNumbersSurface() {
           invokeSms<SmsRentalArea[]>('rental_areas'),
         ])
 
+        setSmsDiagnostics(serviceResult.diagnostics || null)
         setServices(serviceResult.data || [])
         setAreas(areaResult.data || [])
 
@@ -595,6 +617,7 @@ function SmsNumbersSurface() {
           setSelectedServiceId((current) => current || serviceResult.data?.[0]?.service_id || '')
         }
       } else {
+        setSmsDiagnostics(null)
         setServices([])
         setAreas([])
       }
@@ -846,6 +869,11 @@ function SmsNumbersSurface() {
                       title={services.length === 0 ? 'No OTP services available' : 'No service found'}
                       body={services.length === 0 ? 'The SMS provider did not return live stock for this country.' : 'Try another app name or clear the search.'}
                     />
+                    {services.length === 0 && smsDiagnosticText && (
+                      <p className="mt-3 text-center text-xs text-slate-500 dark:text-muted-foreground">
+                        {smsDiagnosticText}
+                      </p>
+                    )}
                   </div>
                 ) : visibleServices.map((service) => {
                   const selected = selectedServiceId === service.service_id
