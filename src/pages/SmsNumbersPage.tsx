@@ -842,7 +842,10 @@ function SmsNumbersSurface() {
                   ))
                 ) : visibleServices.length === 0 ? (
                   <div className="md:col-span-2 xl:col-span-3">
-                    <EmptyState title="No service found" body="Try another app name or clear the search." />
+                    <EmptyState
+                      title={services.length === 0 ? 'No OTP services available' : 'No service found'}
+                      body={services.length === 0 ? 'The SMS provider did not return live stock for this country.' : 'Try another app name or clear the search.'}
+                    />
                   </div>
                 ) : visibleServices.map((service) => {
                   const selected = selectedServiceId === service.service_id

@@ -22,10 +22,7 @@ export const PERMISSIONS = [
   { key: 'setting_rate',            label: 'NGN/USD Rate',           description: 'Override the exchange rate shown to customers', group: 'Settings' },
   { key: 'setting_referral_pct',    label: 'Referral Commission',    description: 'Change the referral reward percentage', group: 'Settings' },
   { key: 'setting_ercas',           label: 'Ercas Pay Toggle',       description: 'Enable or disable the Ercas Pay gateway', group: 'Settings' },
-  { key: 'setting_bitrefill_markup',label: 'Bitrefill Markup',       description: 'Change the gift card markup percentage', group: 'Settings' },
-  { key: 'setting_bitrefill_catalog',label: 'Bitrefill Catalog',     description: 'Block or unblock gift card products', group: 'Settings' },
-  { key: 'setting_social_boost',    label: 'Social Boost Visibility',description: 'Show or hide SMM services on the social boost page', group: 'Settings' },
-  { key: 'setting_suggestions',     label: 'Product Suggestions',    description: 'Run trend checks and manage restock suggestions', group: 'Settings' },
+  { key: 'setting_support_links',   label: 'Support Links',          description: 'Change WhatsApp, Telegram, channel, and login popup support text', group: 'Settings' },
   // ── Specific actions
   { key: 'action_adjust_balance',   label: 'Adjust User Balance',    description: 'Add or subtract wallet balance for a user', group: 'Actions' },
 ] as const

@@ -49,9 +49,53 @@ async function requireAdmin(req: Request): Promise<string> {
   return user.id;
 }
 
+async function requireAdminOrStaffPermission(
+  req: Request,
+  permissionKey: string,
+  requireAutoApprove = false
+): Promise<string> {
+  const auth = req.headers.get("Authorization");
+  if (!auth) throw new Error("Missing authorization header");
+
+  const supabase = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_ANON_KEY")!,
+    { global: { headers: { Authorization: auth } }, auth: { persistSession: false } }
+  );
+
+  const { data: { user }, error } = await supabase.auth.getUser(
+    auth.replace("Bearer ", "")
+  );
+  if (error || !user) throw new Error("Unauthorized");
+
+  const admin = getAdmin();
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("is_admin, is_staff")
+    .eq("id", user.id)
+    .single();
+
+  if (profile?.is_admin) return user.id;
+  if (!profile?.is_staff) throw new Error("Forbidden");
+
+  const { data: permission } = await admin
+    .from("staff_permissions")
+    .select("is_enabled, auto_approve")
+    .eq("user_id", user.id)
+    .eq("permission_key", permissionKey)
+    .maybeSingle();
+
+  if (!permission?.is_enabled) throw new Error("Forbidden: staff permission required");
+  if (requireAutoApprove && permission.auto_approve === false) {
+    throw new Error("Forbidden: staff action requires approval");
+  }
+
+  return user.id;
+}
+
 // ─── Route: POST /email/send ────────────────────────────────────────
 async function handleSend(req: Request) {
-  const userId = await requireAdmin(req);
+  const userId = await requireAdminOrStaffPermission(req, "tab_email", true);
   const { to, subject, html } = await req.json();
 
   if (!to || !subject || !html) {
@@ -68,8 +112,8 @@ async function handleSend(req: Request) {
 
 // ─── Route: POST /email/broadcast ───────────────────────────────────
 async function handleBroadcast(req: Request) {
-  const userId = await requireAdmin(req);
   const { subject, html, dryRun } = await req.json();
+  const userId = await requireAdminOrStaffPermission(req, "tab_email", !Boolean(dryRun));
 
   if (!subject || !html) {
     return json({ success: false, error: "subject and html are required" }, 400);
@@ -312,7 +356,7 @@ async function handleProcessBroadcast() {
 
 // ─── Route: GET /email/broadcast-status ─────────────────────────────
 async function handleBroadcastStatus(req: Request) {
-  await requireAdmin(req);
+  await requireAdminOrStaffPermission(req, "tab_email");
   const admin = getAdmin();
 
   const { data: jobs, error } = await admin
@@ -330,7 +374,7 @@ async function handleBroadcastStatus(req: Request) {
 
 // ─── Route: POST /email/cancel-broadcast ────────────────────────────
 async function handleCancelBroadcast(req: Request) {
-  await requireAdmin(req);
+  await requireAdminOrStaffPermission(req, "tab_email", true);
   const { jobId } = await req.json();
 
   if (!jobId) {
@@ -378,7 +422,11 @@ serve(async (req) => {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Internal error";
-    const status = message === "Unauthorized" || message === "Forbidden: admin only" ? 401 : 500;
+    const status = message === "Unauthorized"
+      ? 401
+      : message.startsWith("Forbidden")
+        ? 403
+        : 500;
     return json({ success: false, error: message }, status);
   }
 });

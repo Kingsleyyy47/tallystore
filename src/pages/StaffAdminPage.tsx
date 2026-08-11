@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Loader2, Clock, CheckCircle2, XCircle, Settings, Upload, Plus, Tag, Users, BarChart2, Mail } from 'lucide-react'
+import { Loader2, Clock, CheckCircle2, XCircle, Settings, Upload, Plus, Tag, Users, BarChart2, Mail, Send, RefreshCw, X } from 'lucide-react'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { useAuth } from '@/contexts/SimpleAuth'
@@ -47,6 +47,9 @@ function can(perms: PermissionMap, key: PermissionKey) {
 function autoApproves(perms: PermissionMap, key: PermissionKey) {
   return perms[key]?.auto_approve !== false
 }
+function hasSettingsPermission(perms: PermissionMap) {
+  return can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas') || can(perms, 'setting_support_links')
+}
 
 export default function StaffAdminPage() {
   const { user } = useAuth()
@@ -73,6 +76,19 @@ export default function StaffAdminPage() {
   const [supportChannelUrl, setSupportChannelUrl] = useState('')
   const [supportPopupMessage, setSupportPopupMessage] = useState('')
   const [savingSupportLinks, setSavingSupportLinks] = useState(false)
+
+  // Email / broadcast
+  const [emailSubject, setEmailSubject] = useState('TallyStore Notification')
+  const [emailMessage, setEmailMessage] = useState('')
+  const [emailRecipients, setEmailRecipients] = useState<string[]>([])
+  const [emailRecipientInput, setEmailRecipientInput] = useState('')
+  const [isSendingEmail, setIsSendingEmail] = useState(false)
+  const [broadcastJobs, setBroadcastJobs] = useState<any[]>([])
+  const [isLoadingJobs, setIsLoadingJobs] = useState(false)
+  const [isBroadcasting, setIsBroadcasting] = useState(false)
+  const [isDryRun, setIsDryRun] = useState(true)
+  const [dryRunResult, setDryRunResult] = useState<any>(null)
+  const broadcastPollRef = useRef<NodeJS.Timeout | null>(null)
 
   // Products / categories
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([])
@@ -153,17 +169,19 @@ export default function StaffAdminPage() {
     if (can(perms, 'setting_ercas')) {
       getAppSetting('ercas_enabled').then(v => setErcasEnabled(v !== 'false'))
     }
-    Promise.all([
-      getAppSetting('support_whatsapp_url'),
-      getAppSetting('support_telegram_url'),
-      getAppSetting('support_channel_url'),
-      getAppSetting('support_popup_message'),
-    ]).then(([wa, tg, ch, pm]) => {
-      setSupportWhatsappUrl(wa || '')
-      setSupportTelegramUrl(tg || '')
-      setSupportChannelUrl(ch || '')
-      setSupportPopupMessage(pm || '')
-    })
+    if (can(perms, 'setting_support_links')) {
+      Promise.all([
+        getAppSetting('support_whatsapp_url'),
+        getAppSetting('support_telegram_url'),
+        getAppSetting('support_channel_url'),
+        getAppSetting('support_popup_message'),
+      ]).then(([wa, tg, ch, pm]) => {
+        setSupportWhatsappUrl(wa || '')
+        setSupportTelegramUrl(tg || '')
+        setSupportChannelUrl(ch || '')
+        setSupportPopupMessage(pm || '')
+      })
+    }
     if (can(perms, 'tab_products') || can(perms, 'tab_templates') || can(perms, 'tab_add_product') || can(perms, 'tab_bulk_upload')) {
       setLoadingProducts(true)
       Promise.all([getAllProductGroups(), getCategories()]).then(([pg, cat]) => {
@@ -177,6 +195,40 @@ export default function StaffAdminPage() {
       getDiscountCodes().then(codes => { setDiscountCodes(codes); setLoadingCodes(false) })
     }
   }, [perms, loadingPerms])
+
+  const loadBroadcastJobs = useCallback(async () => {
+    if (!can(perms, 'tab_email')) return
+    setIsLoadingJobs(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('email/broadcast-status', { method: 'GET' })
+      if (error) throw error
+      if (data?.success) setBroadcastJobs(data.jobs || [])
+    } catch (err) {
+      console.error('Failed to load broadcast jobs:', err)
+    } finally {
+      setIsLoadingJobs(false)
+    }
+  }, [perms])
+
+  useEffect(() => {
+    if (!loadingPerms && can(perms, 'tab_email')) loadBroadcastJobs()
+  }, [perms, loadingPerms, loadBroadcastJobs])
+
+  useEffect(() => {
+    const hasActive = broadcastJobs.some(j => j.status === 'queued' || j.status === 'processing')
+    if (hasActive && !broadcastPollRef.current) {
+      broadcastPollRef.current = setInterval(loadBroadcastJobs, 5000)
+    } else if (!hasActive && broadcastPollRef.current) {
+      clearInterval(broadcastPollRef.current)
+      broadcastPollRef.current = null
+    }
+    return () => {
+      if (broadcastPollRef.current) {
+        clearInterval(broadcastPollRef.current)
+        broadcastPollRef.current = null
+      }
+    }
+  }, [broadcastJobs, loadBroadcastJobs])
 
   const loadMyPending = useCallback(async () => {
     if (!user) return
@@ -202,7 +254,11 @@ export default function StaffAdminPage() {
     onSuccess?: () => void,
   ) {
     if (autoApproves(perms, permKey)) {
-      await upsertAppSetting(settingKey, value)
+      const ok = await upsertAppSetting(settingKey, value)
+      if (!ok) {
+        toast({ variant: 'destructive', title: `Failed to update ${label}` })
+        return
+      }
       toast({ title: `${label} updated` })
       onSuccess?.()
     } else {
@@ -216,21 +272,171 @@ export default function StaffAdminPage() {
   async function handleSaveSupportLinks() {
     setSavingSupportLinks(true)
     try {
-      {
-        await Promise.all([
-          upsertAppSetting('support_whatsapp_url', supportWhatsappUrl.trim()),
-          upsertAppSetting('support_telegram_url', supportTelegramUrl.trim()),
-          upsertAppSetting('support_channel_url', supportChannelUrl.trim()),
-          upsertAppSetting('support_popup_message', supportPopupMessage.trim()),
-        ])
+      const settings = {
+        support_whatsapp_url: supportWhatsappUrl.trim(),
+        support_telegram_url: supportTelegramUrl.trim(),
+        support_channel_url: supportChannelUrl.trim(),
+        support_popup_message: supportPopupMessage.trim(),
+      }
+
+      if (autoApproves(perms, 'setting_support_links')) {
+        const results = await Promise.all(Object.entries(settings).map(([key, value]) => upsertAppSetting(key, value)))
+        if (results.some(ok => !ok)) {
+          toast({ variant: 'destructive', title: 'Failed to save support links' })
+          return
+        }
         const { invalidateSupportSettingsCache } = await import('@/hooks/useSupportSettings')
         invalidateSupportSettingsCache()
         toast({ title: 'Support links saved' })
+      } else {
+        const res = await submitPendingAction('setting_support_links', 'upsert_settings', 'Update support links', { settings })
+        if (res.success) {
+          toast({ title: 'Submitted for approval' })
+          loadMyPending()
+        } else {
+          toast({ variant: 'destructive', title: res.error })
+        }
       }
     } finally { setSavingSupportLinks(false) }
   }
 
+  const buildEmailHtml = (message: string) =>
+    `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px">
+      <div style="background:linear-gradient(135deg,#7c3aed,#3b82f6);padding:24px;border-radius:12px;color:white;text-align:center;margin-bottom:24px">
+        <h1 style="margin:0;font-size:24px">TallyStore</h1>
+      </div>
+      <div style="padding:16px;line-height:1.6;color:#333">
+        ${message.replace(/\n/g, '<br/>')}
+      </div>
+      <div style="text-align:center;margin-top:24px">
+        <a href="https://tallystore.org/dashboard" style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Dashboard</a>
+      </div>
+      <div style="text-align:center;margin-top:32px;color:#999;font-size:12px"><p>TallyStore - Your trusted digital marketplace</p></div>
+    </div>`
+
+  const addEmailRecipient = () => {
+    const email = emailRecipientInput.trim().toLowerCase()
+    if (!email) return
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      toast({ title: 'Invalid email', description: 'Please enter a valid email address', variant: 'destructive' })
+      return
+    }
+    if (emailRecipients.includes(email)) {
+      toast({ title: 'Duplicate', description: 'This email is already in the list', variant: 'destructive' })
+      return
+    }
+    setEmailRecipients(prev => [...prev, email])
+    setEmailRecipientInput('')
+  }
+
+  const handleSendToList = async () => {
+    if (emailRecipients.length === 0 || !emailMessage.trim()) {
+      toast({ title: 'Missing info', description: 'Add recipients and a message', variant: 'destructive' })
+      return
+    }
+
+    if (!autoApproves(perms, 'tab_email')) {
+      const res = await submitPendingAction('tab_email', 'send_email_list', `Send email to ${emailRecipients.length} recipient(s)`, {
+        subject: emailSubject,
+        message: emailMessage,
+        recipients: emailRecipients,
+      })
+      if (res.success) {
+        toast({ title: 'Submitted for approval' })
+        setEmailRecipients([])
+        setEmailMessage('')
+        loadMyPending()
+      } else {
+        toast({ variant: 'destructive', title: res.error })
+      }
+      return
+    }
+
+    setIsSendingEmail(true)
+    const html = buildEmailHtml(emailMessage)
+    let sentCount = 0
+    let failCount = 0
+    for (const to of emailRecipients) {
+      try {
+        const { data, error } = await supabase.functions.invoke('email/send', { body: { to, subject: emailSubject, html } })
+        if (error || !data?.success) failCount++
+        else sentCount++
+      } catch { failCount++ }
+    }
+    setIsSendingEmail(false)
+    toast({ title: 'Done', description: `Sent: ${sentCount}, Failed: ${failCount}` })
+    if (sentCount > 0) {
+      setEmailRecipients([])
+      setEmailMessage('')
+    }
+  }
+
+  const handleBroadcast = async () => {
+    if (!emailMessage.trim()) {
+      toast({ title: 'Missing message', description: 'Write a message before broadcasting', variant: 'destructive' })
+      return
+    }
+
+    if (!autoApproves(perms, 'tab_email')) {
+      const res = await submitPendingAction('tab_email', 'broadcast_email', 'Broadcast email to all users', {
+        subject: emailSubject,
+        message: emailMessage,
+      })
+      if (res.success) {
+        toast({ title: 'Submitted for approval' })
+        setEmailMessage('')
+        loadMyPending()
+      } else {
+        toast({ variant: 'destructive', title: res.error })
+      }
+      return
+    }
+
+    const html = buildEmailHtml(emailMessage)
+
+    if (isDryRun) {
+      setIsBroadcasting(true)
+      try {
+        const { data, error } = await supabase.functions.invoke('email/broadcast', { body: { subject: emailSubject, html, dryRun: true } })
+        if (error) throw error
+        setDryRunResult(data)
+      } catch (err: any) {
+        toast({ title: 'Dry run failed', description: err.message, variant: 'destructive' })
+      } finally {
+        setIsBroadcasting(false)
+      }
+      return
+    }
+
+    if (!confirm('This will email all registered users. Continue?')) return
+    setIsBroadcasting(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('email/broadcast', { body: { subject: emailSubject, html } })
+      if (error) throw error
+      toast({ title: 'Broadcast queued', description: data?.message || 'Processing will start within 1 minute.' })
+      setEmailMessage('')
+      setDryRunResult(null)
+      await loadBroadcastJobs()
+    } catch (err: any) {
+      toast({ title: 'Broadcast failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setIsBroadcasting(false)
+    }
+  }
+
   // ── Add single account ───────────────────────────────────────────────────
+  const handleCancelBroadcast = async (jobId: string) => {
+    if (!confirm('Cancel this broadcast? Emails already sent cannot be undone.')) return
+    try {
+      const { data, error } = await supabase.functions.invoke('email/cancel-broadcast', { body: { jobId } })
+      if (error || data?.success === false) throw new Error(data?.error || error?.message || 'Failed to cancel broadcast')
+      toast({ title: 'Cancelled', description: 'Broadcast job cancelled.' })
+      await loadBroadcastJobs()
+    } catch (err: any) {
+      toast({ title: 'Cancel failed', description: err.message, variant: 'destructive' })
+    }
+  }
+
   async function handleAddAccount() {
     if (!addPgId || !addUsername || !addPassword) return
     setAddingAccount(true)
@@ -294,12 +500,19 @@ export default function StaffAdminPage() {
     if (!newCatName.trim()) return
     setAddingCat(true)
     try {
-      await createCategory(newCatName, newCatName, newCatDesc || undefined)
+      const category = await createCategory(newCatName, newCatName, newCatDesc || undefined)
+      if (!category) throw new Error('Category was not created')
       toast({ title: 'Category created' })
       setNewCatName(''); setNewCatDesc('')
       const cats = await getCategories()
       setCategories(cats)
-    } catch { toast({ variant: 'destructive', title: 'Failed to create category' }) }
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Failed to create category',
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
     finally { setAddingCat(false) }
   }
 
@@ -308,16 +521,23 @@ export default function StaffAdminPage() {
     if (!newCode.trim() || !newCodePct) return
     setCreatingCode(true)
     try {
-      await createDiscountCode({
+      const result = await createDiscountCode({
         code: newCode.toUpperCase(),
         percent_off: parseInt(newCodePct),
         max_uses: newCodeMaxUses ? parseInt(newCodeMaxUses) : undefined,
       })
+      if (!result.success) throw new Error(result.error || 'Failed to create code')
       toast({ title: 'Code created' })
       setNewCode(''); setNewCodePct('10'); setNewCodeMaxUses('')
       const codes = await getDiscountCodes()
       setDiscountCodes(codes)
-    } catch { toast({ variant: 'destructive', title: 'Failed to create code' }) }
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Failed to create code',
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
     finally { setCreatingCode(false) }
   }
 
@@ -335,19 +555,24 @@ export default function StaffAdminPage() {
     if (!editingPg) return
     setSavingPg(true)
     try {
-      await updateProductGroup(editingPg.id, {
+      const updated = await updateProductGroup(editingPg.id, {
         price: parseFloat(editPrice) || editingPg.price,
         muabanvia_product_id: editMua || null,
         shopclone_product_id: editShopclone || null,
         shopviaclone_product_id: editShopviaclone || null,
         auto_fulfill_enabled: editAutoFulfill,
       })
+      if (!updated) throw new Error('Product was not updated')
       toast({ title: 'Product updated' })
       const pg = await getAllProductGroups()
       setProductGroups(pg)
       setEditingPg(null)
-    } catch {
-      toast({ variant: 'destructive', title: 'Failed to save' })
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Failed to save',
+        description: error instanceof Error ? error.message : undefined,
+      })
     } finally {
       setSavingPg(false)
     }
@@ -357,9 +582,18 @@ export default function StaffAdminPage() {
   async function handleSearchUsers() {
     if (!userQuery.trim()) return
     setSearchingUsers(true)
-    const results = await searchUsers(userQuery)
-    setUsers(results)
-    setSearchingUsers(false)
+    try {
+      const results = await searchUsers(userQuery)
+      setUsers(results)
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Search failed',
+        description: error instanceof Error ? error.message : undefined,
+      })
+    } finally {
+      setSearchingUsers(false)
+    }
   }
 
   async function handleAdjustBalance() {
@@ -384,6 +618,12 @@ export default function StaffAdminPage() {
         if (res.success) { toast({ title: 'Submitted for approval' }); loadMyPending(); setAdjustUserId(''); setAdjustAmount(''); setAdjustReason('') }
         else toast({ variant: 'destructive', title: res.error })
       }
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Balance adjustment failed',
+        description: error instanceof Error ? error.message : undefined,
+      })
     } finally { setAdjusting(false) }
   }
 
@@ -399,8 +639,8 @@ export default function StaffAdminPage() {
   const hasAnyTab =
     can(perms, 'view_stats') || can(perms, 'tab_templates') || can(perms, 'tab_products') ||
     can(perms, 'tab_add_product') || can(perms, 'tab_bulk_upload') || can(perms, 'tab_discount_codes') ||
-    can(perms, 'tab_categories') || can(perms, 'tab_users') ||
-    can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas')
+    can(perms, 'tab_categories') || can(perms, 'tab_users') || can(perms, 'tab_email') ||
+    hasSettingsPermission(perms)
 
   if (!hasAnyTab) {
     return (
@@ -426,7 +666,8 @@ export default function StaffAdminPage() {
     can(perms, 'tab_categories')       && { key: 'categories',label: 'Categories' },
     can(perms, 'tab_discount_codes')   && { key: 'discounts', label: 'Discount Codes' },
     can(perms, 'tab_users')            && { key: 'users',     label: 'Users' },
-    (can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas') || true) && { key: 'settings', label: 'Settings' },
+    can(perms, 'tab_email')            && { key: 'email',     label: 'Email' },
+    hasSettingsPermission(perms)        && { key: 'settings', label: 'Settings' },
     { key: 'my-actions', label: 'My Requests' },
   ].filter(Boolean) as { key: string; label: string }[]
 
@@ -712,9 +953,13 @@ export default function StaffAdminPage() {
                             size="sm"
                             variant={dc.is_active ? 'outline' : 'default'}
                             onClick={async () => {
-                              await setDiscountCodeActive(dc.id, !dc.is_active)
-                              const codes = await getDiscountCodes()
-                              setDiscountCodes(codes)
+                              const ok = await setDiscountCodeActive(dc.id, !dc.is_active)
+                              if (ok) {
+                                const codes = await getDiscountCodes()
+                                setDiscountCodes(codes)
+                              } else {
+                                toast({ variant: 'destructive', title: 'Failed to update code' })
+                              }
                             }}
                           >
                             {dc.is_active ? 'Disable' : 'Enable'}
@@ -784,7 +1029,133 @@ export default function StaffAdminPage() {
           )}
 
           {/* ── Settings ──────────────────────────────────────── */}
-          {true && (
+          {can(perms, 'tab_email') && (
+            <TabsContent value="email" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Mail className="h-5 w-5" />
+                    Compose Email
+                  </CardTitle>
+                  {!autoApproves(perms, 'tab_email') && (
+                    <Badge variant="outline" className="w-fit flex items-center gap-1">
+                      <Clock className="h-3 w-3" /> Requires approval
+                    </Badge>
+                  )}
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <label className="text-sm font-medium mb-1 block">Subject</label>
+                    <Input value={emailSubject} onChange={e => setEmailSubject(e.target.value)} placeholder="Email subject line" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium mb-1 block">Message</label>
+                    <Textarea value={emailMessage} onChange={e => setEmailMessage(e.target.value)} placeholder="Write your email message here..." rows={7} />
+                  </div>
+                  <div className="border rounded-lg p-4 space-y-3">
+                    <label className="text-sm font-medium block">Targeted Recipients</label>
+                    <div className="flex gap-2">
+                      <Input
+                        value={emailRecipientInput}
+                        onChange={e => setEmailRecipientInput(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addEmailRecipient() } }}
+                        placeholder="user@example.com"
+                        className="flex-1"
+                      />
+                      <Button variant="outline" size="sm" onClick={addEmailRecipient}><Plus className="h-4 w-4" /></Button>
+                    </div>
+                    {emailRecipients.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap gap-2">
+                          {emailRecipients.map((email, idx) => (
+                            <Badge key={idx} variant="secondary" className="flex items-center gap-1 px-2 py-1">
+                              {email}
+                              <button onClick={() => setEmailRecipients(prev => prev.filter((_, i) => i !== idx))}>
+                                <X className="h-3 w-3" />
+                              </button>
+                            </Badge>
+                          ))}
+                        </div>
+                        <Button variant="ghost" size="sm" onClick={() => setEmailRecipients([])}>Clear all</Button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <Button
+                      onClick={handleSendToList}
+                      disabled={isSendingEmail || emailRecipients.length === 0 || !emailMessage.trim()}
+                      variant="outline"
+                      className="flex-1"
+                    >
+                      {isSendingEmail ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />}
+                      {autoApproves(perms, 'tab_email') ? `Send to List (${emailRecipients.length})` : 'Submit Targeted Email'}
+                    </Button>
+                    <div className="flex items-center gap-2 flex-1">
+                      <Button onClick={handleBroadcast} disabled={isBroadcasting || !emailMessage.trim()} className="flex-1">
+                        {isBroadcasting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Mail className="h-4 w-4 mr-2" />}
+                        {autoApproves(perms, 'tab_email') ? (isDryRun ? 'Dry Run' : 'Broadcast to All Users') : 'Submit Broadcast'}
+                      </Button>
+                      {autoApproves(perms, 'tab_email') && (
+                        <label className="flex items-center gap-1.5 text-xs whitespace-nowrap cursor-pointer">
+                          <input type="checkbox" checked={isDryRun} onChange={e => { setIsDryRun(e.target.checked); setDryRunResult(null) }} className="rounded" />
+                          Test mode
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                  {dryRunResult && (
+                    <div className="p-3 bg-blue-50 dark:bg-blue-950 rounded-lg text-sm text-blue-700 dark:text-blue-300">
+                      Total recipients: <strong>{dryRunResult.totalRecipients?.toLocaleString()}</strong>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {autoApproves(perms, 'tab_email') && (
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="flex items-center gap-2"><Send className="h-5 w-5" /> Broadcast Jobs</CardTitle>
+                      <Button variant="outline" size="sm" onClick={loadBroadcastJobs} disabled={isLoadingJobs}>
+                        <RefreshCw className={`h-4 w-4 mr-1 ${isLoadingJobs ? 'animate-spin' : ''}`} /> Refresh
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    {broadcastJobs.length === 0 ? (
+                      <p className="text-muted-foreground text-sm">No broadcast jobs yet.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {broadcastJobs.map(job => {
+                          const processed = (job.sent_count || 0) + (job.failed_count || 0)
+                          const total = job.total_recipients || 1
+                          const isActive = job.status === 'queued' || job.status === 'processing'
+
+                          return (
+                            <div key={job.id} className="flex items-center justify-between p-3 rounded-lg border text-sm">
+                              <div>
+                                <p className="font-medium">{job.subject}</p>
+                                <p className="text-muted-foreground text-xs">
+                                  {job.status} · {processed}/{total} processed · {format(new Date(job.created_at), 'dd MMM HH:mm')}
+                                </p>
+                              </div>
+                              {isActive && (
+                                <Button variant="outline" size="sm" onClick={() => handleCancelBroadcast(job.id)}>
+                                  Cancel
+                                </Button>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+          )}
+
+          {hasSettingsPermission(perms) && (
             <TabsContent value="settings" className="space-y-4">
               {can(perms, 'setting_rate') && (
                 <Card>
@@ -844,9 +1215,11 @@ export default function StaffAdminPage() {
                   </CardContent>
                 </Card>
               )}
+              {can(perms, 'setting_support_links') && (
               <Card>
                 <CardHeader>
                   <CardTitle>Support Links</CardTitle>
+                  {!autoApproves(perms, 'setting_support_links') && <Badge variant="outline" className="w-fit flex items-center gap-1"><Clock className="h-3 w-3" /> Requires approval</Badge>}
                   <p className="text-sm text-muted-foreground">Leave a field blank to hide that channel across the site.</p>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -873,10 +1246,11 @@ export default function StaffAdminPage() {
                     />
                   </div>
                   <Button onClick={handleSaveSupportLinks} disabled={savingSupportLinks} size="sm">
-                    {savingSupportLinks ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
+                    {savingSupportLinks ? <Loader2 className="h-4 w-4 animate-spin" /> : autoApproves(perms, 'setting_support_links') ? 'Save' : 'Submit'}
                   </Button>
                 </CardContent>
               </Card>
+              )}
             </TabsContent>
           )}
 

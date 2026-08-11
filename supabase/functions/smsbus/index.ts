@@ -16,7 +16,7 @@ async function getUsdToNgnRate(): Promise<number> {
 }
 
 // ── Inlined: daisysms-client ──────────────────────────────────────────────────
-const DAISY_BASE = 'https://daisysms.io/stubs/handler_api.php'
+const DEFAULT_DAISY_BASE = 'https://daisysms.io/stubs/handler_api.php'
 const DAISY_COUNTRY = 187
 
 const SERVICE_NAMES: Record<string, string> = {
@@ -42,7 +42,7 @@ class DaisySmsError extends Error {
 }
 
 async function daisyGet(apiKey: string, params: Record<string, string>): Promise<string> {
-  const url = new URL(DAISY_BASE)
+  const url = new URL(Deno.env.get('DAISYSMS_BASE_URL') || DEFAULT_DAISY_BASE)
   url.searchParams.set('api_key', apiKey)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
   const res = await fetch(url.toString())
@@ -58,19 +58,92 @@ async function daisyGetBalance(apiKey: string): Promise<number> {
 }
 
 type DaisyService = { code: string; name: string; count: number; priceUsd: number }
+type DaisyPriceEntry = {
+  count?: number | string
+  price?: number | string
+  cost?: number | string
+  rate?: number | string
+}
+
+function normalizeDaisyService(code: string, entry: DaisyPriceEntry | undefined): DaisyService | null {
+  if (!entry || typeof entry !== 'object') return null
+  const count = Number(entry.count || 0)
+  const priceUsd = Number(entry.price ?? entry.cost ?? entry.rate ?? 0)
+  if (!Number.isFinite(count) || count < 1) return null
+  if (!Number.isFinite(priceUsd) || priceUsd < 0) return null
+  return {
+    code,
+    name: SERVICE_NAMES[code] || code.toUpperCase(),
+    count,
+    priceUsd,
+  }
+}
+
+function collectDaisyService(services: Map<string, DaisyService>, service: DaisyService | null) {
+  if (!service) return
+  const existing = services.get(service.code)
+  if (!existing || service.count > existing.count) services.set(service.code, service)
+}
+
+function parseServiceCountryPrices(raw: unknown): DaisyService[] {
+  const services = new Map<string, DaisyService>()
+  if (!raw || typeof raw !== 'object') return []
+
+  for (const [code, countries] of Object.entries(raw as Record<string, unknown>)) {
+    if (!countries || typeof countries !== 'object') continue
+    const usa = (countries as Record<string, DaisyPriceEntry>)[String(DAISY_COUNTRY)]
+    collectDaisyService(services, normalizeDaisyService(code, usa))
+  }
+
+  return [...services.values()]
+}
+
+function parseCountryServicePrices(raw: unknown): DaisyService[] {
+  const services = new Map<string, DaisyService>()
+  if (!raw || typeof raw !== 'object') return []
+
+  const usa = (raw as Record<string, unknown>)[String(DAISY_COUNTRY)]
+  if (!usa || typeof usa !== 'object') return []
+
+  for (const [code, entry] of Object.entries(usa as Record<string, DaisyPriceEntry>)) {
+    collectDaisyService(services, normalizeDaisyService(code, entry))
+  }
+
+  return [...services.values()]
+}
+
+async function daisyGetPriceObject(apiKey: string, action: 'getPricesVerification' | 'getPrices'): Promise<unknown> {
+  const text = await daisyGet(apiKey, { action })
+  if (text === 'BAD_KEY') throw new DaisySmsError('BAD_KEY', 'Invalid API key')
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new DaisySmsError('PARSE_ERROR', `Unexpected ${action} response`)
+  }
+}
+
+function uniqueSortedServices(candidates: DaisyService[]): DaisyService[] {
+  const services = new Map<string, DaisyService>()
+  for (const service of candidates) collectDaisyService(services, service)
+  return [...services.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
 
 async function daisyGetServices(apiKey: string): Promise<DaisyService[]> {
-  const text = await daisyGet(apiKey, { action: 'getPricesVerification' })
-  if (text === 'BAD_KEY') throw new DaisySmsError('BAD_KEY', 'Invalid API key')
-  let raw: Record<string, Record<string, { count: number; price: number }>>
-  try { raw = JSON.parse(text) } catch { throw new DaisySmsError('PARSE_ERROR', 'Unexpected services response') }
-  const services: DaisyService[] = []
-  for (const [code, countries] of Object.entries(raw)) {
-    const usa = countries[String(DAISY_COUNTRY)]
-    if (!usa || Number(usa.count || 0) < 1) continue
-    services.push({ code, name: SERVICE_NAMES[code] || code.toUpperCase(), count: Number(usa.count), priceUsd: Number(usa.price || 0) })
+  const rawVerification = await daisyGetPriceObject(apiKey, 'getPricesVerification')
+  const verificationServices = uniqueSortedServices([
+    ...parseServiceCountryPrices(rawVerification),
+    ...parseCountryServicePrices(rawVerification),
+  ])
+
+  if (verificationServices.length > 0) {
+    return verificationServices
   }
-  return services.sort((a, b) => a.name.localeCompare(b.name))
+
+  const rawPrices = await daisyGetPriceObject(apiKey, 'getPrices')
+  return uniqueSortedServices([
+    ...parseCountryServicePrices(rawPrices),
+    ...parseServiceCountryPrices(rawPrices),
+  ])
 }
 
 async function daisyGetNumber(apiKey: string, serviceCode: string, maxPriceUsd?: number): Promise<{ activationId: string; phoneNumber: string }> {

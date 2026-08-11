@@ -683,6 +683,27 @@ export default function AdminPage() {
       if (action.action_type === 'upsert_setting') {
         const { setting_key, value } = action.action_data
         await upsertAppSetting(setting_key, value)
+      } else if (action.action_type === 'upsert_settings') {
+        const { settings } = action.action_data
+        const entries = Object.entries(settings || {}) as [string, string][]
+        const results = await Promise.all(entries.map(([key, value]) => upsertAppSetting(key, value)))
+        if (results.some(ok => !ok)) throw new Error('Failed to update one or more settings')
+        if (entries.some(([key]) => key.startsWith('support_'))) {
+          const { invalidateSupportSettingsCache } = await import('@/hooks/useSupportSettings')
+          invalidateSupportSettingsCache()
+        }
+      } else if (action.action_type === 'send_email_list') {
+        const { subject, message, recipients } = action.action_data
+        const html = buildEmailHtml(message || '')
+        for (const to of recipients || []) {
+          const { data, error } = await supabase.functions.invoke('email/send', { body: { to, subject, html } })
+          if (error || !data?.success) throw new Error(data?.error || error?.message || `Failed to send email to ${to}`)
+        }
+      } else if (action.action_type === 'broadcast_email') {
+        const { subject, message } = action.action_data
+        const html = buildEmailHtml(message || '')
+        const { data, error } = await supabase.functions.invoke('email/broadcast', { body: { subject, html } })
+        if (error || !data?.success) throw new Error(data?.error || error?.message || 'Failed to queue broadcast')
       } else if (action.action_type === 'adjust_balance') {
         const { user_id, amount, reason } = action.action_data
         await adminAdjustBalance(user_id, amount, reason || 'Approved staff action', user?.email || 'admin')
