@@ -1,4 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom'
+import { PhoneCall } from 'lucide-react'
 import { getCategoryStyle } from '@/lib/categoryStyles'
 import type { Category, ProductGroup } from '@/lib/supabase'
 
@@ -33,17 +34,28 @@ export default function CategorySidebar({
       <h3 className="text-sm font-semibold text-muted-foreground px-3 mb-2">Categories</h3>
 
       {onSelectCategory && (
-        <button
-          onClick={() => onSelectCategory('all')}
-          className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
-            selectedCategory === 'all'
-              ? 'bg-primary/10 text-primary font-medium'
-              : 'hover:bg-muted text-foreground'
-          }`}
-        >
-          <span>All Categories</span>
-          <span className="text-xs text-muted-foreground">{productGroups.length}</span>
-        </button>
+        <>
+          <button
+            onClick={() => onSelectCategory('all')}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
+              selectedCategory === 'all'
+                ? 'bg-primary/10 text-primary font-medium'
+                : 'hover:bg-muted text-foreground'
+            }`}
+          >
+            <span>All Categories</span>
+            <span className="text-xs text-muted-foreground">{productGroups.length}</span>
+          </button>
+          <Link
+            to="/sms-numbers"
+            className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors hover:bg-muted text-foreground"
+          >
+            <span className="flex items-center gap-2">
+              <PhoneCall className="h-4 w-4 text-cyan-500" />
+              SMS Numbers
+            </span>
+          </Link>
+        </>
       )}
 
       {categories.map((category) => {

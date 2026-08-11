@@ -92,6 +92,8 @@ type SmsService = {
   exchange_rate: number
   price_ngn: number
   available_count: number
+  customer_buy_count?: number
+  recommended_score?: number
   is_enabled?: boolean
   is_favorite?: boolean
   provider_cost_ngn?: number
@@ -260,7 +262,7 @@ function statusClass(status: string) {
 
 function safeSmsError(error: unknown, fallback = 'SMS request failed') {
   const message = error instanceof Error ? error.message : fallback
-  if (/smsbus|provider|api key|token|secret|backend/i.test(message)) {
+  if (/smsbus|provider|daisy|daisysms|api key|token|secret|backend/i.test(message)) {
     return 'SMS numbers are temporarily unavailable. Please try again later.'
   }
   return message || fallback
@@ -550,22 +552,25 @@ function SmsNumbersSurface() {
     })
 
     return [...matches].sort((a, b) => {
+      if (serviceSort === 'recommended') {
+        const scoreRank = Number(b.recommended_score || 0) - Number(a.recommended_score || 0)
+        if (scoreRank !== 0) return scoreRank
+        return Number(b.customer_buy_count || 0) - Number(a.customer_buy_count || 0) || b.available_count - a.available_count || a.price_ngn - b.price_ngn
+      }
       const favoriteRank = Number(b.is_favorite === true) - Number(a.is_favorite === true)
       if (favoriteRank !== 0) return favoriteRank
       if (serviceSort === 'price_low') return a.price_ngn - b.price_ngn
-      if (serviceSort === 'stock') return b.available_count - a.available_count
-      return b.available_count - a.available_count || a.price_ngn - b.price_ngn
+      return b.available_count - a.available_count
     })
   }, [services, serviceQuery, serviceSort])
 
   const visibleServices = filteredServices.slice(0, visibleServiceCount)
   const smsDiagnosticText = useMemo(() => {
     if (!smsDiagnostics) return ''
-    const host = smsDiagnostics.provider_host ? `Provider: ${smsDiagnostics.provider_host}` : ''
     const country = smsDiagnostics.country_id ? `Country: ${smsDiagnostics.country_id}` : ''
     const verification = `getPricesVerification: ${smsDiagnostics.verification_services ?? 0}`
     const prices = `getPrices: ${smsDiagnostics.prices_services ?? 0}`
-    return [host, country, verification, prices].filter(Boolean).join(' · ')
+    return [country, verification, prices].filter(Boolean).join(' · ')
   }, [smsDiagnostics])
 
   const filteredAreas = useMemo(() => {

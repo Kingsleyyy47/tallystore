@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ThemeToggle"
-import { Menu, X, User, LogOut, Wallet, Download, Bitcoin, Gift } from "lucide-react"
+import { Menu, X, User, LogOut, Wallet, Download, Bitcoin, Gift, PhoneCall } from "lucide-react"
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
@@ -201,6 +201,10 @@ export default function Navbar() {
                       </Link>
                       <Link to="/gift-cards" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
                         Gift Cards & eSIMs
+                      </Link>
+                      <Link to="/sms-numbers" className="px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <PhoneCall className="h-4 w-4" />
+                        SMS Numbers
                       </Link>
                       <Link to="/social-boost" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-pink-600 dark:text-pink-400">
                         🚀 Social Boost
@@ -418,6 +422,13 @@ export default function Navbar() {
                     <Link to="/gift-cards" onClick={() => setIsMobileMenuOpen(false)}>
                       <Button variant="ghost" className="w-full justify-start gap-2">
                         Gift Cards & eSIMs
+                      </Button>
+                    </Link>
+
+                    <Link to="/sms-numbers" onClick={() => setIsMobileMenuOpen(false)}>
+                      <Button variant="ghost" className="w-full justify-start gap-2">
+                        <PhoneCall className="h-4 w-4" />
+                        SMS Numbers
                       </Button>
                     </Link>
 

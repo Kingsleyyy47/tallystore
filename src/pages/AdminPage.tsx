@@ -120,6 +120,8 @@ type AdminSmsProduct = {
   exchange_rate: number
   price_ngn: number
   available_count: number
+  customer_buy_count?: number
+  recommended_score?: number
   is_enabled: boolean
   is_favorite: boolean
   price_override_ngn: number | null
@@ -149,6 +151,8 @@ type AdminSmsCatalogResponse = {
   diagnostics?: AdminSmsDiagnostics | null
   global_margin_ngn?: number
   exchange_rate?: number
+  exchange_rate_source?: 'override' | 'live' | 'fallback' | 'unknown'
+  round_to_nearest_10?: boolean
 }
 
 // Mock admin stats
@@ -277,6 +281,8 @@ export default function AdminPage() {
   const [smsMarginInputs, setSmsMarginInputs] = useState<Record<string, string>>({})
   const [smsDiagnostics, setSmsDiagnostics] = useState<AdminSmsDiagnostics | null>(null)
   const [smsCatalogNotice, setSmsCatalogNotice] = useState('')
+  const [smsExchangeRateSource, setSmsExchangeRateSource] = useState<'override' | 'live' | 'fallback' | 'unknown'>('unknown')
+  const [smsRoundToNearestTen, setSmsRoundToNearestTen] = useState(false)
 
   // Email / Broadcast state
   const [emailSubject, setEmailSubject] = useState('TallyStore Notification')
@@ -869,6 +875,8 @@ export default function AdminPage() {
       const diagnostics = data.diagnostics || null
       setSmsProducts(products)
       setSmsDiagnostics(diagnostics)
+      setSmsExchangeRateSource(data.exchange_rate_source || 'unknown')
+      setSmsRoundToNearestTen(data.round_to_nearest_10 === true)
       if (data.configured === false || diagnostics?.configured === false) {
         setSmsCatalogNotice('DaisySMS API key is not configured on the deployed smsbus function.')
       } else if (products.length === 0) {
@@ -971,6 +979,28 @@ export default function AdminPage() {
     }
   }
 
+  const toggleSmsRounding = async () => {
+    const next = !smsRoundToNearestTen
+    setSmsSavingKey('round-to-10')
+    try {
+      const { data, error } = await supabase.functions.invoke<{ success: boolean; error?: string; round_to_nearest_10?: boolean }>('smsbus', {
+        body: { action: 'admin_set_sms_rounding', round_to_nearest_10: next },
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to update rounding')
+      setSmsRoundToNearestTen(next)
+      await loadSmsProducts()
+      toast({
+        title: next ? 'SMS rounding enabled' : 'SMS rounding disabled',
+        description: next ? 'Auto-markup prices now round up to the next 10.' : 'Auto-markup prices now use the exact naira calculation.',
+      })
+    } catch (err: any) {
+      toast({ title: 'Rounding update failed', description: err.message || 'Please try again', variant: 'destructive' })
+    } finally {
+      setSmsSavingKey(null)
+    }
+  }
+
   const bulkToggleSmsProducts = async (isEnabled: boolean) => {
     setSmsSavingKey(isEnabled ? 'enable-all' : 'disable-all')
     try {
@@ -1024,7 +1054,7 @@ export default function AdminPage() {
             <div className="min-w-0">
               <p className="truncate font-semibold">{product.service_name}</p>
               <p className="text-xs text-muted-foreground">
-                {product.available_count.toLocaleString()} available · {product.service_code}
+                {product.available_count.toLocaleString()} available · {Number(product.customer_buy_count || 0).toLocaleString()} buys · {product.service_code}
               </p>
             </div>
           </div>
@@ -3239,6 +3269,16 @@ export default function AdminPage() {
                       {smsSavingKey === 'global-markup' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                       Markup
                     </Button>
+                    <Button
+                      type="button"
+                      variant={smsRoundToNearestTen ? 'default' : 'outline'}
+                      disabled={smsSavingKey === 'round-to-10'}
+                      onClick={toggleSmsRounding}
+                      title="Round auto-markup prices up to the next 10, for example 982 becomes 990"
+                    >
+                      {smsSavingKey === 'round-to-10' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      Round up to 10
+                    </Button>
                     <Button type="button" variant="outline" disabled={smsSavingKey === 'enable-all'} onClick={() => bulkToggleSmsProducts(true)}>
                       Enable all ({smsProducts.length})
                     </Button>
@@ -3252,7 +3292,7 @@ export default function AdminPage() {
                       <p className="font-semibold">{smsCatalogNotice || 'DaisySMS sync diagnostics'}</p>
                       {smsDiagnostics && (
                         <p className="mt-1 text-xs opacity-90">
-                          Host: {smsDiagnostics.provider_host || 'unknown'} · Country: {smsDiagnostics.country_id || 'unknown'} · getPricesVerification: {smsDiagnostics.verification_services ?? 0} · getPrices: {smsDiagnostics.prices_services ?? 0}
+                          Host: {smsDiagnostics.provider_host || 'unknown'} · Rate source: {smsExchangeRateSource} · Rounding: {smsRoundToNearestTen ? 'up to 10' : 'off'} · Country: {smsDiagnostics.country_id || 'unknown'} · getPricesVerification: {smsDiagnostics.verification_services ?? 0} · getPrices: {smsDiagnostics.prices_services ?? 0}
                         </p>
                       )}
                     </div>
