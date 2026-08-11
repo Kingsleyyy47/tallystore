@@ -1,0 +1,3 @@
+# Disable JWT verification for this webhook
+# NowPayments calls this endpoint without Supabase auth
+verify_jwt = false

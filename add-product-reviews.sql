@@ -1,0 +1,2 @@
+-- NOT NEEDED - reviews/ratings feature was cancelled before this was used.
+-- Safe to delete this file. Do not run it.

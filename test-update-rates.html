@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Update Crypto Rates</title>
+</head>
+<body>
+    <h1>Test Live Rate Update</h1>
+    <button onclick="updateRates()">Update Rates Now</button>
+    <pre id="result"></pre>
+
+    <script>
+        async function updateRates() {
+            const result = document.getElementById('result');
+            result.textContent = 'Updating rates...';
+
+            try {
+                const response = await fetch('https://dssvvswvqnxanyzfhixf.supabase.co/functions/v1/update-crypto-rates', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzc3Z2c3d2cW54YW55emZoaXhmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY5OTM5NDIsImV4cCI6MjA3MjU2OTk0Mn0.nbWnbroQNlAUHAjvab9nNMq5Rsy0mhs_bi2TWCPR-U4'
+                    }
+                });
+
+                const data = await response.json();
+                result.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                result.textContent = 'Error: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>

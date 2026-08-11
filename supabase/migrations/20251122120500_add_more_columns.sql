@@ -1,0 +1,12 @@
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS nowpayments_smart_contract TEXT;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS burning_percent NUMERIC;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS fixed_rate_valid_until TEXT;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS nowpayments_network TEXT;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS nowpayments_payin_extra_id TEXT;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS nowpayments_purchase_id TEXT;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS nowpayments_pay_address TEXT;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS nowpayments_amount_received NUMERIC;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS outcome_amount NUMERIC;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS outcome_currency TEXT;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS payment_type TEXT;
+ALTER TABLE crypto_transactions ADD COLUMN IF NOT EXISTS expiration_date TEXT;

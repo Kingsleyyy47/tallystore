@@ -1,0 +1,254 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tallystore Design System - Modern Social Media Business with Dark/Light Mode */
+
+@layer base {
+  :root {
+    /* Light Mode Colors - Enhanced */
+    --background: 240 10% 99%;
+    --foreground: 240 10% 3%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 4%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 4%;
+
+    --primary: 262 83% 58%;
+    --primary-foreground: 0 0% 100%;
+    --primary-glow: 278 83% 68%;
+    --primary-dark: 262 83% 48%;
+
+    --secondary: 240 5% 97%;
+    --secondary-foreground: 240 6% 10%;
+
+    --muted: 240 5% 97%;
+    --muted-foreground: 240 4% 40%;
+
+    --accent: 262 83% 58%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 6% 92%;
+    --input: 240 6% 92%;
+    --ring: 262 83% 58%;
+
+    --radius: 16px;
+
+    /* Enhanced Light Mode Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(262 83% 58%), hsl(278 83% 68%));
+    --gradient-hero: linear-gradient(135deg, hsl(262 83% 58%) 0%, hsl(245 83% 65%) 25%, hsl(210 83% 70%) 75%, hsl(195 83% 68%) 100%);
+    --gradient-hero-dark: linear-gradient(135deg, hsl(262 83% 45%) 0%, hsl(245 83% 55%) 25%, hsl(210 83% 60%) 75%, hsl(195 83% 58%) 100%);
+    --gradient-card: linear-gradient(145deg, hsl(0 0% 100%) 0%, hsl(240 8% 99%) 50%, hsl(240 6% 98%) 100%);
+    --gradient-card-dark: linear-gradient(145deg, hsl(240 15% 8%) 0%, hsl(240 15% 10%) 50%, hsl(240 15% 12%) 100%);
+    --gradient-section: linear-gradient(180deg, hsl(240 10% 99%) 0%, hsl(240 8% 97%) 50%, hsl(240 6% 95%) 100%);
+    --gradient-section-dark: linear-gradient(180deg, hsl(240 15% 4%) 0%, hsl(240 15% 6%) 50%, hsl(240 15% 8%) 100%);
+    
+    /* Enhanced Light Mode Shadows */
+    --shadow-elegant: 0 25px 60px -15px hsl(262 83% 58% / 0.25);
+    --shadow-card: 0 8px 32px -8px hsl(240 6% 50% / 0.08);
+    --shadow-glow: 0 0 50px hsl(262 83% 58% / 0.3);
+    --shadow-inner: inset 0 2px 8px hsl(240 6% 50% / 0.04);
+
+    /* Advanced Animations */
+    --transition-smooth: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+    --transition-spring: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+
+  .dark {
+    /* Enhanced Dark Mode Colors */
+    --background: 240 15% 3%;
+    --foreground: 240 8% 98%;
+
+    --card: 240 15% 6%;
+    --card-foreground: 240 8% 98%;
+
+    --popover: 240 15% 6%;
+    --popover-foreground: 240 8% 98%;
+
+    --primary: 278 88% 75%;
+    --primary-foreground: 240 15% 3%;
+    --primary-glow: 278 88% 85%;
+    --primary-dark: 262 88% 65%;
+
+    --secondary: 240 8% 12%;
+    --secondary-foreground: 240 8% 98%;
+
+    --muted: 240 8% 12%;
+    --muted-foreground: 240 8% 70%;
+
+    --accent: 278 88% 75%;
+    --accent-foreground: 240 15% 3%;
+
+    --destructive: 0 84% 65%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 8% 18%;
+    --input: 240 8% 18%;
+    --ring: 278 88% 75%;
+
+    /* Enhanced Dark Mode Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(278 88% 75%), hsl(262 88% 70%));
+    --gradient-hero: linear-gradient(135deg, hsl(278 88% 65%) 0%, hsl(245 88% 60%) 25%, hsl(210 88% 65%) 75%, hsl(195 88% 70%) 100%);
+    --gradient-card: linear-gradient(145deg, hsl(240 15% 6%) 0%, hsl(240 15% 8%) 50%, hsl(240 15% 10%) 100%);
+    --gradient-section: linear-gradient(180deg, hsl(240 15% 3%) 0%, hsl(240 15% 5%) 50%, hsl(240 15% 7%) 100%);
+    
+    /* Enhanced Dark Mode Shadows */
+    --shadow-elegant: 0 25px 60px -15px hsl(278 88% 75% / 0.35);
+    --shadow-card: 0 8px 32px -8px hsl(240 15% 0% / 0.6);
+    --shadow-glow: 0 0 50px hsl(278 88% 75% / 0.4);
+    --shadow-inner: inset 0 2px 8px hsl(240 15% 0% / 0.4);
+
+    /* Enhanced Dark Mode Sidebar Variables */
+    --sidebar-background: 240 15% 5%;
+    --sidebar-foreground: 240 8% 95%;
+    --sidebar-primary: 278 88% 75%;
+    --sidebar-primary-foreground: 240 15% 3%;
+    --sidebar-accent: 240 8% 15%;
+    --sidebar-accent-foreground: 240 8% 95%;
+    --sidebar-border: 240 8% 20%;
+    --sidebar-ring: 278 88% 75%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    /* Beautiful dark mode background pattern */
+    background-image: 
+      radial-gradient(circle at 20% 50%, hsl(var(--primary) / 0.08) 0%, transparent 50%),
+      radial-gradient(circle at 80% 20%, hsl(var(--accent) / 0.08) 0%, transparent 50%),
+      radial-gradient(circle at 40% 80%, hsl(var(--primary) / 0.08) 0%, transparent 50%);
+  }
+
+  .dark body {
+    background-image: 
+      radial-gradient(circle at 20% 50%, hsl(278 88% 75% / 0.15) 0%, transparent 70%),
+      radial-gradient(circle at 80% 20%, hsl(262 88% 70% / 0.15) 0%, transparent 70%),
+      radial-gradient(circle at 40% 80%, hsl(245 88% 65% / 0.15) 0%, transparent 70%);
+  }
+
+  /* Custom navbar styles for seamless blending */
+  .navbar-transparent {
+    background: transparent;
+    border-bottom: 1px solid transparent;
+  }
+
+  .navbar-blurred {
+    background: hsl(var(--background) / 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid hsl(var(--border) / 0.1);
+    box-shadow: 0 4px 12px hsl(var(--background) / 0.15);
+  }
+
+  .dark .navbar-blurred {
+    background: hsl(var(--background) / 0.9);
+    border-bottom: 1px solid hsl(var(--border) / 0.2);
+    box-shadow: 0 4px 12px hsl(var(--background) / 0.3);
+  }
+
+  /* Smooth navbar transitions */
+  .navbar-transition {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: transform, background-color, backdrop-filter;
+  }
+
+  /* Mobile menu with consistent background */
+  .mobile-menu-bg {
+    background: hsl(var(--background) / 0.98);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-top: 1px solid hsl(var(--primary) / 0.2);
+    box-shadow: 0 8px 32px hsl(var(--background) / 0.8);
+  }
+
+  .dark .mobile-menu-bg {
+    background: hsl(var(--background) / 0.95);
+    box-shadow: 0 8px 32px hsl(var(--background) / 0.9);
+  }
+
+  /* Enhanced dark mode specific styles */
+  .dark {
+    /* Dark mode text shadows for better readability */
+    .hero-text {
+      text-shadow: 0 2px 20px hsl(278 88% 75% / 0.3);
+    }
+    
+    /* Enhanced dark mode card effects */
+    .card-dark-glow {
+      box-shadow: 
+        0 0 0 1px hsl(var(--border)),
+        0 8px 32px -8px hsl(278 88% 75% / 0.15),
+        inset 0 1px 0 hsl(240 8% 25%);
+    }
+    
+    /* Dark mode button enhancement */
+    .btn-dark-glow {
+      box-shadow: 
+        0 0 20px hsl(278 88% 75% / 0.4),
+        0 8px 16px hsl(278 88% 75% / 0.2);
+    }
+  }
+
+  /* Smooth transitions for theme switching */
+  * {
+    transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+  }
+
+  /* Enhanced animations for dark mode */
+  @keyframes dark-glow-pulse {
+    0%, 100% { 
+      box-shadow: 0 0 20px hsl(278 88% 75% / 0.3);
+    }
+    50% { 
+      box-shadow: 0 0 40px hsl(278 88% 75% / 0.6);
+    }
+  }
+
+  .dark .animate-glow-pulse {
+    animation: dark-glow-pulse 2s ease-in-out infinite;
+  }
+
+  /* Marquee scrolling animation */
+  @keyframes marquee {
+    0% {
+      transform: translateX(0%);
+    }
+    100% {
+      transform: translateX(-33.33%);
+    }
+  }
+
+  .animate-marquee {
+    animation: marquee 25s linear infinite;
+  }
+
+  .animate-marquee:hover {
+    animation-play-state: paused;
+  }
+
+  /* Hide scrollbar utility for horizontal scroll */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Extra small breakpoint for very small phones */
+  @media (min-width: 360px) {
+    .xs\:inline { display: inline; }
+    .xs\:hidden { display: none; }
+  }
+}
