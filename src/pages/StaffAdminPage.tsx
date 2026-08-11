@@ -153,19 +153,17 @@ export default function StaffAdminPage() {
     if (can(perms, 'setting_ercas')) {
       getAppSetting('ercas_enabled').then(v => setErcasEnabled(v !== 'false'))
     }
-    if (can(perms, 'setting_support_links')) {
-      Promise.all([
-        getAppSetting('support_whatsapp_url'),
-        getAppSetting('support_telegram_url'),
-        getAppSetting('support_channel_url'),
-        getAppSetting('support_popup_message'),
-      ]).then(([wa, tg, ch, pm]) => {
-        setSupportWhatsappUrl(wa || '')
-        setSupportTelegramUrl(tg || '')
-        setSupportChannelUrl(ch || '')
-        setSupportPopupMessage(pm || '')
-      })
-    }
+    Promise.all([
+      getAppSetting('support_whatsapp_url'),
+      getAppSetting('support_telegram_url'),
+      getAppSetting('support_channel_url'),
+      getAppSetting('support_popup_message'),
+    ]).then(([wa, tg, ch, pm]) => {
+      setSupportWhatsappUrl(wa || '')
+      setSupportTelegramUrl(tg || '')
+      setSupportChannelUrl(ch || '')
+      setSupportPopupMessage(pm || '')
+    })
     if (can(perms, 'tab_products') || can(perms, 'tab_templates') || can(perms, 'tab_add_product') || can(perms, 'tab_bulk_upload')) {
       setLoadingProducts(true)
       Promise.all([getAllProductGroups(), getCategories()]).then(([pg, cat]) => {
@@ -218,7 +216,7 @@ export default function StaffAdminPage() {
   async function handleSaveSupportLinks() {
     setSavingSupportLinks(true)
     try {
-      if (autoApproves(perms, 'setting_support_links' as PermissionKey)) {
+      {
         await Promise.all([
           upsertAppSetting('support_whatsapp_url', supportWhatsappUrl.trim()),
           upsertAppSetting('support_telegram_url', supportTelegramUrl.trim()),
@@ -228,11 +226,6 @@ export default function StaffAdminPage() {
         const { invalidateSupportSettingsCache } = await import('@/hooks/useSupportSettings')
         invalidateSupportSettingsCache()
         toast({ title: 'Support links saved' })
-      } else {
-        const payload = { support_whatsapp_url: supportWhatsappUrl.trim(), support_telegram_url: supportTelegramUrl.trim(), support_channel_url: supportChannelUrl.trim(), support_popup_message: supportPopupMessage.trim() }
-        const res = await submitPendingAction('setting_support_links' as PermissionKey, 'upsert_support_links', 'Update support links', payload)
-        if (res.success) { toast({ title: 'Submitted for approval' }); loadMyPending() }
-        else toast({ variant: 'destructive', title: res.error })
       }
     } finally { setSavingSupportLinks(false) }
   }
@@ -405,7 +398,7 @@ export default function StaffAdminPage() {
     can(perms, 'tab_categories')       && { key: 'categories',label: 'Categories' },
     can(perms, 'tab_discount_codes')   && { key: 'discounts', label: 'Discount Codes' },
     can(perms, 'tab_users')            && { key: 'users',     label: 'Users' },
-    (can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas') || can(perms, 'setting_support_links' as PermissionKey)) && { key: 'settings', label: 'Settings' },
+    (can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas') || true) && { key: 'settings', label: 'Settings' },
     { key: 'my-actions', label: 'My Requests' },
   ].filter(Boolean) as { key: string; label: string }[]
 
@@ -757,7 +750,7 @@ export default function StaffAdminPage() {
           )}
 
           {/* ── Settings ──────────────────────────────────────── */}
-          {(can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas') || can(perms, 'setting_support_links' as PermissionKey)) && (
+          {true && (
             <TabsContent value="settings" className="space-y-4">
               {can(perms, 'setting_rate') && (
                 <Card>
@@ -817,42 +810,39 @@ export default function StaffAdminPage() {
                   </CardContent>
                 </Card>
               )}
-              {can(perms, 'setting_support_links' as PermissionKey) && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Support Links</CardTitle>
-                    <p className="text-sm text-muted-foreground">Leave a field blank to hide that channel across the site.</p>
-                    {!autoApproves(perms, 'setting_support_links' as PermissionKey) && <Badge variant="outline" className="w-fit flex items-center gap-1"><Clock className="h-3 w-3" /> Requires approval</Badge>}
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <div>
-                      <label className="text-sm font-medium">WhatsApp support URL</label>
-                      <Input placeholder="https://wa.me/..." value={supportWhatsappUrl} onChange={e => setSupportWhatsappUrl(e.target.value)} className="mt-1" />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Telegram support URL</label>
-                      <Input placeholder="https://t.me/..." value={supportTelegramUrl} onChange={e => setSupportTelegramUrl(e.target.value)} className="mt-1" />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Join channel URL</label>
-                      <Input placeholder="https://t.me/... or WhatsApp channel" value={supportChannelUrl} onChange={e => setSupportChannelUrl(e.target.value)} className="mt-1" />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Login popup message</label>
-                      <textarea
-                        rows={3}
-                        placeholder="Message shown on login popup..."
-                        value={supportPopupMessage}
-                        onChange={e => setSupportPopupMessage(e.target.value)}
-                        className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      />
-                    </div>
-                    <Button onClick={handleSaveSupportLinks} disabled={savingSupportLinks} size="sm">
-                      {savingSupportLinks ? <Loader2 className="h-4 w-4 animate-spin" /> : autoApproves(perms, 'setting_support_links' as PermissionKey) ? 'Save' : 'Submit'}
-                    </Button>
-                  </CardContent>
-                </Card>
-              )}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Support Links</CardTitle>
+                  <p className="text-sm text-muted-foreground">Leave a field blank to hide that channel across the site.</p>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div>
+                    <label className="text-sm font-medium">WhatsApp support URL</label>
+                    <Input placeholder="https://wa.me/..." value={supportWhatsappUrl} onChange={e => setSupportWhatsappUrl(e.target.value)} className="mt-1" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Telegram support URL</label>
+                    <Input placeholder="https://t.me/..." value={supportTelegramUrl} onChange={e => setSupportTelegramUrl(e.target.value)} className="mt-1" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Join channel URL</label>
+                    <Input placeholder="https://t.me/... or WhatsApp channel" value={supportChannelUrl} onChange={e => setSupportChannelUrl(e.target.value)} className="mt-1" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Login popup message</label>
+                    <textarea
+                      rows={3}
+                      placeholder="Message shown on login popup..."
+                      value={supportPopupMessage}
+                      onChange={e => setSupportPopupMessage(e.target.value)}
+                      className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    />
+                  </div>
+                  <Button onClick={handleSaveSupportLinks} disabled={savingSupportLinks} size="sm">
+                    {savingSupportLinks ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
+                  </Button>
+                </CardContent>
+              </Card>
             </TabsContent>
           )}
 
