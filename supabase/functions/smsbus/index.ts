@@ -895,9 +895,18 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     throw new Error(`Insufficient wallet balance. Required: ₦${estimatedPriceNgn.toLocaleString()}`)
   }
 
-  const number = await daisyGetNumber(key, serviceCode, Math.max(svc.provider_cost_usd * 1.25, svc.provider_cost_usd + 0.05))
+  const maxProviderPriceUsd = Math.max(
+    svc.provider_cost_usd * 1.25,
+    svc.provider_cost_usd + 0.05,
+    estimatedPriceNgn / exchangeRate,
+  )
+  const number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd)
   const effectiveProviderUsd = number.priceUsd ?? svc.provider_cost_usd
   const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true)
+  if (effectivePricing.providerCostNgn > estimatedPriceNgn) {
+    try { await daisyCancelNumber(key, number.activationId) } catch { /* ignore */ }
+    throw new Error('Service price changed before purchase. Please refresh and try again.')
+  }
   const priceNgn = estimatedPriceNgn
   const marginUsd = Math.max(0, (priceNgn - effectivePricing.providerCostNgn) / exchangeRate)
   const marginNgn = Math.max(0, priceNgn - effectivePricing.providerCostNgn)
@@ -1075,7 +1084,7 @@ serve(async (req) => {
       case 'rental_sms':
       case 'renew_rental':
       case 'cancel_rental':
-        return json({ success: false, error: 'Long-term rentals are not available with the current SMS provider.' }, 400)
+        return json({ success: false, error: 'Long-term rentals are not available with the current SMS provider.' })
       default:
         throw new Error('Unknown SMS action')
     }
@@ -1083,6 +1092,6 @@ serve(async (req) => {
     const message = friendlyError(err)
     const isAuth = err instanceof Error && (err.message === 'Unauthorized' || err.message === 'Missing authorization header')
     console.error('SMS function error:', message)
-    return json({ success: false, error: message }, isAuth ? 401 : 400)
+    return json({ success: false, error: message }, isAuth ? 401 : 200)
   }
 })

@@ -277,6 +277,20 @@ async function invokeSms<T>(action: string, payload: Record<string, unknown> = {
   })
 
   if (error) {
+    const context = (error as { context?: Response }).context
+    if (context) {
+      const bodyText = await context.clone().text().catch(() => '')
+      if (bodyText) {
+        let message = bodyText
+        try {
+          const parsed = JSON.parse(bodyText)
+          message = parsed?.error || parsed?.message || bodyText
+        } catch {
+          message = bodyText
+        }
+        throw new Error(message)
+      }
+    }
     throw new Error(error.message || 'SMS request failed')
   }
 
