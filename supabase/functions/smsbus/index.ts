@@ -435,6 +435,25 @@ async function requireAdminUser(admin: SupabaseAdmin, userId: string) {
   if (error || !data?.is_admin) throw new Error('Admin access required')
 }
 
+async function requireSmsProductAccess(admin: SupabaseAdmin, userId: string, requireAutoApprove = false) {
+  const { data: profile, error } = await admin.from('profiles').select('is_admin, is_staff').eq('id', userId).single()
+  if (error || !profile) throw new Error('Admin access required')
+  if (profile.is_admin) return
+  if (!profile.is_staff) throw new Error('Admin access required')
+
+  const { data: permission } = await admin
+    .from('staff_permissions')
+    .select('is_enabled, auto_approve')
+    .eq('user_id', userId)
+    .eq('permission_key', 'tab_sms_products')
+    .maybeSingle()
+
+  if (!permission?.is_enabled) throw new Error('SMS product permission required')
+  if (requireAutoApprove && permission.auto_approve === false) {
+    throw new Error('SMS product changes require approval')
+  }
+}
+
 async function getNumericAppSetting(admin: SupabaseAdmin, key: string, fallback: number) {
   const { data } = await admin.from('app_settings').select('value').eq('key', key).maybeSingle()
   const value = Number(data?.value)
@@ -653,6 +672,52 @@ async function recordPurchase(admin: SupabaseAdmin, userId: string, reference: s
   })
 }
 
+async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, order: any) {
+  if (!order || order.order_type !== 'otp' || TERMINAL_STATUSES.includes(order.status)) return order
+  const activationId = order.provider_request_id
+  if (!activationId) return order
+
+  const result = await daisyGetStatus(apiKey, activationId)
+
+  if (result.status === 'waiting') {
+    const { data: updated } = await admin
+      .from('sms_orders')
+      .update({ status: 'waiting' })
+      .eq('id', order.id)
+      .select()
+      .single()
+    return updated || { ...order, status: 'waiting' }
+  }
+
+  if (result.status === 'cancelled') {
+    const { data: updated } = await admin
+      .from('sms_orders')
+      .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
+      .eq('id', order.id)
+      .select()
+      .single()
+    const nextOrder = updated || { ...order, status: 'cancelled', cancelled_at: new Date().toISOString() }
+    await refundWallet(admin, nextOrder, `Auto-refund for cancelled SMS order: ${order.reference}`)
+    const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
+    return refunded || nextOrder
+  }
+
+  if (result.status === 'ok') {
+    const messages = Array.isArray(order.messages) ? order.messages : []
+    const newMsg = { content: result.code, code: result.code, received_at: new Date().toISOString() }
+    const nextMessages = messages.some((m: any) => m.code === result.code) ? messages : [...messages, newMsg]
+    const { data: updated } = await admin.from('sms_orders').update({
+      status: 'completed',
+      messages: nextMessages,
+      completed_at: new Date().toISOString(),
+    }).eq('id', order.id).select().single()
+    try { await daisyMarkDone(apiKey, activationId) } catch { /* ignore */ }
+    return updated || { ...order, status: 'completed', messages: nextMessages }
+  }
+
+  return order
+}
+
 // ── Action handlers ───────────────────────────────────────────────────────────
 
 async function handleHealth() {
@@ -684,7 +749,7 @@ async function handleServices(admin: SupabaseAdmin) {
 }
 
 async function handleAdminSmsProducts(admin: SupabaseAdmin, userId: string) {
-  await requireAdminUser(admin, userId)
+  await requireSmsProductAccess(admin, userId)
   const { products, diagnostics, exchangeRate, exchangeRateSource, globalMarginNgn, roundAutoPricesToNearestTen } = await buildSmsCatalog(admin)
   return json({
     success: true,
@@ -699,7 +764,7 @@ async function handleAdminSmsProducts(admin: SupabaseAdmin, userId: string) {
 }
 
 async function handleAdminUpdateSmsProduct(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
-  await requireAdminUser(admin, userId)
+  await requireSmsProductAccess(admin, userId, true)
   const serviceCode = String(body.service_code || body.service_id || '').trim()
   if (!serviceCode) throw new Error('service_code is required')
 
@@ -721,7 +786,7 @@ async function handleAdminUpdateSmsProduct(admin: SupabaseAdmin, userId: string,
 }
 
 async function handleAdminBulkSmsProducts(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
-  await requireAdminUser(admin, userId)
+  await requireSmsProductAccess(admin, userId, true)
   if (typeof body.is_enabled !== 'boolean') throw new Error('is_enabled is required')
   const { products } = await buildSmsCatalog(admin)
   const now = new Date().toISOString()
@@ -739,7 +804,7 @@ async function handleAdminBulkSmsProducts(admin: SupabaseAdmin, userId: string, 
 }
 
 async function handleAdminApplySmsMarkup(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
-  await requireAdminUser(admin, userId)
+  await requireSmsProductAccess(admin, userId, true)
   const marginNgn = optionalNaira(body.margin_ngn)
   if (marginNgn === null) throw new Error('Enter a valid markup amount')
   const keepAutoApplying = body.keep_auto_applying !== false
@@ -766,7 +831,7 @@ async function handleAdminApplySmsMarkup(admin: SupabaseAdmin, userId: string, b
 }
 
 async function handleAdminSetSmsRounding(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
-  await requireAdminUser(admin, userId)
+  await requireSmsProductAccess(admin, userId, true)
   if (typeof body.round_to_nearest_10 !== 'boolean') throw new Error('round_to_nearest_10 is required')
   const { error } = await admin
     .from('app_settings')
@@ -780,10 +845,22 @@ async function handleAdminSetSmsRounding(admin: SupabaseAdmin, userId: string, b
 }
 
 async function handleOrders(admin: SupabaseAdmin, userId: string) {
+  const key = getDaisyKey()
   const { data, error } = await admin.from('sms_orders').select('*').eq('user_id', userId)
     .order('created_at', { ascending: false }).limit(50)
   if (error) throw new Error(`Failed to load orders: ${error.message}`)
-  return json({ success: true, data: data || [] })
+
+  const orders = data || []
+  if (!key) return json({ success: true, data: orders })
+
+  const reconciled = await Promise.all(
+    orders.map((order) => reconcileOtpOrderStatus(admin, key, order).catch((err) => {
+      console.warn('Failed to reconcile SMS order:', order.id, err)
+      return order
+    })),
+  )
+
+  return json({ success: true, data: reconciled })
 }
 
 async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
@@ -802,6 +879,16 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
   if (!svc || !svc.is_enabled || svc.available_count <= 0) throw new Error('Service not available')
 
   const estimatedPriceNgn = svc.price_ngn
+  const expectedPriceRaw = body.expected_price_ngn
+  const expectedPriceNgn = expectedPriceRaw === undefined || expectedPriceRaw === null || expectedPriceRaw === ''
+    ? null
+    : Math.round(Number(expectedPriceRaw))
+  if (expectedPriceNgn !== null && (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn < 0)) {
+    throw new Error('Invalid expected price')
+  }
+  if (expectedPriceNgn !== null && expectedPriceNgn !== estimatedPriceNgn) {
+    throw new Error(`Price changed from NGN ${expectedPriceNgn.toLocaleString()} to NGN ${estimatedPriceNgn.toLocaleString()}. Please refresh and try again.`)
+  }
 
   const { data: profile } = await admin.from('profiles').select('wallet_balance').eq('id', userId).single()
   if (!profile || Number(profile.wallet_balance || 0) < estimatedPriceNgn) {
@@ -811,8 +898,10 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
   const number = await daisyGetNumber(key, serviceCode, Math.max(svc.provider_cost_usd * 1.25, svc.provider_cost_usd + 0.05))
   const effectiveProviderUsd = number.priceUsd ?? svc.provider_cost_usd
   const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true)
-  const totalUsd = effectivePricing.totalUsd
-  const priceNgn = effectivePricing.priceNgn
+  const priceNgn = estimatedPriceNgn
+  const marginUsd = Math.max(0, (priceNgn - effectivePricing.providerCostNgn) / exchangeRate)
+  const marginNgn = Math.max(0, priceNgn - effectivePricing.providerCostNgn)
+  const totalUsd = priceNgn / exchangeRate
   const reference = generateReference('SMS')
   let debit: { prev: number; next: number } | null = null
 
@@ -824,15 +913,19 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
       service_id: serviceCode, service_name: svc.service_name,
       country_id: DAISY_COUNTRY, country_code: 'us',
       phone_number: `+${number.phoneNumber}`, raw_phone_number: number.phoneNumber,
-      provider_cost_usd: effectiveProviderUsd, margin_usd: effectivePricing.marginUsd,
+      provider_cost_usd: effectiveProviderUsd, margin_usd: marginUsd,
       total_cost_usd: totalUsd, exchange_rate: exchangeRate, price_ngn: priceNgn,
       status: 'active',
       expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
       provider_payload: {
         activation_id: number.activationId,
         service: svc,
+        displayed_price_ngn: estimatedPriceNgn,
+        expected_price_ngn: expectedPriceNgn,
+        charged_price_ngn: priceNgn,
         effective_provider_price_usd: number.priceUsd ?? null,
-        margin_ngn: effectivePricing.marginNgn,
+        margin_ngn: marginNgn,
+        effective_margin_usd: marginUsd,
         price_override_ngn: svc.price_override_ngn,
         pricing_mode: effectivePricing.pricingMode,
         round_to_nearest_10: roundAutoPricesToNearestTen === true,
@@ -914,7 +1007,8 @@ async function handleCancelOtp(admin: SupabaseAdmin, userId: string, body: Recor
 
   const { data: updated } = await admin.from('sms_orders').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', order.id).select().single()
   await refundWallet(admin, order, `Refund for cancelled SMS order: ${order.reference}`)
-  return json({ success: true, data: updated })
+  const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
+  return json({ success: true, data: refunded || updated })
 }
 
 // ── DaisySMS webhook (no auth — called by DaisySMS server) ───────────────────

@@ -136,6 +136,9 @@ type SmsOrder = {
   expires_at?: string | null
   keep_at?: string | null
   rent_months?: number | null
+  refunded_at?: string | null
+  refund_amount_ngn?: number | null
+  refund_reference?: string | null
   created_at: string
 }
 
@@ -339,6 +342,16 @@ function SmsOrderCard({
           <div className="text-left sm:text-right">
             <p className="text-lg font-black">{formatNaira(order.price_ngn)}</p>
             <p className="text-xs text-slate-500 dark:text-muted-foreground">{formatDate(order.created_at)}</p>
+            {order.status === 'cancelled' && (
+              <p className={cn(
+                'mt-1 text-xs font-semibold',
+                order.refunded_at ? 'text-emerald-600 dark:text-emerald-300' : 'text-amber-600 dark:text-amber-300',
+              )}>
+                {order.refunded_at
+                  ? `Refunded ${formatNaira(order.refund_amount_ngn || order.price_ngn)}`
+                  : 'Refund pending'}
+              </p>
+            )}
           </div>
         </div>
 
@@ -615,6 +628,7 @@ function SmsNumbersSurface() {
 
       setHealth(healthResult)
       setOrders(orderResult.data || [])
+      window.dispatchEvent(new Event('transactionAdded'))
 
       if (healthResult.configured && healthResult.valid !== false) {
         const [serviceResult, areaResult] = await Promise.all([
@@ -656,10 +670,21 @@ function SmsNumbersSurface() {
     }
   }
 
-  const refreshOrders = async () => {
+  const refreshOrders = useCallback(async () => {
     const result = await invokeSms<SmsOrder[]>('orders')
     setOrders(result.data || [])
-  }
+    window.dispatchEvent(new Event('transactionAdded'))
+  }, [])
+
+  useEffect(() => {
+    if (activeOrders.length === 0) return
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        refreshOrders().catch((error) => console.error('Failed to refresh SMS orders:', error))
+      }
+    }, 30000)
+    return () => window.clearInterval(timer)
+  }, [activeOrders.length, refreshOrders])
 
   const buyOtp = () => runAction('buy-otp', async () => {
     if (!selectedService) throw new Error('Select an OTP service first')
@@ -667,6 +692,7 @@ function SmsNumbersSurface() {
     const result = await invokeSms<SmsOrder>('create_otp', {
       country_id: selectedService.country_id,
       service_id: selectedService.service_id,
+      expected_price_ngn: selectedService.price_ngn,
       idempotency_key: `sms-otp-${selectedService.service_id}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     })
 

@@ -15,6 +15,80 @@ function json(body: unknown, status = 200) {
   })
 }
 
+function optionalNaira(value: unknown) {
+  if (value === null || value === '') return null
+  const number = Math.round(Number(value))
+  return Number.isFinite(number) && number >= 0 ? number : null
+}
+
+async function applySmsPendingAction(admin: ReturnType<typeof createClient>, pendingAction: any) {
+  const d = pendingAction.action_data || {}
+  const now = new Date().toISOString()
+
+  if (pendingAction.action_type === 'sms_update_product') {
+    const serviceCode = String(d.service_code || '').trim()
+    if (!serviceCode) throw new Error('SMS service_code missing')
+    const updates: Record<string, unknown> = { service_code: serviceCode, updated_at: now }
+    if (typeof d.service_name === 'string') updates.service_name = d.service_name.trim()
+    if (typeof d.is_enabled === 'boolean') updates.is_enabled = d.is_enabled
+    if (typeof d.is_favorite === 'boolean') updates.is_favorite = d.is_favorite
+    if (typeof d.auto_markup_enabled === 'boolean') updates.auto_markup_enabled = d.auto_markup_enabled
+    if (Object.prototype.hasOwnProperty.call(d, 'price_override_ngn')) updates.price_override_ngn = optionalNaira(d.price_override_ngn)
+    if (Object.prototype.hasOwnProperty.call(d, 'margin_ngn')) updates.margin_ngn = optionalNaira(d.margin_ngn)
+
+    const { error } = await admin.from('sms_product_settings').upsert(updates, { onConflict: 'service_code' })
+    if (error) throw new Error(error.message)
+    return
+  }
+
+  if (pendingAction.action_type === 'sms_bulk_products') {
+    if (typeof d.is_enabled !== 'boolean') throw new Error('SMS is_enabled missing')
+    const { data: rows, error: loadError } = await admin.from('sms_product_settings').select('service_code, service_name')
+    if (loadError) throw new Error(loadError.message)
+    const updates = (rows || []).map((row: any) => ({
+      service_code: row.service_code,
+      service_name: row.service_name,
+      is_enabled: d.is_enabled,
+      updated_at: now,
+    }))
+    if (updates.length > 0) {
+      const { error } = await admin.from('sms_product_settings').upsert(updates, { onConflict: 'service_code' })
+      if (error) throw new Error(error.message)
+    }
+    return
+  }
+
+  if (pendingAction.action_type === 'sms_apply_markup') {
+    const marginNgn = optionalNaira(d.margin_ngn)
+    if (marginNgn === null) throw new Error('SMS markup missing')
+    const keepAutoApplying = d.keep_auto_applying !== false
+
+    const { error: settingError } = await admin
+      .from('app_settings')
+      .upsert({ key: 'sms_default_margin_ngn', value: String(marginNgn), updated_at: now }, { onConflict: 'key' })
+    if (settingError) throw new Error(settingError.message)
+
+    const { error } = await admin
+      .from('sms_product_settings')
+      .update({ margin_ngn: marginNgn, auto_markup_enabled: keepAutoApplying, updated_at: now })
+      .neq('service_code', '')
+    if (error) throw new Error(error.message)
+    return
+  }
+
+  if (pendingAction.action_type === 'sms_set_rounding') {
+    if (typeof d.round_to_nearest_10 !== 'boolean') throw new Error('SMS rounding value missing')
+    const { error } = await admin
+      .from('app_settings')
+      .upsert({
+        key: 'sms_round_markup_to_nearest_10',
+        value: d.round_to_nearest_10 ? 'true' : 'false',
+        updated_at: now,
+      }, { onConflict: 'key' })
+    if (error) throw new Error(error.message)
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
@@ -119,7 +193,17 @@ serve(async (req) => {
         if (pendingAction) {
           const d = pendingAction.action_data || {}
           if (pendingAction.action_type === 'upsert_setting') {
-            await admin.from('app_settings').upsert({ key: d.setting_key, value: d.value }, { onConflict: 'key' })
+            await admin.from('app_settings').upsert({ key: d.setting_key, value: d.value, updated_at: new Date().toISOString() }, { onConflict: 'key' })
+          } else if (pendingAction.action_type === 'upsert_settings') {
+            const settings = d.settings || {}
+            const rows = Object.entries(settings).map(([key, value]) => ({
+              key,
+              value: String(value ?? ''),
+              updated_at: new Date().toISOString(),
+            }))
+            if (rows.length > 0) await admin.from('app_settings').upsert(rows, { onConflict: 'key' })
+          } else if (String(pendingAction.action_type || '').startsWith('sms_')) {
+            await applySmsPendingAction(admin, pendingAction)
           } else if (pendingAction.action_type === 'adjust_balance') {
             // Read current balance then update
             const { data: profile } = await admin.from('profiles').select('wallet_balance').eq('id', d.user_id).single()

@@ -6,7 +6,8 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Loader2, Clock, CheckCircle2, XCircle, Settings, Upload, Plus, Tag, Users, BarChart2, Mail, Send, RefreshCw, X } from 'lucide-react'
+import { Loader2, Clock, CheckCircle2, XCircle, Settings, Upload, Plus, Tag, Users, BarChart2, Mail, Send, RefreshCw, X, PhoneCall, Star } from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { useAuth } from '@/contexts/SimpleAuth'
@@ -40,6 +41,35 @@ import {
   type DiscountCode,
 } from '@/lib/supabase'
 import { format } from 'date-fns'
+
+type StaffSmsProduct = {
+  service_id: string
+  service_code: string
+  service_name: string
+  provider_cost_usd: number
+  provider_cost_ngn: number
+  margin_ngn: number
+  exchange_rate: number
+  price_ngn: number
+  available_count: number
+  customer_buy_count?: number
+  is_enabled: boolean
+  is_favorite: boolean
+  price_override_ngn: number | null
+  auto_markup_enabled: boolean
+  pricing_mode: 'auto_markup' | 'manual_margin' | 'override'
+}
+
+type StaffSmsCatalogResponse = {
+  success: boolean
+  data?: StaffSmsProduct[]
+  error?: string
+  configured?: boolean
+  global_margin_ngn?: number
+  exchange_rate?: number
+  exchange_rate_source?: 'override' | 'live' | 'fallback' | 'unknown'
+  round_to_nearest_10?: boolean
+}
 
 function can(perms: PermissionMap, key: PermissionKey) {
   return perms[key]?.is_enabled === true
@@ -122,6 +152,18 @@ export default function StaffAdminPage() {
   const [newCodeMaxUses, setNewCodeMaxUses] = useState('')
   const [creatingCode, setCreatingCode] = useState(false)
 
+  // SMS products
+  const [smsProducts, setSmsProducts] = useState<StaffSmsProduct[]>([])
+  const [smsProductsLoading, setSmsProductsLoading] = useState(false)
+  const [smsSearchQuery, setSmsSearchQuery] = useState('')
+  const [smsGlobalMargin, setSmsGlobalMargin] = useState('700')
+  const [smsKeepAutoApply, setSmsKeepAutoApply] = useState(true)
+  const [smsRoundToNearestTen, setSmsRoundToNearestTen] = useState(false)
+  const [smsSavingKey, setSmsSavingKey] = useState<string | null>(null)
+  const [smsPriceInputs, setSmsPriceInputs] = useState<Record<string, string>>({})
+  const [smsMarginInputs, setSmsMarginInputs] = useState<Record<string, string>>({})
+  const [smsCatalogNotice, setSmsCatalogNotice] = useState('')
+
   // Users
   const [userQuery, setUserQuery] = useState('')
   const [users, setUsers] = useState<any[]>([])
@@ -152,6 +194,36 @@ export default function StaffAdminPage() {
       setLoadingPerms(false)
     })
   }, [])
+
+  const loadSmsProducts = useCallback(async () => {
+    if (!can(perms, 'tab_sms_products')) return
+    setSmsProductsLoading(true)
+    try {
+      const { data, error } = await supabase.functions.invoke<StaffSmsCatalogResponse>('smsbus', {
+        body: { action: 'admin_sms_products' },
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to load SMS products')
+      const products = data.data || []
+      setSmsProducts(products)
+      setSmsRoundToNearestTen(data.round_to_nearest_10 === true)
+      if (typeof data.global_margin_ngn === 'number') setSmsGlobalMargin(String(data.global_margin_ngn))
+      setSmsPriceInputs(Object.fromEntries(products.map((product) => [
+        product.service_code,
+        product.price_override_ngn === null || product.price_override_ngn === undefined ? '' : String(product.price_override_ngn),
+      ])))
+      setSmsMarginInputs(Object.fromEntries(products.map((product) => [
+        product.service_code,
+        String(product.margin_ngn ?? data.global_margin_ngn ?? 700),
+      ])))
+      setSmsCatalogNotice(data.configured === false ? 'SMS API key is not configured on the deployed function.' : '')
+    } catch (err: any) {
+      setSmsCatalogNotice(err.message || 'Failed to load SMS products')
+      toast({ title: 'Failed to load SMS products', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsProductsLoading(false)
+    }
+  }, [perms, toast])
 
   useEffect(() => {
     if (loadingPerms) return
@@ -194,7 +266,10 @@ export default function StaffAdminPage() {
       setLoadingCodes(true)
       getDiscountCodes().then(codes => { setDiscountCodes(codes); setLoadingCodes(false) })
     }
-  }, [perms, loadingPerms])
+    if (can(perms, 'tab_sms_products')) {
+      loadSmsProducts()
+    }
+  }, [perms, loadingPerms, loadSmsProducts])
 
   const loadBroadcastJobs = useCallback(async () => {
     if (!can(perms, 'tab_email')) return
@@ -269,6 +344,137 @@ export default function StaffAdminPage() {
   }
 
   // ── Support links ─────────────────────────────────────────────────────────
+  async function submitSmsAction(actionType: string, label: string, actionData: Record<string, unknown>) {
+    const res = await submitPendingAction('tab_sms_products', actionType, label, actionData)
+    if (res.success) {
+      toast({ title: 'Submitted for approval' })
+      loadMyPending()
+    } else {
+      toast({ variant: 'destructive', title: res.error })
+    }
+  }
+
+  async function invokeSmsProductAction(body: Record<string, unknown>) {
+    const { data, error } = await supabase.functions.invoke<{ success: boolean; error?: string; count?: number }>('smsbus', { body })
+    if (error) throw error
+    if (!data?.success) throw new Error(data?.error || 'SMS product update failed')
+    return data
+  }
+
+  async function updateSmsProduct(serviceCode: string, updates: Record<string, unknown>, reload = false) {
+    const product = smsProducts.find(item => item.service_code === serviceCode)
+    setSmsSavingKey(`${serviceCode}-${Object.keys(updates).join('-')}`)
+    try {
+      if (autoApproves(perms, 'tab_sms_products')) {
+        await invokeSmsProductAction({
+          action: 'admin_update_sms_product',
+          service_code: serviceCode,
+          service_name: product?.service_name,
+          ...updates,
+        })
+        setSmsProducts(prev => prev.map(item => item.service_code === serviceCode ? { ...item, ...updates } as StaffSmsProduct : item))
+        if (reload) await loadSmsProducts()
+        toast({ title: 'SMS product updated' })
+      } else {
+        await submitSmsAction(
+          'sms_update_product',
+          `Update SMS product ${product?.service_name || serviceCode}`,
+          { service_code: serviceCode, service_name: product?.service_name, ...updates },
+        )
+      }
+    } catch (err: any) {
+      toast({ title: 'SMS product update failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsSavingKey(null)
+    }
+  }
+
+  async function saveSmsPriceOverride(product: StaffSmsProduct) {
+    const raw = smsPriceInputs[product.service_code] ?? ''
+    const value = raw.trim() === '' ? null : Number(raw)
+    if (value !== null && (!Number.isFinite(value) || value < 0)) {
+      toast({ title: 'Invalid price', description: 'Enter a valid naira amount or leave it blank.', variant: 'destructive' })
+      return
+    }
+    await updateSmsProduct(product.service_code, { price_override_ngn: value === null ? null : Math.round(value) }, true)
+  }
+
+  async function saveSmsMargin(product: StaffSmsProduct) {
+    const value = Number(smsMarginInputs[product.service_code] ?? '')
+    if (!Number.isFinite(value) || value < 0) {
+      toast({ title: 'Invalid markup', description: 'Enter a valid naira markup.', variant: 'destructive' })
+      return
+    }
+    await updateSmsProduct(product.service_code, { margin_ngn: Math.round(value), auto_markup_enabled: true }, true)
+  }
+
+  async function applySmsGlobalMarkup() {
+    const margin = Number(smsGlobalMargin)
+    if (!Number.isFinite(margin) || margin < 0) {
+      toast({ title: 'Invalid markup', description: 'Enter a valid naira markup.', variant: 'destructive' })
+      return
+    }
+    setSmsSavingKey('global-markup')
+    try {
+      if (autoApproves(perms, 'tab_sms_products')) {
+        const data = await invokeSmsProductAction({
+          action: 'admin_apply_sms_markup',
+          margin_ngn: Math.round(margin),
+          keep_auto_applying: smsKeepAutoApply,
+        })
+        await loadSmsProducts()
+        toast({ title: 'SMS markup applied', description: `${data.count || 0} product(s) updated.` })
+      } else {
+        await submitSmsAction('sms_apply_markup', `Apply SMS markup NGN ${Math.round(margin).toLocaleString()}`, {
+          margin_ngn: Math.round(margin),
+          keep_auto_applying: smsKeepAutoApply,
+        })
+      }
+    } catch (err: any) {
+      toast({ title: 'Markup failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsSavingKey(null)
+    }
+  }
+
+  async function toggleSmsRounding() {
+    const next = !smsRoundToNearestTen
+    setSmsSavingKey('round-to-10')
+    try {
+      if (autoApproves(perms, 'tab_sms_products')) {
+        await invokeSmsProductAction({ action: 'admin_set_sms_rounding', round_to_nearest_10: next })
+        setSmsRoundToNearestTen(next)
+        await loadSmsProducts()
+        toast({ title: next ? 'SMS rounding enabled' : 'SMS rounding disabled' })
+      } else {
+        await submitSmsAction('sms_set_rounding', `${next ? 'Enable' : 'Disable'} SMS rounding`, {
+          round_to_nearest_10: next,
+        })
+      }
+    } catch (err: any) {
+      toast({ title: 'Rounding update failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsSavingKey(null)
+    }
+  }
+
+  async function bulkToggleSmsProducts(isEnabled: boolean) {
+    setSmsSavingKey(isEnabled ? 'enable-all' : 'disable-all')
+    try {
+      if (autoApproves(perms, 'tab_sms_products')) {
+        const data = await invokeSmsProductAction({ action: 'admin_bulk_sms_products', is_enabled: isEnabled })
+        await loadSmsProducts()
+        toast({ title: isEnabled ? 'SMS products enabled' : 'SMS products disabled', description: `${data.count || 0} product(s) updated.` })
+      } else {
+        await submitSmsAction('sms_bulk_products', `${isEnabled ? 'Enable' : 'Disable'} all SMS products`, { is_enabled: isEnabled })
+      }
+    } catch (err: any) {
+      toast({ title: 'Bulk update failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsSavingKey(null)
+    }
+  }
+
   async function handleSaveSupportLinks() {
     setSavingSupportLinks(true)
     try {
@@ -628,6 +834,15 @@ export default function StaffAdminPage() {
   }
 
   // ── Loading ───────────────────────────────────────────────────────────────
+  const filteredSmsProducts = smsProducts
+    .filter((product) => {
+      const query = smsSearchQuery.trim().toLowerCase()
+      if (!query) return true
+      return [product.service_name, product.service_code, product.price_ngn, product.available_count]
+        .some((value) => String(value || '').toLowerCase().includes(query))
+    })
+    .sort((a, b) => Number(b.is_favorite) - Number(a.is_favorite) || a.service_name.localeCompare(b.service_name))
+
   if (loadingPerms) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -639,7 +854,7 @@ export default function StaffAdminPage() {
   const hasAnyTab =
     can(perms, 'view_stats') || can(perms, 'tab_templates') || can(perms, 'tab_products') ||
     can(perms, 'tab_add_product') || can(perms, 'tab_bulk_upload') || can(perms, 'tab_discount_codes') ||
-    can(perms, 'tab_categories') || can(perms, 'tab_users') || can(perms, 'tab_email') ||
+    can(perms, 'tab_sms_products') || can(perms, 'tab_categories') || can(perms, 'tab_users') || can(perms, 'tab_email') ||
     hasSettingsPermission(perms)
 
   if (!hasAnyTab) {
@@ -663,6 +878,7 @@ export default function StaffAdminPage() {
     can(perms, 'tab_products')         && { key: 'products',  label: 'Products' },
     can(perms, 'tab_add_product')      && { key: 'add',       label: 'Add Account' },
     can(perms, 'tab_bulk_upload')      && { key: 'bulk',      label: 'Bulk Upload' },
+    can(perms, 'tab_sms_products')     && { key: 'sms-products', label: 'SMS Products' },
     can(perms, 'tab_categories')       && { key: 'categories',label: 'Categories' },
     can(perms, 'tab_discount_codes')   && { key: 'discounts', label: 'Discount Codes' },
     can(perms, 'tab_users')            && { key: 'users',     label: 'Users' },
@@ -892,6 +1108,116 @@ export default function StaffAdminPage() {
           )}
 
           {/* ── Categories ────────────────────────────────────── */}
+          {can(perms, 'tab_sms_products') && (
+            <TabsContent value="sms-products" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <PhoneCall className="h-5 w-5" />
+                    SMS Products
+                  </CardTitle>
+                  {!autoApproves(perms, 'tab_sms_products') && (
+                    <Badge variant="outline" className="w-fit flex items-center gap-1">
+                      <Clock className="h-3 w-3" /> Requires approval
+                    </Badge>
+                  )}
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+                    <Input value={smsSearchQuery} onChange={e => setSmsSearchQuery(e.target.value)} placeholder="Search SMS products..." className="lg:max-w-xs" />
+                    <Input type="number" min="0" value={smsGlobalMargin} onChange={e => setSmsGlobalMargin(e.target.value)} placeholder="Default markup" className="lg:max-w-[160px]" />
+                    <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <input type="checkbox" checked={smsKeepAutoApply} onChange={e => setSmsKeepAutoApply(e.target.checked)} />
+                      Keep auto-applying
+                    </label>
+                    <Button onClick={applySmsGlobalMarkup} disabled={smsSavingKey === 'global-markup'} variant="outline">
+                      {smsSavingKey === 'global-markup' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      {autoApproves(perms, 'tab_sms_products') ? 'Apply markup' : 'Submit markup'}
+                    </Button>
+                    <Button onClick={toggleSmsRounding} disabled={smsSavingKey === 'round-to-10'} variant={smsRoundToNearestTen ? 'default' : 'outline'}>
+                      {smsSavingKey === 'round-to-10' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                      Round up to 10
+                    </Button>
+                    <Button onClick={() => bulkToggleSmsProducts(true)} disabled={smsSavingKey === 'enable-all'} variant="outline">Enable all</Button>
+                    <Button onClick={() => bulkToggleSmsProducts(false)} disabled={smsSavingKey === 'disable-all'} variant="outline">Disable all</Button>
+                    <Button onClick={loadSmsProducts} disabled={smsProductsLoading} variant="outline" size="sm">
+                      <RefreshCw className={`h-4 w-4 ${smsProductsLoading ? 'animate-spin' : ''}`} />
+                    </Button>
+                  </div>
+
+                  {smsCatalogNotice && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                      {smsCatalogNotice}
+                    </div>
+                  )}
+
+                  <div className="rounded-lg border">
+                    <div className="grid grid-cols-[1fr_140px_220px_90px] gap-3 border-b px-4 py-3 text-xs font-semibold uppercase text-muted-foreground max-lg:hidden">
+                      <span>Product</span>
+                      <span>Cost</span>
+                      <span>Customer price override</span>
+                      <span className="text-right">Enabled</span>
+                    </div>
+                    {smsProductsLoading ? (
+                      <div className="flex items-center justify-center p-8"><Loader2 className="h-5 w-5 animate-spin" /></div>
+                    ) : filteredSmsProducts.length === 0 ? (
+                      <p className="p-6 text-center text-sm text-muted-foreground">No SMS products found.</p>
+                    ) : (
+                      <div className="divide-y">
+                        {filteredSmsProducts.map(product => {
+                          const rowSaving = smsSavingKey?.startsWith(product.service_code)
+                          return (
+                            <div key={product.service_code} className="grid gap-4 p-4 lg:grid-cols-[1fr_140px_220px_90px] lg:items-center">
+                              <div className="min-w-0">
+                                <div className="flex items-start gap-2">
+                                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0" disabled={rowSaving} onClick={() => updateSmsProduct(product.service_code, { is_favorite: !product.is_favorite })}>
+                                    <Star className={`h-4 w-4 ${product.is_favorite ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground'}`} />
+                                  </Button>
+                                  <div className="min-w-0">
+                                    <p className="truncate font-semibold">{product.service_name}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {product.available_count.toLocaleString()} available - {Number(product.customer_buy_count || 0).toLocaleString()} buys - {product.service_code}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="mt-3 flex flex-wrap items-center gap-2 pl-10">
+                                  <Switch checked={product.auto_markup_enabled} disabled={rowSaving} onCheckedChange={(checked) => updateSmsProduct(product.service_code, { auto_markup_enabled: checked }, true)} />
+                                  <span className="text-sm text-muted-foreground">Auto-markup</span>
+                                  <Input type="number" min="0" className="h-9 w-28" value={smsMarginInputs[product.service_code] ?? ''} onChange={e => setSmsMarginInputs(prev => ({ ...prev, [product.service_code]: e.target.value }))} />
+                                  <Button type="button" variant="outline" size="sm" disabled={rowSaving} onClick={() => saveSmsMargin(product)}>Save margin</Button>
+                                </div>
+                              </div>
+
+                              <div>
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Cost</p>
+                                <p className="font-bold">${Number(product.provider_cost_usd || 0).toFixed(2)}</p>
+                                <p className="text-xs text-muted-foreground">NGN {Number(product.provider_cost_ngn || 0).toLocaleString()}</p>
+                              </div>
+
+                              <div className="flex min-w-0 items-center gap-2">
+                                <Input type="number" min="0" placeholder={`Auto NGN ${Number(product.price_ngn || 0).toLocaleString()}`} value={smsPriceInputs[product.service_code] ?? ''} onChange={e => setSmsPriceInputs(prev => ({ ...prev, [product.service_code]: e.target.value }))} />
+                                <Button type="button" variant="outline" disabled={rowSaving} onClick={() => saveSmsPriceOverride(product)}>
+                                  {rowSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : autoApproves(perms, 'tab_sms_products') ? 'Save' : 'Submit'}
+                                </Button>
+                              </div>
+
+                              <div className="flex items-center justify-between gap-2 lg:justify-end">
+                                <Badge variant={product.pricing_mode === 'override' ? 'default' : 'secondary'} className="whitespace-nowrap">
+                                  NGN {Number(product.price_ngn || 0).toLocaleString()}
+                                </Badge>
+                                <Switch checked={product.is_enabled} disabled={rowSaving} onCheckedChange={(checked) => updateSmsProduct(product.service_code, { is_enabled: checked })} />
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+
           {can(perms, 'tab_categories') && (
             <TabsContent value="categories" className="space-y-4">
               <Card>
