@@ -1,70 +1,244 @@
-import { useState, useEffect } from 'react'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import {
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  Grid,
+  Home,
+  LayoutGrid,
+  List,
+  Loader2,
+  MoreHorizontal,
+  Package,
+  RefreshCw,
+  Search,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { Search, Grid, List, Loader2, ShoppingCart } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import ProductTemplateCard from '@/components/ProductTemplateCard'
-import WalletBalanceWidget from '@/components/WalletBalanceWidget'
+import CategorySidebar from '@/components/CategorySidebar'
+import { getCategoryStyle } from '@/lib/categoryStyles'
 import {
-  getCategories,
   getAllProductGroups,
-  testConnection,
-  getRecentlyRestockedProductGroupIds,
   getAvailableAccountIdsByProductGroup,
+  getCategories,
+  getGlobalActivityFeed,
+  getRecentlyRestockedProductGroupIds,
   getTopSellingProductGroupIds,
+  testConnection,
   type Category,
+  type GlobalActivityItem,
   type ProductGroup,
 } from '@/lib/supabase'
-import CategorySidebar from '@/components/CategorySidebar'
+
+type ProductCollection = 'popular' | 'refilled' | 'new'
+type SortMode = 'newest' | 'price-low' | 'price-high' | 'stock'
+
+const PAGE_SIZE = 12
+
+function canAutoFulfill(productGroup: ProductGroup) {
+  return !!(
+    (productGroup.auto_fulfill_enabled && productGroup.muabanvia_product_id) ||
+    productGroup.shopclone_product_id ||
+    productGroup.shopviaclone_product_id
+  )
+}
+
+function isPurchasable(productGroup: ProductGroup) {
+  return productGroup.stock_count > 0 || canAutoFulfill(productGroup)
+}
+
+function maskActivity(item: GlobalActivityItem) {
+  if (item.kind === 'deposit') return `${item.maskedName} deposited funds`
+  return `${item.maskedName} purchased ${item.label}`
+}
 
 export default function ProductsPage() {
   const navigate = useNavigate()
-  
-  // State for real Supabase data
   const [categories, setCategories] = useState<Category[]>([])
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [restockedIds, setRestockedIds] = useState<string[]>([])
-  const [accountMap, setAccountMap] = useState<Record<string, string>>({})
+  const [, setAccountMap] = useState<Record<string, string>>({})
   const [topSellingIds, setTopSellingIds] = useState<string[]>([])
-
-  // Existing UI state
+  const [activity, setActivity] = useState<GlobalActivityItem[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
+  const [activeCollection, setActiveCollection] = useState<ProductCollection>('popular')
+  const [sortMode, setSortMode] = useState<SortMode>('newest')
+  const [currentPage, setCurrentPage] = useState(1)
 
-  // Handle adding to cart (navigate to checkout with quantity)
-  const handleAddToCart = (productGroupId: string, quantity: number) => {
-    const productGroup = productGroups.find(pg => pg.id === productGroupId)
-    const category = categories.find(cat => cat.id === productGroup?.category_id)
-    
-    if (productGroup && category) {
-      navigate('/checkout', {
-        state: {
-          productGroup,
-          category,
-          quantity,
-          isBulkPurchase: quantity > 1
-        }
+  const loadData = useCallback(async (showPageLoader = false) => {
+    try {
+      if (showPageLoader) setLoading(true)
+      setRefreshing(true)
+
+      const connectionOk = await testConnection()
+      if (!connectionOk) throw new Error('Failed to connect to database')
+
+      const [categoriesData, productGroupsData, accountMapData, topSellingData, activityData] = await Promise.all([
+        getCategories(),
+        getAllProductGroups(),
+        getAvailableAccountIdsByProductGroup(),
+        getTopSellingProductGroupIds(12),
+        getGlobalActivityFeed(6),
+      ])
+
+      setCategories(categoriesData)
+      setProductGroups(productGroupsData)
+      setAccountMap(accountMapData)
+      setTopSellingIds(topSellingData)
+      setActivity(activityData)
+      setError(null)
+
+      getRecentlyRestockedProductGroupIds(8).then(setRestockedIds).catch((err) => {
+        console.error('Error loading restocked product groups:', err)
       })
+    } catch (err) {
+      console.error('Error loading products:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load products')
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
     }
+  }, [])
+
+  useEffect(() => {
+    loadData(true)
+  }, [loadData])
+
+  useEffect(() => {
+    const refreshVisibleData = () => {
+      if (!loading) loadData(false)
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshVisibleData()
+    }
+
+    window.addEventListener('focus', refreshVisibleData)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      window.removeEventListener('focus', refreshVisibleData)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [loadData, loading])
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm, selectedCategory, sortMode])
+
+  const activeProductGroups = useMemo(
+    () => productGroups.filter((productGroup) => productGroup.is_active),
+    [productGroups],
+  )
+
+  const productCountByCategory = useMemo(() => {
+    return activeProductGroups.reduce<Record<string, number>>((acc, productGroup) => {
+      acc[productGroup.category_id] = (acc[productGroup.category_id] || 0) + 1
+      return acc
+    }, {})
+  }, [activeProductGroups])
+
+  const categoryChips = useMemo(() => {
+    const ranked = categories
+      .map((category) => ({
+        category,
+        count: productCountByCategory[category.id] || 0,
+      }))
+      .filter((entry) => entry.count > 0)
+      .sort((a, b) => b.count - a.count || a.category.name.localeCompare(b.category.name))
+
+    return ranked.slice(0, 7)
+  }, [categories, productCountByCategory])
+
+  const categoryForProduct = useCallback(
+    (productGroup: ProductGroup) => categories.find((category) => category.id === productGroup.category_id),
+    [categories],
+  )
+
+  const sortedProductGroups = useMemo(() => {
+    const searched = activeProductGroups.filter((productGroup) => {
+      const category = categoryForProduct(productGroup)
+      const query = searchTerm.trim().toLowerCase()
+      const matchesSearch =
+        query.length === 0 ||
+        productGroup.name.toLowerCase().includes(query) ||
+        productGroup.description?.toLowerCase().includes(query) ||
+        category?.name.toLowerCase().includes(query)
+      const matchesCategory = selectedCategory === 'all' || productGroup.category_id === selectedCategory
+      return matchesSearch && matchesCategory
+    })
+
+    return searched.sort((a, b) => {
+      const aPurchasable = isPurchasable(a)
+      const bPurchasable = isPurchasable(b)
+      if (aPurchasable !== bPurchasable) return aPurchasable ? -1 : 1
+
+      if (sortMode === 'price-low') return a.price - b.price
+      if (sortMode === 'price-high') return b.price - a.price
+      if (sortMode === 'stock') return b.stock_count - a.stock_count
+
+      const aTopRank = topSellingIds.indexOf(a.id)
+      const bTopRank = topSellingIds.indexOf(b.id)
+      if (aTopRank !== -1 || bTopRank !== -1) {
+        if (aTopRank === -1) return 1
+        if (bTopRank === -1) return -1
+        return aTopRank - bTopRank
+      }
+
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    })
+  }, [activeProductGroups, categoryForProduct, searchTerm, selectedCategory, sortMode, topSellingIds])
+
+  const topSellingProductGroups = useMemo(() => {
+    const ranked = topSellingIds
+      .map((id) => activeProductGroups.find((productGroup) => productGroup.id === id))
+      .filter((productGroup): productGroup is ProductGroup => !!productGroup && isPurchasable(productGroup))
+
+    const fillIns = [...activeProductGroups]
+      .filter((productGroup) => isPurchasable(productGroup) && !ranked.some((rankedProduct) => rankedProduct.id === productGroup.id))
+      .sort((a, b) => a.stock_count - b.stock_count)
+
+    return [...ranked, ...fillIns].slice(0, 9)
+  }, [activeProductGroups, topSellingIds])
+
+  const restockedProductGroups = useMemo(
+    () =>
+      restockedIds
+        .map((id) => activeProductGroups.find((productGroup) => productGroup.id === id))
+        .filter((productGroup): productGroup is ProductGroup => !!productGroup)
+        .slice(0, 9),
+    [activeProductGroups, restockedIds],
+  )
+
+  const newProductGroups = useMemo(
+    () =>
+      [...activeProductGroups]
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, 9),
+    [activeProductGroups],
+  )
+
+  const collectionGroups = {
+    popular: topSellingProductGroups,
+    refilled: restockedProductGroups,
+    new: newProductGroups,
   }
 
-  // Navigate from a Popular/Refilled/New tile straight to checkout for that
-  // product group. We previously tried to route these through the per-account
-  // Product Detail page (/product/:accountId), but that depends on looking up
-  // a specific individual_accounts row via accountMap - which is unreliable
-  // (accounts can be sold/reserved/never-stocked for auto-fulfill products),
-  // and silently fell back to the category page whenever the lookup missed.
-  // Going straight to checkout with the product group mirrors the "Purchase
-  // Now" button elsewhere on this page and always opens the actual product,
-  // never a category listing.
+  const totalPages = Math.max(1, Math.ceil(sortedProductGroups.length / PAGE_SIZE))
+  const pageProductGroups = sortedProductGroups.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
+
   const goToProduct = (productGroup: ProductGroup) => {
-    const category = categories.find((cat) => cat.id === productGroup.category_id)
+    const category = categoryForProduct(productGroup)
     navigate('/checkout', {
       state: {
         productGroup,
@@ -75,466 +249,348 @@ export default function ProductsPage() {
     })
   }
 
-  // Load real data from Supabase
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        setLoading(true)
-        // Test connection first
-        const connectionOk = await testConnection()
-        if (!connectionOk) {
-          throw new Error('Failed to connect to database')
-        }
+  const handlePurchase = (productGroupId: string, quantity: number) => {
+    const productGroup = productGroups.find((pg) => pg.id === productGroupId)
+    const category = productGroup ? categoryForProduct(productGroup) : null
 
-        // Load categories, product groups, and the account map together so
-        // the ranked tiles can link straight to a product on first render
-        // instead of racing ahead of the account lookup.
-        const [categoriesData, productGroupsData, accountMapData, topSellingData] = await Promise.all([
-          getCategories(),
-          getAllProductGroups(),
-          getAvailableAccountIdsByProductGroup(),
-          getTopSellingProductGroupIds(8),
-        ])
-
-        setCategories(categoriesData)
-        setProductGroups(productGroupsData)
-        setAccountMap(accountMapData)
-        setTopSellingIds(topSellingData)
-        setError(null)
-
-        // Load recently restocked product groups for the "Refilled" section
-        getRecentlyRestockedProductGroupIds(4).then(setRestockedIds).catch(err => {
-          console.error('Error loading restocked product groups:', err)
-        })
-
-      } catch (err) {
-        console.error('❌ Error loading data:', err)
-        setError(err instanceof Error ? err.message : 'Failed to load data')
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    loadData()
-  }, [])
-
-  // Refresh data when user returns to page (after purchase)
-  useEffect(() => {
-    const handleFocus = () => {
-      // Reload product groups to get updated stock counts
-      getAllProductGroups().then(productGroupsData => {
-        setProductGroups(productGroupsData)
-      }).catch(err => {
-        console.error('Error refreshing product groups:', err)
+    if (productGroup && category) {
+      navigate('/checkout', {
+        state: {
+          productGroup,
+          category,
+          quantity,
+          isBulkPurchase: quantity > 1,
+        },
       })
     }
+  }
 
-    window.addEventListener('focus', handleFocus)
-    return () => window.removeEventListener('focus', handleFocus)
-  }, [])
-
-  // Refresh data when user returns to page (for stock updates after purchases)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && !loading) {
-        const refreshData = async () => {
-          try {
-            const [categoriesData, productGroupsData] = await Promise.all([
-              getCategories(),
-              getAllProductGroups()
-            ])
-            setCategories(categoriesData)
-            setProductGroups(productGroupsData)
-          } catch (err) {
-            console.error('Error refreshing data:', err)
-          }
-        }
-        refreshData()
-      }
-    }
-
-    const handleFocus = () => {
-      if (!loading) {
-        const refreshData = async () => {
-          try {
-            const [categoriesData, productGroupsData] = await Promise.all([
-              getCategories(),
-              getAllProductGroups()
-            ])
-            setCategories(categoriesData)
-            setProductGroups(productGroupsData)
-          } catch (err) {
-            console.error('Error refreshing data:', err)
-          }
-        }
-        refreshData()
-      }
-    }
-
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    window.addEventListener('focus', handleFocus)
-    
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-      window.removeEventListener('focus', handleFocus)
-    }
-  }, [loading])
-
-  // Show loading state
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
+      <div className="min-h-screen bg-[#f6f7fb] text-slate-950 dark:bg-[#05070d] dark:text-white">
         <Navbar />
-        <div className="container mx-auto px-6 py-32">
-          <div className="flex items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin mr-3" />
-            <span className="text-lg">Loading products from database...</span>
+        <main className="mx-auto flex min-h-[60vh] max-w-7xl items-center justify-center px-5">
+          <div className="flex items-center gap-3 text-sm font-black text-slate-600 dark:text-slate-300">
+            <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+            Loading products...
           </div>
-        </div>
+        </main>
         <Footer />
       </div>
     )
   }
 
-  // Show error state
   if (error) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
+      <div className="min-h-screen bg-[#f6f7fb] text-slate-950 dark:bg-[#05070d] dark:text-white">
         <Navbar />
-        <div className="container mx-auto px-6 py-32">
-          <div className="text-center">
-            <h2 className="text-2xl font-bold text-red-600 mb-4">Database Connection Error</h2>
-            <p className="text-gray-600 mb-4">{error}</p>
-            <Button onClick={() => window.location.reload()}>Try Again</Button>
+        <main className="mx-auto flex min-h-[60vh] max-w-7xl items-center justify-center px-5">
+          <div className="max-w-md rounded-xl border border-red-200 bg-white p-6 text-center shadow-sm dark:border-red-500/30 dark:bg-white/[0.04]">
+            <h1 className="text-xl font-black text-red-600 dark:text-red-400">Could not load products</h1>
+            <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">{error}</p>
+            <Button className="mt-5" onClick={() => loadData(true)}>
+              Try Again
+            </Button>
           </div>
-        </div>
+        </main>
         <Footer />
       </div>
     )
   }
 
-  // Filter product groups for direct product template display
-  const filteredProductGroups = productGroups
-    .filter(productGroup => {
-      const category = categories.find(cat => cat.id === productGroup.category_id)
-      const matchesSearch =
-        productGroup.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        productGroup.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        category?.name.toLowerCase().includes(searchTerm.toLowerCase())
-      const matchesCategory = selectedCategory === 'all' || productGroup.category_id === selectedCategory
-      return matchesSearch && matchesCategory && productGroup.is_active
-    })
-    .sort((a, b) => {
-      // Relevance sort so customers always see purchasable products first.
-      // Tier 1 → top seller AND in stock
-      // Tier 2 → in stock (not a top seller)
-      // Tier 3 → auto-fulfill only (stock = 0 but provider configured)
-      // Tier 4 → out of stock, no provider
-      const autoFulfill = (pg: ProductGroup) => !!(
-        (pg.auto_fulfill_enabled && pg.muabanvia_product_id) ||
-        pg.shopclone_product_id ||
-        pg.shopviaclone_product_id
-      )
-      const tierOf = (pg: ProductGroup): number => {
-        const inStock = pg.stock_count > 0
-        const topSeller = topSellingIds.includes(pg.id)
-        if (inStock && topSeller) return 0
-        if (inStock) return 1
-        if (autoFulfill(pg)) return 2
-        return 3
-      }
-      const tierA = tierOf(a)
-      const tierB = tierOf(b)
-      if (tierA !== tierB) return tierA - tierB
-      // Within same tier: top sellers in sales-rank order, others alphabetical
-      if (tierA === 0) {
-        return topSellingIds.indexOf(a.id) - topSellingIds.indexOf(b.id)
-      }
-      return a.name.localeCompare(b.name)
-    })
-
-  // Popular Products: real "most bought" ranking computed from completed
-  // orders (topSellingIds), in rank order. If there isn't enough real sales
-  // data yet to fill 8 slots, top up the rest with a stock-count proxy
-  // ("selling fast" = low remaining stock) so the section is never sparse.
-  const topSellingProductGroups = topSellingIds
-    .map((id) => productGroups.find((pg) => pg.id === id))
-    .filter((pg): pg is ProductGroup => !!pg && pg.is_active && pg.stock_count > 0)
-
-  const stockProxyFillIns = [...productGroups]
-    .filter(
-      (pg) =>
-        pg.is_active &&
-        pg.stock_count > 0 &&
-        !topSellingProductGroups.some((p) => p.id === pg.id),
-    )
-    .sort((a, b) => a.stock_count - b.stock_count)
-
-  const popularProductGroups = [...topSellingProductGroups, ...stockProxyFillIns].slice(0, 8)
-
-  // Popular Categories: ranked by number of active products, capped at 8.
-  const popularCategories = [...categories]
-    .map((category) => ({
-      category,
-      productCount: productGroups.filter((pg) => pg.category_id === category.id && pg.is_active).length,
-    }))
-    .filter((entry) => entry.productCount > 0)
-    .sort((a, b) => b.productCount - a.productCount)
-    .slice(0, 8)
-
-  // New: most recently created active product groups, capped at 4.
-  const newProductGroups = [...productGroups]
-    .filter((pg) => pg.is_active)
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-    .slice(0, 4)
-
-  // Refilled: product groups whose stock was most recently topped up, capped at 4.
-  const restockedProductGroups = restockedIds
-    .map((id) => productGroups.find((pg) => pg.id === id))
-    .filter((pg): pg is ProductGroup => !!pg && pg.is_active)
-    .slice(0, 4)
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_20%_0%,rgba(168,85,247,0.10),transparent_30rem),linear-gradient(180deg,#ffffff_0%,#f7f9fc_55%,#eef3f8_100%)] text-slate-950 dark:bg-[radial-gradient(circle_at_20%_0%,rgba(126,51,231,0.16),transparent_30rem),linear-gradient(180deg,#05070d_0%,#07111d_100%)] dark:text-white">
       <Navbar />
-      
-      {/* Wallet Balance Widget */}
-      <div className="container mx-auto px-6 pt-24 pb-2">
-        <WalletBalanceWidget showRefresh={true} />
-      </div>
 
-      {/* Hero Section: Popular Products + Popular Categories (ranked tiles) */}
-      <div className="bg-gradient-to-r from-primary to-primary/80 text-white">
-        <div className="container mx-auto px-6 py-10">
-          <div className="grid md:grid-cols-2 gap-8">
-            <div>
-              <h2 className="text-2xl font-bold mb-4">Popular Products</h2>
-              {popularProductGroups.length > 0 ? (
-                <div className="grid grid-cols-2 gap-2">
-                  {popularProductGroups.map((productGroup, index) => (
-                    <button
-                      key={productGroup.id}
-                      type="button"
-                      title={productGroup.name}
-                      onClick={() => goToProduct(productGroup)}
-                      className="flex items-center gap-2 rounded-lg bg-white hover:bg-white/90 transition-colors px-2.5 py-2 text-left overflow-hidden"
-                    >
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary shrink-0">
-                        {index + 1}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-gray-900">
-                        {productGroup.name}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-white/80 text-sm">No products available yet.</p>
-              )}
-            </div>
-
-            <div>
-              <h2 className="text-2xl font-bold mb-4">Popular Categories</h2>
-              {popularCategories.length > 0 ? (
-                <div className="grid grid-cols-2 gap-2">
-                  {popularCategories.map(({ category }, index) => (
-                    <button
-                      key={category.id}
-                      type="button"
-                      title={category.name}
-                      onClick={() => navigate(`/category/${category.id}`)}
-                      className="flex items-center gap-2 rounded-lg bg-white hover:bg-white/90 transition-colors px-2.5 py-2 text-left overflow-hidden"
-                    >
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary shrink-0">
-                        {index + 1}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-gray-900">
-                        {category.name}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-white/80 text-sm">No categories available yet.</p>
-              )}
-            </div>
-          </div>
-
-          {/* Refilled + New: same ranked-tile style, same purple band */}
-          {(restockedProductGroups.length > 0 || newProductGroups.length > 0) && (
-            <div className="grid md:grid-cols-2 gap-8 mt-10 pt-8 border-t border-white/15">
-              <div>
-                <h2 className="text-2xl font-bold mb-4">Refilled</h2>
-                {restockedProductGroups.length > 0 ? (
-                  <div className="grid grid-cols-2 gap-2">
-                    {restockedProductGroups.map((productGroup, index) => (
-                      <button
-                        key={productGroup.id}
-                        type="button"
-                        title={productGroup.name}
-                        onClick={() => goToProduct(productGroup)}
-                        className="flex items-center gap-2 rounded-lg bg-white hover:bg-white/90 transition-colors px-2.5 py-2 text-left overflow-hidden"
-                      >
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary shrink-0">
-                          {index + 1}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-gray-900">
-                          {productGroup.name}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-white/80 text-sm">No recent restocks yet.</p>
-                )}
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-bold mb-4">New</h2>
-                {newProductGroups.length > 0 ? (
-                  <div className="grid grid-cols-2 gap-2">
-                    {newProductGroups.map((productGroup, index) => (
-                      <button
-                        key={productGroup.id}
-                        type="button"
-                        title={productGroup.name}
-                        onClick={() => goToProduct(productGroup)}
-                        className="flex items-center gap-2 rounded-lg bg-white hover:bg-white/90 transition-colors px-2.5 py-2 text-left overflow-hidden"
-                      >
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary shrink-0">
-                          {index + 1}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-gray-900">
-                          {productGroup.name}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-white/80 text-sm">No new products yet.</p>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Filters and Controls */}
-      <div className="container mx-auto px-6 py-8">
-      <div className="md:flex md:gap-8">
-        <aside className="hidden md:block md:w-56 shrink-0">
-          <CategorySidebar
-            categories={categories}
-            productGroups={productGroups}
-            selectedCategory={selectedCategory}
-            onSelectCategory={setSelectedCategory}
-          />
-        </aside>
-        <div className="flex-1">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
-          <div className="flex items-center gap-4">
-            <h2 className="text-2xl font-semibold">Available Products</h2>
-            <Badge variant="secondary">{filteredProductGroups.length} products</Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={async () => {
-                setLoading(true)
-                try {
-                  const [categoriesData, productGroupsData] = await Promise.all([
-                    getCategories(),
-                    getAllProductGroups()
-                  ])
-                  setCategories(categoriesData)
-                  setProductGroups(productGroupsData)
-                } catch (err) {
-                  console.error('Error manually refreshing data:', err)
-                } finally {
-                  setLoading(false)
-                }
-              }}
-              disabled={loading}
-            >
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : '🔄 Refresh Stock'}
-            </Button>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            {/* Search */}
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search categories..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 w-48"
-              />
-            </div>
-
-            {/* Category Filter */}
-            <select
-              value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value)}
-              className="px-3 py-2 border rounded-md bg-background"
-            >
-              <option value="all">All Categories</option>
-              {categories.map((category) => (
-                <option key={category.id} value={category.id}>
-                  {category.name}
-                </option>
-              ))}
-            </select>
-            
-            <div className="flex items-center gap-2">
-              <Button
-                variant={viewMode === 'grid' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setViewMode('grid')}
-              >
-                <Grid className="h-4 w-4" />
-              </Button>
-              <Button
-                variant={viewMode === 'list' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setViewMode('list')}
-              >
-                <List className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
+      <main className="mx-auto w-full max-w-7xl px-4 pb-12 pt-5 sm:px-6 lg:px-8">
+        <div className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+          <Link to="/" className="inline-flex items-center gap-1 transition hover:text-purple-600 dark:hover:text-purple-300">
+            <Home className="h-3.5 w-3.5" />
+            Home
+          </Link>
+          <span>/</span>
+          <span className="text-slate-800 dark:text-slate-200">Products</span>
         </div>
 
-        {/* Product Templates Grid */}
-        <div className={`grid gap-3 sm:gap-4 mb-12 ${
-          viewMode === 'grid'
-            ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4'
-            : 'grid-cols-1 max-w-4xl mx-auto'
-        }`}>
-          {filteredProductGroups.length === 0 ? (
-            <div className="col-span-full text-center py-12">
-              <ShoppingCart className="h-16 w-16 mx-auto text-muted-foreground mb-4 opacity-50" />
-              <h3 className="text-xl font-semibold mb-2">No Products Available</h3>
-              <p className="text-muted-foreground">
-                {searchTerm ? 'Try adjusting your search terms' : 'Check back later for new products'}
-              </p>
+        <section className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
+          <div className="flex min-w-0 items-center gap-5 overflow-x-auto px-4 py-3 text-xs font-semibold text-slate-600 dark:text-slate-300">
+            <div className="flex shrink-0 items-center gap-2 font-black text-slate-950 dark:text-white">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.9)]" />
+              Live Activity
             </div>
-          ) : (
-            filteredProductGroups.map((productGroup) => {
-              const category = categories.find(cat => cat.id === productGroup.category_id)
-              return category ? (
-                <ProductTemplateCard
-                  key={productGroup.id}
-                  productGroup={productGroup}
-                  category={category}
-                  onAddToCart={handleAddToCart}
+            {(activity.length > 0 ? activity : [
+              { kind: 'order', maskedName: 'Marco', label: 'TikTok aged account' } as GlobalActivityItem,
+              { kind: 'order', maskedName: 'Emma', label: 'Instagram account' } as GlobalActivityItem,
+              { kind: 'order', maskedName: 'Daniel', label: 'Facebook account' } as GlobalActivityItem,
+              { kind: 'order', maskedName: 'James', label: 'Netflix VPN' } as GlobalActivityItem,
+            ]).slice(0, 5).map((item, index) => (
+              <div key={`${item.maskedName}-${index}`} className="flex shrink-0 items-center gap-5">
+                <span className="h-1 w-1 rounded-full bg-purple-500" />
+                <span>{maskActivity(item)}</span>
+              </div>
+            ))}
+            <Link to="/orders" className="ml-auto shrink-0 rounded-lg border border-purple-200 px-3 py-1.5 text-purple-700 hover:bg-purple-50 dark:border-purple-300/20 dark:text-purple-300 dark:hover:bg-white/[0.06]">
+              View all
+            </Link>
+          </div>
+        </section>
+
+        <section className="mb-7">
+          <div className="mb-4 flex items-center justify-between">
+            <h1 className="text-xl font-black tracking-normal">Browse Categories</h1>
+            <Link to="/products" className="hidden items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 sm:inline-flex">
+              View all categories
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+            <button
+              type="button"
+              onClick={() => setSelectedCategory('all')}
+              className={`flex min-h-16 items-center gap-3 rounded-lg border p-3 text-left transition ${
+                selectedCategory === 'all'
+                  ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
+                  : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
+              }`}
+            >
+              <span className="grid h-9 w-9 place-items-center rounded-lg bg-purple-500/20">
+                <LayoutGrid className="h-5 w-5" />
+              </span>
+              <span>
+                <strong className="block text-sm">All</strong>
+                <small className={selectedCategory === 'all' ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{activeProductGroups.length}</small>
+              </span>
+            </button>
+
+            {categoryChips.map(({ category, count }) => {
+              const style = getCategoryStyle(category.name)
+              const Icon = style.icon
+              const active = selectedCategory === category.id
+              return (
+                <button
+                  key={category.id}
+                  type="button"
+                  onClick={() => setSelectedCategory(category.id)}
+                  className={`flex min-h-16 items-center gap-3 rounded-lg border p-3 text-left transition ${
+                    active
+                      ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
+                      : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <span className={`grid h-9 w-9 place-items-center rounded-lg ${active ? 'bg-white/15 text-white' : style.bg}`}>
+                    <Icon className={`h-5 w-5 ${active ? 'text-white' : style.color}`} />
+                  </span>
+                  <span className="min-w-0">
+                    <strong className="block truncate text-sm">{category.name}</strong>
+                    <small className={active ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{count}</small>
+                  </span>
+                </button>
+              )
+            })}
+
+            <Link
+              to="/products"
+              className="flex min-h-16 items-center gap-3 rounded-lg border border-slate-200 bg-white/85 p-3 text-left transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]"
+            >
+              <span className="grid h-9 w-9 place-items-center rounded-lg bg-slate-100 dark:bg-white/10">
+                <MoreHorizontal className="h-5 w-5" />
+              </span>
+              <span>
+                <strong className="block text-sm">More</strong>
+                <small className="text-slate-500 dark:text-slate-400">{Math.max(0, categories.length - categoryChips.length)}</small>
+              </span>
+            </Link>
+          </div>
+        </section>
+
+        <section className="mb-8">
+          <div className="mb-3 flex items-center gap-2">
+            {([
+              ['popular', 'Popular'],
+              ['refilled', 'Refilled'],
+              ['new', 'New'],
+            ] as Array<[ProductCollection, string]>).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setActiveCollection(value)}
+                className={`relative px-4 py-2 text-sm font-black transition ${
+                  activeCollection === value ? 'text-purple-700 dark:text-purple-300' : 'text-slate-500 hover:text-slate-950 dark:hover:text-white'
+                }`}
+              >
+                {label}
+                {activeCollection === value && <span className="absolute inset-x-3 -bottom-0.5 h-0.5 rounded-full bg-purple-600" />}
+              </button>
+            ))}
+            <Link to="/products" className="ml-auto hidden items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 sm:inline-flex">
+              View all
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-3">
+            {collectionGroups[activeCollection].slice(0, 9).map((productGroup) => (
+              <button
+                key={productGroup.id}
+                type="button"
+                onClick={() => goToProduct(productGroup)}
+                className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white/85 px-4 py-3 text-left text-sm font-black shadow-sm transition hover:border-purple-300 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/30 dark:hover:bg-white/[0.06]"
+                title={productGroup.name}
+              >
+                <span className="flex min-w-0 items-center gap-3">
+                  <Package className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-300" />
+                  <span className="truncate">{productGroup.name}</span>
+                </span>
+                <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section>
+          <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-3">
+              <h2 className="text-xl font-black tracking-normal">Available Products</h2>
+              <Badge className="rounded-full bg-purple-100 text-purple-700 hover:bg-purple-100 dark:bg-purple-500/15 dark:text-purple-300">
+                {sortedProductGroups.length} products
+              </Badge>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-[auto_minmax(210px,1fr)_160px_auto] lg:min-w-[620px]">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => loadData(false)}
+                disabled={refreshing}
+                className="h-10 rounded-lg"
+              >
+                {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Refresh Stock
+              </Button>
+
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Input
+                  placeholder="Search products..."
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  className="h-10 rounded-lg border-slate-200 bg-white/85 pl-10 dark:border-white/10 dark:bg-white/[0.035]"
                 />
-              ) : null
-            })
-          )}
-        </div>
-        </div>
-        </div>
-      </div>
+              </div>
+
+              <select
+                value={sortMode}
+                onChange={(event) => setSortMode(event.target.value as SortMode)}
+                className="h-10 rounded-lg border border-slate-200 bg-white/85 px-3 text-sm font-semibold outline-none dark:border-white/10 dark:bg-[#080d15]"
+              >
+                <option value="newest">Newest</option>
+                <option value="stock">Most stock</option>
+                <option value="price-low">Lowest price</option>
+                <option value="price-high">Highest price</option>
+              </select>
+
+              <div className="flex items-center gap-2">
+                <Button variant={viewMode === 'grid' ? 'default' : 'outline'} size="icon" onClick={() => setViewMode('grid')} className="h-10 w-10 rounded-lg">
+                  <Grid className="h-4 w-4" />
+                </Button>
+                <Button variant={viewMode === 'list' ? 'default' : 'outline'} size="icon" onClick={() => setViewMode('list')} className="h-10 w-10 rounded-lg">
+                  <List className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-5 lg:grid-cols-[210px_minmax(0,1fr)]">
+            <aside className="hidden rounded-xl border border-slate-200 bg-white/85 p-3 shadow-sm dark:border-white/10 dark:bg-white/[0.035] lg:block">
+              <CategorySidebar
+                categories={categories}
+                productGroups={activeProductGroups}
+                selectedCategory={selectedCategory}
+                onSelectCategory={setSelectedCategory}
+              />
+            </aside>
+
+            <div>
+              {pageProductGroups.length === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-white/85 px-5 py-16 text-center shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
+                  <Package className="mx-auto h-12 w-12 text-slate-400" />
+                  <h3 className="mt-4 text-xl font-black">No products found</h3>
+                  <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Try a different category or search term.</p>
+                </div>
+              ) : (
+                <div className={`grid gap-4 ${
+                  viewMode === 'grid'
+                    ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'
+                    : 'grid-cols-1'
+                }`}>
+                  {pageProductGroups.map((productGroup) => {
+                    const category = categoryForProduct(productGroup)
+                    return category ? (
+                      <ProductTemplateCard
+                        key={productGroup.id}
+                        productGroup={productGroup}
+                        category={category}
+                        onPurchase={handlePurchase}
+                      />
+                    ) : null
+                  })}
+                </div>
+              )}
+
+              <div className="mt-6 flex flex-col gap-3 text-xs font-semibold text-slate-500 dark:text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center justify-center gap-2 sm:justify-start">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 rounded-lg"
+                    onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                    disabled={currentPage <= 1}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, index) => index + 1).map((page) => (
+                    <Button
+                      key={page}
+                      variant={currentPage === page ? 'default' : 'outline'}
+                      size="icon"
+                      className="h-9 w-9 rounded-lg"
+                      onClick={() => setCurrentPage(page)}
+                    >
+                      {page}
+                    </Button>
+                  ))}
+                  {totalPages > 5 && <span className="px-1">...</span>}
+                  {totalPages > 5 && (
+                    <Button
+                      variant={currentPage === totalPages ? 'default' : 'outline'}
+                      size="icon"
+                      className="h-9 w-9 rounded-lg"
+                      onClick={() => setCurrentPage(totalPages)}
+                    >
+                      {totalPages}
+                    </Button>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 rounded-lg"
+                    onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                    disabled={currentPage >= totalPages}
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+
+                <span className="text-center sm:text-right">
+                  Showing {sortedProductGroups.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}-
+                  {Math.min(currentPage * PAGE_SIZE, sortedProductGroups.length)} of {sortedProductGroups.length} products
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
 
       <Footer />
     </div>

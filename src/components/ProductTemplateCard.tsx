@@ -3,20 +3,20 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Plus, Minus, ShoppingCart, Package, Star, Flame } from 'lucide-react'
+import { Plus, Minus, Package, Flame, ArrowRight } from 'lucide-react'
 import { type ProductGroup, type Category, computeDiscountedTotal } from '@/lib/supabase'
 import { useCurrency } from '@/contexts/CurrencyContext'
 
 interface ProductTemplateCardProps {
   productGroup: ProductGroup
   category: Category
-  onAddToCart: (productGroupId: string, quantity: number) => void
+  onPurchase: (productGroupId: string, quantity: number) => void
 }
 
 export default function ProductTemplateCard({ 
   productGroup, 
   category, 
-  onAddToCart 
+  onPurchase
 }: ProductTemplateCardProps) {
   const [quantity, setQuantity] = useState(1)
   const { formatPrice } = useCurrency()
@@ -52,29 +52,39 @@ export default function ProductTemplateCard({
     }
   }
 
-  const handleAddToCart = (e: React.MouseEvent<HTMLButtonElement>) => {
+  const handlePurchase = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault()
     e.stopPropagation()
-    onAddToCart(productGroup.id, quantity)
+    onPurchase(productGroup.id, quantity)
   }
 
   return (
-    <Card className="group hover:shadow-lg transition-all duration-300 border-2 hover:border-primary/20">
+    <Card className="group overflow-hidden rounded-xl border border-slate-200 bg-white/90 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-purple-300 hover:shadow-lg dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35">
       <CardHeader className="pb-2.5 px-3.5 pt-3.5">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300">
+            <Package className="h-5 w-5" />
+          </span>
+          {productGroup.stock_count > 0 && productGroup.stock_count <= 10 && (
+            <Badge className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-black text-amber-600 hover:bg-amber-500/10 dark:text-amber-400">
+              Fast
+            </Badge>
+          )}
+        </div>
         <CardTitle
-          className="min-h-[2.5em] overflow-hidden text-sm leading-snug transition-colors group-hover:text-primary [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]"
+          className="min-h-[2.5em] overflow-hidden text-sm font-black uppercase leading-snug tracking-normal transition-colors group-hover:text-purple-700 dark:group-hover:text-purple-300 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]"
           title={productGroup.name}
         >
           {productGroup.name}
         </CardTitle>
-        <Badge variant="outline" className="mt-1 w-fit text-[10px] px-1.5 py-0">
+        <Badge variant="outline" className="mt-1 w-fit rounded-full px-2 py-0 text-[10px]">
           {category.name}
         </Badge>
         <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
           {productGroup.description}
         </p>
         {bestTier && (
-          <p className="text-[10px] text-green-600 font-medium mt-1">
+          <p className="mt-1 text-[10px] font-black text-emerald-600 dark:text-emerald-400">
             Buy {bestTier.min_qty}+, save {bestTier.discount_pct}%
           </p>
         )}
@@ -92,7 +102,7 @@ export default function ProductTemplateCard({
                 Only {productGroup.stock_count} left!
               </span>
             ) : productGroup.stock_count > 0 ? (
-              <span className="text-muted-foreground">
+              <span className="font-semibold text-emerald-600 dark:text-emerald-400">
                 {productGroup.stock_count} available
               </span>
             ) : (
@@ -100,7 +110,7 @@ export default function ProductTemplateCard({
             )}
           </span>
           <div className="text-right">
-            <div className="text-base font-bold text-primary leading-tight">
+            <div className="text-base font-black text-slate-950 leading-tight dark:text-white">
               {formatPrice(productGroup.price)}
             </div>
           </div>
@@ -153,14 +163,14 @@ export default function ProductTemplateCard({
 
         {/* Action Button */}
         {isOutOfStock ? (
-          <Button disabled size="sm" className="w-full h-9 text-xs">
+          <Button disabled size="sm" className="h-9 w-full rounded-lg text-xs">
             <Package className="h-3.5 w-3.5 mr-1.5" />
             Out of Stock
           </Button>
         ) : (
-          <Button type="button" size="sm" onClick={handleAddToCart} className="w-full h-9 text-xs">
-            <ShoppingCart className="h-3.5 w-3.5 mr-1.5" />
-            Purchase Now
+          <Button type="button" size="sm" onClick={handlePurchase} className="h-9 w-full rounded-lg bg-purple-600 text-xs font-black hover:bg-purple-500">
+            Buy Now
+            <ArrowRight className="h-3.5 w-3.5" />
           </Button>
         )}
       </CardContent>

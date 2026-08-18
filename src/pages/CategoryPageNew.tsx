@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Search, ArrowLeft, Loader2, ShoppingCart } from 'lucide-react'
+import { Search, ArrowLeft, Loader2, Package } from 'lucide-react'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import ProductTemplateCard from '@/components/ProductTemplateCard'
@@ -262,7 +262,7 @@ export default function CategoryPage() {
         <div className="grid gap-3 grid-cols-2 sm:gap-6 md:grid-cols-2 lg:grid-cols-3">
           {filteredProductGroups.length === 0 ? (
             <div className="col-span-full text-center py-12">
-              <ShoppingCart className="h-16 w-16 mx-auto text-muted-foreground mb-4 opacity-50" />
+              <Package className="h-16 w-16 mx-auto text-muted-foreground mb-4 opacity-50" />
               <h3 className="text-xl font-semibold mb-2">No Products Found</h3>
               <p className="text-muted-foreground">
                 {searchTerm 
@@ -277,7 +277,7 @@ export default function CategoryPage() {
                 key={productGroup.id}
                 productGroup={productGroup}
                 category={category}
-                onAddToCart={handleAddToCart}
+                onPurchase={handleAddToCart}
               />
             ))
           )}
