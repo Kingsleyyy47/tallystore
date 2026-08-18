@@ -100,13 +100,12 @@ const formatDateTime = (value: string) => {
 }
 
 export default function WalletPage() {
-  const { user, walletBalance, walletLoading, refreshWalletBalance } = useAuth()
+  const { user, walletBalance, walletLoading, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
   const { formatPrice } = useCurrency()
   const { toast } = useToast()
   const [transactions, setTransactions] = useState<any[]>([])
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(false)
   const [activeTab, setActiveTab] = useState<WalletTab>('all')
-  const [showWalletBalance, setShowWalletBalance] = useState(true)
 
   const loadTransactions = useCallback(async () => {
     if (!user?.id) return
@@ -206,7 +205,8 @@ export default function WalletPage() {
     })
   }
 
-  const walletBalanceDisplay = showWalletBalance ? formatPrice(walletBalance) : '***'
+  const walletBalanceDisplay = showBalances ? formatPrice(walletBalance) : '***'
+  const pendingBalanceDisplay = showBalances ? formatPrice(pendingBalance) : '***'
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_18%_0%,rgba(168,85,247,0.12),transparent_30rem),linear-gradient(180deg,#f8fafc_0%,#eef2f7_100%)] text-slate-950 dark:bg-[radial-gradient(circle_at_18%_0%,rgba(126,51,231,0.18),transparent_30rem),linear-gradient(180deg,#05070d_0%,#07111d_100%)] dark:text-white">
@@ -264,11 +264,11 @@ export default function WalletPage() {
                       Your Balance
                       <button
                         type="button"
-                        onClick={() => setShowWalletBalance((value) => !value)}
+                        onClick={toggleBalanceVisibility}
                         className="grid h-7 w-7 place-items-center rounded-full text-purple-100 transition hover:bg-white/10 hover:text-white"
-                        aria-label={showWalletBalance ? 'Hide wallet balance' : 'Show wallet balance'}
+                        aria-label={showBalances ? 'Hide balances' : 'Show balances'}
                       >
-                        {showWalletBalance ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                        {showBalances ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
                       </button>
                     </div>
                     <div className="mt-3 text-3xl font-black tracking-normal sm:mt-5 sm:text-5xl">
@@ -500,7 +500,7 @@ export default function WalletPage() {
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-white/10">
                   <span className="text-slate-600 dark:text-slate-400">Pending Balance</span>
-                  <strong className="text-amber-600 dark:text-amber-400">{formatPrice(pendingBalance)}</strong>
+                  <strong className="text-amber-600 dark:text-amber-400">{pendingBalanceDisplay}</strong>
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-white/10">
                   <span className="text-slate-600 dark:text-slate-400">Total Deposits</span>

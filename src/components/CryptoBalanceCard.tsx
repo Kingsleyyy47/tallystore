@@ -23,7 +23,7 @@ interface CryptoBalanceCardProps {
 }
 
 export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
-  const { isAdmin } = useAuth();
+  const { isAdmin, showBalances } = useAuth();
   const { formatPrice } = useCurrency();
   const [balance, setBalance] = useState<number>(0);
   const [tallyStoreBalance, setTallyStoreBalance] = useState<number>(0);
@@ -203,7 +203,7 @@ export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
               {loading ? (
                 <span className="text-3xl">Loading...</span>
               ) : (
-                <>{formatPrice(balance)}</>
+                <>{showBalances ? formatPrice(balance) : '***'}</>
               )}
             </div>
             <p className="text-sm text-orange-100">
@@ -300,13 +300,13 @@ export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Crypto Balance</p>
                 <p className="text-lg font-bold text-orange-600">
-                  ₦{balance.toLocaleString()}
+                  {showBalances ? `₦${balance.toLocaleString()}` : '***'}
                 </p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1">TallyStore Balance</p>
                 <p className="text-lg font-bold text-green-600">
-                  ₦{tallyStoreBalance.toLocaleString()}
+                  {showBalances ? `₦${tallyStoreBalance.toLocaleString()}` : '***'}
                 </p>
               </div>
             </div>
@@ -341,7 +341,7 @@ export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Available: ₦{balance.toLocaleString()}
+                Available: {showBalances ? `₦${balance.toLocaleString()}` : '***'}
               </p>
             </div>
 

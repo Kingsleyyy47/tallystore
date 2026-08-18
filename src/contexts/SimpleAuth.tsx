@@ -15,6 +15,9 @@ interface AuthContextType {
   walletBalance: number
   walletLoading: boolean
   refreshWalletBalance: () => Promise<void>
+  showBalances: boolean
+  toggleBalanceVisibility: () => void
+  setBalanceVisibility: (visible: boolean) => void
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -27,7 +30,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isStaff, setIsStaff] = useState(false)
   const [walletBalance, setWalletBalance] = useState(0)
   const [walletLoading, setWalletLoading] = useState(true)
+  const [showBalances, setShowBalances] = useState(() => {
+    if (typeof window === 'undefined') return true
+    return localStorage.getItem('show_balances') !== 'false'
+  })
   const lastProfileLoadKey = useRef<string | null>(null)
+
+  useEffect(() => {
+    localStorage.setItem('show_balances', showBalances ? 'true' : 'false')
+  }, [showBalances])
 
   const checkAdminStatus = useCallback(async (userId: string, userEmail?: string) => {
     setWalletLoading(true)
@@ -227,6 +238,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const setBalanceVisibility = (visible: boolean) => {
+    setShowBalances(visible)
+  }
+
+  const toggleBalanceVisibility = () => {
+    setShowBalances((visible) => !visible)
+  }
+
   const value = {
     user,
     loading,
@@ -239,7 +258,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isStaff,
     walletBalance,
     walletLoading,
-    refreshWalletBalance
+    refreshWalletBalance,
+    showBalances,
+    toggleBalanceVisibility,
+    setBalanceVisibility
   }
 
   return (

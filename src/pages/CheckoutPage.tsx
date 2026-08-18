@@ -28,7 +28,7 @@ import { Tag, X } from 'lucide-react'
 export default function CheckoutPage() {
   const location = useLocation()
   const navigate = useNavigate()
-  const { user, walletBalance, refreshWalletBalance } = useAuth()
+  const { user, walletBalance, refreshWalletBalance, showBalances } = useAuth()
   const { toast } = useToast()
   
   // Get data from navigation state - supports both single and bulk purchases
@@ -471,12 +471,14 @@ export default function CheckoutPage() {
                     Your Wallet Balance
                   </span>
                   <span className={`font-medium ${canAfford ? 'text-green-600' : 'text-red-600'}`}>
-                    ₦{walletBalance.toLocaleString()}
+                    {showBalances ? `₦${walletBalance.toLocaleString()}` : '***'}
                   </span>
                 </div>
                 {insufficientFunds && (
                   <p className="text-sm text-red-600">
-                    Insufficient funds. You need ₦{(totalAmount - walletBalance).toLocaleString()} more.
+                    {showBalances
+                      ? `Insufficient funds. You need ₦${(totalAmount - walletBalance).toLocaleString()} more.`
+                      : 'Insufficient funds. Top up your wallet to continue.'}
                   </p>
                 )}
               </div>

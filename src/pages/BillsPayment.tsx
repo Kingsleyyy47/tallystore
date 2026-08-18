@@ -37,6 +37,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow } from "date-fns";
+import { useAuth } from "@/contexts/SimpleAuth";
 
 interface DataPlan {
   code: string;
@@ -82,6 +83,7 @@ export default function BillsPayment() {
   const [loadingPlans, setLoadingPlans] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { showBalances } = useAuth();
 
   useEffect(() => {
     fetchBalance();
@@ -121,6 +123,8 @@ export default function BillsPayment() {
 
   // Get the currently selected balance
   const selectedBalance = paymentSource === 'wallet' ? walletBalance : cryptoBalance;
+  const formatBalance = (value: number) =>
+    showBalances ? `₦${value.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '***';
 
   const fetchTransactionHistory = async () => {
     try {
@@ -237,7 +241,9 @@ export default function BillsPayment() {
     if (purchaseAmount > selectedBalance) {
       toast({
         title: "Insufficient Balance",
-        description: `You need ₦${purchaseAmount.toLocaleString()} but only have ₦${selectedBalance.toLocaleString()} in your ${paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} balance`,
+        description: showBalances
+          ? `You need ₦${purchaseAmount.toLocaleString()} but only have ₦${selectedBalance.toLocaleString()} in your ${paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} balance`
+          : `You need ₦${purchaseAmount.toLocaleString()} in your ${paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} balance`,
         variant: "destructive",
       });
       return;
@@ -406,7 +412,7 @@ export default function BillsPayment() {
                       <p className="text-lg font-bold">Loading...</p>
                     ) : (
                       <p className={`text-xl font-bold ${paymentSource === 'wallet' ? 'text-green-700 dark:text-green-400' : 'text-foreground'}`}>
-                        ₦{walletBalance.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatBalance(walletBalance)}
                       </p>
                     )}
                   </div>
@@ -433,7 +439,7 @@ export default function BillsPayment() {
                       <p className="text-lg font-bold">Loading...</p>
                     ) : (
                       <p className={`text-xl font-bold ${paymentSource === 'crypto' ? 'text-orange-700 dark:text-orange-400' : 'text-foreground'}`}>
-                        ₦{cryptoBalance.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatBalance(cryptoBalance)}
                       </p>
                     )}
                   </div>
@@ -460,7 +466,7 @@ export default function BillsPayment() {
                       ? 'text-green-700 dark:text-green-400' 
                       : 'text-orange-700 dark:text-orange-400'
                   }`}>
-                    ₦{selectedBalance.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    {formatBalance(selectedBalance)}
                   </span>
                 </div>
 

@@ -519,10 +519,10 @@ export default function ProductsPage() {
                   <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Try a different category or search term.</p>
                 </div>
               ) : (
-                <div className={`grid gap-4 ${
+                <div className={`grid ${
                   viewMode === 'grid'
-                    ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'
-                    : 'grid-cols-1'
+                    ? 'grid-cols-2 gap-2.5 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4'
+                    : 'grid-cols-1 gap-4'
                 }`}>
                   {pageProductGroups.map((productGroup) => {
                     const category = categoryForProduct(productGroup)

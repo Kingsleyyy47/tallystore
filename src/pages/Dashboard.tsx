@@ -141,7 +141,7 @@ const actionItems = [
 ]
 
 export default function Dashboard() {
-  const { user, walletBalance, walletLoading, refreshWalletBalance } = useAuth()
+  const { user, walletBalance, walletLoading, refreshWalletBalance, showBalances } = useAuth()
   const { formatPrice } = useCurrency()
   const [transactions, setTransactions] = useState<DashboardTransaction[]>([])
   const [orders, setOrders] = useState<DashboardOrder[]>([])
@@ -342,7 +342,7 @@ export default function Dashboard() {
                     {walletLoading ? (
                       <span className="mx-auto block h-14 w-56 rounded-2xl bg-white/20 lg:mx-0" />
                     ) : (
-                      formatPrice(walletBalance)
+                      showBalances ? formatPrice(walletBalance) : '***'
                     )}
                   </div>
                   <div className="mt-6 flex flex-wrap justify-center gap-3 lg:justify-start">

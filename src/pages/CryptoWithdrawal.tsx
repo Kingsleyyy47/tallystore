@@ -14,6 +14,7 @@ import { Wallet, TrendingDown, Loader2, AlertCircle, CheckCircle2, Building2, In
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/SimpleAuth";
 
 interface BankAccount {
   bankCode: string;
@@ -101,6 +102,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
   const [accountValidated, setAccountValidated] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { showBalances } = useAuth();
 
   // Fetch crypto balance
   useEffect(() => {
@@ -218,7 +220,9 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
     if (withdrawAmount > cryptoBalance) {
       toast({
         title: "Insufficient Balance",
-        description: `You only have ₦${cryptoBalance.toLocaleString('en-NG', { minimumFractionDigits: 2 })} available`,
+        description: showBalances
+          ? `You only have ₦${cryptoBalance.toLocaleString('en-NG', { minimumFractionDigits: 2 })} available`
+          : 'Your available balance is not enough for this withdrawal',
         variant: "destructive",
       });
       return;
@@ -390,7 +394,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
                 </div>
               ) : (
                 <div className="text-4xl font-bold text-green-900">
-                  ₦{cryptoBalance.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {showBalances ? `₦${cryptoBalance.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '***'}
                 </div>
               )}
               {cryptoBalance === 0 && !loadingBalance && (

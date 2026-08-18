@@ -288,7 +288,7 @@ function useDebounce<T>(value: T, delay: number): T {
 
 export default function SocialBoostPage() {
   const navigate = useNavigate();
-  const { user, walletBalance, refreshWalletBalance } = useAuth();
+  const { user, walletBalance, refreshWalletBalance, showBalances } = useAuth();
   const { toast } = useToast();
 
   const [services, setServices] = useState<SmmService[]>([]);
@@ -646,7 +646,9 @@ export default function SocialBoostPage() {
                   {loadingWallet ? (
                     <div className="h-7 sm:h-8 w-24 sm:w-32 bg-muted animate-pulse rounded" />
                   ) : (
-                    <p className="text-lg sm:text-xl md:text-2xl font-bold text-green-700 dark:text-green-400 shrink-0">₦{walletBalance.toLocaleString('en-NG', { minimumFractionDigits: 0 })}</p>
+                    <p className="text-lg sm:text-xl md:text-2xl font-bold text-green-700 dark:text-green-400 shrink-0">
+                      {showBalances ? `₦${walletBalance.toLocaleString('en-NG', { minimumFractionDigits: 0 })}` : '***'}
+                    </p>
                   )}
                 </div>
                 {!loadingWallet && walletBalance < 1000 && <Button size="sm" variant="outline" onClick={() => navigate('/wallet')} className="mt-2 sm:mt-3 w-full text-xs sm:text-sm h-8 sm:h-9">Top Up Wallet</Button>}

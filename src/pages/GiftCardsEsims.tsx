@@ -66,7 +66,7 @@ interface BitrefillOrder {
 }
 
 export default function GiftCardsEsims() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, showBalances } = useAuth();
   const showComingSoon = COMING_SOON && !isAdmin;
 
   const [walletBalance, setWalletBalance] = useState<number>(0);
@@ -143,6 +143,8 @@ export default function GiftCardsEsims() {
   };
 
   const selectedBalance = paymentSource === 'wallet' ? walletBalance : cryptoBalance;
+  const formatBalance = (value: number) =>
+    showBalances ? `₦${value.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '***';
 
   const fetchOrderHistory = async () => {
     try {
@@ -385,7 +387,7 @@ export default function GiftCardsEsims() {
                       <p className="text-lg font-bold">Loading...</p>
                     ) : (
                       <p className={`text-xl font-bold ${paymentSource === 'wallet' ? 'text-green-700 dark:text-green-400' : 'text-foreground'}`}>
-                        ₦{walletBalance.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatBalance(walletBalance)}
                       </p>
                     )}
                   </div>
@@ -411,7 +413,7 @@ export default function GiftCardsEsims() {
                       <p className="text-lg font-bold">Loading...</p>
                     ) : (
                       <p className={`text-xl font-bold ${paymentSource === 'crypto' ? 'text-orange-700 dark:text-orange-400' : 'text-foreground'}`}>
-                        ₦{cryptoBalance.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatBalance(cryptoBalance)}
                       </p>
                     )}
                   </div>
@@ -433,7 +435,7 @@ export default function GiftCardsEsims() {
                   <span className={`text-lg font-bold ${
                     paymentSource === 'wallet' ? 'text-green-700 dark:text-green-400' : 'text-orange-700 dark:text-orange-400'
                   }`}>
-                    ₦{selectedBalance.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    {formatBalance(selectedBalance)}
                   </span>
                 </div>
 

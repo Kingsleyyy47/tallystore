@@ -16,7 +16,7 @@ import { useCurrency } from '@/contexts/CurrencyContext'
 import { getUserTransactions } from '@/lib/supabase'
 
 export default function ProfilePage() {
-  const { user, walletBalance } = useAuth()
+  const { user, walletBalance, showBalances } = useAuth()
   const { formatPrice } = useCurrency()
   const [transactions, setTransactions] = useState<any[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -121,7 +121,7 @@ export default function ProfilePage() {
                 <CardContent className="space-y-4">
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Wallet Balance</span>
-                    <span className="font-medium text-green-600">{formatPrice(walletBalance)}</span>
+                    <span className="font-medium text-green-600">{showBalances ? formatPrice(walletBalance) : '***'}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Total Spent</span>

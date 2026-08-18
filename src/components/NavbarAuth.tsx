@@ -24,7 +24,7 @@ export default function Navbar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [showInstallDialog, setShowInstallDialog] = useState(false)
   const [announcementVisible, setAnnouncementVisible] = useState(true)
-  const { user, signOut, isAdmin, isStaff, walletBalance, walletLoading } = useAuth()
+  const { user, signOut, isAdmin, isStaff, walletBalance, walletLoading, showBalances } = useAuth()
   const { currency, toggleCurrency, formatPrice } = useCurrency()
   const { canInstall, isInstalled, isAndroid, isIOS, installApp } = usePWAInstall()
   const { toast } = useToast()
@@ -111,7 +111,7 @@ export default function Navbar() {
       <div className={`${announcementVisible ? 'h-[72px] md:h-[calc(32px+72px)]' : 'h-[72px]'}`} />
       
       <nav 
-        className={`fixed ${announcementVisible ? 'top-8' : 'top-0'} left-0 right-0 z-50 transition-all duration-300 ${
+        className={`fixed ${announcementVisible ? 'top-0 md:top-8' : 'top-0'} left-0 right-0 z-50 transition-all duration-300 ${
           isScrolled 
             ? "bg-white/90 dark:bg-gray-900/90 backdrop-blur-md shadow-lg border-b border-gray-200/50 dark:border-gray-700/50" 
             : "bg-transparent"
@@ -246,7 +246,7 @@ export default function Navbar() {
                     {walletLoading ? (
                       <span className="inline-block h-4 w-16 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
                     ) : (
-                      <>{formatPrice(mockProfile.wallet_balance || 0)}</>
+                      <>{showBalances ? formatPrice(mockProfile.wallet_balance || 0) : '***'}</>
                     )}
                   </Link>
                 )}
@@ -402,7 +402,7 @@ export default function Navbar() {
                         {walletLoading ? (
                           <span className="inline-block h-4 w-16 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
                         ) : (
-                          <>Balance: {formatPrice(mockProfile.wallet_balance || 0)}</>
+                          <>Balance: {showBalances ? formatPrice(mockProfile.wallet_balance || 0) : '***'}</>
                         )}
                       </div>
                     )}

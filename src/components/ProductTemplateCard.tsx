@@ -45,6 +45,13 @@ export default function ProductTemplateCard({
   const bestTier = (productGroup.quantity_discount_tiers || [])
     .slice()
     .sort((a, b) => a.min_qty - b.min_qty)[0]
+  const productNameLength = productGroup.name.length
+  const productTitleSizeClass =
+    productNameLength > 56
+      ? 'text-[9px] sm:text-xs'
+      : productNameLength > 38
+        ? 'text-[10px] sm:text-[13px]'
+        : 'text-[11px] sm:text-sm'
 
   const handleQuantityChange = (newQuantity: number) => {
     if (newQuantity >= 1 && newQuantity <= maxQuantity) {
@@ -60,10 +67,10 @@ export default function ProductTemplateCard({
 
   return (
     <Card className="group overflow-hidden rounded-xl border border-slate-200 bg-white/90 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-purple-300 hover:shadow-lg dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35">
-      <CardHeader className="pb-2.5 px-3.5 pt-3.5">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300">
-            <Package className="h-5 w-5" />
+      <CardHeader className="px-2.5 pb-2 pt-2.5 sm:px-3.5 sm:pb-2.5 sm:pt-3.5">
+        <div className="mb-2 flex items-start justify-between gap-2 sm:mb-3 sm:gap-3">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300 sm:h-10 sm:w-10 sm:rounded-xl">
+            <Package className="h-4 w-4 sm:h-5 sm:w-5" />
           </span>
           {productGroup.stock_count > 0 && productGroup.stock_count <= 10 && (
             <Badge className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-black text-amber-600 hover:bg-amber-500/10 dark:text-amber-400">
@@ -72,33 +79,33 @@ export default function ProductTemplateCard({
           )}
         </div>
         <CardTitle
-          className="min-h-[2.5em] overflow-hidden text-sm font-black uppercase leading-snug tracking-normal transition-colors group-hover:text-purple-700 dark:group-hover:text-purple-300 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]"
+          className={`min-h-[3.85em] max-w-full overflow-hidden font-black uppercase leading-snug tracking-normal transition-colors [overflow-wrap:anywhere] [word-break:break-word] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] group-hover:text-purple-700 dark:group-hover:text-purple-300 sm:min-h-[2.55em] sm:[-webkit-line-clamp:2] ${productTitleSizeClass}`}
           title={productGroup.name}
         >
           {productGroup.name}
         </CardTitle>
-        <Badge variant="outline" className="mt-1 w-fit rounded-full px-2 py-0 text-[10px]">
+        <Badge variant="outline" className="mt-1 w-fit max-w-full truncate rounded-full px-1.5 py-0 text-[9px] sm:px-2 sm:text-[10px]">
           {category.name}
         </Badge>
-        <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
+        <p className="mt-1 hidden text-xs text-muted-foreground line-clamp-2 sm:block">
           {productGroup.description}
         </p>
         {bestTier && (
-          <p className="mt-1 text-[10px] font-black text-emerald-600 dark:text-emerald-400">
+          <p className="mt-1 hidden text-[10px] font-black text-emerald-600 dark:text-emerald-400 sm:block">
             Buy {bestTier.min_qty}+, save {bestTier.discount_pct}%
           </p>
         )}
       </CardHeader>
 
-      <CardContent className="pt-0 px-3.5 pb-3.5 space-y-2.5">
+      <CardContent className="space-y-2 px-2.5 pb-2.5 pt-0 sm:space-y-2.5 sm:px-3.5 sm:pb-3.5">
         {/* Stock and Price Info */}
-        <div className="flex justify-between items-center">
-          <span className="text-xs">
+        <div className="flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <span className="text-[10px] sm:text-xs">
             {isOutOfStock ? (
               <Badge variant="destructive" className="text-[10px] px-1.5 py-0">Out of Stock</Badge>
             ) : isLowStock ? (
               <span className="inline-flex items-center gap-1 text-orange-600 font-semibold animate-pulse">
-                <Flame className="h-3 w-3" />
+                <Flame className="h-3 w-3 shrink-0" />
                 Only {productGroup.stock_count} left!
               </span>
             ) : productGroup.stock_count > 0 ? (
@@ -109,8 +116,8 @@ export default function ProductTemplateCard({
               <span className="text-muted-foreground">Instant delivery</span>
             )}
           </span>
-          <div className="text-right">
-            <div className="text-base font-black text-slate-950 leading-tight dark:text-white">
+          <div className="text-left sm:text-right">
+            <div className="text-sm font-black leading-tight text-slate-950 dark:text-white sm:text-base">
               {formatPrice(productGroup.price)}
             </div>
           </div>
@@ -118,7 +125,7 @@ export default function ProductTemplateCard({
 
         {/* Quantity Selection */}
         {!isOutOfStock && (
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-1.5 sm:gap-2">
             <div className="flex items-center gap-1">
               <Button
                 variant="outline"
@@ -136,7 +143,7 @@ export default function ProductTemplateCard({
                 max={maxQuantity}
                 value={quantity}
                 onChange={(e) => handleQuantityChange(parseInt(e.target.value) || 1)}
-                className="w-10 h-6 text-center px-1 text-xs"
+                className="h-6 w-8 px-1 text-center text-xs sm:w-10"
               />
 
               <Button
@@ -149,7 +156,7 @@ export default function ProductTemplateCard({
                 <Plus className="h-3 w-3" />
               </Button>
             </div>
-            <span className="text-xs font-semibold text-primary text-right">
+            <span className="min-w-0 text-right text-[10px] font-semibold text-primary sm:text-xs">
               {discountPct > 0 && (
                 <span className="block text-[10px] text-muted-foreground line-through font-normal">
                   {formatPrice(productGroup.price * quantity)}
@@ -163,12 +170,12 @@ export default function ProductTemplateCard({
 
         {/* Action Button */}
         {isOutOfStock ? (
-          <Button disabled size="sm" className="h-9 w-full rounded-lg text-xs">
+          <Button disabled size="sm" className="h-8 w-full rounded-lg text-[11px] sm:h-9 sm:text-xs">
             <Package className="h-3.5 w-3.5 mr-1.5" />
             Out of Stock
           </Button>
         ) : (
-          <Button type="button" size="sm" onClick={handlePurchase} className="h-9 w-full rounded-lg bg-purple-600 text-xs font-black hover:bg-purple-500">
+          <Button type="button" size="sm" onClick={handlePurchase} className="h-8 w-full rounded-lg bg-purple-600 text-[11px] font-black hover:bg-purple-500 sm:h-9 sm:text-xs">
             Buy Now
             <ArrowRight className="h-3.5 w-3.5" />
           </Button>

@@ -12,7 +12,7 @@ import { useToast } from '@/hooks/use-toast'
 import { getReferralStats, withdrawReferralBalance } from '@/lib/supabase'
 
 export default function ReferralsPage() {
-  const { user, refreshWalletBalance } = useAuth()
+  const { user, refreshWalletBalance, showBalances } = useAuth()
   const { toast } = useToast()
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
@@ -106,7 +106,7 @@ export default function ReferralsPage() {
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Referral Balance</p>
-                      <p className="text-xl font-bold">₦{stats.referralBalance.toLocaleString()}</p>
+                      <p className="text-xl font-bold">{showBalances ? `₦${stats.referralBalance.toLocaleString()}` : '***'}</p>
                     </div>
                   </div>
                 </CardContent>
