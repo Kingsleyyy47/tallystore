@@ -1,0 +1,1538 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TallyStore Homepage Redesign Preview</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #05070d;
+      --panel: rgba(13, 18, 29, 0.78);
+      --panel-strong: rgba(18, 23, 37, 0.94);
+      --line: rgba(255, 255, 255, 0.12);
+      --line-strong: rgba(193, 114, 255, 0.34);
+      --text: #f8fafc;
+      --muted: #a7b0c2;
+      --purple: #b655ff;
+      --purple-2: #7c35ff;
+      --violet: #d37cff;
+      --cyan: #5bd9ff;
+      --green: #55f3b1;
+      --shadow: 0 32px 90px rgba(0, 0, 0, 0.55);
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 64% 14%, rgba(128, 55, 255, 0.3), transparent 28rem),
+        radial-gradient(circle at 18% 38%, rgba(76, 23, 144, 0.26), transparent 24rem),
+        linear-gradient(180deg, #070b13 0%, #04060b 64%, #030407 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .page {
+      width: min(1460px, calc(100% - 36px));
+      margin: 14px auto 56px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background:
+        linear-gradient(180deg, rgba(10, 15, 25, 0.98), rgba(6, 9, 16, 0.98)),
+        var(--bg);
+      box-shadow: var(--shadow);
+    }
+
+    .promo {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr) 38px;
+      min-height: 42px;
+      background: linear-gradient(90deg, rgba(84, 38, 177, 0.92), rgba(33, 16, 83, 0.95), rgba(93, 45, 166, 0.9));
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      color: #f5eaff;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .promo span {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 0 16px;
+      white-space: nowrap;
+    }
+
+    .promo b {
+      color: white;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.7);
+    }
+
+    .promo button {
+      border: 0;
+      border-left: 1px solid rgba(255, 255, 255, 0.14);
+      background: transparent;
+      color: #f8e9ff;
+      cursor: pointer;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 82px;
+      padding: 0 52px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(6, 10, 18, 0.8);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand {
+      font-size: 28px;
+      font-weight: 950;
+      letter-spacing: -0.02em;
+    }
+
+    .brand span {
+      color: var(--purple);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 38px;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .nav-links a {
+      color: #f3f6fb;
+      opacity: 0.95;
+    }
+
+    .nav-links a.active {
+      color: white;
+      position: relative;
+    }
+
+    .nav-links a.active::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -20px;
+      height: 2px;
+      background: var(--purple);
+      box-shadow: 0 0 16px rgba(182, 85, 255, 0.8);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0 16px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .moon {
+      width: 44px;
+      padding: 0;
+      justify-content: center;
+      border-radius: 50%;
+    }
+
+    .hero {
+      position: relative;
+      padding: 58px 102px 24px;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(5, 7, 13, 0.2) 0%, transparent 34%, rgba(126, 44, 255, 0.08) 100%),
+        radial-gradient(circle at 70% 22%, rgba(145, 58, 255, 0.18), transparent 19rem);
+      pointer-events: none;
+    }
+
+    .hero-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr 620px;
+      align-items: center;
+      gap: 42px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      border: 1px solid rgba(193, 114, 255, 0.34);
+      border-radius: 999px;
+      background: rgba(145, 58, 255, 0.12);
+      color: #f6e9ff;
+      padding: 8px 16px;
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 28px 0 0;
+      max-width: 660px;
+      font-size: clamp(42px, 4.8vw, 72px);
+      line-height: 0.98;
+      letter-spacing: 0;
+      font-weight: 1000;
+    }
+
+    h1 span {
+      display: block;
+      color: var(--purple);
+    }
+
+    .sub {
+      margin: 22px 0 0;
+      max-width: 580px;
+      color: #d5dbea;
+      font-size: 18px;
+      line-height: 1.65;
+    }
+
+    .trust-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 26px;
+      margin: 26px 0 0;
+      color: white;
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .trust-row span {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .trust-row i,
+    .stat-icon,
+    .why-icon,
+    .lock-icon {
+      display: inline-grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      background: linear-gradient(145deg, rgba(167, 73, 255, 0.38), rgba(80, 27, 151, 0.48));
+      color: #ebb7ff;
+      font-style: normal;
+      box-shadow: 0 0 20px rgba(178, 85, 255, 0.18);
+    }
+
+    .actions {
+      display: flex;
+      gap: 18px;
+      margin: 30px 0 0;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-width: 190px;
+      height: 54px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: white;
+      background: rgba(255, 255, 255, 0.03);
+      cursor: pointer;
+      font-weight: 950;
+      box-shadow: none;
+    }
+
+    .btn.primary {
+      border-color: rgba(202, 130, 255, 0.32);
+      background: linear-gradient(135deg, #a43cff, #7b2bea);
+      box-shadow: 0 18px 38px rgba(128, 43, 234, 0.34);
+    }
+
+    .wallet-scene {
+      position: relative;
+      min-height: 410px;
+      perspective: 900px;
+    }
+
+    .wallet-glow {
+      position: absolute;
+      width: 340px;
+      height: 180px;
+      left: 160px;
+      bottom: 20px;
+      border-radius: 50%;
+      background: radial-gradient(closest-side, rgba(153, 55, 255, 0.46), transparent);
+      filter: blur(26px);
+    }
+
+    .wallet {
+      position: absolute;
+      left: 185px;
+      top: 140px;
+      width: 275px;
+      height: 170px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 34px;
+      background:
+        linear-gradient(145deg, rgba(192, 82, 255, 0.42), rgba(69, 20, 141, 0.94)),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.18), transparent);
+      box-shadow:
+        inset 0 12px 24px rgba(255, 255, 255, 0.08),
+        inset -18px -20px 36px rgba(26, 4, 73, 0.54),
+        0 34px 60px rgba(71, 20, 141, 0.48);
+      transform: rotateX(10deg) rotateY(-14deg) rotateZ(2deg);
+    }
+
+    .wallet::before,
+    .wallet::after {
+      content: "";
+      position: absolute;
+      inset: 18px -18px auto auto;
+      width: 235px;
+      height: 142px;
+      border-radius: 30px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: linear-gradient(150deg, #8f34e6, #3d107b);
+      z-index: -1;
+    }
+
+    .wallet::after {
+      inset: 30px -34px auto auto;
+      background: linear-gradient(150deg, #6e26bf, #2e0a62);
+      z-index: -2;
+    }
+
+    .wallet-strap {
+      position: absolute;
+      right: -8px;
+      top: 58px;
+      width: 104px;
+      height: 64px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 26px 16px 16px 26px;
+      background: linear-gradient(145deg, #8e35e0, #51159d);
+      box-shadow: inset 0 8px 16px rgba(255, 255, 255, 0.09);
+    }
+
+    .wallet-strap::after {
+      content: "";
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: linear-gradient(145deg, #cb78ff, #7130c8);
+      border: 1px solid rgba(255, 255, 255, 0.24);
+    }
+
+    .logo-tile {
+      position: absolute;
+      display: grid;
+      place-items: center;
+      width: 74px;
+      height: 74px;
+      border-radius: 20px;
+      font-size: 34px;
+      font-weight: 1000;
+      box-shadow: 0 20px 38px rgba(0, 0, 0, 0.36);
+      transform: rotateX(9deg) rotateY(-13deg);
+    }
+
+    .ig {
+      left: 138px;
+      top: 36px;
+      background: radial-gradient(circle at 70% 75%, #ffd66d, transparent 26%), linear-gradient(135deg, #ff3f84, #7438ff);
+    }
+
+    .fb {
+      left: 270px;
+      top: 54px;
+      background: linear-gradient(145deg, #3398ff, #0649be);
+      font-family: Georgia, serif;
+    }
+
+    .tt {
+      right: 72px;
+      top: 80px;
+      background: #0b0d13;
+      color: white;
+      text-shadow: 3px 3px 0 #ff2d6c, -3px -3px 0 #21f5ee;
+    }
+
+    .sc {
+      left: 80px;
+      top: 166px;
+      background: #ffed32;
+      color: #111;
+    }
+
+    .tg {
+      right: 8px;
+      top: 178px;
+      background: linear-gradient(145deg, #40c7ff, #087cc5);
+    }
+
+    .sparkle {
+      position: absolute;
+      color: var(--purple);
+      font-size: 34px;
+      filter: drop-shadow(0 0 12px rgba(190, 83, 255, 0.8));
+    }
+
+    .sp1 { left: 10px; top: 110px; }
+    .sp2 { left: 60px; top: 250px; }
+    .sp3 { right: 68px; top: 120px; }
+    .sp4 { right: 20px; bottom: 96px; }
+
+    .stats {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      margin-top: 34px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(20, 27, 42, 0.82), rgba(11, 15, 24, 0.82));
+      overflow: hidden;
+    }
+
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 22px 30px;
+      border-right: 1px solid var(--line);
+    }
+
+    .stat:last-child {
+      border-right: 0;
+    }
+
+    .stat-icon {
+      width: 54px;
+      height: 54px;
+      border-radius: 12px;
+      font-size: 25px;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 1000;
+    }
+
+    .stat small {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .section {
+      position: relative;
+      padding: 0 102px 28px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 2px 0 18px;
+    }
+
+    .section h2 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      font-weight: 1000;
+    }
+
+    .view-all {
+      color: #d05fff;
+      font-weight: 900;
+      font-size: 14px;
+    }
+
+    .categories {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 18px;
+    }
+
+    .category-card {
+      min-height: 218px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(180deg, rgba(21, 27, 42, 0.82), rgba(8, 12, 20, 0.88)),
+        rgba(255, 255, 255, 0.02);
+      transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+    }
+
+    .category-card:hover {
+      transform: translateY(-3px);
+      border-color: var(--line-strong);
+      background:
+        linear-gradient(180deg, rgba(30, 35, 55, 0.88), rgba(11, 15, 25, 0.92)),
+        rgba(255, 255, 255, 0.04);
+    }
+
+    .cat-logo {
+      display: grid;
+      place-items: center;
+      width: 54px;
+      height: 54px;
+      border-radius: 12px;
+      color: white;
+      font-size: 28px;
+      font-weight: 1000;
+      margin-bottom: 24px;
+    }
+
+    .facebook { background: linear-gradient(145deg, #358eff, #093dbe); font-family: Georgia, serif; }
+    .instagram { background: radial-gradient(circle at 70% 75%, #ffd66d, transparent 26%), linear-gradient(135deg, #ff3f84, #7438ff); }
+    .snapchat { background: #ffed32; color: #111; }
+    .tiktok { background: #05070d; text-shadow: 2px 2px 0 #ff2d6c, -2px -2px 0 #21f5ee; }
+    .vpn { background: linear-gradient(145deg, #8c39e8, #431083); }
+    .more { background: rgba(255, 255, 255, 0.1); }
+
+    .category-card h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 950;
+    }
+
+    .category-card p {
+      min-height: 52px;
+      margin: 12px 0 18px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .category-card a {
+      color: #d35cff;
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 22px;
+      margin-top: 20px;
+      padding: 20px 34px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        radial-gradient(circle at 9% 46%, rgba(147, 58, 255, 0.18), transparent 11rem),
+        linear-gradient(180deg, rgba(14, 19, 31, 0.9), rgba(9, 13, 22, 0.9));
+    }
+
+    .banner-copy {
+      display: flex;
+      align-items: center;
+      gap: 26px;
+    }
+
+    .lock-icon {
+      width: 70px;
+      height: 70px;
+      border-radius: 16px;
+      font-size: 32px;
+    }
+
+    .banner h2 {
+      margin: 0;
+      font-size: 23px;
+    }
+
+    .banner p {
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .why {
+      padding-top: 2px;
+      padding-bottom: 60px;
+    }
+
+    .why-panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        radial-gradient(circle at 50% 0%, rgba(115, 52, 205, 0.14), transparent 20rem),
+        linear-gradient(180deg, rgba(13, 19, 31, 0.76), rgba(8, 12, 20, 0.88));
+      padding: 24px 18px 18px;
+      overflow: hidden;
+    }
+
+    .why-title {
+      text-align: center;
+      margin-bottom: 22px;
+    }
+
+    .why-title h2 {
+      font-size: 28px;
+    }
+
+    .why-title p {
+      margin: 6px 0 0;
+      color: var(--muted);
+    }
+
+    .why-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+    }
+
+    .why-card {
+      display: flex;
+      gap: 16px;
+      min-height: 112px;
+      padding: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .why-icon {
+      flex: 0 0 auto;
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      font-size: 23px;
+    }
+
+    .why-card h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+
+    .why-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .how-section {
+      position: relative;
+      padding: 92px 102px 76px;
+      background:
+        radial-gradient(circle at 50% 40%, rgba(116, 45, 191, 0.32), transparent 31rem),
+        linear-gradient(180deg, #06070c 0%, #100b1b 50%, #05060a 100%);
+    }
+
+    .center-title {
+      text-align: center;
+      margin-bottom: 70px;
+    }
+
+    .center-title h2 {
+      margin: 0;
+      font-size: 48px;
+      line-height: 1;
+      font-weight: 1000;
+    }
+
+    .center-title p {
+      margin: 22px 0 0;
+      color: var(--muted);
+      font-size: 20px;
+      line-height: 1.5;
+    }
+
+    .steps {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 32px;
+      max-width: 1080px;
+      margin: 0 auto;
+    }
+
+    .step-card {
+      position: relative;
+      min-height: 285px;
+      padding: 36px 34px 32px;
+      border: 1px solid rgba(189, 93, 255, 0.22);
+      border-radius: 14px;
+      background: rgba(18, 20, 29, 0.78);
+      text-align: center;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    .step-card:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      top: 78px;
+      right: -33px;
+      width: 33px;
+      height: 2px;
+      background: linear-gradient(90deg, rgba(200, 92, 255, 0.4), rgba(200, 92, 255, 0.9));
+    }
+
+    .step-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 28px;
+      border-radius: 999px;
+      padding: 0 16px;
+      background: rgba(181, 91, 255, 0.15);
+      color: #d783ff;
+      font-size: 13px;
+      font-weight: 1000;
+    }
+
+    .step-icon {
+      display: grid;
+      place-items: center;
+      width: 80px;
+      height: 80px;
+      margin: 26px auto 34px;
+      border-radius: 16px;
+      color: white;
+      font-size: 42px;
+      font-weight: 300;
+      box-shadow: 0 20px 42px rgba(0, 0, 0, 0.38);
+    }
+
+    .step-icon.blue { background: linear-gradient(135deg, #4687ff, #1f5bef); }
+    .step-icon.green { background: linear-gradient(135deg, #34d870, #0fa94c); }
+    .step-icon.purple { background: linear-gradient(135deg, #c85cff, #9338ea); }
+    .step-icon.orange { background: linear-gradient(135deg, #ff8a23, #ff6412); }
+
+    .step-card h3 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 950;
+    }
+
+    .step-card p {
+      margin: 22px auto 0;
+      max-width: 210px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    .why-split {
+      padding: 60px 102px 74px;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(122, 49, 197, 0.28), transparent 30rem),
+        linear-gradient(180deg, #05060a 0%, #110b1e 48%, #05060a 100%);
+    }
+
+    .why-split-grid {
+      display: grid;
+      grid-template-columns: minmax(380px, 560px) 1fr;
+      gap: 66px;
+      align-items: center;
+      max-width: 1160px;
+      margin: 0 auto;
+    }
+
+    .middleman-poster {
+      position: relative;
+      min-height: 520px;
+      overflow: hidden;
+      border-radius: 14px;
+      background:
+        radial-gradient(circle at 50% 63%, rgba(255, 255, 255, 0.18), transparent 16rem),
+        linear-gradient(180deg, #264dff 0%, #2448ff 72%, #4d63ff 100%);
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.42);
+    }
+
+    .direct-badge {
+      position: absolute;
+      right: -28px;
+      top: -24px;
+      z-index: 5;
+      display: grid;
+      place-items: center;
+      min-width: 150px;
+      height: 58px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #d17bff, #a656ec);
+      color: white;
+      font-size: 14px;
+      font-weight: 1000;
+      box-shadow: 0 22px 40px rgba(117, 38, 190, 0.38);
+    }
+
+    .poster-top {
+      position: absolute;
+      left: 92px;
+      right: 92px;
+      top: 0;
+      height: 52px;
+      border-radius: 0 0 60px 60px;
+      background: white;
+      color: #202a44;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      font-weight: 1000;
+    }
+
+    .poster-title {
+      position: absolute;
+      top: 86px;
+      left: 42px;
+      right: 42px;
+      text-align: center;
+      color: white;
+      font-size: 45px;
+      line-height: 0.92;
+      font-weight: 1000;
+      text-transform: uppercase;
+    }
+
+    .poster-strip {
+      position: absolute;
+      left: 78px;
+      right: 78px;
+      top: 178px;
+      z-index: 2;
+      min-height: 36px;
+      border-radius: 999px;
+      background: #03040a;
+      display: grid;
+      place-items: center;
+      color: white;
+      font-size: 15px;
+      font-weight: 950;
+    }
+
+    .phone-visual {
+      position: absolute;
+      left: 50%;
+      bottom: 56px;
+      width: 190px;
+      height: 260px;
+      transform: translateX(-50%);
+      border-radius: 32px;
+      border: 8px solid #05070d;
+      background:
+        radial-gradient(circle at 50% 40%, #ffd8b4, transparent 52px),
+        linear-gradient(180deg, #e7efff 0%, #b8c8e9 100%);
+      box-shadow: 0 24px 38px rgba(0, 0, 0, 0.34);
+    }
+
+    .phone-visual::before {
+      content: "";
+      position: absolute;
+      left: 52px;
+      top: -9px;
+      width: 70px;
+      height: 22px;
+      border-radius: 0 0 16px 16px;
+      background: #05070d;
+    }
+
+    .person {
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      width: 238px;
+      height: 255px;
+      transform: translateX(-50%);
+      border-radius: 120px 120px 0 0;
+      background:
+        radial-gradient(circle at 50% 58px, #ffe0c7 0 38px, transparent 39px),
+        radial-gradient(circle at 50% 92px, #2a1f18 0 45px, transparent 46px),
+        linear-gradient(180deg, transparent 0 108px, #fff 109px);
+    }
+
+    .poster-logo {
+      position: absolute;
+      display: grid;
+      place-items: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: white;
+      font-size: 28px;
+      box-shadow: 0 14px 26px rgba(0, 0, 0, 0.18);
+    }
+
+    .poster-logo.p1 { left: 72px; top: 238px; color: #1877f2; }
+    .poster-logo.p2 { left: 122px; top: 318px; color: #d946ef; }
+    .poster-logo.p3 { right: 82px; top: 238px; color: #ff7a1a; }
+    .poster-logo.p4 { right: 110px; top: 330px; color: #111; background: #ffed32; }
+
+    .poster-footer {
+      position: absolute;
+      left: 112px;
+      right: 112px;
+      bottom: 0;
+      height: 64px;
+      border-radius: 60px 60px 0 0;
+      background: rgba(255, 255, 255, 0.92);
+      color: #24304d;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      font-weight: 1000;
+    }
+
+    .why-copy h2 {
+      margin: 0;
+      font-size: 48px;
+      line-height: 1.05;
+      font-weight: 1000;
+    }
+
+    .why-copy > p {
+      margin: 26px 0 34px;
+      color: var(--muted);
+      font-size: 20px;
+      line-height: 1.55;
+    }
+
+    .why-large-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+    }
+
+    .why-large-card {
+      min-height: 170px;
+      padding: 24px 22px;
+      border: 1px solid rgba(189, 93, 255, 0.22);
+      border-radius: 14px;
+      background: rgba(18, 20, 29, 0.78);
+      text-align: center;
+    }
+
+    .why-large-card .why-icon {
+      margin: 0 auto 22px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #cc72ff, #a44ff2);
+    }
+
+    .why-large-card h3 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      font-weight: 950;
+    }
+
+    .why-large-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .site-footer {
+      padding: 44px 102px 34px;
+      background: #101827;
+      color: #d7dce7;
+    }
+
+    .footer-grid {
+      display: grid;
+      grid-template-columns: 1.4fr 0.65fr 0.65fr;
+      gap: 80px;
+      max-width: 1160px;
+      margin: 0 auto 42px;
+    }
+
+    .footer-grid h3 {
+      margin: 0 0 22px;
+      color: white;
+      font-size: 17px;
+      font-weight: 1000;
+    }
+
+    .footer-grid p,
+    .footer-grid a {
+      color: #d7dce7;
+      font-size: 14px;
+      line-height: 1.75;
+    }
+
+    .footer-grid ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    .footer-support {
+      max-width: 1160px;
+      margin: 0 auto 42px;
+    }
+
+    .footer-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      max-width: 1160px;
+      margin: 0 auto;
+      padding-top: 30px;
+      border-top: 1px solid rgba(255, 255, 255, 0.16);
+      color: #d7dce7;
+      font-size: 14px;
+    }
+
+    .socials {
+      display: flex;
+      gap: 18px;
+      color: #aab3c4;
+      font-size: 20px;
+    }
+
+    .mobile-shell {
+      display: none;
+    }
+
+    @media (max-width: 1180px) {
+      .page {
+        width: min(430px, calc(100% - 24px));
+        border-radius: 34px;
+      }
+
+      .promo,
+      .nav,
+      .hero,
+      .section,
+      .why,
+      .how-section,
+      .why-split,
+      .site-footer {
+        display: none;
+      }
+
+      .mobile-shell {
+        display: block;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 50% -2%, rgba(151, 59, 255, 0.22), transparent 18rem),
+          linear-gradient(180deg, #070b13, #05070d 45%, #070a12);
+      }
+
+      .mobile-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 76px;
+        padding: 0 22px;
+      }
+
+      .icon-btn {
+        display: grid;
+        place-items: center;
+        width: 40px;
+        height: 40px;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 21px;
+        font-weight: 900;
+      }
+
+      .cart {
+        position: relative;
+      }
+
+      .cart::after {
+        content: "3";
+        position: absolute;
+        right: -2px;
+        top: -5px;
+        display: grid;
+        place-items: center;
+        width: 19px;
+        height: 19px;
+        border-radius: 50%;
+        background: var(--purple);
+        color: white;
+        font-size: 11px;
+      }
+
+      .mobile-content {
+        padding: 16px 24px 86px;
+      }
+
+      .mobile-content h1 {
+        margin-top: 20px;
+        font-size: 31px;
+        line-height: 1.08;
+      }
+
+      .mobile-content .sub {
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      .mobile-content .trust-row {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        font-size: 11px;
+      }
+
+      .mobile-content .actions {
+        display: grid;
+        gap: 8px;
+      }
+
+      .mobile-content .btn {
+        width: 100%;
+        height: 50px;
+      }
+
+      .mobile-stats {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        margin-top: 20px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .mobile-stats .stat {
+        display: flex;
+        gap: 12px;
+        padding: 16px 12px;
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .mobile-stats .stat:nth-child(2n) {
+        border-right: 0;
+      }
+
+      .mobile-stats .stat:nth-last-child(-n + 2) {
+        border-bottom: 0;
+      }
+
+      .mobile-stats .stat-icon {
+        width: 36px;
+        height: 36px;
+        font-size: 17px;
+      }
+
+      .mobile-stats .stat strong {
+        font-size: 17px;
+      }
+
+      .mobile-stats .stat small {
+        margin-top: 3px;
+        font-size: 11px;
+      }
+
+      .mobile-section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 26px 0 12px;
+      }
+
+      .mobile-section-head h2 {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      .mobile-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .mobile-cat {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-height: 62px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .mobile-cat .cat-logo {
+        width: 38px;
+        height: 38px;
+        min-width: 38px;
+        margin: 0;
+        border-radius: 9px;
+        font-size: 22px;
+      }
+
+      .mobile-cat strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .mobile-cat small {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .mobile-cat .chev {
+        margin-left: auto;
+        color: var(--muted);
+      }
+
+      .bottom-nav {
+        position: fixed;
+        left: 50%;
+        bottom: 16px;
+        transform: translateX(-50%);
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        width: min(382px, calc(100% - 42px));
+        height: 66px;
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: rgba(7, 10, 18, 0.92);
+        backdrop-filter: blur(18px);
+        box-shadow: 0 20px 55px rgba(0, 0, 0, 0.55);
+      }
+
+      .bottom-nav a {
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 750;
+      }
+
+      .bottom-nav a.active {
+        color: var(--purple);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="promo">
+      <span>⚡ Instant bank withdrawals now available <b>Get Started →</b></span>
+      <span>💰 Sell your crypto instantly for Naira <b>Try Now →</b></span>
+      <span>✨ Premium accounts at best prices <b>Shop Now →</b></span>
+      <button aria-label="Dismiss promo">×</button>
+    </div>
+
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="#">Tally<span>Store</span></a>
+      <div class="nav-links">
+        <a class="active" href="#">Home</a>
+        <a href="#">Products⌄</a>
+        <a href="#">Services⌄</a>
+        <a href="#">Support</a>
+        <a href="#">How It Works</a>
+      </div>
+      <div class="nav-actions">
+        <span>👤 flexrex234⌄</span>
+        <span class="pill">▣ ₦72,689.09</span>
+        <span class="pill">₦ NGN</span>
+        <span class="pill moon">◐</span>
+      </div>
+    </nav>
+
+    <section class="hero">
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow">✦ Premium accounts. Instant delivery. ✦</div>
+          <h1>Premium Social Media Accounts <span>Delivered Instantly.</span></h1>
+          <p class="sub">Verified, high-quality accounts across all major platforms. Fast delivery, secure payments, 24/7 support.</p>
+          <div class="trust-row">
+            <span><i>♢</i>100% Safe</span>
+            <span><i>♬</i>24/7 Support</span>
+            <span><i>✿</i>Best Prices</span>
+          </div>
+          <div class="actions">
+            <a class="btn primary" href="#">Browse Products →</a>
+            <a class="btn" href="#">How It Works</a>
+          </div>
+        </div>
+
+        <div class="wallet-scene" aria-hidden="true">
+          <div class="wallet-glow"></div>
+          <div class="logo-tile ig">◎</div>
+          <div class="logo-tile fb">f</div>
+          <div class="logo-tile tt">♪</div>
+          <div class="logo-tile sc">♟</div>
+          <div class="logo-tile tg">✈</div>
+          <div class="sparkle sp1">✦</div>
+          <div class="sparkle sp2">✦</div>
+          <div class="sparkle sp3">✦</div>
+          <div class="sparkle sp4">✦</div>
+          <div class="wallet"><div class="wallet-strap"></div></div>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><span class="stat-icon">♚</span><span><strong>10K+</strong><small>Happy Customers</small></span></div>
+        <div class="stat"><span class="stat-icon">♧</span><span><strong>50K+</strong><small>Accounts Delivered</small></span></div>
+        <div class="stat"><span class="stat-icon">♢</span><span><strong>99.9%</strong><small>Success Rate</small></span></div>
+        <div class="stat"><span class="stat-icon">♬</span><span><strong>24/7</strong><small>Support Available</small></span></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Popular Categories</h2>
+        <a class="view-all" href="#">View all categories →</a>
+      </div>
+
+      <div class="categories">
+        <article class="category-card">
+          <div class="cat-logo facebook">f</div>
+          <h3>Facebook Accounts</h3>
+          <p>Verified accounts ready for use</p>
+          <a href="#">Browse →</a>
+        </article>
+        <article class="category-card">
+          <div class="cat-logo instagram">◎</div>
+          <h3>Instagram Accounts</h3>
+          <p>Authentic profiles with real history</p>
+          <a href="#">Browse →</a>
+        </article>
+        <article class="category-card">
+          <div class="cat-logo snapchat">♟</div>
+          <h3>Snapchat Accounts</h3>
+          <p>Active accounts with clean reputation</p>
+          <a href="#">Browse →</a>
+        </article>
+        <article class="category-card">
+          <div class="cat-logo tiktok">♪</div>
+          <h3>TikTok Accounts</h3>
+          <p>Optimized for content creation</p>
+          <a href="#">Browse →</a>
+        </article>
+        <article class="category-card">
+          <div class="cat-logo vpn">♢</div>
+          <h3>VPN Services</h3>
+          <p>Secure and fast connections</p>
+          <a href="#">Browse →</a>
+        </article>
+        <article class="category-card">
+          <div class="cat-logo more">•••</div>
+          <h3>View All</h3>
+          <p>Explore all categories</p>
+          <a href="#">Browse →</a>
+        </article>
+      </div>
+
+    </section>
+
+    <section class="how-section">
+      <div class="center-title">
+        <h2>How It Works</h2>
+        <p>Simple steps to get your social media accounts up and running</p>
+      </div>
+      <div class="steps">
+        <article class="step-card">
+          <div class="step-badge">Step 1: Explore</div>
+          <div class="step-icon blue">⌕</div>
+          <h3>Explore</h3>
+          <p>Dive into our store and discover a world of unique products.</p>
+        </article>
+        <article class="step-card">
+          <div class="step-badge">Step 2: Connect</div>
+          <div class="step-icon green">☏</div>
+          <h3>Connect</h3>
+          <p>Communicate directly with us to ask questions or discuss customization.</p>
+        </article>
+        <article class="step-card">
+          <div class="step-badge">Step 3: Secure Checkout</div>
+          <div class="step-icon purple">♢</div>
+          <h3>Secure Checkout</h3>
+          <p>Proceed to our secure checkout. Your payment is protected.</p>
+        </article>
+        <article class="step-card">
+          <div class="step-badge">Step 4: Enjoy</div>
+          <div class="step-icon orange">☻</div>
+          <h3>Enjoy</h3>
+          <p>Sit back and relax as you receive your account logins instantly.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="why-split">
+      <div class="why-split-grid">
+        <div class="middleman-poster">
+          <div class="direct-badge">DIRECT ACCESS</div>
+          <div class="poster-top">⌁ Tallystore</div>
+          <div class="poster-title">No Need For<br>Middle-Man.</div>
+          <div class="poster-strip">You get your account logins instantly on our website</div>
+          <div class="poster-logo p1">f</div>
+          <div class="poster-logo p2">◎</div>
+          <div class="poster-logo p3">♧</div>
+          <div class="poster-logo p4">♟</div>
+          <div class="phone-visual"></div>
+          <div class="person"></div>
+          <div class="poster-footer">tallystore.org</div>
+        </div>
+
+        <div class="why-copy">
+          <h2>Why Choose TallyStore?</h2>
+          <p>Direct access to premium social media accounts with no intermediaries. Get what you pay for, instantly and securely.</p>
+          <div class="why-large-grid">
+            <article class="why-large-card"><span class="why-icon">⚡</span><h3>Instant Delivery</h3><p>Get your accounts within minutes of purchase</p></article>
+            <article class="why-large-card"><span class="why-icon">♢</span><h3>Secure & Safe</h3><p>All transactions are protected and encrypted</p></article>
+            <article class="why-large-card"><span class="why-icon">◷</span><h3>24/7 Availability</h3><p>Shop anytime, accounts delivered instantly</p></article>
+            <article class="why-large-card"><span class="why-icon">♬</span><h3>Expert Support</h3><p>Professional customer service when you need it</p></article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="site-footer">
+      <div class="footer-grid">
+        <div>
+          <h3>TallyStore</h3>
+          <p>Your trusted source for premium social media accounts. We provide authentic, verified accounts across all major platforms with guaranteed delivery and 24/7 support.</p>
+        </div>
+        <div>
+          <h3>Shop</h3>
+          <ul>
+            <li><a href="#">All Products</a></li>
+            <li><a href="#">Instagram Accounts</a></li>
+            <li><a href="#">TikTok Accounts</a></li>
+            <li><a href="#">YouTube Channels</a></li>
+            <li><a href="#">Twitter Accounts</a></li>
+          </ul>
+        </div>
+        <div>
+          <h3>Account</h3>
+          <ul>
+            <li><a href="#">Sign In</a></li>
+            <li><a href="#">Register</a></li>
+            <li><a href="#">My Profile</a></li>
+            <li><a href="#">Order History</a></li>
+            <li><a href="#">Wallet</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-support">
+        <h3>Support</h3>
+        <ul>
+          <li><a href="#">Help Center</a></li>
+          <li><a href="#">Terms of Service</a></li>
+          <li><a href="#">Privacy Policy</a></li>
+          <li><a href="#">About Us</a></li>
+          <li><a href="#">Contact</a></li>
+          <li><a href="#">Web Services</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-bottom">
+        <span>© 2024 Tallybest Store LTD. All rights reserved.</span>
+        <div class="socials"><span>●</span><span>♥</span><span>↗</span></div>
+      </div>
+    </footer>
+
+    <section class="mobile-shell">
+      <div class="mobile-top">
+        <button class="icon-btn" aria-label="Open menu">☰</button>
+        <a class="brand" href="#">Tally<span>Store</span></a>
+        <button class="icon-btn cart" aria-label="Cart">🛒</button>
+      </div>
+
+      <div class="mobile-content">
+        <div class="eyebrow">✦ Premium accounts. Instant delivery. ✦</div>
+        <h1>Premium Social Media Accounts <span>Delivered Instantly.</span></h1>
+        <p class="sub">Verified, high-quality accounts across all major platforms. Fast delivery, secure payments, 24/7 support.</p>
+
+        <div class="trust-row">
+          <span><i>♢</i>100% Safe</span>
+          <span><i>♬</i>24/7 Support</span>
+          <span><i>✿</i>Best Prices</span>
+        </div>
+
+        <div class="actions">
+          <a class="btn primary" href="#">Browse Products →</a>
+          <a class="btn" href="#">How It Works</a>
+        </div>
+
+        <div class="mobile-stats">
+          <div class="stat"><span class="stat-icon">♚</span><span><strong>10K+</strong><small>Happy Customers</small></span></div>
+          <div class="stat"><span class="stat-icon">♧</span><span><strong>50K+</strong><small>Accounts Delivered</small></span></div>
+          <div class="stat"><span class="stat-icon">♢</span><span><strong>99.9%</strong><small>Success Rate</small></span></div>
+          <div class="stat"><span class="stat-icon">♬</span><span><strong>24/7</strong><small>Support Available</small></span></div>
+        </div>
+
+        <div class="mobile-section-head">
+          <h2>Popular Categories</h2>
+          <a class="view-all" href="#">View all</a>
+        </div>
+
+        <div class="mobile-list">
+          <a class="mobile-cat" href="#"><span class="cat-logo facebook">f</span><span><strong>Facebook Accounts</strong><small>Verified accounts ready for use</small></span><span class="chev">›</span></a>
+          <a class="mobile-cat" href="#"><span class="cat-logo instagram">◎</span><span><strong>Instagram Accounts</strong><small>Authentic profiles with real history</small></span><span class="chev">›</span></a>
+          <a class="mobile-cat" href="#"><span class="cat-logo snapchat">♟</span><span><strong>Snapchat Accounts</strong><small>Active accounts with clean reputation</small></span><span class="chev">›</span></a>
+          <a class="mobile-cat" href="#"><span class="cat-logo tiktok">♪</span><span><strong>TikTok Accounts</strong><small>Optimized for content creation</small></span><span class="chev">›</span></a>
+          <a class="mobile-cat" href="#"><span class="cat-logo vpn">♢</span><span><strong>VPN Services</strong><small>Secure and fast connections</small></span><span class="chev">›</span></a>
+          <a class="mobile-cat" href="#"><span class="cat-logo more">•••</span><span><strong>View All Categories</strong><small>Explore everything</small></span><span class="chev">›</span></a>
+        </div>
+      </div>
+
+      <nav class="bottom-nav" aria-label="Mobile navigation">
+        <a class="active" href="#">⌂<br>Home</a>
+        <a href="#">▣<br>Products</a>
+        <a href="#">▤<br>Wallet</a>
+        <a href="#">▥<br>Orders</a>
+        <a href="#">♡<br>Account</a>
+      </nav>
+    </section>
+  </main>
+</body>
+</html>

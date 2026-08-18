@@ -1,5 +1,4 @@
 import { Link } from 'react-router-dom'
-import GlobalActivityFeed from '@/components/GlobalActivityFeed'
 
 const Footer = () => {
   const scrollToSection = (sectionId: string) => {
@@ -10,12 +9,10 @@ const Footer = () => {
   }
 
   return (
-    <>
-    <GlobalActivityFeed />
     <footer className="mt-16 border-t border-gray-200 bg-white text-gray-600
                      dark:border-gray-800 dark:bg-gradient-to-r dark:from-gray-900 
                      dark:via-slate-900 dark:to-gray-900 dark:text-gray-300">
-      <div className="container mx-auto px-6 py-8">
+      <div className="container mx-auto px-6 pb-28 pt-8 md:pb-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
           <div className="md:col-span-2">
             <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-4">
@@ -151,7 +148,6 @@ const Footer = () => {
         </div>
       </div>
     </footer>
-    </>
   )
 }
 

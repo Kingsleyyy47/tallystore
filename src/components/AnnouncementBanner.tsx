@@ -69,7 +69,7 @@ export default function AnnouncementBanner() {
   const repeatedAnnouncements = [...ANNOUNCEMENTS, ...ANNOUNCEMENTS, ...ANNOUNCEMENTS];
 
   return (
-    <div className="fixed left-0 right-0 top-0 z-[60] h-8 max-w-[100vw] overflow-hidden bg-gradient-to-r from-primary via-purple-600 to-primary text-white">
+    <div className="fixed left-0 right-0 top-0 z-[60] hidden h-8 max-w-[100vw] overflow-hidden bg-gradient-to-r from-primary via-purple-600 to-primary text-white md:block">
       {/* Scrolling Marquee Container */}
       <div className="flex h-full max-w-full items-center overflow-hidden pr-10">
         {/* Animated scrolling content */}

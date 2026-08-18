@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
+import { useState, useEffect, type ReactNode } from 'react';
+import { Button, type ButtonProps } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -11,16 +11,29 @@ import { getOrCreatePocketFiAccount, type PocketFiAccount } from '@/services/poc
 import { getAppSetting } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
 import { useExchangeRate } from '@/hooks/useExchangeRate';
+import { cn } from '@/lib/utils';
 
 interface TopUpWalletProps {
   onSuccess?: () => void;
+  initialAmount?: number;
+  triggerChildren?: ReactNode;
+  triggerClassName?: string;
+  triggerVariant?: ButtonProps['variant'];
+  triggerSize?: ButtonProps['size'];
 }
 
 type Gateway = 'ercaspay' | 'pocketfi';
 
 const QUICK_AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 
-export function TopUpWallet({ onSuccess }: TopUpWalletProps) {
+export function TopUpWallet({
+  onSuccess,
+  initialAmount,
+  triggerChildren,
+  triggerClassName,
+  triggerVariant = 'default',
+  triggerSize = 'lg',
+}: TopUpWalletProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [amount, setAmount] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -44,6 +57,13 @@ export function TopUpWallet({ onSuccess }: TopUpWalletProps) {
 
   const handleQuickAmount = (quickAmount: number) => {
     setAmount(quickAmount.toString());
+  };
+
+  const handleOpenChange = (open: boolean) => {
+    setIsOpen(open);
+    if (open && initialAmount) {
+      setAmount(initialAmount.toString());
+    }
   };
 
   const handleGetPocketFiAccount = async () => {
@@ -340,11 +360,15 @@ export function TopUpWallet({ onSuccess }: TopUpWalletProps) {
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={setIsOpen}>
+    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
-        <Button className="w-full" size="lg">
-          <Plus className="mr-2 h-4 w-4" />
-          Top Up Wallet
+        <Button variant={triggerVariant} className={cn(triggerClassName ?? 'w-full')} size={triggerSize}>
+          {triggerChildren ?? (
+            <>
+              <Plus className="mr-2 h-4 w-4" />
+              Top Up Wallet
+            </>
+          )}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">

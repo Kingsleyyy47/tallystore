@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import { Menu, X, User, LogOut, Wallet, Download, Bitcoin, Gift, PhoneCall } from "lucide-react"
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
 import InstallAppDialog from '@/components/InstallAppDialog'
@@ -10,6 +10,14 @@ import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { useToast } from '@/hooks/use-toast'
 
 const ANNOUNCEMENT_STORAGE_KEY = 'announcement-banner-dismissed';
+
+const desktopNavClass = ({ isActive }: { isActive: boolean }) =>
+  [
+    "relative py-2 text-sm font-medium transition-colors",
+    "text-gray-700 hover:text-primary dark:text-gray-300 dark:hover:text-primary",
+    "after:absolute after:left-0 after:-bottom-1 after:h-0.5 after:w-full after:origin-left after:rounded-full after:bg-primary after:transition-transform after:duration-200",
+    isActive ? "text-primary after:scale-x-100" : "after:scale-x-0 hover:after:scale-x-100",
+  ].join(" ")
 
 export default function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false)
@@ -100,7 +108,7 @@ export default function Navbar() {
   return (
     <>
       {/* Spacer to push content below fixed navbar + announcement banner */}
-      <div className={`${announcementVisible ? 'h-[calc(32px+72px)]' : 'h-[72px]'}`} />
+      <div className={`${announcementVisible ? 'h-[72px] md:h-[calc(32px+72px)]' : 'h-[72px]'}`} />
       
       <nav 
         className={`fixed ${announcementVisible ? 'top-8' : 'top-0'} left-0 right-0 z-50 transition-all duration-300 ${
@@ -120,21 +128,21 @@ export default function Navbar() {
 
           {/* Desktop Navigation */}
           <div className="hidden md:flex items-center space-x-8">
-            <Link to="/" className="text-gray-700 dark:text-gray-300 hover:text-primary transition-colors">
+            <NavLink to="/" end className={desktopNavClass}>
               Home
-            </Link>
-            <Link to="/products" className="text-gray-700 dark:text-gray-300 hover:text-primary transition-colors">
+            </NavLink>
+            <NavLink to="/products" className={desktopNavClass}>
               Products
-            </Link>
-            <Link to="/web-services" className="text-gray-700 dark:text-gray-300 hover:text-primary transition-colors">
+            </NavLink>
+            <NavLink to="/web-services" className={desktopNavClass}>
               Services
-            </Link>
-            <Link to="/support" className="text-gray-700 dark:text-gray-300 hover:text-primary transition-colors">
+            </NavLink>
+            <NavLink to="/support" className={desktopNavClass}>
               Support
-            </Link>
-            <Link to="/how-it-works" className="text-gray-700 dark:text-gray-300 hover:text-primary transition-colors">
+            </NavLink>
+            <NavLink to="/how-it-works" className={desktopNavClass}>
               How It Works
-            </Link>
+            </NavLink>
 
             {/* Auth Buttons */}
             {user ? (

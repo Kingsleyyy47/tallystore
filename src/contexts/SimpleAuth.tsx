@@ -7,6 +7,7 @@ interface AuthContextType {
   loading: boolean
   signUp: (email: string, password: string, referralCode?: string) => Promise<{ success: boolean; error?: string }>
   signIn: (email: string, password: string) => Promise<{ success: boolean; error?: string }>
+  signInWithGoogle: () => Promise<{ success: boolean; error?: string }>
   signOut: () => Promise<void>
   resendConfirmation: (email: string) => Promise<{ success: boolean; error?: string }>
   isAdmin: boolean
@@ -181,6 +182,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const signInWithGoogle = async () => {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/login`,
+        },
+      })
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: 'Google sign in failed' }
+    }
+  }
+
   const signOut = async () => {
     await supabase.auth.signOut()
     setIsAdmin(false)
@@ -212,6 +232,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loading,
     signUp,
     signIn,
+    signInWithGoogle,
     signOut,
     resendConfirmation,
     isAdmin,
