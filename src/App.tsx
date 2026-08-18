@@ -53,7 +53,6 @@ if (typeof window !== 'undefined' && !isLocalDev) {
 import Index from "./pages/Index";
 import SimpleLogin from '@/pages/SimpleLogin'
 import SimpleRegister from '@/pages/SimpleRegister'
-import Dashboard from '@/pages/Dashboard'
 import ProductsPage from '@/pages/ProductsPage'
 import CategoryPage from '@/pages/CategoryPage'
 import ProductDetailPage from '@/pages/ProductDetailPage'
@@ -152,7 +151,7 @@ const App = () => {
                 path="/dashboard"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <Dashboard />
+                    <WalletPage />
                   </ProtectedRoute>
                 }
               />
