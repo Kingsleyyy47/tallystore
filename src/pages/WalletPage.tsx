@@ -12,15 +12,19 @@ import {
   CreditCard,
   Download,
   Eye,
+  EyeOff,
   Filter,
   Headphones,
   Home,
   Landmark,
+  LayoutGrid,
   Plus,
   Receipt,
   RefreshCw,
   Send,
   ShieldCheck,
+  PackageCheck,
+  User,
   Wallet,
   XCircle,
 } from 'lucide-react'
@@ -102,6 +106,7 @@ export default function WalletPage() {
   const [transactions, setTransactions] = useState<any[]>([])
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(false)
   const [activeTab, setActiveTab] = useState<WalletTab>('all')
+  const [showWalletBalance, setShowWalletBalance] = useState(true)
 
   const loadTransactions = useCallback(async () => {
     if (!user?.id) return
@@ -201,11 +206,13 @@ export default function WalletPage() {
     })
   }
 
+  const walletBalanceDisplay = showWalletBalance ? formatPrice(walletBalance) : '***'
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_18%_0%,rgba(168,85,247,0.12),transparent_30rem),linear-gradient(180deg,#f8fafc_0%,#eef2f7_100%)] text-slate-950 dark:bg-[radial-gradient(circle_at_18%_0%,rgba(126,51,231,0.18),transparent_30rem),linear-gradient(180deg,#05070d_0%,#07111d_100%)] dark:text-white">
       <Navbar />
 
-      <main className="mx-auto w-full max-w-7xl px-4 pb-10 pt-5 sm:px-6 lg:px-8">
+      <main className="mx-auto w-full max-w-7xl px-4 pb-28 pt-5 sm:px-6 md:pb-10 lg:px-8">
         <div className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
           <Link to="/" className="inline-flex items-center gap-1 transition hover:text-purple-600 dark:hover:text-purple-300">
             <Home className="h-3.5 w-3.5" />
@@ -234,26 +241,48 @@ export default function WalletPage() {
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_310px]">
           <section className="space-y-6">
             <div className="grid gap-4 lg:grid-cols-[1.25fr_0.9fr]">
-              <article className="relative overflow-hidden rounded-xl border border-purple-200/70 bg-gradient-to-br from-purple-800 via-purple-700 to-violet-950 p-5 text-white shadow-[0_24px_70px_rgba(126,51,231,0.28)] dark:border-purple-300/20">
-                <div className="absolute -right-10 -top-10 h-44 w-44 rounded-full bg-purple-300/20 blur-2xl" />
-                <div className="relative z-10 flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2 text-sm font-black text-purple-100">
-                      Your Balance
-                      <Eye className="h-4 w-4" />
+              <article className="relative min-h-[170px] overflow-hidden rounded-xl border border-purple-200/70 bg-[radial-gradient(circle_at_82%_48%,rgba(216,180,254,0.22),transparent_15rem),linear-gradient(135deg,#2d145c_0%,#4c1d95_48%,#1b103d_100%)] p-4 text-white shadow-[0_24px_70px_rgba(126,51,231,0.28)] dark:border-purple-300/20 sm:min-h-[190px] sm:p-5">
+                <div className="absolute -right-12 -top-12 h-48 w-48 rounded-full bg-purple-300/20 blur-2xl" />
+                <div className="absolute bottom-0 left-0 h-14 w-full bg-black/10" />
+
+                <div className="pointer-events-none absolute right-2 top-1/2 h-28 w-32 -translate-y-1/2 sm:right-7 sm:h-36 sm:w-40">
+                  <div className="absolute left-8 top-0 h-10 w-16 -rotate-6 rounded-md bg-emerald-100 shadow-lg sm:left-10 sm:h-12 sm:w-20" />
+                  <div className="absolute left-12 top-2 h-10 w-16 rotate-3 rounded-md bg-slate-200 shadow-lg sm:left-14 sm:h-12 sm:w-20" />
+                  <div className="absolute bottom-3 right-6 h-20 w-24 rounded-[1rem] bg-gradient-to-br from-purple-400 via-purple-700 to-violet-950 shadow-[0_16px_35px_rgba(0,0,0,0.35)] ring-1 ring-white/15 sm:h-24 sm:w-32">
+                    <div className="absolute -right-2 top-7 h-10 w-10 rounded-l-xl rounded-r-md bg-purple-500 shadow-lg ring-1 ring-white/15 sm:top-8 sm:h-12 sm:w-12" />
+                    <div className="absolute inset-x-4 top-5 grid place-items-center text-4xl font-black text-white/90 sm:text-5xl">
+                      T
                     </div>
-                    <div className="mt-5 text-4xl font-black tracking-normal sm:text-5xl">
+                  </div>
+                  <span className="absolute bottom-0 right-2 grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-purple-300 to-purple-700 text-xl font-black text-white shadow-xl ring-2 ring-purple-200/40 sm:h-14 sm:w-14 sm:text-2xl">
+                    ₦
+                  </span>
+                </div>
+
+                <div className="relative z-10 max-w-[62%] sm:max-w-[58%]">
+                    <div className="flex items-center gap-2 text-xs font-black text-purple-100 sm:text-sm">
+                      Your Balance
+                      <button
+                        type="button"
+                        onClick={() => setShowWalletBalance((value) => !value)}
+                        className="grid h-7 w-7 place-items-center rounded-full text-purple-100 transition hover:bg-white/10 hover:text-white"
+                        aria-label={showWalletBalance ? 'Hide wallet balance' : 'Show wallet balance'}
+                      >
+                        {showWalletBalance ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                    <div className="mt-3 text-3xl font-black tracking-normal sm:mt-5 sm:text-5xl">
                       {walletLoading ? (
-                        <span className="inline-block h-10 w-48 rounded-lg bg-white/20 animate-pulse" />
+                        <span className="inline-block h-9 w-40 rounded-lg bg-white/20 animate-pulse" />
                       ) : (
-                        formatPrice(walletBalance)
+                        walletBalanceDisplay
                       )}
                     </div>
-                    <p className="mt-2 text-sm font-semibold text-purple-100/85">Available Balance</p>
-                    <div className="mt-5 max-w-48">
+                    <p className="mt-2 text-xs font-bold text-purple-100/85 sm:text-sm">Available Balance</p>
+                    <div className="mt-4 max-w-48 sm:mt-5">
                       <TopUpWallet
                         onSuccess={handleTopUpSuccess}
-                        triggerClassName="h-11 w-full rounded-lg bg-white/15 text-white hover:bg-white/25"
+                        triggerClassName="h-10 w-full rounded-lg bg-purple-500 text-sm font-black text-white hover:bg-purple-400 sm:h-11"
                         triggerChildren={(
                           <>
                             Add Funds
@@ -262,16 +291,6 @@ export default function WalletPage() {
                         )}
                       />
                     </div>
-                  </div>
-
-                  <div className="hidden h-32 w-32 shrink-0 place-items-center rounded-3xl bg-black/15 ring-1 ring-white/10 sm:grid">
-                    <div className="relative grid h-24 w-24 place-items-center rounded-2xl bg-gradient-to-br from-purple-300 to-violet-700 shadow-2xl">
-                      <Wallet className="h-11 w-11" />
-                      <span className="absolute -bottom-3 -right-3 grid h-12 w-12 place-items-center rounded-full bg-purple-500 text-2xl font-black shadow-xl">
-                        ₦
-                      </span>
-                    </div>
-                  </div>
                 </div>
               </article>
 
@@ -477,7 +496,7 @@ export default function WalletPage() {
               <div className="mt-5 space-y-4 text-sm">
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-white/10">
                   <span className="text-slate-600 dark:text-slate-400">Available Balance</span>
-                  <strong className="text-purple-600 dark:text-purple-300">{walletLoading ? '...' : formatPrice(walletBalance)}</strong>
+                  <strong className="text-purple-600 dark:text-purple-300">{walletLoading ? '...' : walletBalanceDisplay}</strong>
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-white/10">
                   <span className="text-slate-600 dark:text-slate-400">Pending Balance</span>
@@ -558,6 +577,29 @@ export default function WalletPage() {
           </aside>
         </div>
       </main>
+
+      <nav className="fixed bottom-3 left-1/2 z-40 grid h-16 w-[min(390px,calc(100%-28px))] -translate-x-1/2 grid-cols-5 rounded-2xl border border-slate-200 bg-white/95 text-[11px] font-bold text-slate-600 shadow-2xl backdrop-blur dark:border-white/10 dark:bg-[#070a12]/95 dark:text-slate-400 md:hidden">
+        <Link to="/" className="grid place-items-center hover:text-slate-950 dark:hover:text-white">
+          <Home className="h-5 w-5" />
+          Home
+        </Link>
+        <Link to="/products" className="grid place-items-center hover:text-slate-950 dark:hover:text-white">
+          <LayoutGrid className="h-5 w-5" />
+          Products
+        </Link>
+        <Link to="/wallet" className="grid place-items-center text-purple-600 dark:text-purple-400">
+          <Wallet className="h-5 w-5" />
+          Wallet
+        </Link>
+        <Link to="/orders" className="grid place-items-center hover:text-slate-950 dark:hover:text-white">
+          <PackageCheck className="h-5 w-5" />
+          Orders
+        </Link>
+        <Link to="/profile" className="grid place-items-center hover:text-slate-950 dark:hover:text-white">
+          <User className="h-5 w-5" />
+          Account
+        </Link>
+      </nav>
 
       <Footer />
     </div>

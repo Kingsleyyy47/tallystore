@@ -118,9 +118,9 @@ export default function Navbar() {
         }`}
       >
       <div className="container mx-auto px-6 py-4">
-        <div className="flex items-center justify-between">
+        <div className="relative flex items-center justify-between">
           {/* Logo */}
-          <Link to="/" className="group">
+          <Link to="/" className="group hidden md:block">
             <span className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-primary to-primary/70 bg-clip-text text-transparent group-hover:from-primary/80 group-hover:to-primary transition-all">
               TallyStore
             </span>
@@ -287,28 +287,30 @@ export default function Navbar() {
           </div>
 
           {/* Mobile Menu Button */}
-          <div className="md:hidden flex items-center space-x-2">
+          <div className="flex w-full items-center justify-between md:hidden">
             <button
               type="button"
-              onClick={toggleCurrency}
-              title={currency === 'NGN' ? 'Switch to USD' : 'Switch to NGN'}
-              className="h-9 px-2 rounded-md border border-gray-300 dark:border-gray-600 text-xs font-semibold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            >
-              {currency === 'NGN' ? '₦' : '$'}
-            </button>
-            <ThemeToggle />
-            <Button
-              variant="ghost"
-              size="sm"
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className={`p-2 ${
-                isScrolled 
-                  ? "text-gray-700 dark:text-gray-300" 
-                  : "text-gray-700 dark:text-gray-300"
-              }`}
+              aria-label={isMobileMenuOpen ? "Close menu" : "Open menu"}
+              className="grid h-10 w-10 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
             >
-              {isMobileMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
-            </Button>
+              {isMobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            </button>
+
+            <Link to="/" className="absolute left-1/2 -translate-x-1/2 text-2xl font-black tracking-normal text-gray-950 dark:text-white">
+              Tally<span className="text-primary">Store</span>
+            </Link>
+
+            <div className="flex items-center gap-2">
+              <ThemeToggle />
+              <Link
+                to={user ? "/profile" : "/login"}
+                aria-label={user ? "Open profile" : "Log in or sign up"}
+                className="grid h-10 w-10 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
+              >
+                <User className="h-5 w-5" />
+              </Link>
+            </div>
           </div>
         </div>
 
