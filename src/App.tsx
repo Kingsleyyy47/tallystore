@@ -14,6 +14,7 @@ import MaintenancePage from '@/components/MaintenancePage'
 import GlobalPaymentChecker from '@/components/GlobalPaymentChecker'
 import LoginWelcomeDialog from '@/components/LoginWelcomeDialog'
 import ChatWidget from '@/components/ChatWidget'
+import MobileBottomNav from '@/components/MobileBottomNav'
 
 // ⚠️ MAINTENANCE MODE - Set to false to restore normal site
 const MAINTENANCE_MODE = false;
@@ -21,7 +22,7 @@ const MAINTENANCE_MODE = false;
 const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
 // Version tracking for cache busting
-const MAINTENANCE_VERSION = "2.0-products-no-overflow";
+const MAINTENANCE_VERSION = "2.3-wallet-mobile-fit";
 
 // Force cache clear on version change
 if (typeof window !== 'undefined' && !isLocalDev) {
@@ -303,6 +304,7 @@ const App = () => {
               {/* Catch all route */}
               <Route path="*" element={<NotFound />} />
             </Routes>
+            <MobileBottomNav />
           </CurrencyProvider>
           </AuthProvider>
         </TooltipProvider>

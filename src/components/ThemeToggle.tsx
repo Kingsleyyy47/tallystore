@@ -2,8 +2,9 @@ import { Moon, Sun } from "lucide-react"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 import { useEffect, useState } from "react"
+import { cn } from "@/lib/utils"
 
-export function ThemeToggle() {
+export function ThemeToggle({ className }: { className?: string }) {
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
 
@@ -13,7 +14,7 @@ export function ThemeToggle() {
 
   if (!mounted) {
     return (
-      <Button variant="ghost" size="icon" className="w-10 h-10 rounded-full">
+      <Button variant="ghost" size="icon" className={cn("h-10 w-10 rounded-full", className)}>
         <div className="h-4 w-4" />
       </Button>
     )
@@ -24,7 +25,7 @@ export function ThemeToggle() {
       variant="ghost"
       size="icon"
       onClick={() => setTheme(theme === "light" ? "dark" : "light")}
-      className="w-10 h-10 rounded-full hover:bg-primary/10 dark:hover:bg-primary/20 transition-all duration-500 hover:scale-110 group relative overflow-hidden backdrop-blur-sm border border-transparent hover:border-primary/20"
+      className={cn("group relative h-10 w-10 overflow-hidden rounded-full border border-transparent backdrop-blur-sm transition-all duration-500 hover:scale-110 hover:border-primary/20 hover:bg-primary/10 dark:hover:bg-primary/20", className)}
     >
       {/* Background glow effect */}
       <div className="absolute inset-0 bg-gradient-primary opacity-0 group-hover:opacity-10 transition-opacity duration-500 rounded-full"></div>

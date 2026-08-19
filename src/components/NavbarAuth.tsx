@@ -117,7 +117,7 @@ export default function Navbar() {
             : "bg-transparent"
         }`}
       >
-      <div className="container mx-auto px-6 py-4">
+      <div className="container mx-auto px-2 py-3 sm:px-4 md:px-6 md:py-4">
         <div className="relative flex items-center justify-between">
           {/* Logo */}
           <Link to="/" className="group hidden md:block">
@@ -292,23 +292,23 @@ export default function Navbar() {
               type="button"
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
               aria-label={isMobileMenuOpen ? "Close menu" : "Open menu"}
-              className="grid h-10 w-10 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
+              className="grid h-8 w-8 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10 sm:h-10 sm:w-10"
             >
-              {isMobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+              {isMobileMenuOpen ? <X className="h-4 w-4 sm:h-5 sm:w-5" /> : <Menu className="h-4 w-4 sm:h-5 sm:w-5" />}
             </button>
 
-            <Link to="/" className="absolute left-1/2 -translate-x-1/2 text-2xl font-black tracking-normal text-gray-950 dark:text-white">
+            <Link to="/" className="absolute left-1/2 max-w-[calc(100%-116px)] -translate-x-1/2 whitespace-nowrap text-center text-[15px] font-black tracking-normal text-gray-950 dark:text-white min-[280px]:text-lg min-[340px]:text-xl sm:text-2xl">
               Tally<span className="text-primary">Store</span>
             </Link>
 
-            <div className="flex items-center gap-2">
-              <ThemeToggle />
+            <div className="flex items-center gap-0 sm:gap-2">
+              <ThemeToggle className="h-8 w-8 sm:h-10 sm:w-10" />
               <Link
                 to={user ? "/profile" : "/login"}
                 aria-label={user ? "Open profile" : "Log in or sign up"}
-                className="grid h-10 w-10 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
+                className="grid h-8 w-8 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10 sm:h-10 sm:w-10"
               >
-                <User className="h-5 w-5" />
+                <User className="h-4 w-4 sm:h-5 sm:w-5" />
               </Link>
             </div>
           </div>

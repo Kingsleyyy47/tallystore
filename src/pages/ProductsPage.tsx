@@ -326,7 +326,7 @@ export default function ProductsPage() {
                 <LayoutGrid className="h-4 w-4 sm:h-5 sm:w-5" />
               </span>
               <span className="min-w-0 max-w-full">
-                <strong className="block max-w-full truncate text-xs sm:text-sm">All</strong>
+                <strong className="block max-w-full break-words text-[10px] leading-tight sm:text-sm">All</strong>
                 <small className={selectedCategory === 'all' ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{activeProductGroups.length}</small>
               </span>
             </button>
@@ -350,7 +350,7 @@ export default function ProductsPage() {
                     <Icon className={`h-4 w-4 sm:h-5 sm:w-5 ${active ? 'text-white' : style.color}`} />
                   </span>
                   <span className="min-w-0 max-w-full">
-                    <strong className="block max-w-full truncate text-xs sm:text-sm">{category.name}</strong>
+                    <strong className="block max-w-full break-words text-[9px] leading-tight sm:text-sm">{category.name}</strong>
                     <small className={active ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{count}</small>
                   </span>
                 </button>
@@ -376,7 +376,7 @@ export default function ProductsPage() {
                     <Icon className={`h-4 w-4 sm:h-5 sm:w-5 ${active ? 'text-white' : style.color}`} />
                   </span>
                   <span className="min-w-0 max-w-full">
-                    <strong className="block max-w-full truncate text-xs sm:text-sm">{category.name}</strong>
+                    <strong className="block max-w-full break-words text-[9px] leading-tight sm:text-sm">{category.name}</strong>
                     <small className={active ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{count}</small>
                   </span>
                 </button>
@@ -391,7 +391,7 @@ export default function ProductsPage() {
                 <MoreHorizontal className="h-4 w-4 sm:h-5 sm:w-5" />
               </span>
               <span className="min-w-0 max-w-full">
-                <strong className="block max-w-full truncate text-xs sm:text-sm">More</strong>
+                <strong className="block max-w-full break-words text-[10px] leading-tight sm:text-sm">More</strong>
                 <small className="text-slate-500 dark:text-slate-400">{Math.max(0, categories.length - categoryChips.length)}</small>
               </span>
             </Link>
@@ -429,12 +429,14 @@ export default function ProductsPage() {
                 key={productGroup.id}
                 type="button"
                 onClick={() => goToProduct(productGroup)}
-                className="flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-3 py-2.5 text-left text-xs font-black shadow-sm transition hover:border-purple-300 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/30 dark:hover:bg-white/[0.06] sm:px-4 sm:py-3 sm:text-sm"
+                className="flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-3 py-2.5 text-left text-[10px] font-black shadow-sm transition hover:border-purple-300 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/30 dark:hover:bg-white/[0.06] sm:px-4 sm:py-3 sm:text-sm"
                 title={productGroup.name}
               >
-                <span className="flex min-w-0 items-center gap-3">
+                <span className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
                   <Package className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-300" />
-                  <span className="block min-w-0 max-w-full truncate">{productGroup.name}</span>
+                  <span className="block min-w-0 max-w-full whitespace-normal break-words leading-tight [overflow-wrap:anywhere]">
+                    {productGroup.name}
+                  </span>
                 </span>
                 <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
               </button>

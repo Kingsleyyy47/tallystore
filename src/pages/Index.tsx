@@ -7,11 +7,9 @@ import {
   CreditCard,
   Facebook,
   Headphones,
-  Home,
   Instagram,
   Menu,
   KeyRound,
-  LayoutGrid,
   MessageCircle,
   MoreHorizontal,
   PackageCheck,
@@ -583,14 +581,6 @@ const Index = () => {
 
         <HomepageLiveActivity />
       </main>
-
-      <nav className="fixed bottom-3 left-1/2 z-40 grid h-16 w-[min(390px,calc(100%-28px))] -translate-x-1/2 grid-cols-5 rounded-2xl border border-slate-200 bg-white/95 text-[11px] font-bold text-slate-600 shadow-2xl backdrop-blur dark:border-white/10 dark:bg-[#070a12]/95 dark:text-slate-400 md:hidden">
-        <Link to="/" className="grid place-items-center text-purple-600 dark:text-purple-400"><Home className="h-5 w-5" />Home</Link>
-        <Link to="/products" className="grid place-items-center hover:text-slate-950 dark:hover:text-white"><LayoutGrid className="h-5 w-5" />Products</Link>
-        <Link to="/wallet" className="grid place-items-center hover:text-slate-950 dark:hover:text-white"><Wallet className="h-5 w-5" />Wallet</Link>
-        <Link to="/orders" className="grid place-items-center hover:text-slate-950 dark:hover:text-white"><PackageCheck className="h-5 w-5" />Orders</Link>
-        <Link to="/profile" className="grid place-items-center hover:text-slate-950 dark:hover:text-white"><User className="h-5 w-5" />Account</Link>
-      </nav>
 
       <Footer />
     </div>

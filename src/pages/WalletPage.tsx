@@ -17,15 +17,11 @@ import {
   Headphones,
   Home,
   Landmark,
-  LayoutGrid,
   Plus,
   Receipt,
   RefreshCw,
   Send,
   ShieldCheck,
-  PackageCheck,
-  User,
-  Wallet,
   XCircle,
 } from 'lucide-react'
 import Navbar from '@/components/NavbarAuth'
@@ -101,7 +97,7 @@ const formatDateTime = (value: string) => {
 
 export default function WalletPage() {
   const { user, walletBalance, walletLoading, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
-  const { formatPrice } = useCurrency()
+  const { currency, formatPrice } = useCurrency()
   const { toast } = useToast()
   const [transactions, setTransactions] = useState<any[]>([])
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(false)
@@ -207,6 +203,9 @@ export default function WalletPage() {
 
   const walletBalanceDisplay = showBalances ? formatPrice(walletBalance) : '***'
   const pendingBalanceDisplay = showBalances ? formatPrice(pendingBalance) : '***'
+  const totalTopupsDisplay = showBalances ? formatPrice(totalTopups) : '***'
+  const totalSpentDisplay = showBalances ? formatPrice(totalSpent) : '***'
+  const currencySymbol = currency === 'USD' ? '$' : '₦'
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_18%_0%,rgba(168,85,247,0.12),transparent_30rem),linear-gradient(180deg,#f8fafc_0%,#eef2f7_100%)] text-slate-950 dark:bg-[radial-gradient(circle_at_18%_0%,rgba(126,51,231,0.18),transparent_30rem),linear-gradient(180deg,#05070d_0%,#07111d_100%)] dark:text-white">
@@ -255,7 +254,7 @@ export default function WalletPage() {
                     </div>
                   </div>
                   <span className="absolute bottom-0 right-2 grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-purple-300 to-purple-700 text-xl font-black text-white shadow-xl ring-2 ring-purple-200/40 sm:h-14 sm:w-14 sm:text-2xl">
-                    ₦
+                    {currencySymbol}
                   </span>
                 </div>
 
@@ -294,20 +293,20 @@ export default function WalletPage() {
                 </div>
               </article>
 
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-2 gap-2 sm:gap-3">
                 <TopUpWallet
                   onSuccess={handleTopUpSuccess}
                   triggerVariant="outline"
                   triggerSize="default"
-                  triggerClassName="h-auto min-h-[86px] justify-start rounded-xl border-slate-200 bg-white/85 p-4 text-left shadow-sm hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]"
+                  triggerClassName="h-auto min-h-[84px] justify-start rounded-xl border-slate-200 bg-white/85 p-2.5 text-left shadow-sm hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[86px] sm:p-4"
                   triggerChildren={(
-                    <span className="flex items-center gap-3">
-                      <span className="grid h-11 w-11 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300">
-                        <Plus className="h-5 w-5" />
+                    <span className="flex min-w-0 items-start gap-2 sm:items-center sm:gap-3">
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
+                        <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
                       </span>
-                      <span>
-                        <strong className="block text-sm text-slate-950 dark:text-white">Add Funds</strong>
-                        <small className="mt-1 block text-slate-500 dark:text-slate-400">Fund your wallet</small>
+                      <span className="min-w-0">
+                        <strong className="block break-words text-xs leading-tight text-slate-950 dark:text-white sm:text-sm">Add Funds</strong>
+                        <small className="mt-1 block break-words text-[10px] leading-tight text-slate-500 dark:text-slate-400 sm:text-xs">Fund your wallet</small>
                       </span>
                     </span>
                   )}
@@ -315,40 +314,40 @@ export default function WalletPage() {
 
                 <Link
                   to="/support"
-                  className="flex min-h-[86px] items-center gap-3 rounded-xl border border-slate-200 bg-white/85 p-4 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]"
+                  className="flex min-h-[84px] min-w-0 items-start gap-2 rounded-xl border border-slate-200 bg-white/85 p-2.5 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[86px] sm:items-center sm:gap-3 sm:p-4"
                 >
-                  <span className="grid h-11 w-11 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300">
-                    <ArrowUpRight className="h-5 w-5" />
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
+                    <ArrowUpRight className="h-4 w-4 sm:h-5 sm:w-5" />
                   </span>
-                  <span>
-                    <strong className="block text-sm">Withdraw</strong>
-                    <small className="mt-1 block text-slate-500 dark:text-slate-400">Request support</small>
+                  <span className="min-w-0">
+                    <strong className="block break-words text-xs leading-tight sm:text-sm">Withdraw</strong>
+                    <small className="mt-1 block break-words text-[10px] leading-tight text-slate-500 dark:text-slate-400 sm:text-xs">Request support</small>
                   </span>
                 </Link>
 
                 <Link
                   to="/support"
-                  className="flex min-h-[86px] items-center gap-3 rounded-xl border border-slate-200 bg-white/85 p-4 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]"
+                  className="flex min-h-[84px] min-w-0 items-start gap-2 rounded-xl border border-slate-200 bg-white/85 p-2.5 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[86px] sm:items-center sm:gap-3 sm:p-4"
                 >
-                  <span className="grid h-11 w-11 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300">
-                    <Send className="h-5 w-5" />
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
+                    <Send className="h-4 w-4 sm:h-5 sm:w-5" />
                   </span>
-                  <span>
-                    <strong className="block text-sm">Transfer</strong>
-                    <small className="mt-1 block text-slate-500 dark:text-slate-400">Ask support</small>
+                  <span className="min-w-0">
+                    <strong className="block break-words text-xs leading-tight sm:text-sm">Transfer</strong>
+                    <small className="mt-1 block break-words text-[10px] leading-tight text-slate-500 dark:text-slate-400 sm:text-xs">Ask support</small>
                   </span>
                 </Link>
 
                 <Link
                   to="/profile"
-                  className="flex min-h-[86px] items-center gap-3 rounded-xl border border-slate-200 bg-white/85 p-4 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]"
+                  className="flex min-h-[84px] min-w-0 items-start gap-2 rounded-xl border border-slate-200 bg-white/85 p-2.5 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[86px] sm:items-center sm:gap-3 sm:p-4"
                 >
-                  <span className="grid h-11 w-11 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300">
-                    <CreditCard className="h-5 w-5" />
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
+                    <CreditCard className="h-4 w-4 sm:h-5 sm:w-5" />
                   </span>
-                  <span>
-                    <strong className="block text-sm">Payment Methods</strong>
-                    <small className="mt-1 block text-slate-500 dark:text-slate-400">Manage account</small>
+                  <span className="min-w-0">
+                    <strong className="block break-words text-xs leading-tight sm:text-sm">Payment Methods</strong>
+                    <small className="mt-1 block break-words text-[10px] leading-tight text-slate-500 dark:text-slate-400 sm:text-xs">Manage account</small>
                   </span>
                 </Link>
               </div>
@@ -359,11 +358,11 @@ export default function WalletPage() {
             <article className="overflow-hidden rounded-xl border border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
               <div className="flex flex-col gap-4 border-b border-slate-200 p-4 dark:border-white/10 md:flex-row md:items-center md:justify-between">
                 <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as WalletTab)}>
-                  <TabsList className="grid w-full grid-cols-4 bg-slate-100 dark:bg-white/5 md:w-auto">
-                    <TabsTrigger value="all">Transactions</TabsTrigger>
-                    <TabsTrigger value="funding">Funding</TabsTrigger>
-                    <TabsTrigger value="purchase">Purchases</TabsTrigger>
-                    <TabsTrigger value="withdrawal">Withdrawals</TabsTrigger>
+                  <TabsList className="grid w-full min-w-0 grid-cols-4 bg-slate-100 p-1 dark:bg-white/5 md:w-auto">
+                    <TabsTrigger value="all" className="min-w-0 px-1 text-[9px] leading-none sm:px-3 sm:text-xs">Transactions</TabsTrigger>
+                    <TabsTrigger value="funding" className="min-w-0 px-1 text-[9px] leading-none sm:px-3 sm:text-xs">Funding</TabsTrigger>
+                    <TabsTrigger value="purchase" className="min-w-0 px-1 text-[9px] leading-none sm:px-3 sm:text-xs">Purchases</TabsTrigger>
+                    <TabsTrigger value="withdrawal" className="min-w-0 px-1 text-[9px] leading-none sm:px-3 sm:text-xs">Withdrawals</TabsTrigger>
                   </TabsList>
                 </Tabs>
 
@@ -504,11 +503,11 @@ export default function WalletPage() {
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-white/10">
                   <span className="text-slate-600 dark:text-slate-400">Total Deposits</span>
-                  <strong className="text-emerald-600 dark:text-emerald-400">{formatPrice(totalTopups)}</strong>
+                  <strong className="text-emerald-600 dark:text-emerald-400">{totalTopupsDisplay}</strong>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-600 dark:text-slate-400">Total Spent</span>
-                  <strong className="text-red-600 dark:text-red-400">{formatPrice(totalSpent)}</strong>
+                  <strong className="text-red-600 dark:text-red-400">{totalSpentDisplay}</strong>
                 </div>
               </div>
             </article>
@@ -577,29 +576,6 @@ export default function WalletPage() {
           </aside>
         </div>
       </main>
-
-      <nav className="fixed bottom-3 left-1/2 z-40 grid h-16 w-[min(390px,calc(100%-28px))] -translate-x-1/2 grid-cols-5 rounded-2xl border border-slate-200 bg-white/95 text-[11px] font-bold text-slate-600 shadow-2xl backdrop-blur dark:border-white/10 dark:bg-[#070a12]/95 dark:text-slate-400 md:hidden">
-        <Link to="/" className="grid place-items-center hover:text-slate-950 dark:hover:text-white">
-          <Home className="h-5 w-5" />
-          Home
-        </Link>
-        <Link to="/products" className="grid place-items-center hover:text-slate-950 dark:hover:text-white">
-          <LayoutGrid className="h-5 w-5" />
-          Products
-        </Link>
-        <Link to="/wallet" className="grid place-items-center text-purple-600 dark:text-purple-400">
-          <Wallet className="h-5 w-5" />
-          Wallet
-        </Link>
-        <Link to="/orders" className="grid place-items-center hover:text-slate-950 dark:hover:text-white">
-          <PackageCheck className="h-5 w-5" />
-          Orders
-        </Link>
-        <Link to="/profile" className="grid place-items-center hover:text-slate-950 dark:hover:text-white">
-          <User className="h-5 w-5" />
-          Account
-        </Link>
-      </nav>
 
       <Footer />
     </div>

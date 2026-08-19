@@ -79,7 +79,7 @@ export default function ProductTemplateCard({
           )}
         </div>
         <CardTitle
-          className={`min-h-[3.75em] max-w-full overflow-hidden font-black uppercase leading-tight tracking-normal transition-colors [overflow-wrap:anywhere] [word-break:break-word] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] group-hover:text-purple-700 dark:group-hover:text-purple-300 sm:min-h-[2.55em] sm:leading-snug sm:[-webkit-line-clamp:2] ${productTitleSizeClass}`}
+          className={`max-w-full whitespace-normal break-words font-black uppercase leading-tight tracking-normal transition-colors [overflow-wrap:anywhere] [word-break:break-word] group-hover:text-purple-700 dark:group-hover:text-purple-300 sm:leading-snug ${productTitleSizeClass}`}
           title={productGroup.name}
         >
           {productGroup.name}
