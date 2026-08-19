@@ -33,7 +33,7 @@ export default function MobileBottomNav() {
   return (
     <>
       <div className="h-[68px] md:hidden" aria-hidden="true" />
-      <nav className="fixed inset-x-0 bottom-0 z-50 mx-auto grid h-[68px] w-full max-w-[430px] grid-cols-5 border-x border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] text-[11px] font-bold text-slate-600 shadow-[0_-16px_45px_rgba(15,23,42,0.18)] backdrop-blur dark:border-white/10 dark:bg-[#070a12]/95 dark:text-slate-400 md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-50 mx-auto grid h-[68px] w-full max-w-[430px] grid-cols-5 border-x border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] text-[9px] font-bold text-slate-600 shadow-[0_-16px_45px_rgba(15,23,42,0.18)] backdrop-blur dark:border-white/10 dark:bg-[#070a12]/95 dark:text-slate-400 min-[340px]:text-[11px] md:hidden">
         {items.map((item) => {
           const Icon = item.icon
           return (
@@ -46,7 +46,7 @@ export default function MobileBottomNav() {
               )}
             >
               <Icon className="h-5 w-5" />
-              <span className="max-w-full truncate">{item.label}</span>
+              <span className="max-w-full whitespace-nowrap leading-tight">{item.label}</span>
             </Link>
           )
         })}

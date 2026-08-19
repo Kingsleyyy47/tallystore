@@ -22,7 +22,7 @@ const MAINTENANCE_MODE = false;
 const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
 // Version tracking for cache busting
-const MAINTENANCE_VERSION = "2.3-wallet-mobile-fit";
+const MAINTENANCE_VERSION = "2.5-wallet-actions-tabs";
 
 // Force cache clear on version change
 if (typeof window !== 'undefined' && !isLocalDev) {

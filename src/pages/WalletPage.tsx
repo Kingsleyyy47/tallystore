@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -36,6 +35,13 @@ import { getUserTransactions } from '@/lib/supabase'
 type WalletTab = 'all' | 'funding' | 'purchase' | 'withdrawal'
 
 const quickAmounts = [5000, 10000, 20000, 50000, 100000]
+
+const walletTabs: Array<[WalletTab, string]> = [
+  ['all', 'Transactions'],
+  ['funding', 'Funding'],
+  ['purchase', 'Purchases'],
+  ['withdrawal', 'Withdrawals'],
+]
 
 const classifyTransaction = (transaction: any): WalletTab => {
   const type = String(transaction.type || '').toLowerCase()
@@ -298,15 +304,15 @@ export default function WalletPage() {
                   onSuccess={handleTopUpSuccess}
                   triggerVariant="outline"
                   triggerSize="default"
-                  triggerClassName="h-auto min-h-[84px] justify-start rounded-xl border-slate-200 bg-white/85 p-2.5 text-left shadow-sm hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[86px] sm:p-4"
+                  triggerClassName="h-auto min-h-[82px] justify-start rounded-xl border-slate-200 bg-white/85 p-3 text-left shadow-sm hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[88px] sm:p-4"
                   triggerChildren={(
-                    <span className="flex min-w-0 items-start gap-2 sm:items-center sm:gap-3">
+                    <span className="flex min-w-0 items-center gap-2.5 sm:gap-3">
                       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
                         <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
                       </span>
-                      <span className="min-w-0">
-                        <strong className="block break-words text-xs leading-tight text-slate-950 dark:text-white sm:text-sm">Add Funds</strong>
-                        <small className="mt-1 block break-words text-[10px] leading-tight text-slate-500 dark:text-slate-400 sm:text-xs">Fund your wallet</small>
+                      <span className="min-w-0 flex-1">
+                        <strong className="block text-xs font-black leading-tight text-slate-950 dark:text-white min-[360px]:text-sm">Add Funds</strong>
+                        <small className="mt-1 block text-[10px] font-semibold leading-tight text-slate-500 dark:text-slate-400 min-[360px]:text-xs">Fund your wallet</small>
                       </span>
                     </span>
                   )}
@@ -314,40 +320,40 @@ export default function WalletPage() {
 
                 <Link
                   to="/support"
-                  className="flex min-h-[84px] min-w-0 items-start gap-2 rounded-xl border border-slate-200 bg-white/85 p-2.5 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[86px] sm:items-center sm:gap-3 sm:p-4"
+                  className="flex min-h-[82px] min-w-0 items-center gap-2.5 rounded-xl border border-slate-200 bg-white/85 p-3 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[88px] sm:gap-3 sm:p-4"
                 >
                   <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
                     <ArrowUpRight className="h-4 w-4 sm:h-5 sm:w-5" />
                   </span>
-                  <span className="min-w-0">
-                    <strong className="block break-words text-xs leading-tight sm:text-sm">Withdraw</strong>
-                    <small className="mt-1 block break-words text-[10px] leading-tight text-slate-500 dark:text-slate-400 sm:text-xs">Request support</small>
+                  <span className="min-w-0 flex-1">
+                    <strong className="block text-xs font-black leading-tight text-slate-950 dark:text-white min-[360px]:text-sm">Withdraw</strong>
+                    <small className="mt-1 block text-[10px] font-semibold leading-tight text-slate-500 dark:text-slate-400 min-[360px]:text-xs">Request support</small>
                   </span>
                 </Link>
 
                 <Link
                   to="/support"
-                  className="flex min-h-[84px] min-w-0 items-start gap-2 rounded-xl border border-slate-200 bg-white/85 p-2.5 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[86px] sm:items-center sm:gap-3 sm:p-4"
+                  className="flex min-h-[82px] min-w-0 items-center gap-2.5 rounded-xl border border-slate-200 bg-white/85 p-3 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[88px] sm:gap-3 sm:p-4"
                 >
                   <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
                     <Send className="h-4 w-4 sm:h-5 sm:w-5" />
                   </span>
-                  <span className="min-w-0">
-                    <strong className="block break-words text-xs leading-tight sm:text-sm">Transfer</strong>
-                    <small className="mt-1 block break-words text-[10px] leading-tight text-slate-500 dark:text-slate-400 sm:text-xs">Ask support</small>
+                  <span className="min-w-0 flex-1">
+                    <strong className="block text-xs font-black leading-tight text-slate-950 dark:text-white min-[360px]:text-sm">Transfer</strong>
+                    <small className="mt-1 block text-[10px] font-semibold leading-tight text-slate-500 dark:text-slate-400 min-[360px]:text-xs">Ask support</small>
                   </span>
                 </Link>
 
                 <Link
                   to="/profile"
-                  className="flex min-h-[84px] min-w-0 items-start gap-2 rounded-xl border border-slate-200 bg-white/85 p-2.5 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[86px] sm:items-center sm:gap-3 sm:p-4"
+                  className="flex min-h-[82px] min-w-0 items-center gap-2.5 rounded-xl border border-slate-200 bg-white/85 p-3 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[88px] sm:gap-3 sm:p-4"
                 >
                   <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
                     <CreditCard className="h-4 w-4 sm:h-5 sm:w-5" />
                   </span>
-                  <span className="min-w-0">
-                    <strong className="block break-words text-xs leading-tight sm:text-sm">Payment Methods</strong>
-                    <small className="mt-1 block break-words text-[10px] leading-tight text-slate-500 dark:text-slate-400 sm:text-xs">Manage account</small>
+                  <span className="min-w-0 flex-1">
+                    <strong className="block text-xs font-black leading-tight text-slate-950 dark:text-white min-[360px]:text-sm">Payment Methods</strong>
+                    <small className="mt-1 block text-[10px] font-semibold leading-tight text-slate-500 dark:text-slate-400 min-[360px]:text-xs">Manage account</small>
                   </span>
                 </Link>
               </div>
@@ -355,17 +361,26 @@ export default function WalletPage() {
 
             <PaymentVerificationCard />
 
-            <article className="overflow-hidden rounded-xl border border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
-              <div className="flex flex-col gap-4 border-b border-slate-200 p-4 dark:border-white/10 md:flex-row md:items-center md:justify-between">
-                <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as WalletTab)}>
-                  <TabsList className="grid w-full min-w-0 grid-cols-4 bg-slate-100 p-1 dark:bg-white/5 md:w-auto">
-                    <TabsTrigger value="all" className="min-w-0 px-1 text-[9px] leading-none sm:px-3 sm:text-xs">Transactions</TabsTrigger>
-                    <TabsTrigger value="funding" className="min-w-0 px-1 text-[9px] leading-none sm:px-3 sm:text-xs">Funding</TabsTrigger>
-                    <TabsTrigger value="purchase" className="min-w-0 px-1 text-[9px] leading-none sm:px-3 sm:text-xs">Purchases</TabsTrigger>
-                    <TabsTrigger value="withdrawal" className="min-w-0 px-1 text-[9px] leading-none sm:px-3 sm:text-xs">Withdrawals</TabsTrigger>
-                  </TabsList>
-                </Tabs>
-
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="grid min-w-0 grid-cols-4 items-center gap-1">
+                {walletTabs.map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setActiveTab(value)}
+                    className={`relative min-w-0 px-1 py-2.5 text-center text-[11px] font-black leading-tight transition min-[360px]:text-xs sm:px-3 sm:text-sm ${
+                      activeTab === value
+                        ? 'text-purple-700 dark:text-purple-300'
+                        : 'text-slate-500 hover:text-slate-950 dark:text-slate-400 dark:hover:text-white'
+                    }`}
+                  >
+                    {label}
+                    {activeTab === value && (
+                      <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-purple-600 dark:bg-purple-400" />
+                    )}
+                  </button>
+                ))}
+              </div>
                 <div className="flex items-center gap-2">
                   <Button variant="outline" size="sm">
                     <Filter className="h-4 w-4" />
@@ -376,8 +391,9 @@ export default function WalletPage() {
                     Download
                   </Button>
                 </div>
-              </div>
+            </div>
 
+            <article className="overflow-hidden rounded-xl border border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
               <div className="hidden overflow-x-auto md:block">
                 <table className="w-full text-left text-sm">
                   <thead className="border-b border-slate-200 text-xs uppercase text-slate-500 dark:border-white/10 dark:text-slate-400">

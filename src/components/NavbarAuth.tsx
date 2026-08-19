@@ -287,7 +287,7 @@ export default function Navbar() {
           </div>
 
           {/* Mobile Menu Button */}
-          <div className="flex w-full items-center justify-between md:hidden">
+          <div className="grid w-full grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-1 md:hidden sm:grid-cols-[40px_minmax(0,1fr)_auto] sm:gap-2">
             <button
               type="button"
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
@@ -297,11 +297,20 @@ export default function Navbar() {
               {isMobileMenuOpen ? <X className="h-4 w-4 sm:h-5 sm:w-5" /> : <Menu className="h-4 w-4 sm:h-5 sm:w-5" />}
             </button>
 
-            <Link to="/" className="absolute left-1/2 max-w-[calc(100%-116px)] -translate-x-1/2 whitespace-nowrap text-center text-[15px] font-black tracking-normal text-gray-950 dark:text-white min-[280px]:text-lg min-[340px]:text-xl sm:text-2xl">
+            <Link to="/" className="min-w-0 truncate text-center text-xs font-black tracking-normal text-gray-950 dark:text-white min-[280px]:text-base min-[340px]:text-xl sm:text-2xl">
               Tally<span className="text-primary">Store</span>
             </Link>
 
             <div className="flex items-center gap-0 sm:gap-2">
+              <button
+                type="button"
+                onClick={toggleCurrency}
+                aria-label={currency === 'NGN' ? 'Switch to USD' : 'Switch to NGN'}
+                title={currency === 'NGN' ? 'Switch to USD' : 'Switch to NGN'}
+                className="grid h-8 min-w-8 place-items-center rounded-full border border-gray-200 bg-white/80 px-2 text-[11px] font-black text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10 sm:h-10 sm:min-w-10 sm:text-xs"
+              >
+                {currency === 'NGN' ? '₦' : '$'}
+              </button>
               <ThemeToggle className="h-8 w-8 sm:h-10 sm:w-10" />
               <Link
                 to={user ? "/profile" : "/login"}
