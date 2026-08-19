@@ -89,6 +89,21 @@ import {
 import { format, formatDistanceToNow } from 'date-fns'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
+
+const ADMIN_TABS = [
+  { value: 'templates', label: 'Templates' },
+  { value: 'sms-products', label: 'SMS Products' },
+  { value: 'products', label: 'Products' },
+  { value: 'add-product', label: 'Add Product' },
+  { value: 'bulk-upload', label: 'Bulk Upload' },
+  { value: 'discount-codes', label: 'Discount Codes' },
+  { value: 'categories', label: 'Categories' },
+  { value: 'users', label: 'Users' },
+  { value: 'email', label: 'Email' },
+  { value: 'staff', label: 'Staff Roles' },
+] as const
+
+type AdminTabValue = (typeof ADMIN_TABS)[number]['value']
 import { clearExchangeRateCache } from '@/hooks/useExchangeRate'
 import { 
   Table, 
@@ -230,6 +245,7 @@ export default function AdminPage() {
   const [bitrefillCurationSearching, setBitrefillCurationSearching] = useState(false)
 
   // UI state
+  const [adminTab, setAdminTab] = useState<AdminTabValue>('templates')
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [newProduct, setNewProduct] = useState({
     title: '',
@@ -1215,7 +1231,7 @@ export default function AdminPage() {
         ${message.replace(/\n/g, '<br/>')}
       </div>
       <div style="text-align:center;margin-top:24px">
-        <a href="https://tallystore.org/dashboard" style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Account Hub</a>
+        <a href="https://tallystore.org/dashboard" style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Wallet</a>
       </div>
       <div style="text-align:center;margin-top:32px;color:#999;font-size:12px"><p>TallyStore — Your trusted digital marketplace</p></div>
     </div>`
@@ -3051,19 +3067,30 @@ export default function AdminPage() {
           </div>
 
           {/* Main Content */}
-          <Tabs defaultValue="templates" className="space-y-6">
-            <div className="w-full overflow-x-auto pb-2">
-              <TabsList className="inline-flex w-full min-w-max md:grid md:w-full md:grid-cols-10">
-                <TabsTrigger value="templates" className="flex-shrink-0">Templates</TabsTrigger>
-                <TabsTrigger value="sms-products" className="flex-shrink-0">SMS Products</TabsTrigger>
-                <TabsTrigger value="products" className="flex-shrink-0">Products</TabsTrigger>
-                <TabsTrigger value="add-product" className="flex-shrink-0">Add Product</TabsTrigger>
-                <TabsTrigger value="bulk-upload" className="flex-shrink-0">Bulk Upload</TabsTrigger>
-                <TabsTrigger value="discount-codes" className="flex-shrink-0">Discount Codes</TabsTrigger>
-                <TabsTrigger value="categories" className="flex-shrink-0">Categories</TabsTrigger>
-                <TabsTrigger value="users" className="flex-shrink-0">Users</TabsTrigger>
-                <TabsTrigger value="email" className="flex-shrink-0">Email</TabsTrigger>
-                <TabsTrigger value="staff" className="flex-shrink-0">Staff Roles</TabsTrigger>
+          <Tabs value={adminTab} onValueChange={(value) => setAdminTab(value as AdminTabValue)} className="space-y-6">
+            <div className="rounded-xl border border-border bg-card/70 p-3 shadow-sm md:hidden">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Admin menu</p>
+              <Select value={adminTab} onValueChange={(value) => setAdminTab(value as AdminTabValue)}>
+                <SelectTrigger className="h-11">
+                  <SelectValue placeholder="Choose admin section" />
+                </SelectTrigger>
+                <SelectContent>
+                  {ADMIN_TABS.map((tab) => (
+                    <SelectItem key={tab.value} value={tab.value}>
+                      {tab.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="hidden w-full pb-2 md:block">
+              <TabsList className="grid w-full grid-cols-5 gap-1 lg:grid-cols-10">
+                {ADMIN_TABS.map((tab) => (
+                  <TabsTrigger key={tab.value} value={tab.value} className="min-w-0 px-2 text-xs lg:text-sm">
+                    <span className="truncate">{tab.label}</span>
+                  </TabsTrigger>
+                ))}
               </TabsList>
             </div>
 

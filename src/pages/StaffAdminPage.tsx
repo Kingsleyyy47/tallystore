@@ -515,7 +515,7 @@ export default function StaffAdminPage() {
         ${message.replace(/\n/g, '<br/>')}
       </div>
       <div style="text-align:center;margin-top:24px">
-        <a href="https://tallystore.org/dashboard" style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Account Hub</a>
+        <a href="https://tallystore.org/dashboard" style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Wallet</a>
       </div>
       <div style="text-align:center;margin-top:32px;color:#999;font-size:12px"><p>TallyStore - Your trusted digital marketplace</p></div>
     </div>`

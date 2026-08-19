@@ -399,25 +399,27 @@ export default function ProductsPage() {
         </section>
 
         <section className="mb-8">
-          <div className="mb-3 grid min-w-0 grid-cols-3 items-center gap-1">
-            {([
-              ['popular', 'Popular'],
-              ['refilled', 'Refilled'],
-              ['new', 'New'],
-            ] as Array<[ProductCollection, string]>).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setActiveCollection(value)}
-                className={`relative min-w-0 px-1 py-2 text-center text-xs font-black transition sm:px-4 sm:text-sm ${
-                  activeCollection === value ? 'text-purple-700 dark:text-purple-300' : 'text-slate-500 hover:text-slate-950 dark:hover:text-white'
-                }`}
-              >
-                {label}
-                {activeCollection === value && <span className="absolute inset-x-3 -bottom-0.5 h-0.5 rounded-full bg-purple-600" />}
-              </button>
-            ))}
-            <Link to="/products" className="ml-auto hidden items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 lg:inline-flex">
+          <div className="mb-3 flex min-w-0 items-center gap-3">
+            <div className="grid min-w-0 flex-1 grid-cols-3 items-center gap-1">
+              {([
+                ['popular', 'Popular'],
+                ['refilled', 'Refilled'],
+                ['new', 'New'],
+              ] as Array<[ProductCollection, string]>).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setActiveCollection(value)}
+                  className={`relative min-w-0 px-1 py-2 text-center text-xs font-black transition sm:px-4 sm:text-sm ${
+                    activeCollection === value ? 'text-purple-700 dark:text-purple-300' : 'text-slate-500 hover:text-slate-950 dark:hover:text-white'
+                  }`}
+                >
+                  {label}
+                  {activeCollection === value && <span className="absolute inset-x-3 -bottom-0.5 h-0.5 rounded-full bg-purple-600" />}
+                </button>
+              ))}
+            </div>
+            <Link to="/products" className="hidden shrink-0 items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 lg:inline-flex">
               View all
               <ArrowRight className="h-4 w-4" />
             </Link>

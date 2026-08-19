@@ -77,5 +77,5 @@ export function BackToCategories() {
 }
 
 export function BackToDashboard() {
-  return <BackButton text="Back to Account Hub" to="/dashboard" />
+  return <BackButton text="Back to Wallet" to="/dashboard" />
 }

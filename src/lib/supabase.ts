@@ -1655,6 +1655,8 @@ export async function processBulkPurchase(
           email: acc.email,
           email_password: acc.email_password,
           two_fa_code: acc.two_fa_code,
+          recovery_email: acc.recovery_email,
+          recovery_email_password: acc.recovery_email_password,
           additional_info: acc.additional_info
         })),
         product_name: productGroup.name,
@@ -1822,6 +1824,8 @@ export async function processPurchase(
         email: account.email,
         email_password: account.email_password,
         two_fa_code: account.two_fa_code,
+        recovery_email: account.recovery_email,
+        recovery_email_password: account.recovery_email_password,
         additional_info: account.additional_info,
         product_name: productGroup.name,
         category: productGroup.categories?.name,

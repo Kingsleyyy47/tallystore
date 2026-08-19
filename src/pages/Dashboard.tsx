@@ -5,21 +5,24 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Bitcoin,
+  ChevronDown,
   Clock,
   CreditCard,
   Download,
+  Eye,
+  EyeOff,
   Gift,
   History,
   MessageSquareText,
   PackageCheck,
   PhoneCall,
+  Plus,
   ReceiptText,
   RefreshCw,
   Settings,
   ShieldCheck,
   ShoppingBag,
   Sparkles,
-  Wallet,
   Zap,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -31,7 +34,6 @@ import NavbarAuth from '@/components/NavbarAuth'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
-const NAIRA = '\u20a6'
 const INSTALL_PROMPT_STORAGE_KEY = 'pwa-install-prompt-dismissed'
 
 type DashboardTransaction = {
@@ -69,13 +71,6 @@ type ActivityItem = {
   status: string
   createdAt: string
   tone: 'credit' | 'debit' | 'neutral'
-}
-
-function formatNaira(value: number, decimals = false) {
-  return `${NAIRA}${Number(value || 0).toLocaleString('en-NG', {
-    minimumFractionDigits: decimals ? 2 : 0,
-    maximumFractionDigits: decimals ? 2 : 0,
-  })}`
 }
 
 function formatCompactDate(value: string) {
@@ -141,8 +136,8 @@ const actionItems = [
 ]
 
 export default function Dashboard() {
-  const { user, walletBalance, walletLoading, refreshWalletBalance, showBalances } = useAuth()
-  const { formatPrice } = useCurrency()
+  const { user, walletBalance, walletLoading, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
+  const { currency, formatPrice } = useCurrency()
   const [transactions, setTransactions] = useState<DashboardTransaction[]>([])
   const [orders, setOrders] = useState<DashboardOrder[]>([])
   const [totalSpent, setTotalSpent] = useState(0)
@@ -152,6 +147,7 @@ export default function Dashboard() {
   const [installPromptOffset, setInstallPromptOffset] = useState(false)
 
   const userName = user?.email?.split('@')[0] || 'User'
+  const currencySymbol = currency === 'USD' ? '$' : '\u20a6'
 
   const loadDashboardStats = useCallback(async () => {
     if (!user?.id) {
@@ -315,69 +311,72 @@ export default function Dashboard() {
       >
         <div className="mx-auto w-full max-w-7xl space-y-6 overflow-x-hidden lg:space-y-8">
           <section className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(340px,0.65fr)]">
-            <div className="min-w-0 space-y-0">
-              <div className="relative overflow-hidden rounded-[2rem] bg-[linear-gradient(145deg,#5b3db2_0%,#4d32a3_48%,#7254d6_100%)] px-5 pb-24 pt-7 text-white shadow-[0_28px_70px_rgba(88,64,179,0.34)] sm:px-8 sm:pb-24 lg:min-h-[360px] lg:px-10 lg:pb-10">
-                <div className="relative z-10 flex items-center justify-between">
-                  <div className="min-w-0 flex-1 overflow-hidden pr-3">
-                    <p className="text-sm font-medium text-cyan-100/90">Welcome back</p>
-                    <h1 className="mt-1 block max-w-[240px] truncate text-2xl font-bold tracking-tight xs:max-w-[280px] sm:max-w-full sm:text-3xl">
-                      {userName}
-                    </h1>
+            <div className="min-w-0 space-y-4">
+              <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-purple-600 dark:text-purple-300">Welcome back, {userName}</p>
+                  <h1 className="mt-1 text-3xl font-black tracking-normal sm:text-4xl">Wallet</h1>
+                  <p className="mt-2 max-w-2xl text-sm text-slate-600 dark:text-slate-400">
+                    Your balance, orders, recovery tools, and services in one place.
+                  </p>
+                </div>
+                <Button variant="outline" onClick={refreshWalletBalance} className="w-full justify-center rounded-xl sm:w-auto">
+                  <RefreshCw className="h-4 w-4" />
+                  Refresh
+                </Button>
+              </div>
+
+              <article className="relative min-h-[170px] overflow-hidden rounded-xl border border-purple-200/70 bg-[radial-gradient(circle_at_82%_48%,rgba(216,180,254,0.22),transparent_15rem),linear-gradient(135deg,#2d145c_0%,#4c1d95_48%,#1b103d_100%)] p-4 text-white shadow-[0_24px_70px_rgba(126,51,231,0.28)] dark:border-purple-300/20 sm:min-h-[190px] sm:p-5">
+                <div className="absolute -right-12 -top-12 h-48 w-48 rounded-full bg-purple-300/20 blur-2xl" />
+                <div className="absolute bottom-0 left-0 h-14 w-full bg-black/10" />
+
+                <div className="pointer-events-none absolute right-2 top-1/2 h-28 w-32 -translate-y-1/2 sm:right-7 sm:h-36 sm:w-40">
+                  <div className="absolute left-8 top-0 h-10 w-16 -rotate-6 rounded-md bg-emerald-100 shadow-lg sm:left-10 sm:h-12 sm:w-20" />
+                  <div className="absolute left-12 top-2 h-10 w-16 rotate-3 rounded-md bg-slate-200 shadow-lg sm:left-14 sm:h-12 sm:w-20" />
+                  <div className="absolute bottom-3 right-6 h-20 w-24 rounded-[1rem] bg-gradient-to-br from-purple-400 via-purple-700 to-violet-950 shadow-[0_16px_35px_rgba(0,0,0,0.35)] ring-1 ring-white/15 sm:h-24 sm:w-32">
+                    <div className="absolute -right-2 top-7 h-10 w-10 rounded-l-xl rounded-r-md bg-purple-500 shadow-lg ring-1 ring-white/15 sm:top-8 sm:h-12 sm:w-12" />
+                    <div className="absolute inset-x-4 top-5 grid place-items-center text-4xl font-black text-white/90 sm:text-5xl">
+                      T
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={refreshWalletBalance}
-                    className="grid h-11 w-11 place-items-center rounded-2xl bg-white/12 text-cyan-100 backdrop-blur transition hover:bg-white/20"
-                    aria-label="Refresh wallet balance"
-                  >
-                    <RefreshCw className="h-5 w-5" />
-                  </button>
+                  <span className="absolute bottom-0 right-2 grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-purple-300 to-purple-700 text-xl font-black text-white shadow-xl ring-2 ring-purple-200/40 sm:h-14 sm:w-14 sm:text-2xl">
+                    {currencySymbol}
+                  </span>
                 </div>
 
-                <div className="relative z-10 mt-10 text-center lg:text-left">
-                  <p className="text-sm font-semibold uppercase tracking-[0.22em] text-cyan-100/90">
-                    Total Balance
-                  </p>
-                  <div className="mt-2 text-5xl font-black tracking-tight sm:text-6xl lg:text-7xl">
+                <div className="relative z-10 max-w-[62%] sm:max-w-[58%]">
+                  <div className="flex items-center gap-2 text-xs font-black text-purple-100 sm:text-sm">
+                    Your Balance
+                    <button
+                      type="button"
+                      onClick={toggleBalanceVisibility}
+                      className="grid h-7 w-7 place-items-center rounded-full text-purple-100 transition hover:bg-white/10 hover:text-white"
+                      aria-label={showBalances ? 'Hide balances' : 'Show balances'}
+                    >
+                      {showBalances ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
+                  <div className="mt-3 text-3xl font-black tracking-normal sm:mt-5 sm:text-5xl">
                     {walletLoading ? (
-                      <span className="mx-auto block h-14 w-56 rounded-2xl bg-white/20 lg:mx-0" />
+                      <span className="inline-block h-9 w-40 animate-pulse rounded-lg bg-white/20" />
                     ) : (
                       showBalances ? formatPrice(walletBalance) : '***'
                     )}
                   </div>
-                  <div className="mt-6 flex flex-wrap justify-center gap-3 lg:justify-start">
-                    <Button asChild className="h-11 rounded-2xl bg-white px-5 text-[#5637aa] hover:bg-cyan-50">
+                  <p className="mt-2 text-xs font-bold text-purple-100/85 sm:text-sm">Available Balance</p>
+                  <div className="mt-4 flex max-w-64 flex-wrap gap-2 sm:mt-5">
+                    <Button asChild className="h-10 flex-1 rounded-lg bg-purple-500 px-4 text-sm font-black text-white hover:bg-purple-400">
                       <Link to="/wallet">
-                        <Wallet className="h-4 w-4" />
-                        Top Up
-                      </Link>
-                    </Button>
-                    <Button
-                      asChild
-                      variant="outline"
-                      className="h-11 rounded-2xl border-white/30 bg-white/10 px-5 text-white hover:bg-white/20 hover:text-white"
-                    >
-                      <Link to="/products">
-                        <ShoppingBag className="h-4 w-4" />
-                        Buy Accounts
+                        Add Funds
+                        <Plus className="h-4 w-4" />
                       </Link>
                     </Button>
                   </div>
                 </div>
+              </article>
 
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 opacity-30">
-                  <div className="absolute bottom-0 left-0 h-16 w-10 bg-[#2d206f]" />
-                  <div className="absolute bottom-0 left-[12%] h-24 w-14 rounded-t-[2rem] bg-[#3c2a83]" />
-                  <div className="absolute bottom-0 left-[30%] h-20 w-16 bg-[#2e2172]" />
-                  <div className="absolute bottom-0 left-[48%] h-28 w-12 rounded-t-[2rem] bg-[#392584]" />
-                  <div className="absolute bottom-0 left-[64%] h-16 w-24 rounded-t-[2rem] bg-[#342575]" />
-                  <div className="absolute bottom-0 right-0 h-24 w-20 rounded-tl-[2rem] bg-[#2f226e]" />
-                </div>
-              </div>
-
-              <div className="relative z-20 -mt-10 px-3 sm:px-6 lg:max-w-2xl">
-                <Card className="overflow-hidden rounded-[1.5rem] border-0 bg-white shadow-[0_22px_48px_rgba(15,23,42,0.12)] dark:bg-slate-950">
-                  <CardContent className="grid grid-cols-2 divide-x divide-slate-100 p-0 dark:divide-white/10">
+              <Card className="overflow-hidden rounded-xl border border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
+                <CardContent className="grid grid-cols-2 divide-x divide-slate-100 p-0 dark:divide-white/10">
                     <div className="min-w-0 p-4 sm:p-5">
                       <div className="mb-3 grid h-10 w-10 place-items-center rounded-2xl bg-cyan-100 text-cyan-700 dark:bg-cyan-400/15 dark:text-cyan-200">
                         <ArrowDownRight className="h-5 w-5" />
@@ -389,7 +388,7 @@ export default function Dashboard() {
                         <span className="mt-2 block h-7 w-28 animate-pulse rounded-xl bg-slate-100 dark:bg-white/10" />
                       ) : (
                         <p className="mt-1 break-words text-xl font-black tracking-tight sm:text-3xl">
-                          {showBalances ? formatNaira(totalSpent) : '***'}
+                          {showBalances ? formatPrice(totalSpent) : '***'}
                         </p>
                       )}
                     </div>
@@ -411,7 +410,6 @@ export default function Dashboard() {
                     </div>
                   </CardContent>
                 </Card>
-              </div>
             </div>
 
             <div className="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-1">
@@ -504,79 +502,86 @@ export default function Dashboard() {
 
             <aside className="min-w-0 space-y-6">
               <Card className="rounded-[1.75rem] border-0 bg-white shadow-card dark:bg-card">
-                <CardContent className="p-5">
-                  <div className="mb-5 flex items-center justify-between">
-                    <div>
-                      <h2 className="text-lg font-black tracking-tight">Recent Activity</h2>
-                      <p className="text-sm text-slate-500 dark:text-muted-foreground">Latest wallet movement.</p>
-                    </div>
-                    <Button asChild variant="ghost" size="sm" className="rounded-xl text-cyan-600 hover:text-cyan-700">
-                      <Link to="/wallet">View all</Link>
-                    </Button>
-                  </div>
+                <CardContent className="p-0">
+                  <details className="group">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-5 [&::-webkit-details-marker]:hidden">
+                      <span className="min-w-0">
+                        <span className="block text-lg font-black tracking-tight">Recent Activity</span>
+                        <span className="block text-sm text-slate-500 dark:text-muted-foreground">Latest wallet movement.</span>
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        <Button asChild variant="ghost" size="sm" className="rounded-xl text-cyan-600 hover:text-cyan-700" onClick={(event) => event.stopPropagation()}>
+                          <Link to="/wallet">View all</Link>
+                        </Button>
+                        <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
+                      </span>
+                    </summary>
 
-                  {activityLoading ? (
-                    <div className="space-y-4">
-                      {[0, 1, 2].map((item) => (
-                        <div key={item} className="flex items-center gap-3">
-                          <span className="h-11 w-11 rounded-2xl bg-slate-100 dark:bg-muted" />
-                          <span className="min-w-0 flex-1 space-y-2">
-                            <span className="block h-4 w-2/3 rounded bg-slate-100 dark:bg-muted" />
-                            <span className="block h-3 w-1/2 rounded bg-slate-100 dark:bg-muted" />
-                          </span>
+                    <div className="border-t border-slate-100 p-5 dark:border-white/10">
+                      {activityLoading ? (
+                        <div className="space-y-4">
+                          {[0, 1, 2].map((item) => (
+                            <div key={item} className="flex items-center gap-3">
+                              <span className="h-11 w-11 rounded-2xl bg-slate-100 dark:bg-muted" />
+                              <span className="min-w-0 flex-1 space-y-2">
+                                <span className="block h-4 w-2/3 rounded bg-slate-100 dark:bg-muted" />
+                                <span className="block h-3 w-1/2 rounded bg-slate-100 dark:bg-muted" />
+                              </span>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  ) : recentActivity.length === 0 ? (
-                    <div className="rounded-3xl bg-slate-100 p-6 text-center dark:bg-muted">
-                      <History className="mx-auto h-8 w-8 text-slate-400" />
-                      <p className="mt-3 text-sm font-semibold">No recent activity</p>
-                      <p className="mt-1 text-xs text-slate-500 dark:text-muted-foreground">
-                        Top up your wallet or make a purchase to see it here.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {recentActivity.map((item) => (
-                        <div key={item.id} className="flex items-center gap-3">
-                          <div
-                            className={cn(
-                              'grid h-11 w-11 shrink-0 place-items-center rounded-2xl',
-                              item.tone === 'credit'
-                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200'
-                                : 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-200',
-                            )}
-                          >
-                            {item.tone === 'credit' ? (
-                              <ArrowUpRight className="h-5 w-5" />
-                            ) : (
-                              <ArrowDownRight className="h-5 w-5" />
-                            )}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-bold">{item.title}</p>
-                            <p className="truncate text-xs text-slate-500 dark:text-muted-foreground">
-                              {item.meta}
-                            </p>
-                          </div>
-                          {typeof item.amount === 'number' && (
-                            <div className="text-right">
-                              <p
+                      ) : recentActivity.length === 0 ? (
+                        <div className="rounded-3xl bg-slate-100 p-6 text-center dark:bg-muted">
+                          <History className="mx-auto h-8 w-8 text-slate-400" />
+                          <p className="mt-3 text-sm font-semibold">No recent activity</p>
+                          <p className="mt-1 text-xs text-slate-500 dark:text-muted-foreground">
+                            Top up your wallet or make a purchase to see it here.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {recentActivity.map((item) => (
+                            <div key={item.id} className="flex items-center gap-3">
+                              <div
                                 className={cn(
-                                  'text-sm font-black',
-                                  item.tone === 'credit' ? 'text-emerald-600' : 'text-slate-950 dark:text-foreground',
+                                  'grid h-11 w-11 shrink-0 place-items-center rounded-2xl',
+                                  item.tone === 'credit'
+                                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200'
+                                    : 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-200',
                                 )}
                               >
-                                {item.tone === 'credit' ? '+' : '-'}
-                                {formatNaira(Math.abs(item.amount))}
-                              </p>
-                              <p className="text-[11px] capitalize text-slate-400">{item.status}</p>
+                                {item.tone === 'credit' ? (
+                                  <ArrowUpRight className="h-5 w-5" />
+                                ) : (
+                                  <ArrowDownRight className="h-5 w-5" />
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-bold">{item.title}</p>
+                                <p className="truncate text-xs text-slate-500 dark:text-muted-foreground">
+                                  {item.meta}
+                                </p>
+                              </div>
+                              {typeof item.amount === 'number' && (
+                                <div className="text-right">
+                                  <p
+                                    className={cn(
+                                      'text-sm font-black',
+                                      item.tone === 'credit' ? 'text-emerald-600' : 'text-slate-950 dark:text-foreground',
+                                    )}
+                                  >
+                                    {item.tone === 'credit' ? '+' : '-'}
+                                    {formatPrice(Math.abs(item.amount))}
+                                  </p>
+                                  <p className="text-[11px] capitalize text-slate-400">{item.status}</p>
+                                </div>
+                              )}
                             </div>
-                          )}
+                          ))}
                         </div>
-                      ))}
+                      )}
                     </div>
-                  )}
+                  </details>
                 </CardContent>
               </Card>
 

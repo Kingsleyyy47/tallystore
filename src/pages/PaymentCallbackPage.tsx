@@ -187,7 +187,7 @@ export default function PaymentCallbackPage() {
                   onClick={() => navigate('/dashboard')}
                   className="w-full"
                 >
-                  Return to Account Hub
+                  Return to Wallet
                 </Button>
               </div>
             </CardContent>

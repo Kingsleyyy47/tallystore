@@ -12,7 +12,7 @@ const shopLinks = [
 const accountLinks = [
   ['Sign In', '/login'],
   ['Create Account', '/register'],
-  ['Account Hub', '/dashboard'],
+  ['Wallet Home', '/dashboard'],
   ['Wallet', '/wallet'],
   ['Order History', '/orders'],
 ]

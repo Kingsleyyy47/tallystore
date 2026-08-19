@@ -198,7 +198,7 @@ export default function Navbar() {
                           </Link>
                           <Link to="/dashboard" className={desktopDropdownItemClass}>
                             <LayoutDashboard className="h-4 w-4" />
-                            Account Hub
+                            Wallet Home
                           </Link>
                         </>
                       ) : isStaff ? (
@@ -209,13 +209,13 @@ export default function Navbar() {
                           </Link>
                           <Link to="/dashboard" className={desktopDropdownItemClass}>
                             <LayoutDashboard className="h-4 w-4" />
-                            Account Hub
+                            Wallet Home
                           </Link>
                         </>
                       ) : (
                         <Link to="/dashboard" className={desktopDropdownItemClass}>
                           <LayoutDashboard className="h-4 w-4" />
-                          Account Hub
+                          Wallet Home
                         </Link>
                       )}
                       <Link to="/profile" className={desktopDropdownItemClass}>
@@ -424,7 +424,7 @@ export default function Navbar() {
                         <Link to="/dashboard" onClick={() => setIsMobileMenuOpen(false)}>
                           <Button variant="ghost" className={mobileMenuButtonClass}>
                             <LayoutDashboard className="h-4 w-4 shrink-0" />
-                            Account Hub
+                            Wallet Home
                           </Button>
                         </Link>
                       </>
@@ -439,7 +439,7 @@ export default function Navbar() {
                         <Link to="/dashboard" onClick={() => setIsMobileMenuOpen(false)}>
                           <Button variant="ghost" className={mobileMenuButtonClass}>
                             <LayoutDashboard className="h-4 w-4 shrink-0" />
-                            Account Hub
+                            Wallet Home
                           </Button>
                         </Link>
                       </>
@@ -447,7 +447,7 @@ export default function Navbar() {
                       <Link to="/dashboard" onClick={() => setIsMobileMenuOpen(false)}>
                         <Button variant="ghost" className={mobileMenuButtonClass}>
                           <LayoutDashboard className="h-4 w-4 shrink-0" />
-                          Account Hub
+                          Wallet Home
                         </Button>
                       </Link>
                     )}

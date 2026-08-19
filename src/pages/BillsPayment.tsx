@@ -360,7 +360,7 @@ export default function BillsPayment() {
             onClick={() => navigate('/dashboard')}
             className="gap-1 sm:gap-2 text-white hover:bg-white/20 hover:text-white font-medium text-sm sm:text-base"
           >
-            ← <span className="hidden sm:inline">Back to Account Hub</span><span className="sm:hidden">Back</span>
+            ← <span className="hidden sm:inline">Back to Wallet</span><span className="sm:hidden">Back</span>
           </Button>
           <div className="flex items-center gap-2 sm:gap-3">
             <Smartphone className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
@@ -382,36 +382,36 @@ export default function BillsPayment() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* Left Column - Purchase Form */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className="min-w-0 space-y-6 lg:col-span-2">
             {/* Balance Selection Card */}
             <Card className="border-2">
-              <CardContent className="pt-6">
+              <CardContent className="p-4 pt-5 sm:p-6">
                 <p className="text-sm font-medium text-muted-foreground mb-4">Pay with</p>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid min-w-0 grid-cols-2 gap-2 sm:gap-4">
                   {/* TallyStore Wallet Option */}
                   <div
                     onClick={() => setPaymentSource('wallet')}
-                    className={`cursor-pointer p-4 rounded-lg border-2 transition-all ${
+                    className={`min-w-0 cursor-pointer rounded-lg border-2 p-3 transition-all sm:p-4 ${
                       paymentSource === 'wallet'
                         ? 'border-green-500 bg-green-50 dark:bg-green-950'
                         : 'border-gray-200 hover:border-gray-300 dark:border-gray-700'
                     }`}
                   >
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className={`p-2 rounded-full ${paymentSource === 'wallet' ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
-                        <Wallet className={`w-5 h-5 ${paymentSource === 'wallet' ? 'text-white' : 'text-gray-600 dark:text-gray-400'}`} />
+                    <div className="mb-2 flex min-w-0 items-center gap-2 sm:gap-3">
+                      <div className={`shrink-0 rounded-full p-2 ${paymentSource === 'wallet' ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
+                        <Wallet className={`h-4 w-4 sm:h-5 sm:w-5 ${paymentSource === 'wallet' ? 'text-white' : 'text-gray-600 dark:text-gray-400'}`} />
                       </div>
-                      <div>
-                        <p className="font-semibold text-sm">TallyStore Balance</p>
-                        <p className="text-xs text-muted-foreground">From card/bank top-up</p>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold leading-tight sm:text-sm">TallyStore Balance</p>
+                        <p className="text-[10px] leading-tight text-muted-foreground sm:text-xs">From card/bank top-up</p>
                       </div>
                     </div>
                     {loadingBalance ? (
-                      <p className="text-lg font-bold">Loading...</p>
+                      <p className="text-sm font-bold sm:text-lg">Loading...</p>
                     ) : (
-                      <p className={`text-xl font-bold ${paymentSource === 'wallet' ? 'text-green-700 dark:text-green-400' : 'text-foreground'}`}>
+                      <p className={`max-w-full truncate text-base font-black leading-tight sm:text-xl ${paymentSource === 'wallet' ? 'text-green-700 dark:text-green-400' : 'text-foreground'}`}>
                         {formatBalance(walletBalance)}
                       </p>
                     )}
@@ -420,25 +420,25 @@ export default function BillsPayment() {
                   {/* Crypto Balance Option */}
                   <div
                     onClick={() => setPaymentSource('crypto')}
-                    className={`cursor-pointer p-4 rounded-lg border-2 transition-all ${
+                    className={`min-w-0 cursor-pointer rounded-lg border-2 p-3 transition-all sm:p-4 ${
                       paymentSource === 'crypto'
                         ? 'border-orange-500 bg-orange-50 dark:bg-orange-950'
                         : 'border-gray-200 hover:border-gray-300 dark:border-gray-700'
                     }`}
                   >
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className={`p-2 rounded-full ${paymentSource === 'crypto' ? 'bg-orange-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
-                        <Bitcoin className={`w-5 h-5 ${paymentSource === 'crypto' ? 'text-white' : 'text-gray-600 dark:text-gray-400'}`} />
+                    <div className="mb-2 flex min-w-0 items-center gap-2 sm:gap-3">
+                      <div className={`shrink-0 rounded-full p-2 ${paymentSource === 'crypto' ? 'bg-orange-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
+                        <Bitcoin className={`h-4 w-4 sm:h-5 sm:w-5 ${paymentSource === 'crypto' ? 'text-white' : 'text-gray-600 dark:text-gray-400'}`} />
                       </div>
-                      <div>
-                        <p className="font-semibold text-sm">Crypto Balance</p>
-                        <p className="text-xs text-muted-foreground">From crypto deposits</p>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold leading-tight sm:text-sm">Crypto Balance</p>
+                        <p className="text-[10px] leading-tight text-muted-foreground sm:text-xs">From crypto deposits</p>
                       </div>
                     </div>
                     {loadingBalance ? (
-                      <p className="text-lg font-bold">Loading...</p>
+                      <p className="text-sm font-bold sm:text-lg">Loading...</p>
                     ) : (
-                      <p className={`text-xl font-bold ${paymentSource === 'crypto' ? 'text-orange-700 dark:text-orange-400' : 'text-foreground'}`}>
+                      <p className={`max-w-full truncate text-base font-black leading-tight sm:text-xl ${paymentSource === 'crypto' ? 'text-orange-700 dark:text-orange-400' : 'text-foreground'}`}>
                         {formatBalance(cryptoBalance)}
                       </p>
                     )}
@@ -446,22 +446,22 @@ export default function BillsPayment() {
                 </div>
                 
                 {/* Selected Balance Indicator */}
-                <div className={`mt-4 p-3 rounded-lg flex items-center justify-between ${
+                <div className={`mt-4 flex min-w-0 flex-col gap-2 rounded-lg p-3 sm:flex-row sm:items-center sm:justify-between ${
                   paymentSource === 'wallet' 
                     ? 'bg-green-100 dark:bg-green-900/30' 
                     : 'bg-orange-100 dark:bg-orange-900/30'
                 }`}>
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     {paymentSource === 'wallet' ? (
-                      <Wallet className="w-5 h-5 text-green-700 dark:text-green-400" />
+                      <Wallet className="h-4 w-4 shrink-0 text-green-700 dark:text-green-400 sm:h-5 sm:w-5" />
                     ) : (
-                      <Bitcoin className="w-5 h-5 text-orange-700 dark:text-orange-400" />
+                      <Bitcoin className="h-4 w-4 shrink-0 text-orange-700 dark:text-orange-400 sm:h-5 sm:w-5" />
                     )}
-                    <span className="text-sm font-medium">
+                    <span className="min-w-0 text-xs font-bold leading-tight sm:text-sm">
                       Paying with {paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} Balance
                     </span>
                   </div>
-                  <span className={`text-lg font-bold ${
+                  <span className={`max-w-full truncate text-base font-black sm:text-lg ${
                     paymentSource === 'wallet' 
                       ? 'text-green-700 dark:text-green-400' 
                       : 'text-orange-700 dark:text-orange-400'

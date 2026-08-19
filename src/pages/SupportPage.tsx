@@ -63,11 +63,11 @@ export default function SupportPage() {
     <div className="min-h-screen bg-background">
       <NavbarAuth />
 
-      <div className="container mx-auto max-w-6xl px-6 pb-4 pt-24">
+      <div className="container mx-auto max-w-6xl px-4 pb-4 pt-24 sm:px-6">
         <WalletBalanceWidget showRefresh={true} />
       </div>
 
-      <main className="container mx-auto max-w-6xl px-6 pb-12">
+      <main className="container mx-auto max-w-6xl overflow-x-hidden px-4 pb-12 sm:px-6">
         <div className="mb-10 text-center">
           <h1 className="mb-4 text-4xl font-bold">Support Center</h1>
           <p className="mx-auto max-w-2xl text-xl text-muted-foreground">
@@ -104,20 +104,20 @@ export default function SupportPage() {
         </div>
 
         {hasAny && (
-          <Card className="mb-10 overflow-hidden border-emerald-200">
-            <div className="grid lg:grid-cols-[1.2fr_0.8fr]">
-              <div className={`p-8 text-white md:p-10 ${hasWhatsApp ? 'bg-gradient-to-br from-emerald-600 via-teal-600 to-cyan-700' : 'bg-gradient-to-br from-sky-600 via-blue-600 to-indigo-700'}`}>
-                <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-white/15">
+          <Card className="mb-10 max-w-full overflow-hidden border-emerald-200">
+            <div className="grid min-w-0 lg:grid-cols-[1.2fr_0.8fr]">
+              <div className={`min-w-0 p-6 text-white sm:p-8 md:p-10 ${hasWhatsApp ? 'bg-gradient-to-br from-emerald-600 via-teal-600 to-cyan-700' : 'bg-gradient-to-br from-sky-600 via-blue-600 to-indigo-700'}`}>
+                <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15 sm:mb-6 sm:h-14 sm:w-14">
                   {hasWhatsApp
-                    ? <WhatsAppIcon className="h-7 w-7" />
-                    : <TelegramIcon className="h-7 w-7" />}
+                    ? <WhatsAppIcon className="h-6 w-6 sm:h-7 sm:w-7" />
+                    : <TelegramIcon className="h-6 w-6 sm:h-7 sm:w-7" />}
                 </div>
-                <h2 className="mb-3 text-3xl font-bold">Message support</h2>
-                <p className="mb-8 max-w-xl text-white/80">
+                <h2 className="mb-3 text-2xl font-bold leading-tight sm:text-3xl">Message support</h2>
+                <p className="mb-6 max-w-xl text-sm leading-6 text-white/85 sm:mb-8 sm:text-base">
                   Relay all account, wallet, payment, and order problems to our support team so we can respond from one place.
                 </p>
-                <div className="flex flex-col gap-3 sm:flex-row flex-wrap">
-                  <Button asChild size="lg" className={primaryColor}>
+                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap">
+                  <Button asChild size="lg" className={`${primaryColor} w-full min-w-0 justify-center whitespace-normal text-xs sm:w-auto sm:text-sm`}>
                     <a href={primaryUrl} target="_blank" rel="noopener noreferrer">
                       {hasWhatsApp
                         ? <WhatsAppIcon className="mr-2 h-5 w-5" />
@@ -126,7 +126,7 @@ export default function SupportPage() {
                     </a>
                   </Button>
                   {hasWhatsApp && hasTelegram && (
-                    <Button asChild size="lg" variant="outline" className="border-white/40 bg-white/10 text-white hover:bg-white/20">
+                    <Button asChild size="lg" variant="outline" className="w-full min-w-0 justify-center whitespace-normal border-white/40 bg-white/10 text-xs text-white hover:bg-white/20 sm:w-auto sm:text-sm">
                       <a href={support.telegramUrl} target="_blank" rel="noopener noreferrer">
                         <TelegramIcon className="mr-2 h-4 w-4" />
                         Telegram support
@@ -136,12 +136,12 @@ export default function SupportPage() {
                 </div>
               </div>
 
-              <CardContent className="space-y-5 p-8 md:p-10">
+              <CardContent className="min-w-0 space-y-5 p-6 sm:p-8 md:p-10">
                 <div className="flex items-start gap-4">
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
                     <ReceiptText className="h-5 w-5" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <h3 className="font-semibold">Include useful details</h3>
                     <p className="text-sm text-muted-foreground">
                       Send your account email, order ID, payment reference, receipt, and a short issue summary.
@@ -152,7 +152,7 @@ export default function SupportPage() {
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
                     <Clock className="h-5 w-5" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <h3 className="font-semibold">Response window</h3>
                     <p className="text-sm text-muted-foreground">
                       We prioritize wallet, payment, and completed-order access issues first.
@@ -163,7 +163,7 @@ export default function SupportPage() {
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-purple-100 text-purple-700">
                     <ShieldCheck className="h-5 w-5" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <h3 className="font-semibold">Account safety</h3>
                     <p className="text-sm text-muted-foreground">
                       Never share your TallyStore password. Support will only ask for order and payment details.

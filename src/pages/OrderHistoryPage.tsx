@@ -1,13 +1,27 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Download, Search, Package, Clock, CheckCircle, XCircle, RefreshCw, Loader2 } from 'lucide-react'
+import { Alert } from '@/components/ui/alert'
+import {
+  ArrowLeft,
+  Calendar,
+  CheckCircle,
+  Clock,
+  Copy,
+  Download,
+  ExternalLink,
+  KeyRound,
+  Loader2,
+  Package,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  XCircle,
+} from 'lucide-react'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import WalletBalanceWidget from '@/components/WalletBalanceWidget'
@@ -31,6 +45,231 @@ const statusIcons = {
   pending: Clock
 }
 
+const credentialFields = [
+  { keys: ['username', 'id', 'login', 'account_id'], label: 'ID', tone: 'text-slate-700 dark:text-slate-300' },
+  { keys: ['password', 'pass'], label: 'PASSWORD', tone: 'text-rose-500' },
+  { keys: ['two_fa_code', 'two_factor', 'two_factor_code', '2fa', '2fa_key'], label: '2FA KEY', tone: 'text-purple-500' },
+  { keys: ['email', 'mail'], label: 'EMAIL', tone: 'text-emerald-500' },
+  { keys: ['email_password', 'mail_password', 'mail_pass', 'mailpass'], label: 'MAIL PASS', tone: 'text-orange-500' },
+  { keys: ['recovery', 'recovery_email', 'backup_email'], label: 'RECOVERY', tone: 'text-sky-500' },
+  { keys: ['recovery_email_password', 'recovery_password', 'backup_email_password', 'backup_password'], label: 'RECOVERY PASS', tone: 'text-cyan-500' },
+  { keys: ['additional_info', 'notes', 'note'], label: 'NOTES', tone: 'text-slate-500 dark:text-slate-400' },
+]
+
+function getOrderAccounts(order: any) {
+  if (Array.isArray(order?.account_details?.accounts)) {
+    return order.account_details.accounts
+  }
+
+  if (order?.account_details?.username || order?.account_details?.email || order?.account_details?.password) {
+    return [{
+      username: order.account_details.username,
+      password: order.account_details.password,
+      email: order.account_details.email,
+      email_password: order.account_details.email_password,
+      two_fa_code: order.account_details.two_fa_code,
+      additional_info: order.account_details.additional_info,
+      recovery: order.account_details.recovery,
+      recovery_email: order.account_details.recovery_email,
+      recovery_email_password: order.account_details.recovery_email_password,
+    }]
+  }
+
+  return []
+}
+
+function readCredentialValue(account: any, keys: string[]) {
+  const key = keys.find((candidate) => account?.[candidate] !== undefined && account?.[candidate] !== null && String(account[candidate]).trim() !== '')
+  return key ? String(account[key]) : ''
+}
+
+function getOrderProductName(order: any) {
+  return order?.account_details?.product_name || order?.product_groups?.name || 'Purchased account'
+}
+
+function getOrderPlatform(order: any) {
+  return order?.account_details?.category || order?.product_groups?.categories?.name || 'Social Media'
+}
+
+function buildCredentialText(order: any) {
+  const accounts = getOrderAccounts(order)
+  const lines = [
+    'TallyStore Order Credentials',
+    `Order: ${order.id}`,
+    `Product: ${getOrderProductName(order)}`,
+    `Platform: ${getOrderPlatform(order)}`,
+    `Items: ${accounts.length || order?.account_details?.quantity || 1}`,
+    '',
+  ]
+
+  accounts.forEach((account: any, index: number) => {
+    lines.push(`Account ${index + 1}`)
+    credentialFields.forEach((field) => {
+      const value = readCredentialValue(account, field.keys)
+      if (value) lines.push(`${field.label}: ${value}`)
+    })
+    lines.push('')
+  })
+
+  return lines.join('\n')
+}
+
+function OrderDetailsView({
+  order,
+  formatPrice,
+  formatDate,
+  onCopyAll,
+  onDownload,
+  onCopyText,
+}: {
+  order: any
+  formatPrice: (amount: number) => string
+  formatDate: (value: string) => { date: string; time: string }
+  onCopyAll: (order: any) => void
+  onDownload: (order: any) => void
+  onCopyText: (text: string, label?: string) => void
+}) {
+  const accounts = getOrderAccounts(order)
+  const productName = getOrderProductName(order)
+  const platform = getOrderPlatform(order)
+  const itemCount = accounts.length || order?.account_details?.quantity || 1
+  const { date } = formatDate(order.created_at)
+  const canAccessCredentials = order.status === 'completed' && accounts.length > 0
+
+  return (
+    <div className="mx-auto max-w-3xl space-y-5">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <Button
+          type="button"
+          variant="outline"
+          className="h-11 justify-center rounded-xl border-purple-400/30 bg-purple-500/10 font-black text-purple-700 hover:bg-purple-500/15 dark:text-purple-300"
+          onClick={() => onCopyAll(order)}
+          disabled={!canAccessCredentials}
+        >
+          <Copy className="h-4 w-4" />
+          Copy All
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-11 justify-center rounded-xl font-black"
+          onClick={() => onDownload(order)}
+          disabled={!canAccessCredentials}
+        >
+          <Download className="h-4 w-4" />
+          Download .txt
+        </Button>
+        <Button
+          asChild
+          className="h-11 justify-center rounded-xl bg-amber-500 font-black text-white shadow-[0_12px_32px_rgba(245,158,11,0.24)] hover:bg-amber-400"
+        >
+          <Link to="/how-it-works">
+            <ExternalLink className="h-4 w-4" />
+            How to Login
+          </Link>
+        </Button>
+      </div>
+
+      <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-amber-900 dark:text-amber-100">
+        <div className="flex gap-3">
+          <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+          <p className="text-sm font-bold leading-6">
+            Please kindly use a GOOD VPN to login and add 2-step verification after purchase.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {[
+          ['Platform', platform],
+          ['Items', String(itemCount)],
+          ['Total', formatPrice(Number(order.amount || 0))],
+          ['Date', date],
+        ].map(([label, value]) => (
+          <div key={label} className="min-w-0 rounded-2xl border border-slate-200 bg-slate-100/80 p-4 dark:border-white/10 dark:bg-slate-900">
+            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">{label}</p>
+            <p className="mt-2 break-words text-lg font-black text-slate-950 dark:text-white sm:text-xl">{value}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-slate-100/80 p-4 dark:border-white/10 dark:bg-slate-900">
+        <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Product</p>
+        <p className="mt-2 whitespace-pre-wrap break-words text-lg font-black leading-7 text-slate-950 dark:text-white">
+          {productName}
+        </p>
+      </div>
+
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-lg font-black uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+            Credentials ({accounts.length})
+          </h3>
+          <Badge variant={statusColors[order.status as keyof typeof statusColors] || 'outline'}>
+            {order.status}
+          </Badge>
+        </div>
+
+        {!canAccessCredentials ? (
+          <Card className="rounded-2xl border-slate-200 bg-white/85 dark:border-white/10 dark:bg-white/[0.035]">
+            <CardContent className="p-6 text-center">
+              <KeyRound className="mx-auto h-10 w-10 text-muted-foreground" />
+              <p className="mt-3 font-black">Credentials are not available yet</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                This order is {order.status}. Completed orders will show the purchased account details here.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-3">
+            {accounts.map((account: any, index: number) => (
+              <div key={`${order.id}-${index}`} className="rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-sm dark:border-white/10 dark:bg-slate-950">
+                <div className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3">
+                  <div className="pt-1 text-center text-sm font-black text-slate-400">{index + 1}</div>
+                  <div className="min-w-0 space-y-2">
+                    {credentialFields.map((field) => {
+                      const value = readCredentialValue(account, field.keys)
+                      if (!value) return null
+
+                      return (
+                        <div key={field.label} className="grid min-w-0 grid-cols-[5.8rem_minmax(0,1fr)_2rem] items-start gap-2 text-sm sm:grid-cols-[7rem_minmax(0,1fr)_2rem]">
+                          <span className={`pt-1 text-[11px] font-black uppercase tracking-[0.12em] ${field.tone}`}>
+                            {field.label}
+                          </span>
+                          <span className="min-w-0 whitespace-pre-wrap break-words rounded-lg bg-slate-100 px-2 py-1.5 font-mono text-sm leading-5 text-slate-800 dark:bg-white/[0.06] dark:text-slate-200">
+                            {value}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onCopyText(value, `${field.label} copied`)}
+                            className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-purple-600 dark:hover:bg-white/10 dark:hover:text-purple-300"
+                            aria-label={`Copy ${field.label}`}
+                          >
+                            <Copy className="h-4 w-4" />
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.035]">
+        <div className="flex items-start gap-3">
+          <Calendar className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            Purchased on {date}. Keep these credentials private and update security details after login.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function OrderHistoryPage() {
   const location = useLocation()
   const { user, showBalances } = useAuth()
@@ -43,6 +282,7 @@ export default function OrderHistoryPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
+  const [selectedOrder, setSelectedOrder] = useState<any | null>(null)
 
   // Check for purchase success message
   useEffect(() => {
@@ -53,7 +293,7 @@ export default function OrderHistoryPage() {
       
       toast({
         title: "Purchase Successful! 🎉",
-        description: `You purchased ${accountText} from ${productName}. Click "Download Credentials" below to access your account details.`,
+        description: `You purchased ${accountText} from ${productName}. Open the order details below to copy or download your credentials.`,
         duration: 10000, // Show for 10 seconds instead of default 5
       })
     }
@@ -122,45 +362,49 @@ export default function OrderHistoryPage() {
     setFilteredOrders(filtered)
   }, [orders, searchTerm, statusFilter, categoryFilter])
 
-  const handleDownload = (order: any) => {
-    // Handle both bulk purchases (accounts array) and single purchases (direct properties)
-    const accountsData = order.account_details?.accounts 
-      ? order.account_details.accounts  // Bulk purchase - array of accounts
-      : order.account_details?.username  // Single purchase - check if direct properties exist
-        ? [{  // Wrap single account in array for consistent structure
-            username: order.account_details.username,
-            password: order.account_details.password,
-            email: order.account_details.email,
-            email_password: order.account_details.email_password,
-            two_fa_code: order.account_details.two_fa_code,
-            additional_info: order.account_details.additional_info
-          }]
-        : [] // No account data found
+  const copyText = async (text: string, label = 'Copied') => {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast({ title: label })
+    } catch {
+      toast({
+        variant: 'destructive',
+        title: 'Copy failed',
+        description: 'Please select and copy the text manually.',
+      })
+    }
+  }
 
-    // Validate we have account credentials
-    if (!accountsData || accountsData.length === 0) {
-      alert('❌ No account credentials found for this order. Please contact support.')
+  const handleCopyAll = (order: any) => {
+    const accountsData = getOrderAccounts(order)
+    if (!accountsData.length) {
+      toast({
+        variant: 'destructive',
+        title: 'No credentials found',
+        description: 'Please contact support for this order.',
+      })
       return
     }
 
-    // Simplified credentials structure - only the essential account data
-    const credentials = {
-      accounts: accountsData.map((account, index) => ({
-        accountNumber: index + 1,
-        username: account.username,
-        password: account.password,
-        email: account.email,
-        email_password: account.email_password,
-        two_fa_code: account.two_fa_code,
-        additional_info: account.additional_info
-      }))
+    copyText(buildCredentialText(order), 'Credentials copied')
+  }
+
+  const handleDownload = (order: any) => {
+    const accountsData = getOrderAccounts(order)
+    if (!accountsData.length) {
+      toast({
+        variant: 'destructive',
+        title: 'No credentials found',
+        description: 'Please contact support for this order.',
+      })
+      return
     }
 
-    const blob = new Blob([JSON.stringify(credentials, null, 2)], { type: 'application/json' })
+    const blob = new Blob([buildCredentialText(order)], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${order.id}-credentials.json`
+    a.download = `${order.id}-credentials.txt`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -217,12 +461,42 @@ export default function OrderHistoryPage() {
                 📥 Your Credentials Are Ready!
               </h3>
               <p className="text-sm text-green-700 dark:text-green-300">
-                Your purchase is complete! Click the <strong>"Download Credentials"</strong> button on your latest order below to get your account details as a JSON file.
+                Your purchase is complete. Open your latest order below to view, copy, or download the credentials.
               </p>
             </div>
           </Alert>
         )}
 
+        {selectedOrder ? (
+          <section className="mt-8">
+            <div className="mb-5 flex items-center gap-3">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="rounded-full"
+                onClick={() => setSelectedOrder(null)}
+                aria-label="Back to orders"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+              <div className="min-w-0">
+                <h2 className="text-2xl font-black tracking-normal">Order Details</h2>
+                <p className="truncate text-sm text-muted-foreground">{selectedOrder.id}</p>
+              </div>
+            </div>
+
+            <OrderDetailsView
+              order={selectedOrder}
+              formatPrice={formatPrice}
+              formatDate={formatDate}
+              onCopyAll={handleCopyAll}
+              onDownload={handleDownload}
+              onCopyText={copyText}
+            />
+          </section>
+        ) : (
+          <>
         {/* Stats */}
         <div className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
           <RevampCard>
@@ -428,12 +702,11 @@ export default function OrderHistoryPage() {
                         <Button
                           variant="default"
                           size="default"
-                          onClick={() => handleDownload(order)}
-                          disabled={order.status !== 'completed'}
+                          onClick={() => setSelectedOrder(order)}
                           className="min-w-[140px]"
                         >
-                          <Download className="h-4 w-4 mr-2" />
-                          Download Credentials
+                          <Package className="h-4 w-4 mr-2" />
+                          View Details
                         </Button>
                       </div>
                     </div>
@@ -442,6 +715,8 @@ export default function OrderHistoryPage() {
               )
             })}
           </div>
+        )}
+          </>
         )}
       </RevampPage>
 
