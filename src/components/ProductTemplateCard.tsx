@@ -48,10 +48,10 @@ export default function ProductTemplateCard({
   const productNameLength = productGroup.name.length
   const productTitleSizeClass =
     productNameLength > 56
-      ? 'text-[9px] sm:text-xs'
+      ? 'text-[8px] sm:text-xs'
       : productNameLength > 38
-        ? 'text-[10px] sm:text-[13px]'
-        : 'text-[11px] sm:text-sm'
+        ? 'text-[9px] sm:text-[13px]'
+        : 'text-[10px] sm:text-sm'
 
   const handleQuantityChange = (newQuantity: number) => {
     if (newQuantity >= 1 && newQuantity <= maxQuantity) {
@@ -66,11 +66,11 @@ export default function ProductTemplateCard({
   }
 
   return (
-    <Card className="group overflow-hidden rounded-xl border border-slate-200 bg-white/90 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-purple-300 hover:shadow-lg dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35">
-      <CardHeader className="px-2.5 pb-2 pt-2.5 sm:px-3.5 sm:pb-2.5 sm:pt-3.5">
+    <Card className="group min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200 bg-white/90 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-purple-300 hover:shadow-lg dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35">
+      <CardHeader className="min-w-0 px-2 pb-2 pt-2 sm:px-3.5 sm:pb-2.5 sm:pt-3.5">
         <div className="mb-2 flex items-start justify-between gap-2 sm:mb-3 sm:gap-3">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300 sm:h-10 sm:w-10 sm:rounded-xl">
-            <Package className="h-4 w-4 sm:h-5 sm:w-5" />
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300 sm:h-10 sm:w-10 sm:rounded-xl">
+            <Package className="h-3.5 w-3.5 sm:h-5 sm:w-5" />
           </span>
           {productGroup.stock_count > 0 && productGroup.stock_count <= 10 && (
             <Badge className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-black text-amber-600 hover:bg-amber-500/10 dark:text-amber-400">
@@ -79,7 +79,7 @@ export default function ProductTemplateCard({
           )}
         </div>
         <CardTitle
-          className={`min-h-[3.85em] max-w-full overflow-hidden font-black uppercase leading-snug tracking-normal transition-colors [overflow-wrap:anywhere] [word-break:break-word] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] group-hover:text-purple-700 dark:group-hover:text-purple-300 sm:min-h-[2.55em] sm:[-webkit-line-clamp:2] ${productTitleSizeClass}`}
+          className={`min-h-[3.75em] max-w-full overflow-hidden font-black uppercase leading-tight tracking-normal transition-colors [overflow-wrap:anywhere] [word-break:break-word] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] group-hover:text-purple-700 dark:group-hover:text-purple-300 sm:min-h-[2.55em] sm:leading-snug sm:[-webkit-line-clamp:2] ${productTitleSizeClass}`}
           title={productGroup.name}
         >
           {productGroup.name}
@@ -97,10 +97,10 @@ export default function ProductTemplateCard({
         )}
       </CardHeader>
 
-      <CardContent className="space-y-2 px-2.5 pb-2.5 pt-0 sm:space-y-2.5 sm:px-3.5 sm:pb-3.5">
+      <CardContent className="min-w-0 space-y-2 px-2 pb-2.5 pt-0 sm:space-y-2.5 sm:px-3.5 sm:pb-3.5">
         {/* Stock and Price Info */}
-        <div className="flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <span className="text-[10px] sm:text-xs">
+        <div className="flex min-w-0 flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <span className="min-w-0 max-w-full text-[9px] sm:text-xs">
             {isOutOfStock ? (
               <Badge variant="destructive" className="text-[10px] px-1.5 py-0">Out of Stock</Badge>
             ) : isLowStock ? (
@@ -116,8 +116,8 @@ export default function ProductTemplateCard({
               <span className="text-muted-foreground">Instant delivery</span>
             )}
           </span>
-          <div className="text-left sm:text-right">
-            <div className="text-sm font-black leading-tight text-slate-950 dark:text-white sm:text-base">
+          <div className="min-w-0 text-left sm:text-right">
+            <div className="break-words text-sm font-black leading-tight text-slate-950 dark:text-white sm:text-base">
               {formatPrice(productGroup.price)}
             </div>
           </div>
@@ -125,12 +125,12 @@ export default function ProductTemplateCard({
 
         {/* Quantity Selection */}
         {!isOutOfStock && (
-          <div className="flex items-center justify-between gap-1.5 sm:gap-2">
+          <div className="flex min-w-0 flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
             <div className="flex items-center gap-1">
               <Button
                 variant="outline"
                 size="sm"
-                className="h-6 w-6 p-0"
+                className="h-6 w-6 shrink-0 p-0"
                 onClick={() => handleQuantityChange(quantity - 1)}
                 disabled={quantity <= 1}
               >
@@ -143,20 +143,20 @@ export default function ProductTemplateCard({
                 max={maxQuantity}
                 value={quantity}
                 onChange={(e) => handleQuantityChange(parseInt(e.target.value) || 1)}
-                className="h-6 w-8 px-1 text-center text-xs sm:w-10"
+                className="h-6 w-8 shrink-0 px-1 text-center text-xs sm:w-10"
               />
 
               <Button
                 variant="outline"
                 size="sm"
-                className="h-6 w-6 p-0"
+                className="h-6 w-6 shrink-0 p-0"
                 onClick={() => handleQuantityChange(quantity + 1)}
                 disabled={quantity >= maxQuantity}
               >
                 <Plus className="h-3 w-3" />
               </Button>
             </div>
-            <span className="min-w-0 text-right text-[10px] font-semibold text-primary sm:text-xs">
+            <span className="max-w-full break-words text-left text-[9px] font-semibold text-primary sm:text-right sm:text-xs">
               {discountPct > 0 && (
                 <span className="block text-[10px] text-muted-foreground line-through font-normal">
                   {formatPrice(productGroup.price * quantity)}

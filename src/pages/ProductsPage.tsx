@@ -290,10 +290,10 @@ export default function ProductsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_20%_0%,rgba(168,85,247,0.10),transparent_30rem),linear-gradient(180deg,#ffffff_0%,#f7f9fc_55%,#eef3f8_100%)] text-slate-950 dark:bg-[radial-gradient(circle_at_20%_0%,rgba(126,51,231,0.16),transparent_30rem),linear-gradient(180deg,#05070d_0%,#07111d_100%)] dark:text-white">
+    <div className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_20%_0%,rgba(168,85,247,0.10),transparent_30rem),linear-gradient(180deg,#ffffff_0%,#f7f9fc_55%,#eef3f8_100%)] text-slate-950 dark:bg-[radial-gradient(circle_at_20%_0%,rgba(126,51,231,0.16),transparent_30rem),linear-gradient(180deg,#05070d_0%,#07111d_100%)] dark:text-white">
       <Navbar />
 
-      <main className="mx-auto w-full max-w-7xl px-4 pb-12 pt-5 sm:px-6 lg:px-8">
+      <main className="mx-auto w-full max-w-7xl overflow-x-hidden px-3 pb-12 pt-5 sm:px-6 lg:px-8">
         <div className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
           <Link to="/" className="inline-flex items-center gap-1 transition hover:text-purple-600 dark:hover:text-purple-300">
             <Home className="h-3.5 w-3.5" />
@@ -312,17 +312,17 @@ export default function ProductsPage() {
             </Link>
           </div>
 
-          <div className="grid grid-cols-5 gap-2 sm:grid-cols-4 sm:gap-3 lg:grid-cols-8">
+          <div className="grid min-w-0 grid-cols-[repeat(5,minmax(0,1fr))] gap-1.5 sm:grid-cols-4 sm:gap-3 lg:grid-cols-8">
             <button
               type="button"
               onClick={() => setSelectedCategory('all')}
-              className={`flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 rounded-lg border px-1.5 py-2 text-center transition sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
+              className={`flex min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border px-1 py-2 text-center transition sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
                 selectedCategory === 'all'
                   ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
                   : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
               }`}
             >
-              <span className="grid h-8 w-8 place-items-center rounded-lg bg-purple-500/20 sm:h-9 sm:w-9">
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-purple-500/20 sm:h-9 sm:w-9">
                 <LayoutGrid className="h-4 w-4 sm:h-5 sm:w-5" />
               </span>
               <span className="min-w-0 max-w-full">
@@ -340,13 +340,13 @@ export default function ProductsPage() {
                   key={category.id}
                   type="button"
                   onClick={() => setSelectedCategory(category.id)}
-                  className={`flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 rounded-lg border px-1.5 py-2 text-center transition sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
+                  className={`flex min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border px-1 py-2 text-center transition sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
                     active
                       ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
                       : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
                   }`}
                 >
-                  <span className={`grid h-8 w-8 place-items-center rounded-lg sm:h-9 sm:w-9 ${active ? 'bg-white/15 text-white' : style.bg}`}>
+                  <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg sm:h-9 sm:w-9 ${active ? 'bg-white/15 text-white' : style.bg}`}>
                     <Icon className={`h-4 w-4 sm:h-5 sm:w-5 ${active ? 'text-white' : style.color}`} />
                   </span>
                   <span className="min-w-0 max-w-full">
@@ -366,13 +366,13 @@ export default function ProductsPage() {
                   key={category.id}
                   type="button"
                   onClick={() => setSelectedCategory(category.id)}
-                  className={`hidden min-h-16 min-w-0 flex-col items-center justify-center gap-1 rounded-lg border px-1.5 py-2 text-center transition sm:flex sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
+                  className={`hidden min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border px-1 py-2 text-center transition sm:flex sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
                     active
                       ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
                       : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
                   }`}
                 >
-                  <span className={`grid h-8 w-8 place-items-center rounded-lg sm:h-9 sm:w-9 ${active ? 'bg-white/15 text-white' : style.bg}`}>
+                  <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg sm:h-9 sm:w-9 ${active ? 'bg-white/15 text-white' : style.bg}`}>
                     <Icon className={`h-4 w-4 sm:h-5 sm:w-5 ${active ? 'text-white' : style.color}`} />
                   </span>
                   <span className="min-w-0 max-w-full">
@@ -385,9 +385,9 @@ export default function ProductsPage() {
 
             <Link
               to="/products"
-              className="flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white/85 px-1.5 py-2 text-center transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left"
+              className="flex min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-1 py-2 text-center transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left"
             >
-              <span className="grid h-8 w-8 place-items-center rounded-lg bg-slate-100 dark:bg-white/10 sm:h-9 sm:w-9">
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-slate-100 dark:bg-white/10 sm:h-9 sm:w-9">
                 <MoreHorizontal className="h-4 w-4 sm:h-5 sm:w-5" />
               </span>
               <span className="min-w-0 max-w-full">
@@ -399,7 +399,7 @@ export default function ProductsPage() {
         </section>
 
         <section className="mb-8">
-          <div className="mb-3 flex items-center gap-2">
+          <div className="mb-3 grid min-w-0 grid-cols-3 items-center gap-1">
             {([
               ['popular', 'Popular'],
               ['refilled', 'Refilled'],
@@ -409,7 +409,7 @@ export default function ProductsPage() {
                 key={value}
                 type="button"
                 onClick={() => setActiveCollection(value)}
-                className={`relative px-4 py-2 text-sm font-black transition ${
+                className={`relative min-w-0 px-1 py-2 text-center text-xs font-black transition sm:px-4 sm:text-sm ${
                   activeCollection === value ? 'text-purple-700 dark:text-purple-300' : 'text-slate-500 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
@@ -417,24 +417,24 @@ export default function ProductsPage() {
                 {activeCollection === value && <span className="absolute inset-x-3 -bottom-0.5 h-0.5 rounded-full bg-purple-600" />}
               </button>
             ))}
-            <Link to="/products" className="ml-auto hidden items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 sm:inline-flex">
+            <Link to="/products" className="ml-auto hidden items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 lg:inline-flex">
               View all
               <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-3">
+          <div className="grid min-w-0 gap-2.5 lg:grid-cols-3">
             {collectionGroups[activeCollection].slice(0, 9).map((productGroup) => (
               <button
                 key={productGroup.id}
                 type="button"
                 onClick={() => goToProduct(productGroup)}
-                className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white/85 px-4 py-3 text-left text-sm font-black shadow-sm transition hover:border-purple-300 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/30 dark:hover:bg-white/[0.06]"
+                className="flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-3 py-2.5 text-left text-xs font-black shadow-sm transition hover:border-purple-300 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/30 dark:hover:bg-white/[0.06] sm:px-4 sm:py-3 sm:text-sm"
                 title={productGroup.name}
               >
                 <span className="flex min-w-0 items-center gap-3">
                   <Package className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-300" />
-                  <span className="truncate">{productGroup.name}</span>
+                  <span className="block min-w-0 max-w-full truncate">{productGroup.name}</span>
                 </span>
                 <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
               </button>
@@ -451,32 +451,32 @@ export default function ProductsPage() {
               </Badge>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-[auto_minmax(210px,1fr)_160px_auto] lg:min-w-[620px]">
+            <div className="grid min-w-0 gap-2.5 sm:grid-cols-[auto_minmax(210px,1fr)_160px_auto] sm:gap-3 lg:min-w-[620px]">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => loadData(false)}
                 disabled={refreshing}
-                className="h-10 rounded-lg"
+                className="h-10 min-w-0 rounded-lg"
               >
                 {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 Refresh Stock
               </Button>
 
-              <div className="relative">
+              <div className="relative min-w-0">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <Input
                   placeholder="Search products..."
                   value={searchTerm}
                   onChange={(event) => setSearchTerm(event.target.value)}
-                  className="h-10 rounded-lg border-slate-200 bg-white/85 pl-10 dark:border-white/10 dark:bg-white/[0.035]"
+                  className="h-10 min-w-0 rounded-lg border-slate-200 bg-white/85 pl-10 dark:border-white/10 dark:bg-white/[0.035]"
                 />
               </div>
 
               <select
                 value={sortMode}
                 onChange={(event) => setSortMode(event.target.value as SortMode)}
-                className="h-10 rounded-lg border border-slate-200 bg-white/85 px-3 text-sm font-semibold outline-none dark:border-white/10 dark:bg-[#080d15]"
+                className="h-10 min-w-0 rounded-lg border border-slate-200 bg-white/85 px-3 text-sm font-semibold outline-none dark:border-white/10 dark:bg-[#080d15]"
               >
                 <option value="newest">Newest</option>
                 <option value="stock">Most stock</option>
@@ -495,7 +495,7 @@ export default function ProductsPage() {
             </div>
           </div>
 
-          <div className="grid gap-5 lg:grid-cols-[210px_minmax(0,1fr)]">
+          <div className="grid min-w-0 gap-5 lg:grid-cols-[210px_minmax(0,1fr)]">
             <aside className="hidden rounded-xl border border-slate-200 bg-white/85 p-3 shadow-sm dark:border-white/10 dark:bg-white/[0.035] lg:block">
               <CategorySidebar
                 categories={categories}
@@ -505,7 +505,7 @@ export default function ProductsPage() {
               />
             </aside>
 
-            <div>
+            <div className="min-w-0">
               {pageProductGroups.length === 0 ? (
                 <div className="rounded-xl border border-slate-200 bg-white/85 px-5 py-16 text-center shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
                   <Package className="mx-auto h-12 w-12 text-slate-400" />
@@ -513,9 +513,9 @@ export default function ProductsPage() {
                   <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Try a different category or search term.</p>
                 </div>
               ) : (
-                <div className={`grid ${
+                <div className={`grid min-w-0 ${
                   viewMode === 'grid'
-                    ? 'grid-cols-2 gap-2.5 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4'
+                    ? 'grid-cols-[repeat(2,minmax(0,1fr))] gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4'
                     : 'grid-cols-1 gap-4'
                 }`}>
                   {pageProductGroups.map((productGroup) => {
