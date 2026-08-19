@@ -29,7 +29,7 @@ import {
   MessageCircle,
   Share2,
   Star,
-  ShoppingCart,
+  PackageCheck,
   History,
   ArrowLeft,
 } from 'lucide-react';
@@ -663,7 +663,7 @@ export default function SocialBoostPage() {
               <CardContent className="p-3 sm:p-4 md:p-6">
                 <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'order' | 'history')}>
                   <TabsList className="grid w-full grid-cols-2 h-9 sm:h-10 md:h-12 mb-4 sm:mb-6">
-                    <TabsTrigger value="order" className="text-xs sm:text-sm md:text-base gap-1 sm:gap-2"><ShoppingCart className="w-3.5 h-3.5 sm:w-4 sm:h-4" /><span className="hidden xs:inline">New</span> Order</TabsTrigger>
+                    <TabsTrigger value="order" className="text-xs sm:text-sm md:text-base gap-1 sm:gap-2"><PackageCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4" /><span className="hidden xs:inline">New</span> Order</TabsTrigger>
                     <TabsTrigger value="history" className="text-xs sm:text-sm md:text-base gap-1 sm:gap-2"><History className="w-3.5 h-3.5 sm:w-4 sm:h-4" />History</TabsTrigger>
                   </TabsList>
 
@@ -765,7 +765,7 @@ export default function SocialBoostPage() {
                     {selectedService && (
                       <Card className="border-2 border-primary/50 bg-primary/5">
                         <CardHeader className="pb-2 sm:pb-3 p-3 sm:p-4 md:p-6">
-                          <CardTitle className="text-base sm:text-lg flex items-center gap-2"><ShoppingCart className="w-4 h-4 sm:w-5 sm:h-5" />Order Details</CardTitle>
+                          <CardTitle className="text-base sm:text-lg flex items-center gap-2"><PackageCheck className="w-4 h-4 sm:w-5 sm:h-5" />Order Details</CardTitle>
                           <div className="text-xs sm:text-sm text-muted-foreground flex items-center gap-2">
                             <span>Type:</span>
                             <Badge variant="secondary" className="text-xs">{selectedService.service_type}</Badge>
@@ -945,7 +945,7 @@ export default function SocialBoostPage() {
                                 ) : isBalanceInsufficient ? (
                                   <><AlertCircle className="w-4 h-4 sm:w-5 sm:h-5 mr-1.5" />Insufficient Balance</>
                                 ) : (
-                                  <><ShoppingCart className="w-4 h-4 sm:w-5 sm:h-5 mr-1.5" />Place Order • ₦{calculateTotal().toLocaleString()}</>
+                                  <><PackageCheck className="w-4 h-4 sm:w-5 sm:h-5 mr-1.5" />Place Order • ₦{calculateTotal().toLocaleString()}</>
                                 )}
                               </Button>
                             );

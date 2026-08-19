@@ -123,11 +123,16 @@
 
   body {
     @apply bg-background text-foreground;
+    overflow-x: hidden;
     /* Beautiful dark mode background pattern */
     background-image: 
       radial-gradient(circle at 20% 50%, hsl(var(--primary) / 0.08) 0%, transparent 50%),
       radial-gradient(circle at 80% 20%, hsl(var(--accent) / 0.08) 0%, transparent 50%),
       radial-gradient(circle at 40% 80%, hsl(var(--primary) / 0.08) 0%, transparent 50%);
+  }
+
+  html {
+    overflow-x: hidden;
   }
 
   .dark body {

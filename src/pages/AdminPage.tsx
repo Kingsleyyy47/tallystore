@@ -1215,7 +1215,7 @@ export default function AdminPage() {
         ${message.replace(/\n/g, '<br/>')}
       </div>
       <div style="text-align:center;margin-top:24px">
-        <a href="https://tallystore.org/dashboard" style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Dashboard</a>
+        <a href="https://tallystore.org/dashboard" style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Account Hub</a>
       </div>
       <div style="text-align:center;margin-top:32px;color:#999;font-size:12px"><p>TallyStore — Your trusted digital marketplace</p></div>
     </div>`
@@ -1947,11 +1947,11 @@ export default function AdminPage() {
       
       {/* Add padding-top to account for fixed navbar */}
       <div className="pt-20 sm:pt-24">
-        <div className="container mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        <div className="container mx-auto max-w-full overflow-x-hidden px-4 sm:px-6 py-6 sm:py-8">
           <div className="max-w-7xl mx-auto">
             {/* Header */}
             <div className="mb-6 sm:mb-8">
-              <h1 className="text-2xl sm:text-3xl font-bold mb-2">Admin Dashboard</h1>
+              <h1 className="text-2xl sm:text-3xl font-bold mb-2">Admin Workspace</h1>
               <p className="text-sm sm:text-base text-muted-foreground">
                 Manage products, categories, and view analytics
               </p>
@@ -2280,7 +2280,11 @@ export default function AdminPage() {
                             className="flex items-center gap-2 flex-1 text-left"
                             onClick={() => setSmmExpandedPlatforms(prev => {
                               const next = new Set(prev)
-                              next.has(platform) ? next.delete(platform) : next.add(platform)
+                              if (next.has(platform)) {
+                                next.delete(platform)
+                              } else {
+                                next.add(platform)
+                              }
                               return next
                             })}
                           >

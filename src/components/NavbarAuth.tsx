@@ -1,7 +1,28 @@
 import { useState, useCallback, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ThemeToggle"
-import { Menu, X, User, LogOut, Wallet, Download, Bitcoin, Gift, PhoneCall } from "lucide-react"
+import {
+  Bitcoin,
+  CreditCard,
+  Download,
+  Gift,
+  Home,
+  LayoutDashboard,
+  LifeBuoy,
+  LogOut,
+  Map,
+  Menu,
+  PackageCheck,
+  PhoneCall,
+  Rocket,
+  ShieldCheck,
+  ShoppingBag,
+  Smartphone,
+  Sparkles,
+  User,
+  Wallet,
+  X,
+} from "lucide-react"
 import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
@@ -18,6 +39,15 @@ const desktopNavClass = ({ isActive }: { isActive: boolean }) =>
     "after:absolute after:left-0 after:-bottom-1 after:h-0.5 after:w-full after:origin-left after:rounded-full after:bg-primary after:transition-transform after:duration-200",
     isActive ? "text-primary after:scale-x-100" : "after:scale-x-0 hover:after:scale-x-100",
   ].join(" ")
+
+const mobileMenuLinkClass =
+  "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold text-gray-700 transition-colors hover:bg-primary/10 hover:text-primary dark:text-gray-200 dark:hover:bg-white/5"
+
+const mobileMenuButtonClass =
+  "h-auto w-full justify-start gap-3 rounded-xl px-3 py-2.5 text-sm font-bold"
+
+const desktopDropdownItemClass =
+  "flex items-center gap-2 px-4 py-2 text-sm font-semibold transition hover:bg-gray-100 dark:hover:bg-gray-700"
 
 export default function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false)
@@ -158,67 +188,78 @@ export default function Navbar() {
                   </Button>
                   
                   {/* Dropdown Menu */}
-                  <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-md shadow-lg border border-gray-200 dark:border-gray-700 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
+                  <div className="absolute right-0 mt-2 w-56 rounded-xl border border-gray-200 bg-white shadow-lg opacity-0 invisible transition-all duration-200 group-hover:visible group-hover:opacity-100 dark:border-gray-700 dark:bg-gray-800 z-50">
                     <div className="py-2">
                       {isAdmin ? (
                         <>
-                          <Link to="/admin" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
-                            Admin Panel
+                          <Link to="/admin" className={desktopDropdownItemClass}>
+                            <ShieldCheck className="h-4 w-4" />
+                            Admin Workspace
                           </Link>
-                          <Link to="/dashboard" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
-                            My Dashboard
+                          <Link to="/dashboard" className={desktopDropdownItemClass}>
+                            <LayoutDashboard className="h-4 w-4" />
+                            Account Hub
                           </Link>
                         </>
                       ) : isStaff ? (
                         <>
-                          <Link to="/staff-admin" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 font-medium text-primary">
-                            Staff Panel
+                          <Link to="/staff-admin" className={`${desktopDropdownItemClass} text-primary`}>
+                            <ShieldCheck className="h-4 w-4" />
+                            Staff Workspace
                           </Link>
-                          <Link to="/dashboard" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
-                            Dashboard
+                          <Link to="/dashboard" className={desktopDropdownItemClass}>
+                            <LayoutDashboard className="h-4 w-4" />
+                            Account Hub
                           </Link>
                         </>
                       ) : (
-                        <Link to="/dashboard" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
-                          Dashboard
+                        <Link to="/dashboard" className={desktopDropdownItemClass}>
+                          <LayoutDashboard className="h-4 w-4" />
+                          Account Hub
                         </Link>
                       )}
-                      <Link to="/profile" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
+                      <Link to="/profile" className={desktopDropdownItemClass}>
+                        <User className="h-4 w-4" />
                         Profile Settings
                       </Link>
-                      <Link to="/orders" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
+                      <Link to="/orders" className={desktopDropdownItemClass}>
+                        <PackageCheck className="h-4 w-4" />
                         Order History
                       </Link>
                       {!isAdmin && (
-                        <Link to="/wallet" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
+                        <Link to="/wallet" className={desktopDropdownItemClass}>
+                          <Wallet className="h-4 w-4" />
                           Wallet
                         </Link>
                       )}
                       {!isAdmin && (
-                        <Link to="/referrals" className="px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <Link to="/referrals" className={desktopDropdownItemClass}>
                           <Gift className="h-4 w-4" />
-                          Referrals
+                          Rewards
                         </Link>
                       )}
-                      <Link to="/crypto-exchange" className="px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                      <Link to="/crypto-exchange" className={desktopDropdownItemClass}>
                         <Bitcoin className="h-4 w-4" />
                         Crypto Exchange
                       </Link>
-                      <Link to="/bills" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
-                        Bills Payment
+                      <Link to="/bills" className={desktopDropdownItemClass}>
+                        <CreditCard className="h-4 w-4" />
+                        Bills & Airtime
                       </Link>
-                      <Link to="/gift-cards" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700">
+                      <Link to="/gift-cards" className={desktopDropdownItemClass}>
+                        <Smartphone className="h-4 w-4" />
                         Gift Cards & eSIMs
                       </Link>
-                      <Link to="/sms-numbers" className="px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                      <Link to="/sms-numbers" className={desktopDropdownItemClass}>
                         <PhoneCall className="h-4 w-4" />
                         SMS Numbers
                       </Link>
-                      <Link to="/social-boost" className="block px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-pink-600 dark:text-pink-400">
-                        🚀 Social Boost
+                      <Link to="/social-boost" className={`${desktopDropdownItemClass} text-pink-600 dark:text-pink-400`}>
+                        <Rocket className="h-4 w-4" />
+                        Social Boost
                       </Link>
                       
-                      {/* Download App in dropdown */}
+                      {/* Install app in dropdown */}
                       {!isInstalled && (canInstall || true) && (
                         <>
                           <div className="border-t border-gray-200 dark:border-gray-600 my-2"></div>
@@ -227,13 +268,14 @@ export default function Navbar() {
                             className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-primary flex items-center gap-2"
                           >
                             <Download className="h-4 w-4" />
-                            Download App
+                            Install App
                           </button>
                         </>
                       )}
                       
                       <div className="border-t border-gray-200 dark:border-gray-600 my-2"></div>
-                      <button onClick={handleSignOut} className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-red-600">
+                      <button onClick={handleSignOut} className={`${desktopDropdownItemClass} w-full text-left text-red-600`}>
+                        <LogOut className="h-4 w-4" />
                         Sign Out
                       </button>
                     </div>
@@ -253,7 +295,7 @@ export default function Navbar() {
               </div>
             ) : (
               <div className="flex items-center space-x-4">
-                {/* Download App Button for non-logged-in users */}
+                {/* Install app button for non-logged-in users */}
                 {!isInstalled && (canInstall || true) && (
                   <Button 
                     variant="outline"
@@ -261,7 +303,7 @@ export default function Navbar() {
                     className="border-primary/50 text-primary hover:bg-primary/10"
                   >
                     <Download className="h-4 w-4 mr-2" />
-                    Download App
+                    Install App
                   </Button>
                 )}
                 
@@ -297,7 +339,7 @@ export default function Navbar() {
               {isMobileMenuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
             </button>
 
-            <Link to="/" className="max-w-[calc(100%-144px)] truncate text-center text-xl font-black tracking-normal text-gray-950 dark:text-white">
+            <Link to="/" className="max-w-[calc(100%-172px)] truncate text-center text-lg font-black tracking-normal text-gray-950 dark:text-white min-[360px]:text-xl">
               Tally<span className="text-primary">Store</span>
             </Link>
 
@@ -326,88 +368,93 @@ export default function Navbar() {
         {/* Mobile Menu */}
         {isMobileMenuOpen && (
           <div className="md:hidden mt-4 mobile-menu-bg backdrop-blur-md rounded-lg border border-gray-200/50 dark:border-gray-700/50 p-4">
-            <div className="flex flex-col space-y-4">
+            <div className="flex flex-col space-y-2">
               <Link 
                 to="/" 
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="text-left text-gray-700 dark:text-gray-300 hover:text-primary transition-colors py-2"
+                className={mobileMenuLinkClass}
               >
+                <Home className="h-4 w-4 shrink-0" />
                 Home
               </Link>
               <Link 
                 to="/products" 
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="text-left text-gray-700 dark:text-gray-300 hover:text-primary transition-colors py-2"
+                className={mobileMenuLinkClass}
               >
-                Products
+                <ShoppingBag className="h-4 w-4 shrink-0" />
+                Shop Products
               </Link>
               <Link 
                 to="/web-services" 
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="text-left text-gray-700 dark:text-gray-300 hover:text-primary transition-colors py-2"
+                className={mobileMenuLinkClass}
               >
-                Services
+                <Sparkles className="h-4 w-4 shrink-0" />
+                Digital Services
               </Link>
               <Link 
                 to="/support" 
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="text-left text-gray-700 dark:text-gray-300 hover:text-primary transition-colors py-2"
+                className={mobileMenuLinkClass}
               >
-                Support
+                <LifeBuoy className="h-4 w-4 shrink-0" />
+                Help Center
               </Link>
               <Link
                 to="/how-it-works"
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="text-left text-gray-700 dark:text-gray-300 hover:text-primary transition-colors py-2"
+                className={mobileMenuLinkClass}
               >
+                <Map className="h-4 w-4 shrink-0" />
                 How It Works
               </Link>
 
-              <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+              <div className="mt-2 border-t border-gray-200 pt-3 dark:border-gray-700">
                 {user ? (
-                  <div className="space-y-4">
+                  <div className="space-y-2">
                     {isAdmin ? (
                       <>
                         <Link to="/admin" onClick={() => setIsMobileMenuOpen(false)}>
-                          <Button variant="ghost" className="w-full justify-start gap-2">
-                            <User className="h-4 w-4" />
-                            Admin Panel
+                          <Button variant="ghost" className={mobileMenuButtonClass}>
+                            <ShieldCheck className="h-4 w-4 shrink-0" />
+                            Admin Workspace
                           </Button>
                         </Link>
                         <Link to="/dashboard" onClick={() => setIsMobileMenuOpen(false)}>
-                          <Button variant="ghost" className="w-full justify-start gap-2">
-                            <User className="h-4 w-4" />
-                            My Dashboard
+                          <Button variant="ghost" className={mobileMenuButtonClass}>
+                            <LayoutDashboard className="h-4 w-4 shrink-0" />
+                            Account Hub
                           </Button>
                         </Link>
                       </>
                     ) : isStaff ? (
                       <>
                         <Link to="/staff-admin" onClick={() => setIsMobileMenuOpen(false)}>
-                          <Button variant="ghost" className="w-full justify-start gap-2 text-primary">
-                            <User className="h-4 w-4" />
-                            Staff Panel
+                          <Button variant="ghost" className={`${mobileMenuButtonClass} text-primary`}>
+                            <ShieldCheck className="h-4 w-4 shrink-0" />
+                            Staff Workspace
                           </Button>
                         </Link>
                         <Link to="/dashboard" onClick={() => setIsMobileMenuOpen(false)}>
-                          <Button variant="ghost" className="w-full justify-start gap-2">
-                            <User className="h-4 w-4" />
-                            Dashboard
+                          <Button variant="ghost" className={mobileMenuButtonClass}>
+                            <LayoutDashboard className="h-4 w-4 shrink-0" />
+                            Account Hub
                           </Button>
                         </Link>
                       </>
                     ) : (
                       <Link to="/dashboard" onClick={() => setIsMobileMenuOpen(false)}>
-                        <Button variant="ghost" className="w-full justify-start gap-2">
-                          <User className="h-4 w-4" />
-                          Dashboard
+                        <Button variant="ghost" className={mobileMenuButtonClass}>
+                          <LayoutDashboard className="h-4 w-4 shrink-0" />
+                          Account Hub
                         </Button>
                       </Link>
                     )}
                     
                     {!isAdmin && (
-                      <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 px-4">
-                        <Wallet className="h-4 w-4" />
+                      <div className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-400">
+                        <Wallet className="h-4 w-4 shrink-0" />
                         {walletLoading ? (
                           <span className="inline-block h-4 w-16 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
                         ) : (
@@ -418,46 +465,49 @@ export default function Navbar() {
                     
                     {!isAdmin && (
                       <Link to="/referrals" onClick={() => setIsMobileMenuOpen(false)}>
-                        <Button variant="ghost" className="w-full justify-start gap-2">
-                          <Gift className="h-4 w-4" />
-                          Referrals
+                        <Button variant="ghost" className={mobileMenuButtonClass}>
+                          <Gift className="h-4 w-4 shrink-0" />
+                          Rewards
                         </Button>
                       </Link>
                     )}
 
                     <Link to="/crypto-exchange" onClick={() => setIsMobileMenuOpen(false)}>
-                      <Button variant="ghost" className="w-full justify-start gap-2">
-                        <Bitcoin className="h-4 w-4" />
+                      <Button variant="ghost" className={mobileMenuButtonClass}>
+                        <Bitcoin className="h-4 w-4 shrink-0" />
                         Crypto Exchange
                       </Button>
                     </Link>
 
                     <Link to="/bills" onClick={() => setIsMobileMenuOpen(false)}>
-                      <Button variant="ghost" className="w-full justify-start gap-2">
-                        Bills Payment
+                      <Button variant="ghost" className={mobileMenuButtonClass}>
+                        <CreditCard className="h-4 w-4 shrink-0" />
+                        Bills & Airtime
                       </Button>
                     </Link>
 
                     <Link to="/gift-cards" onClick={() => setIsMobileMenuOpen(false)}>
-                      <Button variant="ghost" className="w-full justify-start gap-2">
+                      <Button variant="ghost" className={mobileMenuButtonClass}>
+                        <Smartphone className="h-4 w-4 shrink-0" />
                         Gift Cards & eSIMs
                       </Button>
                     </Link>
 
                     <Link to="/sms-numbers" onClick={() => setIsMobileMenuOpen(false)}>
-                      <Button variant="ghost" className="w-full justify-start gap-2">
-                        <PhoneCall className="h-4 w-4" />
+                      <Button variant="ghost" className={mobileMenuButtonClass}>
+                        <PhoneCall className="h-4 w-4 shrink-0" />
                         SMS Numbers
                       </Button>
                     </Link>
 
                     <Link to="/social-boost" onClick={() => setIsMobileMenuOpen(false)}>
-                      <Button variant="ghost" className="w-full justify-start gap-2 text-pink-600 dark:text-pink-400">
-                        🚀 Social Boost
+                      <Button variant="ghost" className={`${mobileMenuButtonClass} text-pink-600 dark:text-pink-400`}>
+                        <Rocket className="h-4 w-4 shrink-0" />
+                        Social Boost
                       </Button>
                     </Link>
                     
-                    {/* Download App Button - Only show if not installed */}
+                    {/* Install app button - Only show if not installed */}
                     {!isInstalled && (canInstall || true) && (
                       <Button 
                         variant="outline"
@@ -465,25 +515,25 @@ export default function Navbar() {
                           handleDownloadClick()
                           setIsMobileMenuOpen(false)
                         }}
-                        className="w-full justify-start gap-2 border-primary/50 text-primary hover:bg-primary/10"
+                        className={`${mobileMenuButtonClass} border-primary/50 text-primary hover:bg-primary/10`}
                       >
-                        <Download className="h-4 w-4" />
-                        Download App
+                        <Download className="h-4 w-4 shrink-0" />
+                        Install App
                       </Button>
                     )}
                     
                     <Button 
                       variant="outline" 
                       onClick={handleSignOut}
-                      className="w-full justify-start gap-2"
+                      className={mobileMenuButtonClass}
                     >
-                      <LogOut className="h-4 w-4" />
+                      <LogOut className="h-4 w-4 shrink-0" />
                       Sign Out
                     </Button>
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {/* Download App Button - Show for non-logged-in users too */}
+                    {/* Install app button - Show for non-logged-in users too */}
                     {!isInstalled && (canInstall || true) && (
                       <Button 
                         variant="outline"
@@ -491,20 +541,22 @@ export default function Navbar() {
                           handleDownloadClick()
                           setIsMobileMenuOpen(false)
                         }}
-                        className="w-full justify-start gap-2 border-primary/50 text-primary hover:bg-primary/10"
+                        className={`${mobileMenuButtonClass} border-primary/50 text-primary hover:bg-primary/10`}
                       >
-                        <Download className="h-4 w-4" />
-                        Download App
+                        <Download className="h-4 w-4 shrink-0" />
+                        Install App
                       </Button>
                     )}
                     
                     <Link to="/login" onClick={() => setIsMobileMenuOpen(false)}>
-                      <Button variant="ghost" className="w-full">
+                      <Button variant="ghost" className={mobileMenuButtonClass}>
+                        <User className="h-4 w-4 shrink-0" />
                         Sign In
                       </Button>
                     </Link>
                     <Link to="/register" onClick={() => setIsMobileMenuOpen(false)}>
-                      <Button variant="hero" className="w-full">
+                      <Button variant="hero" className={mobileMenuButtonClass}>
+                        <PackageCheck className="h-4 w-4 shrink-0" />
                         Get Started
                       </Button>
                     </Link>

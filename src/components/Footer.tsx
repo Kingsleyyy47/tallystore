@@ -1,150 +1,101 @@
 import { Link } from 'react-router-dom'
+import { LifeBuoy, PackageCheck, ShieldCheck, Wallet } from 'lucide-react'
+
+const shopLinks = [
+  ['All Products', '/products'],
+  ['Instagram Accounts', '/category/instagram'],
+  ['TikTok Accounts', '/category/tiktok'],
+  ['Facebook Accounts', '/category/facebook'],
+  ['SMS Numbers', '/sms-numbers'],
+]
+
+const accountLinks = [
+  ['Sign In', '/login'],
+  ['Create Account', '/register'],
+  ['Account Hub', '/dashboard'],
+  ['Wallet', '/wallet'],
+  ['Order History', '/orders'],
+]
+
+const supportLinks = [
+  ['Help Center', '/support'],
+  ['Contact', '/contact'],
+  ['How It Works', '/how-it-works'],
+  ['Terms', '/terms'],
+  ['Privacy', '/privacy'],
+]
+
+function FooterLink({ to, children }: { to: string; children: string }) {
+  return (
+    <Link to={to} className="text-sm text-slate-600 transition hover:text-purple-700 dark:text-slate-400 dark:hover:text-purple-300">
+      {children}
+    </Link>
+  )
+}
 
 const Footer = () => {
-  const scrollToSection = (sectionId: string) => {
-    const element = document.getElementById(sectionId)
-    if (element) {
-      element.scrollIntoView({ behavior: "smooth" })
-    }
-  }
-
   return (
-    <footer className="mt-16 border-t border-gray-200 bg-white text-gray-600
-                     dark:border-gray-800 dark:bg-gradient-to-r dark:from-gray-900 
-                     dark:via-slate-900 dark:to-gray-900 dark:text-gray-300">
-      <div className="container mx-auto px-6 pb-28 pt-8 md:pb-8">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
-          <div className="md:col-span-2">
-            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-4">
-              TallyStore
-            </h3>
-            <p className="text-sm leading-relaxed">
-              Your trusted source for premium social media accounts. We provide authentic, 
-              verified accounts across all major platforms with guaranteed delivery and 24/7 support.
-            </p>
-          </div>
-          
+    <footer className="mt-16 border-t border-slate-200 bg-white/80 text-slate-600 dark:border-white/10 dark:bg-[#080b13]/90 dark:text-slate-300">
+      <div className="mx-auto max-w-7xl px-4 pb-28 pt-8 sm:px-6 md:pb-10 lg:px-8">
+        <div className="grid gap-8 lg:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr]">
           <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white mb-4">Shop</h4>
-            <ul className="space-y-2 text-sm">
-              <li>
-                <Link to="/products" className="hover:text-primary transition-colors">
-                  All Products
-                </Link>
-              </li>
-              <li>
-                <Link to="/category/instagram" className="hover:text-primary transition-colors">
-                  Instagram Accounts
-                </Link>
-              </li>
-              <li>
-                <Link to="/category/tiktok" className="hover:text-primary transition-colors">
-                  TikTok Accounts
-                </Link>
-              </li>
-              <li>
-                <Link to="/category/youtube" className="hover:text-primary transition-colors">
-                  YouTube Channels
-                </Link>
-              </li>
-              <li>
-                <Link to="/category/twitter" className="hover:text-primary transition-colors">
-                  Twitter Accounts
-                </Link>
-              </li>
+            <Link to="/" className="text-2xl font-black tracking-normal text-slate-950 dark:text-white">
+              Tally<span className="text-purple-600 dark:text-purple-300">Store</span>
+            </Link>
+            <p className="mt-4 max-w-md text-sm leading-6">
+              Premium social accounts, SMS numbers, wallet funding, and support tools in one customer account.
+            </p>
+            <div className="mt-5 grid gap-2 sm:grid-cols-3 lg:max-w-lg">
+              {[
+                [ShieldCheck, 'Secure'],
+                [PackageCheck, 'Instant'],
+                [Wallet, 'Wallet-first'],
+              ].map(([Icon, label]) => {
+                const FooterIcon = Icon as typeof ShieldCheck
+                return (
+                  <div key={label as string} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black dark:border-white/10 dark:bg-white/[0.035]">
+                    <FooterIcon className="h-4 w-4 text-purple-600 dark:text-purple-300" />
+                    {label as string}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          <div>
+            <h4 className="mb-4 text-sm font-black uppercase text-slate-950 dark:text-white">Shop</h4>
+            <ul className="grid gap-2">
+              {shopLinks.map(([label, href]) => (
+                <li key={href}><FooterLink to={href}>{label}</FooterLink></li>
+              ))}
             </ul>
           </div>
 
           <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white mb-4">Account</h4>
-            <ul className="space-y-2 text-sm">
-              <li>
-                <Link to="/login" className="hover:text-primary transition-colors">
-                  Sign In
-                </Link>
-              </li>
-              <li>
-                <Link to="/register" className="hover:text-primary transition-colors">
-                  Register
-                </Link>
-              </li>
-              <li>
-                <Link to="/profile" className="hover:text-primary transition-colors">
-                  My Profile
-                </Link>
-              </li>
-              <li>
-                <Link to="/orders" className="hover:text-primary transition-colors">
-                  Order History
-                </Link>
-              </li>
-              <li>
-                <Link to="/wallet" className="hover:text-primary transition-colors">
-                  Wallet
-                </Link>
-              </li>
+            <h4 className="mb-4 text-sm font-black uppercase text-slate-950 dark:text-white">Account</h4>
+            <ul className="grid gap-2">
+              {accountLinks.map(([label, href]) => (
+                <li key={href}><FooterLink to={href}>{label}</FooterLink></li>
+              ))}
             </ul>
           </div>
-          
+
           <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white mb-4">Support</h4>
-            <ul className="space-y-2 text-sm">
-              <li>
-                <Link to="/support" className="hover:text-primary transition-colors">
-                  Help Center
-                </Link>
-              </li>
-              <li>
-                <Link to="/terms" className="hover:text-primary transition-colors">
-                  Terms of Service
-                </Link>
-              </li>
-              <li>
-                <Link to="/privacy" className="hover:text-primary transition-colors">
-                  Privacy Policy
-                </Link>
-              </li>
-              <li>
-                <Link to="/about" className="hover:text-primary transition-colors">
-                  About Us
-                </Link>
-              </li>
-              <li>
-                <Link to="/contact" className="hover:text-primary transition-colors">
-                  Contact
-                </Link>
-              </li>
-              <li>
-                <Link to="/web-services" className="hover:text-primary transition-colors">
-                  Web Services
-                </Link>
-              </li>
+            <h4 className="mb-4 text-sm font-black uppercase text-slate-950 dark:text-white">Support</h4>
+            <ul className="grid gap-2">
+              {supportLinks.map(([label, href]) => (
+                <li key={href}><FooterLink to={href}>{label}</FooterLink></li>
+              ))}
             </ul>
           </div>
         </div>
-        
-        <div className="mt-8 pt-8 border-t border-gray-200 dark:border-gray-700 
-                       flex flex-col md:flex-row justify-between items-center">
-          <p className="text-sm">
-            © 2024 Tallybest Store LTD. All rights reserved.
-          </p>
-          <div className="flex space-x-4 mt-4 md:mt-0">
-            <a href="#" className="text-gray-400 hover:text-primary transition-colors">
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M20 10c0-5.523-4.477-10-10-10S0 4.477 0 10c0 4.991 3.657 9.128 8.438 9.878v-6.987h-2.54V10h2.54V7.797c0-2.506 1.492-3.89 3.777-3.89 1.094 0 2.238.195 2.238.195v2.46h-1.26c-1.243 0-1.63.771-1.63 1.562V10h2.773l-.443 2.89h-2.33v6.988C16.343 19.128 20 14.991 20 10z" clipRule="evenodd" />
-              </svg>
-            </a>
-            <a href="#" className="text-gray-400 hover:text-primary transition-colors">
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M6.29 18.251c7.547 0 11.675-6.253 11.675-11.675 0-.178 0-.355-.012-.53A8.348 8.348 0 0020 3.92a8.19 8.19 0 01-2.357.646 4.118 4.118 0 001.804-2.27 8.224 8.224 0 01-2.605.996 4.107 4.107 0 00-6.993 3.743 11.65 11.65 0 01-8.457-4.287 4.106 4.106 0 001.27 5.477A4.073 4.073 0 01.8 7.713v.052a4.105 4.105 0 003.292 4.022 4.095 4.095 0 01-1.853.07 4.108 4.108 0 003.834 2.85A8.233 8.233 0 010 16.407a11.616 11.616 0 006.29 1.84" />
-              </svg>
-            </a>
-            <a href="#" className="text-gray-400 hover:text-primary transition-colors">
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z" clipRule="evenodd" />
-              </svg>
-            </a>
-          </div>
+
+        <div className="mt-8 flex flex-col gap-4 border-t border-slate-200 pt-6 text-xs dark:border-white/10 sm:flex-row sm:items-center sm:justify-between">
+          <p>© 2024 Tallybest Store LTD. All rights reserved.</p>
+          <Link to="/support" className="inline-flex items-center gap-2 font-black text-purple-700 dark:text-purple-300">
+            <LifeBuoy className="h-4 w-4" />
+            Need help?
+          </Link>
         </div>
       </div>
     </footer>

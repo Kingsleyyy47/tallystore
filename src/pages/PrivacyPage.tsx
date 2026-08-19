@@ -3,17 +3,20 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { BackToHome } from '@/components/ui/back-button'
+import NavbarAuth from '@/components/NavbarAuth'
+import Footer from '@/components/Footer'
 
 const PrivacyPage = () => {
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8">
-      <div className="container mx-auto px-4 max-w-4xl">
+    <div className="min-h-screen bg-background">
+      <NavbarAuth />
+      <main className="mx-auto max-w-4xl px-4 pb-16 pt-8 sm:px-6">
         {/* Header */}
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-4">
+          <h1 className="text-4xl font-black tracking-normal text-slate-950 dark:text-white mb-4">
             Privacy Policy
           </h1>
-          <p className="text-lg text-gray-600 dark:text-gray-400">
+          <p className="text-lg text-slate-600 dark:text-slate-400">
             Last updated: January 1, 2024
           </p>
           <Badge variant="outline" className="mt-2">
@@ -297,7 +300,7 @@ const PrivacyPage = () => {
               </p>
               <ul>
                 <li>Email notification for material changes</li>
-                <li>Dashboard notification upon login</li>
+                <li>Account notification upon login</li>
                 <li>Updated "Last modified" date at the top of this policy</li>
                 <li>30-day notice period for significant changes</li>
               </ul>
@@ -355,7 +358,8 @@ const PrivacyPage = () => {
             © 2024 Tallybest Store LTD. All rights reserved.
           </p>
         </div>
-      </div>
+      </main>
+      <Footer />
     </div>
   )
 }

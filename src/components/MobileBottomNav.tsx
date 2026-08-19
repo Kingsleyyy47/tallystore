@@ -20,13 +20,13 @@ export default function MobileBottomNav() {
       icon: LayoutGrid,
       active: ['/products', '/category', '/product', '/checkout'].some((prefix) => pathname.startsWith(prefix)),
     },
-    { label: 'Wallet', href: user ? '/wallet' : '/login', icon: Wallet, active: pathname === '/wallet' || pathname === '/dashboard' },
+    { label: 'Wallet', href: user ? '/wallet' : '/login', icon: Wallet, active: pathname === '/wallet' },
     { label: 'Orders', href: user ? '/orders' : '/login', icon: PackageCheck, active: pathname.startsWith('/orders') },
     {
       label: 'Account',
       href: accountHref,
       icon: User,
-      active: ['/profile', '/login', '/register'].some((prefix) => pathname.startsWith(prefix)),
+      active: ['/dashboard', '/profile', '/login', '/register'].some((prefix) => pathname.startsWith(prefix)),
     },
   ]
 

@@ -6,11 +6,14 @@ import { CheckCircle, XCircle, Loader2 } from 'lucide-react'
 import { verifyAndCreditWalletSecure } from '@/lib/supabase'
 import { useAuth } from '@/contexts/SimpleAuth'
 import Navbar from '@/components/NavbarAuth'
+import Footer from '@/components/Footer'
+import { useCurrency } from '@/contexts/CurrencyContext'
 
 export default function PaymentCallbackPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { user, refreshWalletBalance } = useAuth()
+  const { formatPrice } = useCurrency()
   const [status, setStatus] = useState<'loading' | 'success' | 'failed' | 'error'>('loading')
   const [paymentData, setPaymentData] = useState<any>(null)
 
@@ -94,7 +97,7 @@ export default function PaymentCallbackPage() {
           title: paymentData?.alreadyProcessed ? 'Payment Already Processed!' : 'Payment Successful!',
           description: paymentData?.alreadyProcessed 
             ? 'Your wallet balance is already up to date.'
-            : `₦${paymentData?.amount?.toLocaleString() || '0'} has been added to your wallet.`
+            : `${formatPrice(paymentData?.amount || 0)} has been added to your wallet.`
         }
       case 'failed':
         return {
@@ -112,12 +115,12 @@ export default function PaymentCallbackPage() {
   const message = getStatusMessage()
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
+    <div className="min-h-screen bg-background">
       <Navbar />
       
-      <div className="container mx-auto px-6 py-16">
-        <div className="max-w-md mx-auto">
-          <Card className="text-center">
+      <main className="mx-auto max-w-md px-4 py-10">
+        <div>
+          <Card className="rounded-2xl border-slate-200 bg-white/85 text-center shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
             <CardHeader className="pb-4">
               <div className="flex justify-center mb-4">
                 {getStatusIcon()}
@@ -135,7 +138,7 @@ export default function PaymentCallbackPage() {
                 <div className="bg-muted/50 rounded-lg p-4 space-y-2">
                   <div className="flex justify-between text-sm">
                     <span>Amount:</span>
-                    <span className="font-medium">₦{paymentData.amount?.toLocaleString()}</span>
+                    <span className="font-medium">{formatPrice(paymentData.amount || 0)}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span>Reference:</span>
@@ -184,13 +187,14 @@ export default function PaymentCallbackPage() {
                   onClick={() => navigate('/dashboard')}
                   className="w-full"
                 >
-                  Return to Dashboard
+                  Return to Account Hub
                 </Button>
               </div>
             </CardContent>
           </Card>
         </div>
-      </div>
+      </main>
+      <Footer />
     </div>
   )
 }

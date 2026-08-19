@@ -84,7 +84,7 @@ export default function ReferralsPage() {
         <div className="mb-8">
           <h1 className="text-3xl font-bold flex items-center gap-2">
             <Gift className="h-7 w-7 text-primary" />
-            Referrals
+            Rewards
           </h1>
           <p className="text-muted-foreground mt-1">
             Share your code and earn a commission on your friend's first 10 deposits. After that, the reward window closes.
@@ -105,7 +105,7 @@ export default function ReferralsPage() {
                       <Wallet className="h-5 w-5 text-primary" />
                     </div>
                     <div>
-                      <p className="text-sm text-muted-foreground">Referral Balance</p>
+                      <p className="text-sm text-muted-foreground">Reward Balance</p>
                       <p className="text-xl font-bold">{showBalances ? `₦${stats.referralBalance.toLocaleString()}` : '***'}</p>
                     </div>
                   </div>
@@ -155,7 +155,7 @@ export default function ReferralsPage() {
 
             <Card className="mb-8">
               <CardHeader>
-                <CardTitle className="text-lg">Your Referral Code</CardTitle>
+                <CardTitle className="text-lg">Your Reward Code</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center gap-2">
@@ -163,7 +163,7 @@ export default function ReferralsPage() {
                   <Button
                     variant="outline"
                     size="icon"
-                    onClick={() => stats.referralCode && handleCopy(stats.referralCode, 'Referral code')}
+                    onClick={() => stats.referralCode && handleCopy(stats.referralCode, 'Reward code')}
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
@@ -173,7 +173,7 @@ export default function ReferralsPage() {
                   <Button
                     variant="outline"
                     size="icon"
-                    onClick={() => referralLink && handleCopy(referralLink, 'Referral link')}
+                    onClick={() => referralLink && handleCopy(referralLink, 'Reward link')}
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
@@ -188,7 +188,7 @@ export default function ReferralsPage() {
               <CardContent>
                 {stats.earnings.length === 0 ? (
                   <p className="text-muted-foreground text-center py-8">
-                    No referral earnings yet. Share your link to start earning.
+                    No reward earnings yet. Share your link to start earning.
                   </p>
                 ) : (
                   <div className="space-y-3">

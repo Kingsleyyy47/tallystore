@@ -360,7 +360,7 @@ export default function BillsPayment() {
             onClick={() => navigate('/dashboard')}
             className="gap-1 sm:gap-2 text-white hover:bg-white/20 hover:text-white font-medium text-sm sm:text-base"
           >
-            ← <span className="hidden sm:inline">Back to Dashboard</span><span className="sm:hidden">Back</span>
+            ← <span className="hidden sm:inline">Back to Account Hub</span><span className="sm:hidden">Back</span>
           </Button>
           <div className="flex items-center gap-2 sm:gap-3">
             <Smartphone className="w-6 h-6 sm:w-7 sm:h-7 text-white" />

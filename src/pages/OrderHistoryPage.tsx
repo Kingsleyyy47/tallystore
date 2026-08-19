@@ -12,8 +12,10 @@ import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import WalletBalanceWidget from '@/components/WalletBalanceWidget'
 import { useAuth } from '@/contexts/SimpleAuth'
+import { useCurrency } from '@/contexts/CurrencyContext'
 import { getUserOrders } from '@/lib/supabase'
 import { useToast } from '@/hooks/use-toast'
+import { RevampCard, RevampHero, RevampPage, RevampVisual } from '@/components/RevampLayout'
 
 const statusColors = {
   completed: 'default',
@@ -31,7 +33,8 @@ const statusIcons = {
 
 export default function OrderHistoryPage() {
   const location = useLocation()
-  const { user } = useAuth()
+  const { user, showBalances } = useAuth()
+  const { formatPrice } = useCurrency()
   const { toast } = useToast()
   
   const [orders, setOrders] = useState<any[]>([])
@@ -187,20 +190,27 @@ export default function OrderHistoryPage() {
     <div className="min-h-screen bg-background">
       <NavbarAuth />
       
-      {/* Wallet Balance Widget */}
-      <div className="container mx-auto px-6 pt-24 pb-4">
+      <div className="mx-auto max-w-7xl px-4 pb-4 pt-8 sm:px-6 lg:px-8">
         <WalletBalanceWidget showRefresh={true} />
       </div>
       
-      <div className="container mx-auto px-6 pb-12">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold mb-2">Order History</h1>
-          <p className="text-muted-foreground">View and download your purchased accounts</p>
-        </div>
+      <RevampPage className="pt-0">
+        <RevampHero
+          eyebrow="Orders"
+          title="Your purchases,"
+          accent="credentials and history."
+          description="Review completed orders, download credentials, and filter purchases by status or category."
+          primaryHref="/products"
+          primaryLabel="Browse Products"
+          secondaryHref="/wallet"
+          secondaryLabel="Open Wallet"
+        >
+          <RevampVisual title="Order vault" subtitle="Completed purchases stay available from your account." icon={Package} />
+        </RevampHero>
 
         {/* Success Alert for New Purchases */}
         {location.state?.purchaseSuccess && (
-          <Alert className="mb-6 border-green-500 bg-green-50 dark:bg-green-950/50">
+          <Alert className="mb-6 mt-8 border-green-500 bg-green-50 dark:bg-green-950/50">
             <Download className="h-5 w-5 text-green-600 dark:text-green-400" />
             <div className="ml-2">
               <h3 className="font-semibold text-green-800 dark:text-green-200 mb-1">
@@ -214,9 +224,8 @@ export default function OrderHistoryPage() {
         )}
 
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-          <Card>
-            <CardContent className="p-4">
+        <div className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+          <RevampCard>
               <div className="flex items-center gap-3">
                 <div className="h-8 w-8 bg-green-100 rounded-full flex items-center justify-center">
                   <CheckCircle className="h-4 w-4 text-green-600" />
@@ -226,11 +235,9 @@ export default function OrderHistoryPage() {
                   <p className="text-2xl font-bold">{stats.completed}</p>
                 </div>
               </div>
-            </CardContent>
-          </Card>
+          </RevampCard>
           
-          <Card>
-            <CardContent className="p-4">
+          <RevampCard>
               <div className="flex items-center gap-3">
                 <div className="h-8 w-8 bg-red-100 rounded-full flex items-center justify-center">
                   <XCircle className="h-4 w-4 text-red-600" />
@@ -240,11 +247,9 @@ export default function OrderHistoryPage() {
                   <p className="text-2xl font-bold">{stats.failed}</p>
                 </div>
               </div>
-            </CardContent>
-          </Card>
+          </RevampCard>
           
-          <Card>
-            <CardContent className="p-4">
+          <RevampCard>
               <div className="flex items-center gap-3">
                 <div className="h-8 w-8 bg-yellow-100 rounded-full flex items-center justify-center">
                   <RefreshCw className="h-4 w-4 text-yellow-600" />
@@ -254,27 +259,24 @@ export default function OrderHistoryPage() {
                   <p className="text-2xl font-bold">{stats.processing}</p>
                 </div>
               </div>
-            </CardContent>
-          </Card>
+          </RevampCard>
           
-          <Card>
-            <CardContent className="p-4">
+          <RevampCard>
               <div className="flex items-center gap-3">
                 <div className="h-8 w-8 bg-primary/10 rounded-full flex items-center justify-center">
                   <span className="text-primary font-bold">₦</span>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Total Spent</p>
-                  <p className="text-2xl font-bold">₦{stats.totalSpent.toLocaleString()}</p>
+                  <p className="text-2xl font-bold">{showBalances ? formatPrice(stats.totalSpent) : '***'}</p>
                 </div>
               </div>
-            </CardContent>
-          </Card>
+          </RevampCard>
         </div>
 
         {/* Filters */}
-        <Card className="mb-6">
-          <CardContent className="p-6">
+        <Card className="my-6 rounded-2xl border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
+          <CardContent className="p-4 sm:p-6">
             <div className="flex flex-col md:flex-row gap-4">
               <div className="flex-1">
                 <div className="relative">
@@ -289,7 +291,7 @@ export default function OrderHistoryPage() {
               </div>
               
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[150px]">
+                <SelectTrigger className="w-full md:w-[150px]">
                   <SelectValue placeholder="All Status" />
                 </SelectTrigger>
                 <SelectContent>
@@ -302,7 +304,7 @@ export default function OrderHistoryPage() {
               </Select>
               
               <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger className="w-[150px]">
+                <SelectTrigger className="w-full md:w-[150px]">
                   <SelectValue placeholder="All Categories" />
                 </SelectTrigger>
                 <SelectContent>
@@ -347,8 +349,8 @@ export default function OrderHistoryPage() {
               const { date, time } = formatDate(order.created_at)
               
               return (
-                <Card key={order.id}>
-                  <CardContent className="p-6">
+                <Card key={order.id} className="rounded-2xl border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
+                  <CardContent className="p-4 sm:p-6">
                     <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                       <div className="flex-1">
                         <div className="flex items-center gap-3 mb-2">
@@ -370,7 +372,7 @@ export default function OrderHistoryPage() {
                             <span className="font-medium">Order ID:</span> {order.id.slice(0, 8)}...
                           </div>
                           <div>
-                            <span className="font-medium">Amount:</span> ₦{order.amount.toLocaleString()}
+                            <span className="font-medium">Amount:</span> {formatPrice(order.amount || 0)}
                           </div>
                           <div>
                             <span className="font-medium">Date:</span> {date}
@@ -441,7 +443,7 @@ export default function OrderHistoryPage() {
             })}
           </div>
         )}
-      </div>
+      </RevampPage>
 
       <Footer />
     </div>

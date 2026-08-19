@@ -515,7 +515,7 @@ export default function StaffAdminPage() {
         ${message.replace(/\n/g, '<br/>')}
       </div>
       <div style="text-align:center;margin-top:24px">
-        <a href="https://tallystore.org/dashboard" style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Dashboard</a>
+        <a href="https://tallystore.org/dashboard" style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Go to Account Hub</a>
       </div>
       <div style="text-align:center;margin-top:32px;color:#999;font-size:12px"><p>TallyStore - Your trusted digital marketplace</p></div>
     </div>`
@@ -890,9 +890,9 @@ export default function StaffAdminPage() {
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
-      <div className="container mx-auto px-4 pt-24 pb-12">
+      <div className="container mx-auto max-w-full overflow-x-hidden px-4 pt-24 pb-12">
         <div className="mb-6">
-          <h1 className="text-2xl font-bold">Staff Panel</h1>
+          <h1 className="text-2xl font-bold">Staff Workspace</h1>
           <p className="text-muted-foreground text-sm">You can only see and change what your administrator has enabled for you.</p>
         </div>
 

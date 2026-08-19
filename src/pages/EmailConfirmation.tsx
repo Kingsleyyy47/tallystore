@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import Navbar from '@/components/Navbar'
+import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
 
@@ -74,12 +74,12 @@ export default function EmailConfirmation() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+    <div className="min-h-screen bg-background">
       <Navbar />
       
-      <div className="container mx-auto px-4 py-16">
-        <div className="max-w-md mx-auto">
-          <Card>
+      <main className="mx-auto max-w-md px-4 pb-16 pt-8">
+        <div>
+          <Card className="rounded-2xl border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
             <CardHeader className="text-center">
               <CardTitle className="text-2xl font-bold">
                 Email Confirmation
@@ -152,7 +152,7 @@ export default function EmailConfirmation() {
             </CardContent>
           </Card>
         </div>
-      </div>
+      </main>
 
       <Footer />
     </div>

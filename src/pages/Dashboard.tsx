@@ -389,7 +389,7 @@ export default function Dashboard() {
                         <span className="mt-2 block h-7 w-28 animate-pulse rounded-xl bg-slate-100 dark:bg-white/10" />
                       ) : (
                         <p className="mt-1 break-words text-xl font-black tracking-tight sm:text-3xl">
-                          {formatNaira(totalSpent)}
+                          {showBalances ? formatNaira(totalSpent) : '***'}
                         </p>
                       )}
                     </div>
@@ -445,7 +445,7 @@ export default function Dashboard() {
                     <div className="min-w-0">
                       <p className="font-bold">Payment Recovery</p>
                       <p className="mt-1 text-sm leading-6 text-slate-500 dark:text-muted-foreground">
-                        If a successful payment is delayed, verify it from your dashboard.
+                        If a successful payment is delayed, verify it from your account.
                       </p>
                     </div>
                   </div>
@@ -615,41 +615,6 @@ export default function Dashboard() {
         </div>
       </main>
 
-      <nav
-        className={cn(
-          'fixed inset-x-4 z-40 rounded-[2rem] border border-white/70 bg-white/95 px-4 py-3 shadow-[0_20px_60px_rgba(15,23,42,0.2)] backdrop-blur-xl transition-[bottom] duration-300 dark:border-white/10 dark:bg-card/95 lg:hidden',
-          installPromptOffset ? 'bottom-24' : 'bottom-4',
-        )}
-      >
-        <div className="grid grid-cols-5 items-center gap-1 text-[11px] font-semibold text-slate-500">
-          <Link to="/wallet" className="flex flex-col items-center gap-1 rounded-2xl p-2 text-violet-700">
-            <Wallet className="h-5 w-5" />
-            Wallet
-          </Link>
-          <Link to="/orders" className="flex flex-col items-center gap-1 rounded-2xl p-2">
-            <Download className="h-5 w-5" />
-            Orders
-          </Link>
-          <Link
-            to="/products"
-            className="-mt-8 grid h-16 w-16 place-items-center justify-self-center rounded-full bg-[#5b3db2] text-white shadow-[0_18px_40px_rgba(91,61,178,0.38)]"
-            aria-label="Buy accounts"
-          >
-            <ShoppingBag className="h-7 w-7" />
-          </Link>
-          <Link to="/bills" className="flex flex-col items-center gap-1 rounded-2xl p-2">
-            <ReceiptText className="h-5 w-5" />
-            Bills
-          </Link>
-          <Link
-            to="/sms-numbers"
-            className="flex flex-col items-center gap-1 rounded-2xl p-2 text-slate-500"
-          >
-            <PhoneCall className="h-5 w-5" />
-            SMS
-          </Link>
-        </div>
-      </nav>
     </div>
   )
 }

@@ -10,7 +10,6 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { 
   Globe, 
   Smartphone, 
-  ShoppingCart, 
   Palette, 
   Code, 
   Zap, 

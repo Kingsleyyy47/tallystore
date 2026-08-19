@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { ArrowLeft, ShoppingCart, Shield, Clock, Star, Check, AlertTriangle, Loader2, Users, Eye, Calendar } from 'lucide-react'
+import { ArrowLeft, PackageCheck, Shield, Clock, Star, Check, AlertTriangle, Loader2, Users, Eye, Calendar } from 'lucide-react'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { BackButton, BackToProducts } from '@/components/ui/back-button'
@@ -239,8 +239,8 @@ export default function ProductDetailPage() {
                 className="w-full py-3 text-lg"
                 size="lg"
               >
-                <ShoppingCart className="h-5 w-5 mr-2" />
-                {isLoggedIn ? `Purchase for ₦${productGroup.price.toLocaleString()}` : 'Sign In to Purchase'}
+                <PackageCheck className="h-5 w-5 mr-2" />
+                {isLoggedIn ? `Buy Now - ${formatPrice(productGroup.price)}` : 'Sign In to Buy'}
               </Button>
               
               {!isLoggedIn && (

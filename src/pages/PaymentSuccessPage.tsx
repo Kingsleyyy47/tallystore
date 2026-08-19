@@ -8,6 +8,8 @@ import { useAuth } from '@/contexts/SimpleAuth';
 import { useToast } from '@/hooks/use-toast';
 import { verifyAndCreditWalletSecure } from '@/lib/supabase';
 import { useSupportSettings } from '@/hooks/useSupportSettings';
+import NavbarAuth from '@/components/NavbarAuth';
+import Footer from '@/components/Footer';
 
 export default function PaymentSuccessPage() {
   const [searchParams] = useSearchParams();
@@ -122,8 +124,10 @@ export default function PaymentSuccessPage() {
 
   if (isVerifying) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background to-muted/20 flex items-center justify-center">
-        <Card className="w-full max-w-md mx-4">
+      <div className="min-h-screen bg-background">
+        <NavbarAuth />
+        <main className="mx-auto grid min-h-[60vh] max-w-md place-items-center px-4 py-10">
+        <Card className="w-full rounded-2xl border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
           <CardContent className="flex flex-col items-center justify-center py-8">
             <Loader2 className="h-12 w-12 animate-spin text-primary mb-4" />
             <h2 className="text-xl font-semibold mb-2">Verifying Payment</h2>
@@ -132,13 +136,17 @@ export default function PaymentSuccessPage() {
             </p>
           </CardContent>
         </Card>
+        </main>
+        <Footer />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background to-muted/20 flex items-center justify-center">
-      <Card className="w-full max-w-md mx-4">
+    <div className="min-h-screen bg-background">
+      <NavbarAuth />
+      <main className="mx-auto grid min-h-[60vh] max-w-md place-items-center px-4 py-10">
+      <Card className="w-full rounded-2xl border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-4">
             {verificationResult?.success ? (
@@ -209,6 +217,8 @@ export default function PaymentSuccessPage() {
           </div>
         </CardContent>
       </Card>
+      </main>
+      <Footer />
     </div>
   );
 }

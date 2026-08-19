@@ -8,7 +8,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import { BackToHome } from '@/components/ui/back-button'
 import {
   Search,
-  ShoppingCart,
+  PackageCheck,
   Wallet,
   KeyRound,
   CreditCard,
@@ -45,7 +45,7 @@ export default function HowItWorksPage() {
           </h1>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
             Everything you need to know about buying accounts, funding your wallet,
-            earning through referrals, and getting help if something's unclear.
+            earning rewards, and getting help if something's unclear.
           </p>
         </div>
 
@@ -53,7 +53,7 @@ export default function HowItWorksPage() {
         <section className="mb-20">
           <div className="flex items-center gap-3 mb-8">
             <div className="p-2.5 rounded-xl bg-gradient-to-r from-blue-500 to-blue-600">
-              <ShoppingCart className="h-5 w-5 text-white" />
+              <PackageCheck className="h-5 w-5 text-white" />
             </div>
             <h2 className="text-2xl sm:text-3xl font-display font-bold">How to Purchase</h2>
           </div>
@@ -207,7 +207,7 @@ export default function HowItWorksPage() {
                 </div>
                 <h3 className="font-semibold mb-2">1. Get Your Link</h3>
                 <p className="text-sm text-muted-foreground">
-                  Every account has a unique referral code and link on the Referrals page. Copy it
+                  Every account has a unique reward code and link on the Rewards page. Copy it
                   and share it however you like — DMs, group chats, your own posts.
                 </p>
               </CardContent>
@@ -220,7 +220,7 @@ export default function HowItWorksPage() {
                 <h3 className="font-semibold mb-2">2. They Sign Up</h3>
                 <p className="text-sm text-muted-foreground">
                   Anyone who registers through your link (or types your code in at signup) is linked
-                  to you as your referral, permanently.
+                  to you for rewards, permanently.
                 </p>
               </CardContent>
             </Card>
@@ -231,8 +231,8 @@ export default function HowItWorksPage() {
                 </div>
                 <h3 className="font-semibold mb-2">3. You Earn</h3>
                 <p className="text-sm text-muted-foreground">
-                  Every time they make a purchase, a percentage is credited to your referral balance.
-                  Withdraw it whenever you like from the Referrals page.
+                  Every time they make a purchase, a percentage is credited to your reward balance.
+                  Withdraw it whenever you like from the Rewards page.
                 </p>
               </CardContent>
             </Card>
@@ -242,7 +242,7 @@ export default function HowItWorksPage() {
             <Link to="/referrals">
               <Button>
                 <Gift className="h-4 w-4 mr-2" />
-                Go to Your Referrals Page
+                Open Rewards
               </Button>
             </Link>
           </div>
@@ -306,7 +306,7 @@ export default function HowItWorksPage() {
                 </AccordionItem>
 
                 <AccordionItem value="q6">
-                  <AccordionTrigger>Is there a limit to how much I can earn from referrals?</AccordionTrigger>
+                  <AccordionTrigger>Is there a limit to how much I can earn from rewards?</AccordionTrigger>
                   <AccordionContent>
                     No cap — every qualifying purchase from everyone you've referred earns you a
                     commission, for as long as they keep buying.

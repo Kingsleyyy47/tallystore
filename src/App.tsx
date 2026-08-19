@@ -22,7 +22,7 @@ const MAINTENANCE_MODE = false;
 const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
 // Version tracking for cache busting
-const MAINTENANCE_VERSION = "2.6-mobile-header-align";
+const MAINTENANCE_VERSION = "3.2-dashboard-route-audit";
 
 // Force cache clear on version change
 if (typeof window !== 'undefined' && !isLocalDev) {
@@ -63,6 +63,7 @@ import OrderHistoryPage from '@/pages/OrderHistoryPage'
 import PaymentCallbackPage from '@/pages/PaymentCallbackPage'
 import PaymentSuccessPage from '@/pages/PaymentSuccessPage'
 import WalletPage from '@/pages/WalletPage'
+import Dashboard from '@/pages/Dashboard'
 import ReferralsPage from '@/pages/ReferralsPage'
 import HowItWorksPage from '@/pages/HowItWorksPage'
 import SupportPage from '@/pages/SupportPage'
@@ -152,7 +153,7 @@ const App = () => {
                 path="/dashboard"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <WalletPage />
+                    <Dashboard />
                   </ProtectedRoute>
                 }
               />

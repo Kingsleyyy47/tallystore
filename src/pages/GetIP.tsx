@@ -5,6 +5,8 @@ import { supabase } from "@/lib/supabase";
 import { Loader2, Copy, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useSupportSettings } from '@/hooks/useSupportSettings';
+import NavbarAuth from '@/components/NavbarAuth';
+import Footer from '@/components/Footer';
 
 export default function GetIP() {
   const [loading, setLoading] = useState(false);
@@ -66,8 +68,10 @@ export default function GetIP() {
   };
 
   return (
-    <div className="container mx-auto p-6 max-w-2xl">
-      <Card>
+    <div className="min-h-screen bg-background">
+      <NavbarAuth />
+      <main className="mx-auto max-w-2xl px-4 py-10 sm:px-6">
+      <Card className="rounded-2xl border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
         <CardHeader>
           <CardTitle>Get Supabase IP Addresses</CardTitle>
         </CardHeader>
@@ -150,6 +154,8 @@ export default function GetIP() {
           )}
         </CardContent>
       </Card>
+      </main>
+      <Footer />
     </div>
   );
 }

@@ -796,7 +796,7 @@ function SmsNumbersSurface() {
               <Button asChild className="h-11 rounded-2xl bg-white/10 px-5 text-white hover:bg-white/15 hover:text-white">
                 <Link to="/dashboard">
                   <ArrowLeft className="h-4 w-4" />
-                  Dashboard
+                  Account Hub
                 </Link>
               </Button>
             </div>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDownRight, ShoppingCart, X, ChevronDown, ChevronUp, Activity } from 'lucide-react'
+import { ArrowDownRight, PackageCheck, X, ChevronDown, ChevronUp, Activity } from 'lucide-react'
 import { getGlobalActivityFeed, type GlobalActivityItem } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useCurrency } from '@/contexts/CurrencyContext'
@@ -209,7 +209,7 @@ export default function GlobalActivityFeed() {
                   {row.kind === 'deposit' ? (
                     <ArrowDownRight className="h-3.5 w-3.5" />
                   ) : (
-                    <ShoppingCart className="h-3.5 w-3.5" />
+                    <PackageCheck className="h-3.5 w-3.5" />
                   )}
                 </div>
                 <div className="min-w-0 flex-1">

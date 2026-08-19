@@ -56,8 +56,8 @@ export default function CategoryPage() {
     }
   }, [user?.id])
 
-  // Handle adding products to cart
-  const handleAddToCart = (productGroupId: string, quantity: number) => {
+  // Handle direct product purchase
+  const handleProductPurchase = (productGroupId: string, quantity: number) => {
     const productGroup = productGroups.find(pg => pg.id === productGroupId)
     
     if (productGroup && category) {
@@ -277,7 +277,7 @@ export default function CategoryPage() {
                 key={productGroup.id}
                 productGroup={productGroup}
                 category={category}
-                onPurchase={handleAddToCart}
+                onPurchase={handleProductPurchase}
               />
             ))
           )}

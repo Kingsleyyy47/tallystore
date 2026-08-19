@@ -27,7 +27,7 @@ function TelegramIcon({ className }: { className?: string }) {
 const faqItems = [
   {
     question: 'How quickly will I receive my account credentials?',
-    answer: 'Account credentials are available in your dashboard immediately after successful payment. Open Order History and download your credentials from the completed order.'
+    answer: 'Account credentials are available in your account immediately after successful payment. Open Order History and download your credentials from the completed order.'
   },
   {
     question: 'What should I send when I need help?',
@@ -35,7 +35,7 @@ const faqItems = [
   },
   {
     question: 'What if my payment succeeded but wallet was not credited?',
-    answer: 'Use the payment recovery option on your dashboard first. If it still does not credit, send the payment reference and receipt to support.'
+    answer: 'Use the payment recovery option from your account first. If it still does not credit, send the payment reference and receipt to support.'
   },
   {
     question: 'Can I get a refund if I am not satisfied?',
@@ -73,7 +73,7 @@ export default function SupportPage() {
           <p className="mx-auto max-w-2xl text-xl text-muted-foreground">
             {hasAny
               ? 'Reach our support team directly via the channels below.'
-              : 'Browse the FAQ below or check your dashboard for self-service options.'}
+              : 'Browse the FAQ below or check your account for self-service options.'}
           </p>
           {hasAny && (
             <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
@@ -179,12 +179,12 @@ export default function SupportPage() {
           <Card>
             <CardHeader>
               <CardTitle>Before messaging</CardTitle>
-              <CardDescription>These dashboard actions solve the most common support requests.</CardDescription>
+              <CardDescription>These account actions solve the most common support requests.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 text-sm text-muted-foreground">
               <Alert>
                 <AlertDescription>
-                  If a payment was successful but delayed, run payment recovery from your dashboard before contacting support.
+                  If a payment was successful but delayed, run payment recovery from your account before contacting support.
                 </AlertDescription>
               </Alert>
               <p>For purchased accounts, go to Order History and use Download Credentials on the completed order.</p>
