@@ -24,6 +24,7 @@ import { useNavigate } from "react-router-dom";
 import QRCode from "react-qr-code";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import NavbarAuth from "@/components/NavbarAuth";
 
 interface CryptoOption {
   ticker: string;
@@ -425,30 +426,21 @@ export default function CryptoExchange() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
-      {/* Navigation */}
-      <nav className="border-b bg-gradient-to-r from-primary to-primary/90 shadow-lg sticky top-0 z-10">
-        <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-5 flex justify-between items-center">
-          <Button
-            variant="ghost"
-            onClick={() => navigate('/dashboard')}
-            className="gap-1 sm:gap-2 text-white hover:bg-white/20 hover:text-white font-medium text-sm sm:text-base"
-          >
-            ← <span className="hidden sm:inline">Back to Wallet</span><span className="sm:hidden">Back</span>
-          </Button>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <Bitcoin className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
-            <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-white">Sell Crypto</h1>
-          </div>
-          <Button
-            variant="ghost"
-            onClick={() => navigate('/crypto-history')}
-            className="gap-1 sm:gap-2 text-white hover:bg-white/20 hover:text-white font-medium text-sm sm:text-base"
-          >
-            <History className="w-4 h-4" />
-            <span className="hidden sm:inline">Transaction History</span><span className="sm:hidden">History</span>
-          </Button>
+      <NavbarAuth />
+
+      <div className="container mx-auto flex max-w-2xl items-center justify-between gap-3 px-4 pt-4 sm:px-6">
+        <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="gap-1 rounded-xl font-bold">
+          ← Wallet
+        </Button>
+        <div className="flex min-w-0 items-center gap-2">
+          <Bitcoin className="h-5 w-5 shrink-0 text-primary" />
+          <h1 className="truncate text-lg font-black">Sell Crypto</h1>
         </div>
-      </nav>
+        <Button variant="outline" size="sm" onClick={() => navigate('/crypto-history')} className="gap-1 rounded-xl font-bold">
+          <History className="h-4 w-4" />
+          History
+        </Button>
+      </div>
 
       {/* Main Content */}
       <div className="container mx-auto p-4 sm:p-6 max-w-2xl">

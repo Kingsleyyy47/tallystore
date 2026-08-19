@@ -329,21 +329,21 @@ export default function Navbar() {
           </div>
 
           {/* Mobile Menu Button */}
-          <div className="relative flex h-10 w-full items-center justify-center md:hidden">
+          <div className="grid h-10 w-full grid-cols-[40px_minmax(0,1fr)_116px] items-center gap-1 md:hidden">
             <button
               type="button"
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
               aria-label={isMobileMenuOpen ? "Close menu" : "Open menu"}
-              className="absolute left-0 grid h-9 w-9 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
+              className="grid h-9 w-9 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
             >
               {isMobileMenuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
             </button>
 
-            <Link to="/" className="max-w-[calc(100%-172px)] truncate text-center text-lg font-black tracking-normal text-gray-950 dark:text-white min-[360px]:text-xl">
+            <Link to="/" className="min-w-0 truncate text-center text-[17px] font-black tracking-normal text-gray-950 dark:text-white min-[360px]:text-lg min-[390px]:text-xl">
               Tally<span className="text-primary">Store</span>
             </Link>
 
-            <div className="absolute right-0 flex h-9 items-center justify-end gap-1">
+            <div className="flex h-9 items-center justify-end gap-1">
               <button
                 type="button"
                 onClick={toggleCurrency}
@@ -452,6 +452,13 @@ export default function Navbar() {
                       </Link>
                     )}
                     
+                    <Link to="/orders" onClick={() => setIsMobileMenuOpen(false)}>
+                      <Button variant="ghost" className={mobileMenuButtonClass}>
+                        <PackageCheck className="h-4 w-4 shrink-0" />
+                        Order History
+                      </Button>
+                    </Link>
+
                     {!isAdmin && (
                       <div className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-400">
                         <Wallet className="h-4 w-4 shrink-0" />

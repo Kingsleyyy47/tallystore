@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import NavbarAuth from '@/components/NavbarAuth';
 import ReactCountryFlag from 'react-country-flag';
 import {
   Search,
@@ -608,20 +609,19 @@ export default function SocialBoostPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
-      {/* Sticky Nav */}
-      <nav className="border-b bg-gradient-to-r from-pink-600 to-purple-600 shadow-lg sticky top-0 z-10">
-        <div className="container mx-auto px-3 sm:px-6 py-3 sm:py-4 flex justify-between items-center">
-          <Button variant="ghost" size="sm" onClick={() => navigate('/dashboard')} className="gap-1 text-white hover:bg-white/20 hover:text-white font-medium text-xs sm:text-sm px-2 sm:px-3">
-            <ArrowLeft className="w-4 h-4" />
-            <span className="hidden xs:inline">Back</span>
-          </Button>
-          <div className="flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
-            <h1 className="text-base sm:text-lg md:text-xl font-bold text-white">Social Boost</h1>
-          </div>
-          <div className="w-12 sm:w-20" />
+      <NavbarAuth />
+
+      <div className="container mx-auto flex max-w-6xl items-center justify-between gap-3 px-3 pt-4 sm:px-4 md:px-6">
+        <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="gap-1 rounded-xl font-bold">
+          <ArrowLeft className="h-4 w-4" />
+          Wallet
+        </Button>
+        <div className="flex min-w-0 items-center gap-2">
+          <TrendingUp className="h-5 w-5 shrink-0 text-primary" />
+          <h1 className="truncate text-lg font-black">Social Boost</h1>
         </div>
-      </nav>
+        <div className="w-[72px]" />
+      </div>
 
       <div className="container mx-auto px-3 sm:px-4 md:px-6 py-4 sm:py-6 max-w-6xl">
         {/* Hero - Compact on mobile */}

@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { ArrowLeft, Loader2, Mail, Lock, ShieldCheck, Sparkles } from 'lucide-react'
+import NavbarAuth from '@/components/NavbarAuth'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
 
@@ -97,8 +98,9 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_18%_18%,hsl(var(--primary)/0.16),transparent_28rem),radial-gradient(circle_at_82%_8%,hsl(var(--accent)/0.12),transparent_24rem),linear-gradient(135deg,hsl(var(--background))_0%,hsl(var(--muted)/0.42)_100%)] px-4 py-8">
-      <div className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-6xl items-center justify-center">
+    <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_18%_18%,hsl(var(--primary)/0.16),transparent_28rem),radial-gradient(circle_at_82%_8%,hsl(var(--accent)/0.12),transparent_24rem),linear-gradient(135deg,hsl(var(--background))_0%,hsl(var(--muted)/0.42)_100%)] pb-24">
+      <NavbarAuth />
+      <div className="mx-auto flex min-h-[calc(100vh-9rem)] w-full max-w-6xl items-center justify-center px-4 py-8">
         <div className="grid w-full items-center gap-8 lg:grid-cols-[0.9fr_1fr]">
           <section className="hidden lg:block">
             <Link to="/" className="inline-flex items-center gap-2 text-sm font-bold text-muted-foreground transition hover:text-foreground">

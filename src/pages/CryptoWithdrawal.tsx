@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/SimpleAuth";
+import NavbarAuth from "@/components/NavbarAuth";
 
 interface BankAccount {
   bankCode: string;
@@ -345,30 +346,21 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
-      {/* Navigation */}
-      <nav className="border-b bg-gradient-to-r from-primary to-primary/90 shadow-lg sticky top-0 z-10">
-        <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-5 flex justify-between items-center">
-          <Button
-            variant="ghost"
-            onClick={() => navigate(config.backRoute)}
-            className="gap-1 sm:gap-2 text-white hover:bg-white/20 hover:text-white font-medium text-sm sm:text-base"
-          >
-            ← <span className="hidden sm:inline">Back</span><span className="sm:hidden">Back</span>
-          </Button>
-          <div className="flex items-center gap-3">
-            <Wallet className="w-7 h-7 text-white" />
-            <h1 className="text-2xl font-bold text-white">{config.title}</h1>
-          </div>
-          <Button
-            variant="ghost"
-            onClick={() => navigate(config.historyRoute)}
-            className="gap-1 sm:gap-2 text-white hover:bg-white/20 hover:text-white font-medium text-sm sm:text-base"
-          >
-            <History className="w-4 h-4" />
-            <span className="hidden sm:inline">History</span><span className="sm:hidden">History</span>
-          </Button>
+      <NavbarAuth />
+
+      <div className="container mx-auto flex max-w-2xl items-center justify-between gap-3 px-4 pt-4 sm:px-6">
+        <Button variant="outline" size="sm" onClick={() => navigate(config.backRoute)} className="gap-1 rounded-xl font-bold">
+          ← Back
+        </Button>
+        <div className="flex min-w-0 items-center gap-2">
+          <Wallet className="h-5 w-5 shrink-0 text-primary" />
+          <h1 className="truncate text-lg font-black">{config.title}</h1>
         </div>
-      </nav>
+        <Button variant="outline" size="sm" onClick={() => navigate(config.historyRoute)} className="gap-1 rounded-xl font-bold">
+          <History className="h-4 w-4" />
+          History
+        </Button>
+      </div>
 
       {/* Main Content */}
       <div className="container mx-auto p-4 sm:p-6 max-w-2xl">

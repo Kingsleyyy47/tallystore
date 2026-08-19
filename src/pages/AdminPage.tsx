@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -27,6 +27,7 @@ import {
   RefreshCw,
   CheckCircle2,
   Clock,
+  ChevronDown,
   X,
   Tag,
   Shield,
@@ -89,6 +90,7 @@ import {
 import { format, formatDistanceToNow } from 'date-fns'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
+import { cn } from '@/lib/utils'
 
 const ADMIN_TABS = [
   { value: 'templates', label: 'Templates' },
@@ -178,6 +180,46 @@ const mockStats = {
   revenue: 285000,
   pendingOrders: 3,
   lowStock: 12
+}
+
+function AdminControlSection({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description?: string
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Card className="overflow-hidden rounded-2xl border-slate-200 bg-white/90 shadow-sm dark:border-white/10 dark:bg-card/90">
+      <CardHeader className="p-0">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left md:cursor-default md:px-5"
+        >
+          <span className="min-w-0">
+            <CardTitle className="truncate text-base md:text-lg">{title}</CardTitle>
+            {description && (
+              <span className="mt-1 hidden text-xs leading-5 text-muted-foreground md:block">
+                {description}
+              </span>
+            )}
+          </span>
+          <ChevronDown className={cn('h-4 w-4 shrink-0 transition-transform md:hidden', open && 'rotate-180')} />
+        </button>
+      </CardHeader>
+      <CardContent className={cn('space-y-4 px-4 pb-4 pt-0 md:block md:px-5 md:pb-5', open ? 'block' : 'hidden')}>
+        {description && (
+          <p className="text-xs leading-5 text-muted-foreground md:hidden">{description}</p>
+        )}
+        {children}
+      </CardContent>
+    </Card>
+  )
 }
 
 export default function AdminPage() {
@@ -1973,15 +2015,12 @@ export default function AdminPage() {
               </p>
             </div>
 
-            {/* Support Links Settings */}
-            <Card className="mb-6 sm:mb-8">
-              <CardHeader>
-                <CardTitle className="text-lg">Support Links</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Set your WhatsApp, Telegram, and channel URLs. Leave blank to hide a channel. Changes appear site-wide immediately.
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <section className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {/* Support Links Settings */}
+              <AdminControlSection
+                title="Support Links"
+                description="Set your WhatsApp, Telegram, and channel URLs. Leave blank to hide a channel. Changes appear site-wide immediately."
+              >
                 {loadingSupportLinks ? (
                   <p className="text-sm text-muted-foreground">Loading...</p>
                 ) : (
@@ -2032,15 +2071,10 @@ export default function AdminPage() {
                     </Button>
                   </>
                 )}
-              </CardContent>
-            </Card>
+              </AdminControlSection>
 
             {/* Referral Settings */}
-            <Card className="mb-6 sm:mb-8">
-              <CardHeader>
-                <CardTitle className="text-lg">Referral Settings</CardTitle>
-              </CardHeader>
-              <CardContent>
+              <AdminControlSection title="Referral Settings">
                 <div className="flex flex-col sm:flex-row sm:items-end gap-3">
                   <div className="flex-1">
                     <Label htmlFor="referralPct">Commission % (per referred purchase)</Label>
@@ -2059,15 +2093,10 @@ export default function AdminPage() {
                     {savingReferralPct ? 'Saving...' : 'Save'}
                   </Button>
                 </div>
-              </CardContent>
-            </Card>
+              </AdminControlSection>
 
             {/* NGN/USD Exchange Rate Settings */}
-            <Card className="mb-6 sm:mb-8">
-              <CardHeader>
-                <CardTitle className="text-lg">Exchange Rate Settings</CardTitle>
-              </CardHeader>
-              <CardContent>
+              <AdminControlSection title="Exchange Rate Settings">
                 <div className="flex flex-col sm:flex-row sm:items-end gap-3">
                   <div className="flex-1">
                     <Label htmlFor="ngnUsdRate">NGN per $1 (leave blank to use the live rate)</Label>
@@ -2092,15 +2121,10 @@ export default function AdminPage() {
                 <p className="text-xs text-muted-foreground mt-2">
                   When set, this overrides the live rate everywhere USD prices are shown to customers.
                 </p>
-              </CardContent>
-            </Card>
+              </AdminControlSection>
 
             {/* Ercas Pay Gateway Toggle */}
-            <Card className="mb-6 sm:mb-8">
-              <CardHeader>
-                <CardTitle className="text-lg">Payment Gateways</CardTitle>
-              </CardHeader>
-              <CardContent>
+              <AdminControlSection title="Payment Gateways">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-medium text-sm">Ercas Pay</p>
@@ -2120,15 +2144,10 @@ export default function AdminPage() {
                     {savingErcasEnabled ? 'Saving...' : ercasEnabled ? 'Enabled' : 'Disabled'}
                   </Button>
                 </div>
-              </CardContent>
-            </Card>
+              </AdminControlSection>
 
             {/* Bitrefill Gift Card Markup */}
-            <Card className="mb-6 sm:mb-8">
-              <CardHeader>
-                <CardTitle className="text-lg">Gift Card Markup (Bitrefill)</CardTitle>
-              </CardHeader>
-              <CardContent>
+              <AdminControlSection title="Gift Card Markup">
                 <div className="flex flex-col sm:flex-row sm:items-end gap-3">
                   <div className="flex-1">
                     <Label htmlFor="bitrefillMarkup">Markup % added on top of Bitrefill's price</Label>
@@ -2152,15 +2171,11 @@ export default function AdminPage() {
                   Set this above 0 to add your profit margin to every gift card purchase. Applied server-side
                   in purchase-bitrefill, and shown to customers on the Gift Cards page before they buy.
                 </p>
-              </CardContent>
-            </Card>
+              </AdminControlSection>
 
             {/* Bitrefill Catalog Curation */}
-            <Card className="mb-6 sm:mb-8">
-              <CardHeader>
-                <CardTitle className="text-lg">Gift Card Catalog Curation</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
+              <div className="md:col-span-2 xl:col-span-1">
+                <AdminControlSection title="Gift Card Catalog Curation">
                 <p className="text-xs text-muted-foreground">
                   Search Bitrefill's catalog and block specific brands you don't want customers to see.
                   Blocked products are filtered out everywhere the catalog is shown — nothing is deleted,
@@ -2215,19 +2230,17 @@ export default function AdminPage() {
                     </div>
                   )}
                 </div>
-              </CardContent>
-            </Card>
+                </AdminControlSection>
+              </div>
 
             {/* Social Boost Service Visibility */}
-            <Card className="mb-6 sm:mb-8">
-              <CardHeader>
+              <div className="md:col-span-2 xl:col-span-3">
+                <AdminControlSection
+                  title="Social Boost Service Visibility"
+                  description="Hide entire platforms or individual services. Changes survive syncs."
+                >
                 <div className="flex items-center justify-between gap-4 flex-wrap">
-                  <div>
-                    <CardTitle className="text-lg">Social Boost Service Visibility</CardTitle>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Hide entire platforms or individual services. Changes survive syncs.
-                    </p>
-                  </div>
+                  <div className="hidden md:block" />
                   <div className="flex gap-2 flex-wrap">
                     <Button size="sm" variant="outline" onClick={handleSmmSync} disabled={smmSyncing}>
                       {smmSyncing ? <><Loader2 className="h-3 w-3 mr-1 animate-spin" />Syncing...</> : <><RefreshCw className="h-3 w-3 mr-1" />Sync Panel</>}
@@ -2257,8 +2270,6 @@ export default function AdminPage() {
                     )}
                   </div>
                 </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
                 {/* Load / search */}
                 <div className="flex gap-2">
                   <Input
@@ -2339,18 +2350,17 @@ export default function AdminPage() {
                     )
                   })
                 })()}
-              </CardContent>
-            </Card>
+                </AdminControlSection>
+              </div>
 
             {/* Product Suggestions ("trending category" panel) */}
-            <Card className="mb-6 sm:mb-8">
-              <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-lg">Product Suggestions</CardTitle>
-                <Button size="sm" onClick={handleCheckTrends} disabled={isCheckingTrends}>
-                  {isCheckingTrends ? 'Checking...' : 'Check Trends'}
-                </Button>
-              </CardHeader>
-              <CardContent>
+              <div className="md:col-span-2 xl:col-span-3">
+                <AdminControlSection title="Product Suggestions">
+                <div className="mb-3 flex justify-end">
+                  <Button size="sm" onClick={handleCheckTrends} disabled={isCheckingTrends}>
+                    {isCheckingTrends ? 'Checking...' : 'Check Trends'}
+                  </Button>
+                </div>
                 <p className="text-xs text-muted-foreground mb-3">
                   Flags categories whose sales are growing fast in your own store and suggests
                   adding a new product based on your best template in that category. Accepting
@@ -2378,8 +2388,9 @@ export default function AdminPage() {
                     ))}
                   </div>
                 )}
-              </CardContent>
-            </Card>
+                </AdminControlSection>
+              </div>
+            </section>
 
           {/* View Account Modal */}
           {viewingAccount && (

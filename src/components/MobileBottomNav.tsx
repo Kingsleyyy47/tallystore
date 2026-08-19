@@ -1,19 +1,14 @@
-import { Home, LayoutGrid, PackageCheck, User, Wallet } from 'lucide-react'
+import { LayoutGrid, PackageCheck, PhoneCall, Rocket, Wallet } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { cn } from '@/lib/utils'
-
-const hiddenPrefixes = ['/admin', '/staff-admin', '/get-ip']
 
 export default function MobileBottomNav() {
   const { pathname } = useLocation()
   const { user } = useAuth()
 
-  if (hiddenPrefixes.some((prefix) => pathname.startsWith(prefix))) return null
-
-  const accountHref = user ? '/profile' : '/login'
   const items = [
-    { label: 'Home', href: '/', icon: Home, active: pathname === '/' },
+    { label: 'SMS', href: user ? '/sms-numbers' : '/login', icon: PhoneCall, active: pathname.startsWith('/sms-numbers') },
     {
       label: 'Products',
       href: '/products',
@@ -23,10 +18,10 @@ export default function MobileBottomNav() {
     { label: 'Wallet', href: user ? '/wallet' : '/login', icon: Wallet, active: pathname === '/wallet' },
     { label: 'Orders', href: user ? '/orders' : '/login', icon: PackageCheck, active: pathname.startsWith('/orders') },
     {
-      label: 'Account',
-      href: accountHref,
-      icon: User,
-      active: ['/dashboard', '/profile', '/login', '/register'].some((prefix) => pathname.startsWith(prefix)),
+      label: 'Social Boost',
+      href: user ? '/social-boost' : '/login',
+      icon: Rocket,
+      active: pathname.startsWith('/social-boost'),
     },
   ]
 
@@ -46,7 +41,7 @@ export default function MobileBottomNav() {
               )}
             >
               <Icon className="h-5 w-5" />
-              <span className="max-w-full whitespace-nowrap leading-tight">{item.label}</span>
+              <span className="max-w-full text-center leading-tight">{item.label}</span>
             </Link>
           )
         })}

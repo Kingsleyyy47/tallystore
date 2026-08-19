@@ -768,53 +768,55 @@ function SmsNumbersSurface() {
   const rentalTotal = selectedArea ? selectedArea.price_ngn_monthly * rentalMonths : 0
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6">
-      <Card className="overflow-hidden rounded-[2rem] border-0 bg-[linear-gradient(145deg,#5b37b7,#121728_72%)] text-white shadow-[0_28px_80px_rgba(88,64,179,0.28)]">
-        <CardContent className="relative p-6 sm:p-8 lg:p-10">
-          <div className="absolute bottom-0 left-0 right-0 h-24 bg-[linear-gradient(180deg,transparent,rgba(255,255,255,0.08))]" />
-          <div className="relative flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-2xl">
-              <div className="flex items-center gap-3">
-                <span className="grid h-14 w-14 shrink-0 place-items-center rounded-3xl bg-white/10">
-                  <ReactCountryFlag countryCode="US" svg className="text-3xl" aria-label="United States" />
+    <div className="mx-auto w-full max-w-7xl space-y-4 sm:space-y-6">
+      <Card className="overflow-hidden rounded-2xl border border-purple-200/70 bg-[radial-gradient(circle_at_88%_20%,rgba(34,211,238,0.22),transparent_12rem),linear-gradient(135deg,#2d145c_0%,#171827_58%,#10131f_100%)] text-white shadow-[0_18px_55px_rgba(88,64,179,0.22)] dark:border-white/10">
+        <CardContent className="relative p-4 sm:p-6">
+          <div className="absolute bottom-0 right-0 h-24 w-40 rounded-tl-full bg-purple-400/10 blur-2xl" />
+          <div className="relative grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+            <div className="min-w-0">
+              <div className="mb-3 flex min-w-0 items-center gap-3">
+                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-white/10 ring-1 ring-white/10 sm:h-12 sm:w-12">
+                  <ReactCountryFlag countryCode="US" svg className="text-2xl" aria-label="United States" />
                 </span>
-                <Badge className="rounded-full bg-cyan-300/15 px-4 py-2 text-cyan-100 hover:bg-cyan-300/15">
-                  US numbers
-                </Badge>
+                <div className="min-w-0">
+                  <Badge className="mb-1 rounded-full bg-cyan-300/15 px-3 py-1 text-[11px] text-cyan-100 hover:bg-cyan-300/15">
+                    US numbers
+                  </Badge>
+                  <h1 className="truncate text-2xl font-black tracking-tight sm:text-3xl">SMS Numbers</h1>
+                </div>
               </div>
-              <h1 className="mt-6 text-4xl font-black tracking-tight sm:text-5xl">SMS Numbers</h1>
-              <p className="mt-4 max-w-xl text-base leading-7 text-slate-200">
-                Search OTP services, choose a rental country, and manage every number from one wallet-ready workspace.
+              <p className="max-w-2xl text-sm leading-6 text-slate-200">
+                Pick an OTP service, rent a number, or return to active numbers without digging through a long page.
               </p>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" className="h-11 rounded-2xl bg-white px-5 text-[#5637aa] hover:bg-cyan-50" onClick={loadSmsNumbers}>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
+              <Button type="button" className="h-10 rounded-xl bg-white px-3 text-xs font-black text-[#5637aa] hover:bg-cyan-50 sm:px-4 sm:text-sm" onClick={loadSmsNumbers}>
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 Refresh
               </Button>
-              <Button asChild className="h-11 rounded-2xl bg-white/10 px-5 text-white hover:bg-white/15 hover:text-white">
+              <Button asChild className="h-10 rounded-xl bg-white/10 px-3 text-xs font-black text-white hover:bg-white/15 hover:text-white sm:px-4 sm:text-sm">
                 <Link to="/dashboard">
                   <ArrowLeft className="h-4 w-4" />
-                  Wallet Home
+                  Wallet
                 </Link>
               </Button>
             </div>
           </div>
 
-          <div className="relative mt-10 grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <div className="relative mt-4 grid grid-cols-4 gap-1.5 sm:gap-3">
             {[
-              { icon: Wallet, label: 'Checkout', value: numbersReady ? 'Wallet' : 'Paused' },
-              { icon: PhoneCall, label: 'OTP services', value: loading ? '...' : services.length.toLocaleString() },
-              { icon: CalendarDays, label: 'Rental countries', value: loading ? '...' : areas.length.toLocaleString() },
-              { icon: Inbox, label: 'My numbers', value: activeOrders.length.toLocaleString() },
+              { icon: Wallet, label: 'Wallet', value: numbersReady ? 'Ready' : 'Paused' },
+              { icon: PhoneCall, label: 'OTP', value: loading ? '...' : services.length.toLocaleString() },
+              { icon: CalendarDays, label: 'Rentals', value: loading ? '...' : areas.length.toLocaleString() },
+              { icon: Inbox, label: 'Mine', value: activeOrders.length.toLocaleString() },
             ].map((item) => {
               const Icon = item.icon
               return (
-                <div key={item.label} className="rounded-3xl border border-white/10 bg-white/8 p-4 sm:p-5">
-                  <Icon className="h-6 w-6 text-cyan-200" />
-                  <p className="mt-4 text-xs font-semibold text-slate-300 sm:text-sm">{item.label}</p>
-                  <p className="mt-1 text-xl font-black sm:text-2xl">{item.value}</p>
+                <div key={item.label} className="min-w-0 rounded-xl border border-white/10 bg-white/[0.07] p-2 text-center sm:rounded-2xl sm:p-3">
+                  <Icon className="mx-auto h-4 w-4 text-cyan-200 sm:h-5 sm:w-5" />
+                  <p className="mt-1 truncate text-[10px] font-bold text-slate-300 sm:text-xs">{item.label}</p>
+                  <p className="truncate text-sm font-black sm:text-lg">{item.value}</p>
                 </div>
               )
             })}
@@ -838,7 +840,7 @@ function SmsNumbersSurface() {
         </Card>
       )}
 
-      <div className="grid gap-2 rounded-3xl bg-white p-2 shadow-card dark:bg-card sm:inline-grid sm:grid-cols-3">
+      <div className="grid grid-cols-3 gap-1 rounded-2xl bg-white p-1.5 shadow-card dark:bg-card sm:inline-grid sm:gap-2 sm:rounded-3xl sm:p-2">
         {[
           { id: 'otp' as const, label: 'OTP numbers', icon: PhoneCall },
           { id: 'rental' as const, label: 'Rentals', icon: CalendarDays },
@@ -851,15 +853,15 @@ function SmsNumbersSurface() {
               type="button"
               variant="ghost"
               className={cn(
-                'h-11 justify-start rounded-2xl sm:justify-center',
+                'h-10 min-w-0 justify-center rounded-xl px-2 text-[11px] font-black sm:h-11 sm:rounded-2xl sm:px-4 sm:text-sm',
                 activeTab === tab.id
                   ? 'bg-slate-950 text-white shadow-sm hover:bg-slate-900 hover:text-white dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100'
                   : 'text-slate-700 hover:bg-violet-50 hover:text-slate-950 dark:text-muted-foreground dark:hover:bg-white/10 dark:hover:text-foreground',
               )}
               onClick={() => setActiveTab(tab.id)}
             >
-              <Icon className="h-4 w-4" />
-              {tab.label}
+              <Icon className="h-4 w-4 shrink-0" />
+              <span className="truncate">{tab.label}</span>
             </Button>
           )
         })}

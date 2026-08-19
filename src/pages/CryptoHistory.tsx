@@ -39,6 +39,7 @@ import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow } from "date-fns";
 import QRCode from "react-qr-code";
+import NavbarAuth from "@/components/NavbarAuth";
 
 interface CryptoTransaction {
   id: string;
@@ -317,10 +318,13 @@ export default function CryptoHistory() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background to-muted/20 flex items-center justify-center">
-        <div className="text-center">
+      <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
+        <NavbarAuth />
+        <div className="flex min-h-[50vh] items-center justify-center">
+          <div className="text-center">
           <Loader2 className="w-12 h-12 animate-spin mx-auto mb-4 text-primary" />
           <p className="text-muted-foreground">Loading transaction history...</p>
+          </div>
         </div>
       </div>
     );
@@ -328,31 +332,26 @@ export default function CryptoHistory() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
-      {/* Navigation */}
-      <nav className="border-b bg-gradient-to-r from-primary to-primary/90 shadow-lg sticky top-0 z-10">
-        <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-5 flex justify-between items-center">
-          <Button
-            variant="ghost"
-            onClick={() => navigate('/dashboard')}
-            className="gap-1 sm:gap-2 text-white hover:bg-white/20 hover:text-white font-medium text-sm sm:text-base"
-          >
-            ← <span className="hidden sm:inline">Back to Wallet</span><span className="sm:hidden">Back</span>
-          </Button>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <History className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
-            <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-white">History</h1>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => fetchHistory()}
-            disabled={refreshing}
-            className="text-white hover:bg-white/20"
-          >
-            <RefreshCw className={`w-5 h-5 ${refreshing ? 'animate-spin' : ''}`} />
-          </Button>
+      <NavbarAuth />
+
+      <div className="container mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 pt-4 sm:px-6">
+        <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="gap-1 rounded-xl font-bold">
+          ← Wallet
+        </Button>
+        <div className="flex min-w-0 items-center gap-2">
+          <History className="h-5 w-5 shrink-0 text-primary" />
+          <h1 className="truncate text-lg font-black">History</h1>
         </div>
-      </nav>
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={() => fetchHistory()}
+          disabled={refreshing}
+          className="rounded-xl"
+        >
+          <RefreshCw className={`h-5 w-5 ${refreshing ? 'animate-spin' : ''}`} />
+        </Button>
+      </div>
 
       {/* Main Content */}
       <div className="container mx-auto p-4 sm:p-6 max-w-7xl">

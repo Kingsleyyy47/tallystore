@@ -24,6 +24,7 @@ import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow } from "date-fns";
 import { useAuth } from "@/contexts/SimpleAuth";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
+import NavbarAuth from "@/components/NavbarAuth";
 
 // Flip this to false once Bitrefill is fully wired up (migration run, secrets
 // set, functions deployed) and you're ready for customers to use this page.
@@ -299,22 +300,18 @@ export default function GiftCardsEsims() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
-      <nav className="border-b bg-gradient-to-r from-primary to-primary/90 shadow-lg sticky top-0 z-10">
-        <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-5 flex justify-between items-center">
-          <Button
-            variant="ghost"
-            onClick={() => navigate('/dashboard')}
-            className="gap-1 sm:gap-2 text-white hover:bg-white/20 hover:text-white font-medium text-sm sm:text-base"
-          >
-            ← <span className="hidden sm:inline">Back to Wallet</span><span className="sm:hidden">Back</span>
-          </Button>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <Gift className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
-            <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-white">Gift Cards</h1>
-          </div>
-          <div className="w-40" />
+      <NavbarAuth />
+
+      <div className="container mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 pt-4 sm:px-6">
+        <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="gap-1 rounded-xl font-bold">
+          ← Wallet
+        </Button>
+        <div className="flex min-w-0 items-center gap-2">
+          <Gift className="h-5 w-5 shrink-0 text-primary" />
+          <h1 className="truncate text-lg font-black">Gift Cards</h1>
         </div>
-      </nav>
+        <div className="w-[72px]" />
+      </div>
 
       {COMING_SOON && isAdmin && (
         <div className="bg-amber-100 dark:bg-amber-900/30 border-b border-amber-300 dark:border-amber-800 text-center py-2 px-4">

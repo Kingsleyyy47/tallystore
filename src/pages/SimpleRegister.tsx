@@ -4,7 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Loader2, Mail, Lock, User, Gift } from 'lucide-react'
+import { Loader2, Mail, Lock, Gift } from 'lucide-react'
+import NavbarAuth from '@/components/NavbarAuth'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
 
@@ -79,9 +80,14 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background to-muted/20 flex items-center justify-center p-4">
-      <Card className="w-full max-w-md">
+    <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_18%_18%,hsl(var(--primary)/0.16),transparent_28rem),radial-gradient(circle_at_82%_8%,hsl(var(--accent)/0.12),transparent_24rem),linear-gradient(135deg,hsl(var(--background))_0%,hsl(var(--muted)/0.42)_100%)] pb-24">
+      <NavbarAuth />
+      <div className="flex min-h-[calc(100vh-9rem)] items-center justify-center px-4 py-8">
+      <Card className="w-full max-w-md border-border/70 bg-background/90 shadow-[0_28px_80px_rgba(15,23,42,0.14)] backdrop-blur dark:shadow-[0_28px_80px_rgba(0,0,0,0.45)]">
         <CardHeader className="space-y-1 text-center">
+          <Link to="/" className="mx-auto text-3xl font-black tracking-normal">
+            Tally<span className="text-primary">Store</span>
+          </Link>
           <CardTitle className="text-2xl font-bold">Create Account</CardTitle>
           <p className="text-muted-foreground">
             Join TallyStore to start buying accounts
@@ -194,6 +200,7 @@ export default function RegisterPage() {
           </div>
         </CardContent>
       </Card>
+      </div>
     </div>
   )
 }
