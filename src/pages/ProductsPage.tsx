@@ -5,7 +5,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Grid,
-  Home,
   LayoutGrid,
   List,
   Loader2,
@@ -22,7 +21,8 @@ import Footer from '@/components/Footer'
 import HomepageLiveActivity from '@/components/HomepageLiveActivity'
 import ProductTemplateCard from '@/components/ProductTemplateCard'
 import CategorySidebar from '@/components/CategorySidebar'
-import { getCategoryStyle } from '@/lib/categoryStyles'
+import CategoryLogo from '@/components/CategoryLogo'
+import PageBreadcrumb from '@/components/PageBreadcrumb'
 import {
   getAllProductGroups,
   getAvailableAccountIdsByProductGroup,
@@ -294,14 +294,7 @@ export default function ProductsPage() {
       <Navbar />
 
       <main className="mx-auto w-full max-w-7xl overflow-x-hidden px-3 pb-12 pt-5 sm:px-6 lg:px-8">
-        <div className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
-          <Link to="/" className="inline-flex items-center gap-1 transition hover:text-purple-600 dark:hover:text-purple-300">
-            <Home className="h-3.5 w-3.5" />
-            Home
-          </Link>
-          <span>/</span>
-          <span className="text-slate-800 dark:text-slate-200">Products</span>
-        </div>
+        <PageBreadcrumb items={[{ label: 'Products' }]} className="mb-5" />
 
         <section className="mb-7">
           <div className="mb-4 flex items-center justify-between">
@@ -332,8 +325,6 @@ export default function ProductsPage() {
             </button>
 
             {categoryChips.slice(0, 3).map(({ category, count }) => {
-              const style = getCategoryStyle(category.name)
-              const Icon = style.icon
               const active = selectedCategory === category.id
               return (
                 <button
@@ -346,9 +337,7 @@ export default function ProductsPage() {
                       : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
                   }`}
                 >
-                  <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg sm:h-9 sm:w-9 ${active ? 'bg-white/15 text-white' : style.bg}`}>
-                    <Icon className={`h-4 w-4 sm:h-5 sm:w-5 ${active ? 'text-white' : style.color}`} />
-                  </span>
+                  <CategoryLogo name={category.name} className="h-7 w-7 sm:h-9 sm:w-9" iconClassName={active ? 'h-6 w-6 text-white sm:h-7 sm:w-7' : 'h-6 w-6 sm:h-7 sm:w-7'} />
                   <span className="min-w-0 max-w-full">
                     <strong className="block max-w-full break-words text-[9px] leading-tight sm:text-sm">{category.name}</strong>
                     <small className={active ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{count}</small>
@@ -358,8 +347,6 @@ export default function ProductsPage() {
             })}
 
             {categoryChips.slice(3).map(({ category, count }) => {
-              const style = getCategoryStyle(category.name)
-              const Icon = style.icon
               const active = selectedCategory === category.id
               return (
                 <button
@@ -372,9 +359,7 @@ export default function ProductsPage() {
                       : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
                   }`}
                 >
-                  <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg sm:h-9 sm:w-9 ${active ? 'bg-white/15 text-white' : style.bg}`}>
-                    <Icon className={`h-4 w-4 sm:h-5 sm:w-5 ${active ? 'text-white' : style.color}`} />
-                  </span>
+                  <CategoryLogo name={category.name} className="h-7 w-7 sm:h-9 sm:w-9" iconClassName={active ? 'h-6 w-6 text-white sm:h-7 sm:w-7' : 'h-6 w-6 sm:h-7 sm:w-7'} />
                   <span className="min-w-0 max-w-full">
                     <strong className="block max-w-full break-words text-[9px] leading-tight sm:text-sm">{category.name}</strong>
                     <small className={active ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{count}</small>
@@ -427,21 +412,30 @@ export default function ProductsPage() {
 
           <div className="grid min-w-0 gap-2.5 lg:grid-cols-3">
             {collectionGroups[activeCollection].slice(0, 9).map((productGroup) => (
-              <button
-                key={productGroup.id}
-                type="button"
-                onClick={() => goToProduct(productGroup)}
-                className="flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-3 py-2.5 text-left text-[10px] font-black shadow-sm transition hover:border-purple-300 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/30 dark:hover:bg-white/[0.06] sm:px-4 sm:py-3 sm:text-sm"
-                title={productGroup.name}
-              >
-                <span className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-                  <Package className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-300" />
-                  <span className="block min-w-0 max-w-full whitespace-normal break-words leading-tight [overflow-wrap:anywhere]">
-                    {productGroup.name}
-                  </span>
-                </span>
-                <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
-              </button>
+              (() => {
+                const category = categoryForProduct(productGroup)
+                return (
+                  <button
+                    key={productGroup.id}
+                    type="button"
+                    onClick={() => goToProduct(productGroup)}
+                    className="flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-3 py-2.5 text-left text-[10px] font-black shadow-sm transition hover:border-purple-300 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/30 dark:hover:bg-white/[0.06] sm:px-4 sm:py-3 sm:text-sm"
+                    title={productGroup.name}
+                  >
+                    <span className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+                      {category ? (
+                        <CategoryLogo name={category.name} className="h-4 w-4" iconClassName="h-4 w-4" />
+                      ) : (
+                        <Package className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-300" />
+                      )}
+                      <span className="block min-w-0 max-w-full whitespace-normal break-words leading-tight [overflow-wrap:anywhere]">
+                        {productGroup.name}
+                      </span>
+                    </span>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+                  </button>
+                )
+              })()
             ))}
           </div>
         </section>

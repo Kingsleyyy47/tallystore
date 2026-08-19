@@ -15,12 +15,12 @@ import {
   RefreshCw,
   Search,
   SlidersHorizontal,
-  Sparkles,
   Wallet,
   XCircle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import NavbarAuth from '@/components/NavbarAuth'
+import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -780,9 +780,9 @@ function SmsNumbersSurface() {
                 </span>
                 <div className="min-w-0">
                   <Badge className="mb-1 rounded-full bg-cyan-300/15 px-3 py-1 text-[11px] text-cyan-100 hover:bg-cyan-300/15">
-                    US numbers
+                    US & Canada
                   </Badge>
-                  <h1 className="truncate text-2xl font-black tracking-tight sm:text-3xl">SMS Numbers</h1>
+                  <h1 className="truncate text-2xl font-black tracking-tight sm:text-3xl">US & Canada Numbers</h1>
                 </div>
               </div>
               <p className="max-w-2xl text-sm leading-6 text-slate-200">
@@ -1234,10 +1234,7 @@ export default function SmsNumbersPage() {
       <NavbarAuth />
 
       <main className="container mx-auto max-w-full overflow-x-hidden px-4 py-6 sm:px-6 lg:py-10">
-        <div className="mx-auto mb-6 flex w-full max-w-7xl items-center gap-3 text-sm font-semibold text-slate-500 dark:text-muted-foreground">
-          <Sparkles className="h-4 w-4 text-violet-500" />
-          SMS Numbers
-        </div>
+        <PageBreadcrumb items={[{ label: 'US & Canada Numbers' }]} className="mx-auto mb-6 w-full max-w-7xl" />
 
         <SmsNumbersSurface />
       </main>

@@ -27,6 +27,7 @@ import NavbarAuth from "@/components/NavbarAuth"
 import Footer from "@/components/Footer"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import HomepageLiveActivity from "@/components/HomepageLiveActivity"
+import CategoryLogo from "@/components/CategoryLogo"
 import { useAuth } from "@/contexts/SimpleAuth"
 import { getCategoryStyle } from "@/lib/categoryStyles"
 import {
@@ -168,7 +169,7 @@ function buildCategoryCards(categories: Category[], productGroups: ProductGroup[
     .map((category) => {
       const style = getCategoryStyle(category.name)
       const normalizedName = category.name.toLowerCase()
-      const matchedImage = CATEGORY_IMAGE_BY_KEY.find((item) => normalizedName.includes(item.key))?.image
+      const matchedImage = style.image || CATEGORY_IMAGE_BY_KEY.find((item) => normalizedName.includes(item.key))?.image
       return {
         id: category.id,
         name: category.name,
@@ -422,20 +423,13 @@ const Index = () => {
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
             {categoryCards.map((category) => {
-              const Icon = category.icon
               return (
                 <Link
                   key={category.id}
                   to={category.href}
                   className="group flex min-h-0 items-center gap-3 rounded-lg border border-slate-200 bg-white/85 p-3 shadow-sm transition hover:border-purple-300/60 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35 dark:hover:bg-white/[0.055] sm:block sm:min-h-[162px] sm:p-4 sm:hover:-translate-y-1"
                 >
-                  <span className={`grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-xl ${category.image ? "bg-white" : category.bg} ${category.image ? "" : category.color}`}>
-                    {category.image ? (
-                      <img src={category.image} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      <Icon className="h-7 w-7" />
-                    )}
-                  </span>
+                  <CategoryLogo name={category.name} className="h-12 w-12" iconClassName="h-10 w-10" />
                   <span className="min-w-0 flex-1">
                     <h3 className="text-sm font-black text-slate-950 dark:text-white sm:mt-4">{category.name}</h3>
                     <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400 sm:mt-2 sm:min-h-10 sm:text-sm sm:leading-6">{category.description}</p>

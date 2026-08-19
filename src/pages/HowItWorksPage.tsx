@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
-import { BackToHome } from '@/components/ui/back-button'
+import PageBreadcrumb from '@/components/PageBreadcrumb'
 import {
   Search,
   PackageCheck,
@@ -29,10 +29,8 @@ export default function HowItWorksPage() {
     <div className="min-h-screen bg-background">
       <NavbarAuth />
 
-      <div className="container mx-auto px-4 sm:px-6 pt-24 pb-16 max-w-5xl">
-        <div className="mb-6">
-          <BackToHome />
-        </div>
+      <div className="container mx-auto max-w-5xl px-4 pb-16 pt-5 sm:px-6">
+        <PageBreadcrumb items={[{ label: 'How It Works' }]} className="mb-6" />
 
         {/* Hero */}
         <div className="text-center mb-16">

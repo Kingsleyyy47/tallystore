@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import NavbarAuth from '@/components/NavbarAuth';
+import PageBreadcrumb from '@/components/PageBreadcrumb';
 import ReactCountryFlag from 'react-country-flag';
 import {
   Search,
@@ -610,6 +611,10 @@ export default function SocialBoostPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
       <NavbarAuth />
+
+      <div className="container mx-auto max-w-6xl px-3 pt-4 sm:px-4 md:px-6">
+        <PageBreadcrumb items={[{ label: 'Wallet', href: '/wallet' }, { label: 'Social Boost' }]} />
+      </div>
 
       <div className="container mx-auto flex max-w-6xl items-center justify-between gap-3 px-3 pt-4 sm:px-4 md:px-6">
         <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="gap-1 rounded-xl font-bold">

@@ -31,6 +31,7 @@ import { useCurrency } from '@/contexts/CurrencyContext'
 import { CryptoBalanceCard } from '@/components/CryptoBalanceCard'
 import { PaymentVerificationCard } from '@/components/PaymentVerificationCard'
 import NavbarAuth from '@/components/NavbarAuth'
+import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
@@ -310,6 +311,7 @@ export default function Dashboard() {
         )}
       >
         <div className="mx-auto w-full max-w-7xl space-y-6 overflow-x-hidden lg:space-y-8">
+          <PageBreadcrumb items={[{ label: 'Wallet Home' }]} />
           <section className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(340px,0.65fr)]">
             <div className="min-w-0 space-y-4">
               <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -421,14 +423,14 @@ export default function Dashboard() {
                   <div className="grid h-14 w-14 place-items-center rounded-3xl bg-cyan-300/15 text-cyan-200">
                     <PhoneCall className="h-6 w-6" />
                   </div>
-                  <h2 className="mt-7 text-2xl font-black tracking-tight">SMS Numbers</h2>
+                  <h2 className="mt-7 text-2xl font-black tracking-tight">US & Canada Numbers</h2>
                   <p className="mt-2 max-w-sm text-sm leading-6 text-slate-300">
                     Buy US numbers for SMS verification directly from your TallyStore wallet.
                   </p>
                   <Button asChild className="mt-6 h-11 rounded-2xl bg-white px-5 text-slate-950 hover:bg-cyan-50">
-                    <Link to="/sms-numbers">
+                    <Link to="/us-canada">
                       <MessageSquareText className="h-4 w-4" />
-                      Buy SMS Numbers
+                      Buy Numbers
                     </Link>
                   </Button>
                 </CardContent>
@@ -592,13 +594,13 @@ export default function Dashboard() {
                       <Bitcoin className="h-5 w-5" />
                     </div>
                     <div>
-                      <h2 className="font-black">SMS Numbers</h2>
+                      <h2 className="font-black">US & Canada Numbers</h2>
                       <p className="text-xs text-slate-500 dark:text-muted-foreground">Ready from your wallet.</p>
                     </div>
                   </div>
 
                   <Link
-                    to="/sms-numbers"
+                    to="/us-canada"
                     className="block rounded-3xl border border-dashed border-cyan-300 bg-cyan-50/70 p-4 transition hover:-translate-y-0.5 hover:bg-cyan-50 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:hover:bg-cyan-500/15"
                   >
                     <div className="flex items-start gap-3">
@@ -606,7 +608,7 @@ export default function Dashboard() {
                         <PhoneCall className="h-4 w-4" />
                       </div>
                       <div className="min-w-0">
-                        <p className="font-bold">US SMS Numbers</p>
+                        <p className="font-bold">US & Canada Numbers</p>
                         <p className="mt-1 text-sm leading-5 text-slate-600 dark:text-muted-foreground">
                           Buy verification numbers directly from your balance.
                         </p>

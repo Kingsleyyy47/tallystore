@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { PhoneCall } from 'lucide-react'
-import { getCategoryStyle } from '@/lib/categoryStyles'
+import CategoryLogo from '@/components/CategoryLogo'
 import type { Category, ProductGroup } from '@/lib/supabase'
 
 interface CategorySidebarProps {
@@ -47,19 +47,18 @@ export default function CategorySidebar({
             <span className="text-xs text-muted-foreground">{productGroups.length}</span>
           </button>
           <Link
-            to="/sms-numbers"
+            to="/us-canada"
             className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors hover:bg-muted text-foreground"
           >
             <span className="flex items-center gap-2">
               <PhoneCall className="h-4 w-4 text-cyan-500" />
-              SMS Numbers
+              US & Canada Numbers
             </span>
           </Link>
         </>
       )}
 
       {categories.map((category) => {
-        const { icon: Icon, color } = getCategoryStyle(category.name)
         const isActive = selectedCategory === category.id
         const count = countFor(category.id)
 
@@ -72,7 +71,7 @@ export default function CategorySidebar({
             }`}
           >
             <span className="flex items-center gap-2">
-              <Icon className={`h-4 w-4 ${color}`} />
+              <CategoryLogo name={category.name} className="h-4 w-4" iconClassName="h-4 w-4" />
               {category.name}
             </span>
             <span className="text-xs text-muted-foreground">{count}</span>

@@ -22,6 +22,7 @@ import {
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import WalletBalanceWidget from '@/components/WalletBalanceWidget'
+import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
 
 // Web service packages
@@ -160,11 +161,12 @@ export default function WebServicesPage() {
       <NavbarAuth />
       
       {/* Wallet Balance Widget */}
-      <div className="container mx-auto px-6 pt-24 pb-4 max-w-6xl">
+      <div className="container mx-auto max-w-6xl px-4 pb-4 pt-4 sm:px-6">
+        <PageBreadcrumb items={[{ label: 'Services' }]} className="mb-4" />
         <WalletBalanceWidget showRefresh={true} />
       </div>
       
-      <div className="container mx-auto px-6 pb-12 max-w-6xl">
+      <div className="container mx-auto max-w-6xl px-4 pb-12 sm:px-6">
         {/* Header */}
         <div className="text-center mb-12">
           <h1 className="text-3xl sm:text-4xl font-bold mb-4">

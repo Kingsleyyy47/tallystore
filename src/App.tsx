@@ -286,6 +286,14 @@ const App = () => {
                 }
               />
               <Route
+                path="/us-canada"
+                element={
+                  <ProtectedRoute requireRole="user">
+                    <SmsNumbersPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
                 path="/admin"
                 element={
                   <ProtectedRoute requireRole="admin">

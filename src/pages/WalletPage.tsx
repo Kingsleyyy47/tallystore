@@ -14,7 +14,6 @@ import {
   EyeOff,
   Filter,
   Headphones,
-  Home,
   Landmark,
   Plus,
   Receipt,
@@ -25,6 +24,7 @@ import {
 } from 'lucide-react'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
+import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { TopUpWallet } from '@/components/TopUpWallet'
 import { PaymentVerificationCard } from '@/components/PaymentVerificationCard'
 import { useAuth } from '@/contexts/SimpleAuth'
@@ -218,14 +218,7 @@ export default function WalletPage() {
       <Navbar />
 
       <main className="mx-auto w-full max-w-7xl px-4 pb-28 pt-5 sm:px-6 md:pb-10 lg:px-8">
-        <div className="mb-5 flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
-          <Link to="/" className="inline-flex items-center gap-1 transition hover:text-purple-600 dark:hover:text-purple-300">
-            <Home className="h-3.5 w-3.5" />
-            Home
-          </Link>
-          <span>/</span>
-          <span className="text-slate-800 dark:text-slate-200">Wallet</span>
-        </div>
+        <PageBreadcrumb items={[{ label: 'Wallet' }]} className="mb-5" />
 
         <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>

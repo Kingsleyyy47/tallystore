@@ -5,6 +5,7 @@ import { Clock, HelpCircle, ShieldCheck, ReceiptText } from 'lucide-react'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import WalletBalanceWidget from '@/components/WalletBalanceWidget'
+import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
 
 // WhatsApp SVG icon
@@ -63,7 +64,8 @@ export default function SupportPage() {
     <div className="min-h-screen bg-background">
       <NavbarAuth />
 
-      <div className="container mx-auto max-w-6xl px-4 pb-4 pt-24 sm:px-6">
+      <div className="container mx-auto max-w-6xl px-4 pb-4 pt-4 sm:px-6">
+        <PageBreadcrumb items={[{ label: 'Support' }]} className="mb-4" />
         <WalletBalanceWidget showRefresh={true} />
       </div>
 

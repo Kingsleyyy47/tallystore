@@ -8,7 +8,7 @@ export default function MobileBottomNav() {
   const { user } = useAuth()
 
   const items = [
-    { label: 'SMS', href: user ? '/sms-numbers' : '/login', icon: PhoneCall, active: pathname.startsWith('/sms-numbers') },
+    { label: 'SMS', href: user ? '/us-canada' : '/login', icon: PhoneCall, active: pathname.startsWith('/sms-numbers') || pathname.startsWith('/us-canada') },
     {
       label: 'Products',
       href: '/products',

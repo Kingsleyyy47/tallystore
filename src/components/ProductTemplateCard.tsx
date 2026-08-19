@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Plus, Minus, Package, Flame, ArrowRight } from 'lucide-react'
 import { type ProductGroup, type Category, computeDiscountedTotal } from '@/lib/supabase'
 import { useCurrency } from '@/contexts/CurrencyContext'
+import CategoryLogo from '@/components/CategoryLogo'
 
 interface ProductTemplateCardProps {
   productGroup: ProductGroup
@@ -69,9 +70,7 @@ export default function ProductTemplateCard({
     <Card className="group min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200 bg-white/90 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-purple-300 hover:shadow-lg dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35">
       <CardHeader className="min-w-0 px-2 pb-2 pt-2 sm:px-3.5 sm:pb-2.5 sm:pt-3.5">
         <div className="mb-2 flex items-start justify-between gap-2 sm:mb-3 sm:gap-3">
-          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300 sm:h-10 sm:w-10 sm:rounded-xl">
-            <Package className="h-3.5 w-3.5 sm:h-5 sm:w-5" />
-          </span>
+          <CategoryLogo name={category.name} className="h-7 w-7 sm:h-10 sm:w-10" iconClassName="h-7 w-7 sm:h-9 sm:w-9" />
           {productGroup.stock_count > 0 && productGroup.stock_count <= 10 && (
             <Badge className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-black text-amber-600 hover:bg-amber-500/10 dark:text-amber-400">
               Fast

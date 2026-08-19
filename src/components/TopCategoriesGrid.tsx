@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Card, CardContent } from '@/components/ui/card'
 import { Loader2 } from 'lucide-react'
 import { getCategories, getAllProductGroups, type Category, type ProductGroup } from '@/lib/supabase'
-import { getCategoryStyle } from '@/lib/categoryStyles'
+import CategoryLogo from '@/components/CategoryLogo'
 
 export default function TopCategoriesGrid() {
   const navigate = useNavigate()
@@ -56,7 +56,6 @@ export default function TopCategoriesGrid() {
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
       {topCategories.map(({ category, productCount, lowestPrice }) => {
-        const { icon: Icon, color, bg } = getCategoryStyle(category.name)
         return (
           <Card
             key={category.id}
@@ -64,9 +63,7 @@ export default function TopCategoriesGrid() {
             onClick={() => navigate(`/category/${category.id}`)}
           >
             <CardContent className="pt-6 text-center">
-              <div className={`mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full ${bg}`}>
-                <Icon className={`h-6 w-6 ${color}`} />
-              </div>
+              <CategoryLogo name={category.name} className="mx-auto mb-3 h-12 w-12" iconClassName="mx-auto mb-3 h-10 w-10" />
               <h3 className="font-semibold text-sm mb-1">{category.name}</h3>
               <p className="text-xs text-muted-foreground">
                 {productCount} product{productCount === 1 ? '' : 's'}

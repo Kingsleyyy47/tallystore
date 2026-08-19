@@ -40,6 +40,7 @@ import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow } from "date-fns";
 import QRCode from "react-qr-code";
 import NavbarAuth from "@/components/NavbarAuth";
+import PageBreadcrumb from "@/components/PageBreadcrumb";
 
 interface CryptoTransaction {
   id: string;
@@ -333,6 +334,10 @@ export default function CryptoHistory() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
       <NavbarAuth />
+
+      <div className="container mx-auto max-w-7xl px-4 pt-4 sm:px-6">
+        <PageBreadcrumb items={[{ label: 'Wallet', href: '/wallet' }, { label: 'Crypto History' }]} />
+      </div>
 
       <div className="container mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 pt-4 sm:px-6">
         <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="gap-1 rounded-xl font-bold">

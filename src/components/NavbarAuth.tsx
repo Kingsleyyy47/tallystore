@@ -250,9 +250,9 @@ export default function Navbar() {
                         <Smartphone className="h-4 w-4" />
                         Gift Cards & eSIMs
                       </Link>
-                      <Link to="/sms-numbers" className={desktopDropdownItemClass}>
+                      <Link to="/us-canada" className={desktopDropdownItemClass}>
                         <PhoneCall className="h-4 w-4" />
-                        SMS Numbers
+                        US & Canada Numbers
                       </Link>
                       <Link to="/social-boost" className={`${desktopDropdownItemClass} text-pink-600 dark:text-pink-400`}>
                         <Rocket className="h-4 w-4" />
@@ -500,10 +500,10 @@ export default function Navbar() {
                       </Button>
                     </Link>
 
-                    <Link to="/sms-numbers" onClick={() => setIsMobileMenuOpen(false)}>
+                    <Link to="/us-canada" onClick={() => setIsMobileMenuOpen(false)}>
                       <Button variant="ghost" className={mobileMenuButtonClass}>
                         <PhoneCall className="h-4 w-4 shrink-0" />
-                        SMS Numbers
+                        US & Canada Numbers
                       </Button>
                     </Link>
 

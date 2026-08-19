@@ -6,7 +6,7 @@ const shopLinks = [
   ['Instagram Accounts', '/category/instagram'],
   ['TikTok Accounts', '/category/tiktok'],
   ['Facebook Accounts', '/category/facebook'],
-  ['SMS Numbers', '/sms-numbers'],
+  ['US & Canada Numbers', '/us-canada'],
 ]
 
 const accountLinks = [

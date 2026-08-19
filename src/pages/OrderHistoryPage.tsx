@@ -29,6 +29,7 @@ import {
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import WalletBalanceWidget from '@/components/WalletBalanceWidget'
+import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
 import { getUserOrders } from '@/lib/supabase'
@@ -102,6 +103,25 @@ function getOrderPlatform(order: any) {
   return order?.account_details?.category || order?.product_groups?.categories?.name || 'Social Media'
 }
 
+function getPlatformLoginUrl(platform: string, productName = '') {
+  const value = `${platform} ${productName}`.toLowerCase()
+
+  if (value.includes('facebook') || value.includes('fb ')) return 'https://www.facebook.com/login'
+  if (value.includes('instagram') || value.includes(' ig ')) return 'https://www.instagram.com/accounts/login/'
+  if (value.includes('tiktok')) return 'https://www.tiktok.com/login'
+  if (value.includes('twitter') || value.includes(' x ')) return 'https://x.com/i/flow/login'
+  if (value.includes('snapchat')) return 'https://accounts.snapchat.com/accounts/login'
+  if (value.includes('telegram')) return 'https://web.telegram.org/'
+  if (value.includes('discord')) return 'https://discord.com/login'
+  if (value.includes('google') || value.includes('gmail') || value.includes('youtube')) return 'https://accounts.google.com/'
+  if (value.includes('amazon')) return 'https://www.amazon.com/ap/signin'
+  if (value.includes('netflix')) return 'https://www.netflix.com/login'
+  if (value.includes('linkedin')) return 'https://www.linkedin.com/login'
+  if (value.includes('pinterest')) return 'https://www.pinterest.com/login/'
+
+  return 'https://www.google.com/search?q=' + encodeURIComponent(`${platform || productName} login`)
+}
+
 function buildCredentialText(order: any) {
   const accounts = getOrderAccounts(order)
   const lines = [
@@ -143,13 +163,14 @@ function OrderDetailsView({
   const accounts = getOrderAccounts(order)
   const productName = getOrderProductName(order)
   const platform = getOrderPlatform(order)
+  const loginUrl = getPlatformLoginUrl(platform, productName)
   const itemCount = accounts.length || order?.account_details?.quantity || 1
   const { date } = formatDate(order.created_at)
   const canAccessCredentials = order.status === 'completed' && accounts.length > 0
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
-      <div className="grid grid-cols-3 gap-2">
+    <div className="max-w-4xl space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         <Button
           type="button"
           variant="outline"
@@ -161,23 +182,23 @@ function OrderDetailsView({
           <span className="truncate">Copy</span>
         </Button>
         <Button
+          asChild
+          className="h-10 min-w-0 justify-center rounded-xl bg-amber-500 px-2 text-xs font-black text-white shadow-[0_12px_32px_rgba(245,158,11,0.24)] hover:bg-amber-400 sm:text-sm"
+        >
+          <a href={loginUrl} target="_blank" rel="noopener noreferrer">
+            <ExternalLink className="h-4 w-4 shrink-0" />
+            <span className="truncate">Login</span>
+          </a>
+        </Button>
+        <Button
           type="button"
           variant="outline"
-          className="h-10 min-w-0 justify-center rounded-xl px-2 text-xs font-black sm:text-sm"
+          className="col-span-2 h-10 min-w-0 justify-center rounded-xl px-2 text-xs font-black sm:col-span-1 sm:text-sm"
           onClick={() => onDownload(order)}
           disabled={!canAccessCredentials}
         >
           <Download className="h-4 w-4 shrink-0" />
-          <span className="truncate">Download</span>
-        </Button>
-        <Button
-          asChild
-          className="h-10 min-w-0 justify-center rounded-xl bg-amber-500 px-2 text-xs font-black text-white shadow-[0_12px_32px_rgba(245,158,11,0.24)] hover:bg-amber-400 sm:text-sm"
-        >
-          <Link to="/how-it-works">
-            <ExternalLink className="h-4 w-4 shrink-0" />
-            <span className="truncate">Login</span>
-          </Link>
+          <span>Download</span>
         </Button>
       </div>
 
@@ -454,6 +475,7 @@ export default function OrderHistoryPage() {
       </div>
       
       <RevampPage className="pt-0">
+        <PageBreadcrumb items={[{ label: 'Order History' }]} className="mb-5" />
         <section className="rounded-2xl border border-slate-200 bg-white/85 p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.035] sm:p-5">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
