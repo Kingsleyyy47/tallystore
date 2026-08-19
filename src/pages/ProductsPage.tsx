@@ -313,26 +313,54 @@ export default function ProductsPage() {
         </div>
 
         <section className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
-          <div className="flex min-w-0 items-center gap-5 overflow-x-auto px-4 py-3 text-xs font-semibold text-slate-600 dark:text-slate-300">
-            <div className="flex shrink-0 items-center gap-2 font-black text-slate-950 dark:text-white">
-              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.9)]" />
-              Live Activity
-            </div>
-            {(activity.length > 0 ? activity : [
+          {(() => {
+            const liveItems = (activity.length > 0 ? activity : [
               { kind: 'order', maskedName: 'Marco', label: 'TikTok aged account' } as GlobalActivityItem,
               { kind: 'order', maskedName: 'Emma', label: 'Instagram account' } as GlobalActivityItem,
               { kind: 'order', maskedName: 'Daniel', label: 'Facebook account' } as GlobalActivityItem,
               { kind: 'order', maskedName: 'James', label: 'Netflix VPN' } as GlobalActivityItem,
-            ]).slice(0, 5).map((item, index) => (
-              <div key={`${item.maskedName}-${index}`} className="flex shrink-0 items-center gap-5">
-                <span className="h-1 w-1 rounded-full bg-purple-500" />
-                <span>{maskActivity(item)}</span>
-              </div>
-            ))}
-            <Link to="/orders" className="ml-auto shrink-0 rounded-lg border border-purple-200 px-3 py-1.5 text-purple-700 hover:bg-purple-50 dark:border-purple-300/20 dark:text-purple-300 dark:hover:bg-white/[0.06]">
-              View all
-            </Link>
-          </div>
+            ]).slice(0, 5)
+
+            return (
+              <>
+                <div className="px-4 py-3 sm:hidden">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-xs font-black text-slate-950 dark:text-white">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.9)]" />
+                      Live Activity
+                    </div>
+                    <Link to="/orders" className="text-[11px] font-black text-purple-700 dark:text-purple-300">
+                      View all
+                    </Link>
+                  </div>
+                  <div className="grid gap-2">
+                    {liveItems.slice(0, 2).map((item, index) => (
+                      <div key={`${item.maskedName}-${index}`} className="flex min-w-0 items-center justify-between gap-3 rounded-lg bg-slate-100/70 px-3 py-2 text-[11px] font-semibold dark:bg-white/[0.035]">
+                        <span className="min-w-0 truncate">{maskActivity(item)}</span>
+                        <span className="shrink-0 text-[10px] text-slate-500 dark:text-slate-400">{index === 0 ? '2m ago' : '4m ago'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="hidden min-w-0 items-center gap-5 overflow-x-auto px-4 py-3 text-xs font-semibold text-slate-600 dark:text-slate-300 sm:flex">
+                  <div className="flex shrink-0 items-center gap-2 font-black text-slate-950 dark:text-white">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.9)]" />
+                    Live Activity
+                  </div>
+                  {liveItems.map((item, index) => (
+                    <div key={`${item.maskedName}-${index}`} className="flex shrink-0 items-center gap-5">
+                      <span className="h-1 w-1 rounded-full bg-purple-500" />
+                      <span>{maskActivity(item)}</span>
+                    </div>
+                  ))}
+                  <Link to="/orders" className="ml-auto shrink-0 rounded-lg border border-purple-200 px-3 py-1.5 text-purple-700 hover:bg-purple-50 dark:border-purple-300/20 dark:text-purple-300 dark:hover:bg-white/[0.06]">
+                    View all
+                  </Link>
+                </div>
+              </>
+            )
+          })()}
         </section>
 
         <section className="mb-7">
@@ -344,21 +372,21 @@ export default function ProductsPage() {
             </Link>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+          <div className="flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-4 sm:gap-3 sm:overflow-visible sm:pb-0 lg:grid-cols-8">
             <button
               type="button"
               onClick={() => setSelectedCategory('all')}
-              className={`flex min-h-16 items-center gap-3 rounded-lg border p-3 text-left transition ${
+              className={`flex min-h-16 min-w-[72px] flex-col items-center justify-center gap-1 rounded-lg border px-2 py-2 text-center transition sm:min-w-0 sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
                 selectedCategory === 'all'
                   ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
                   : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
               }`}
             >
-              <span className="grid h-9 w-9 place-items-center rounded-lg bg-purple-500/20">
-                <LayoutGrid className="h-5 w-5" />
+              <span className="grid h-8 w-8 place-items-center rounded-lg bg-purple-500/20 sm:h-9 sm:w-9">
+                <LayoutGrid className="h-4 w-4 sm:h-5 sm:w-5" />
               </span>
-              <span>
-                <strong className="block text-sm">All</strong>
+              <span className="min-w-0">
+                <strong className="block max-w-full truncate text-xs sm:text-sm">All</strong>
                 <small className={selectedCategory === 'all' ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{activeProductGroups.length}</small>
               </span>
             </button>
@@ -372,17 +400,17 @@ export default function ProductsPage() {
                   key={category.id}
                   type="button"
                   onClick={() => setSelectedCategory(category.id)}
-                  className={`flex min-h-16 items-center gap-3 rounded-lg border p-3 text-left transition ${
+                  className={`flex min-h-16 min-w-[72px] flex-col items-center justify-center gap-1 rounded-lg border px-2 py-2 text-center transition sm:min-w-0 sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
                     active
                       ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
                       : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
                   }`}
                 >
-                  <span className={`grid h-9 w-9 place-items-center rounded-lg ${active ? 'bg-white/15 text-white' : style.bg}`}>
-                    <Icon className={`h-5 w-5 ${active ? 'text-white' : style.color}`} />
+                  <span className={`grid h-8 w-8 place-items-center rounded-lg sm:h-9 sm:w-9 ${active ? 'bg-white/15 text-white' : style.bg}`}>
+                    <Icon className={`h-4 w-4 sm:h-5 sm:w-5 ${active ? 'text-white' : style.color}`} />
                   </span>
                   <span className="min-w-0">
-                    <strong className="block truncate text-sm">{category.name}</strong>
+                    <strong className="block max-w-full truncate text-xs sm:text-sm">{category.name}</strong>
                     <small className={active ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{count}</small>
                   </span>
                 </button>
@@ -391,13 +419,13 @@ export default function ProductsPage() {
 
             <Link
               to="/products"
-              className="flex min-h-16 items-center gap-3 rounded-lg border border-slate-200 bg-white/85 p-3 text-left transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]"
+              className="flex min-h-16 min-w-[72px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white/85 px-2 py-2 text-center transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-w-0 sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left"
             >
-              <span className="grid h-9 w-9 place-items-center rounded-lg bg-slate-100 dark:bg-white/10">
-                <MoreHorizontal className="h-5 w-5" />
+              <span className="grid h-8 w-8 place-items-center rounded-lg bg-slate-100 dark:bg-white/10 sm:h-9 sm:w-9">
+                <MoreHorizontal className="h-4 w-4 sm:h-5 sm:w-5" />
               </span>
-              <span>
-                <strong className="block text-sm">More</strong>
+              <span className="min-w-0">
+                <strong className="block max-w-full truncate text-xs sm:text-sm">More</strong>
                 <small className="text-slate-500 dark:text-slate-400">{Math.max(0, categories.length - categoryChips.length)}</small>
               </span>
             </Link>
