@@ -287,37 +287,37 @@ export default function Navbar() {
           </div>
 
           {/* Mobile Menu Button */}
-          <div className="grid w-full grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-1 md:hidden sm:grid-cols-[40px_minmax(0,1fr)_auto] sm:gap-2">
+          <div className="relative flex h-10 w-full items-center justify-center md:hidden">
             <button
               type="button"
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
               aria-label={isMobileMenuOpen ? "Close menu" : "Open menu"}
-              className="grid h-8 w-8 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10 sm:h-10 sm:w-10"
+              className="absolute left-0 grid h-9 w-9 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
             >
-              {isMobileMenuOpen ? <X className="h-4 w-4 sm:h-5 sm:w-5" /> : <Menu className="h-4 w-4 sm:h-5 sm:w-5" />}
+              {isMobileMenuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
             </button>
 
-            <Link to="/" className="min-w-0 truncate text-center text-xs font-black tracking-normal text-gray-950 dark:text-white min-[280px]:text-base min-[340px]:text-xl sm:text-2xl">
+            <Link to="/" className="max-w-[calc(100%-144px)] truncate text-center text-xl font-black tracking-normal text-gray-950 dark:text-white">
               Tally<span className="text-primary">Store</span>
             </Link>
 
-            <div className="flex items-center gap-0 sm:gap-2">
+            <div className="absolute right-0 flex h-9 items-center justify-end gap-1">
               <button
                 type="button"
                 onClick={toggleCurrency}
                 aria-label={currency === 'NGN' ? 'Switch to USD' : 'Switch to NGN'}
                 title={currency === 'NGN' ? 'Switch to USD' : 'Switch to NGN'}
-                className="grid h-8 min-w-8 place-items-center rounded-full border border-gray-200 bg-white/80 px-2 text-[11px] font-black text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10 sm:h-10 sm:min-w-10 sm:text-xs"
+                className="grid h-9 w-9 place-items-center rounded-full border border-gray-200 bg-white/80 text-[11px] font-black text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
               >
                 {currency === 'NGN' ? '₦' : '$'}
               </button>
-              <ThemeToggle className="h-8 w-8 sm:h-10 sm:w-10" />
+              <ThemeToggle className="h-9 w-9 border-gray-200 bg-white/80 shadow-sm hover:scale-100 hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:hover:bg-white/10" />
               <Link
                 to={user ? "/profile" : "/login"}
                 aria-label={user ? "Open profile" : "Log in or sign up"}
-                className="grid h-8 w-8 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10 sm:h-10 sm:w-10"
+                className="grid h-9 w-9 place-items-center rounded-full border border-gray-200 bg-white/80 text-gray-800 shadow-sm transition hover:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
               >
-                <User className="h-4 w-4 sm:h-5 sm:w-5" />
+                <User className="h-4 w-4" />
               </Link>
             </div>
           </div>
