@@ -101,6 +101,7 @@ const ADMIN_TABS = [
   { value: 'discount-codes', label: 'Discount Codes' },
   { value: 'categories', label: 'Categories' },
   { value: 'users', label: 'Users' },
+  { value: 'transactions', label: 'Transactions' },
   { value: 'email', label: 'Email' },
   { value: 'staff', label: 'Staff Roles' },
 ] as const
@@ -170,6 +171,33 @@ type AdminSmsCatalogResponse = {
   exchange_rate?: number
   exchange_rate_source?: 'override' | 'live' | 'fallback' | 'unknown'
   round_to_nearest_10?: boolean
+}
+
+type AdminDepositTransaction = {
+  id: string
+  user_id: string
+  type: string
+  amount: number
+  status?: string | null
+  reference?: string | null
+  ercas_reference?: string | null
+  balance_after?: number | null
+  description?: string | null
+  created_at: string
+  user_email?: string | null
+  user_name?: string | null
+}
+
+function isDepositTransaction(tx: { type?: string | null; amount?: number | null }) {
+  const type = String(tx.type || '').toLowerCase()
+  const amount = Number(tx.amount || 0)
+  if (amount <= 0) return false
+  if (/(purchase|order|withdraw|debit|refund|spent)/.test(type)) return false
+  return /(topup|top_up|top-up|deposit|credit|wallet)/.test(type)
+}
+
+function isCompletedDeposit(status?: string | null) {
+  return ['completed', 'success', 'successful', 'credited'].includes(String(status || '').toLowerCase())
 }
 
 // Mock admin stats
@@ -249,6 +277,11 @@ export default function AdminPage() {
   const [userTransactions, setUserTransactions] = useState<any[]>([])
   const [userOrders, setUserOrders] = useState<any[]>([])
   const [isAdjusting, setIsAdjusting] = useState(false)
+
+  // Website-wide deposit / top-up transaction history
+  const [depositTransactions, setDepositTransactions] = useState<AdminDepositTransaction[]>([])
+  const [depositTransactionsLoading, setDepositTransactionsLoading] = useState(false)
+  const [depositSearchQuery, setDepositSearchQuery] = useState('')
 
   // Referral commission setting
   const [referralCommissionPct, setReferralCommissionPct] = useState('5')
@@ -1418,6 +1451,77 @@ export default function AdminPage() {
     }
   }
 
+  const loadDepositTransactions = useCallback(async () => {
+    setDepositTransactionsLoading(true)
+    try {
+      const allRows: any[] = []
+      const batchSize = 1000
+      let from = 0
+
+      while (true) {
+        const { data, error } = await supabase
+          .from('transactions')
+          .select('id,user_id,type,amount,status,reference,ercas_reference,balance_after,description,created_at')
+          .order('created_at', { ascending: false })
+          .range(from, from + batchSize - 1)
+
+        if (error) throw error
+
+        const rows = data || []
+        allRows.push(...rows)
+        if (rows.length < batchSize) break
+        from += batchSize
+      }
+
+      const deposits = allRows.filter(isDepositTransaction)
+      const userIds = Array.from(new Set(deposits.map((tx) => tx.user_id).filter(Boolean)))
+      const profileMap = new Map<string, { email?: string | null; full_name?: string | null }>()
+
+      for (let i = 0; i < userIds.length; i += 500) {
+        const slice = userIds.slice(i, i + 500)
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('id,email,full_name')
+          .in('id', slice)
+
+        if (error) {
+          console.warn('Failed to load profiles for deposit transactions:', error)
+          continue
+        }
+
+        for (const profile of data || []) {
+          profileMap.set(profile.id, profile)
+        }
+      }
+
+      setDepositTransactions(
+        deposits.map((tx) => {
+          const profile = profileMap.get(tx.user_id)
+          return {
+            ...tx,
+            user_email: profile?.email || null,
+            user_name: profile?.full_name || null,
+          } as AdminDepositTransaction
+        }),
+      )
+    } catch (err: any) {
+      console.error('Failed to load deposit transactions:', err)
+      toast({
+        title: 'Failed to load transactions',
+        description: err?.message || 'Could not fetch website deposits.',
+        variant: 'destructive',
+      })
+    } finally {
+      setDepositTransactionsLoading(false)
+    }
+  }, [toast])
+
+  useEffect(() => {
+    if (adminTab === 'transactions' && depositTransactions.length === 0) {
+      loadDepositTransactions()
+    }
+  }, [adminTab, depositTransactions.length, loadDepositTransactions])
+
   // Add new category
   const handleAddCategory = async () => {
     if (!newCategory.name) {
@@ -1739,6 +1843,44 @@ export default function AdminPage() {
     lowStock: productGroups.filter(pg => pg.stock_count < 5).length
   }
 
+  const filteredDepositTransactions = useMemo(() => {
+    const query = depositSearchQuery.trim().toLowerCase()
+    if (!query) return depositTransactions
+
+    return depositTransactions.filter((tx) => {
+      const haystack = [
+        tx.user_email,
+        tx.user_name,
+        tx.user_id,
+        tx.type,
+        tx.status,
+        tx.reference,
+        tx.ercas_reference,
+        tx.description,
+      ].join(' ').toLowerCase()
+      return haystack.includes(query)
+    })
+  }, [depositSearchQuery, depositTransactions])
+
+  const depositStats = useMemo(() => {
+    return depositTransactions.reduce(
+      (acc, tx) => {
+        const amount = Number(tx.amount || 0)
+        acc.count += 1
+        acc.total += amount
+        if (isCompletedDeposit(tx.status)) {
+          acc.completedCount += 1
+          acc.completedTotal += amount
+        } else {
+          acc.pendingCount += 1
+          acc.pendingTotal += amount
+        }
+        return acc
+      },
+      { count: 0, total: 0, completedCount: 0, completedTotal: 0, pendingCount: 0, pendingTotal: 0 },
+    )
+  }, [depositTransactions])
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
@@ -1915,6 +2057,33 @@ export default function AdminPage() {
   // Calculate total spent by user
   const calculateTotalSpent = (orders: any[]) => {
     return orders.reduce((sum, order) => sum + (order.amount || 0), 0).toLocaleString()
+  }
+
+  const exportDepositTransactions = () => {
+    const rows = [
+      ['Date', 'User', 'User ID', 'Type', 'Amount', 'Status', 'Reference', 'Ercas Reference', 'Balance After', 'Description'],
+      ...filteredDepositTransactions.map((tx) => [
+        tx.created_at ? format(new Date(tx.created_at), 'yyyy-MM-dd HH:mm:ss') : '',
+        tx.user_email || tx.user_name || 'Unknown user',
+        tx.user_id || '',
+        tx.type || '',
+        String(tx.amount || 0),
+        tx.status || '',
+        tx.reference || '',
+        tx.ercas_reference || '',
+        String(tx.balance_after ?? ''),
+        tx.description || '',
+      ]),
+    ]
+
+    const csv = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `tallystore-deposit-transactions-${format(new Date(), 'yyyy-MM-dd')}.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
   }
 
   const handleAddProduct = async () => {
@@ -3096,7 +3265,7 @@ export default function AdminPage() {
             </div>
 
             <div className="hidden w-full pb-2 md:block">
-              <TabsList className="grid w-full grid-cols-5 gap-1 lg:grid-cols-10">
+              <TabsList className="grid w-full grid-cols-5 gap-1 lg:grid-cols-11">
                 {ADMIN_TABS.map((tab) => (
                   <TabsTrigger key={tab.value} value={tab.value} className="min-w-0 px-2 text-xs lg:text-sm">
                     <span className="truncate">{tab.label}</span>
@@ -4076,6 +4245,152 @@ export default function AdminPage() {
                       </p>
                       <p className="text-sm text-muted-foreground">Admins</p>
                     </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* Deposit Transaction History */}
+            <TabsContent value="transactions" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <CardTitle>Deposit Transaction History</CardTitle>
+                      <p className="text-sm text-muted-foreground">
+                        Every wallet deposit/top-up recorded on the website, across all customers.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="outline" onClick={loadDepositTransactions} disabled={depositTransactionsLoading}>
+                        {depositTransactionsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                        Refresh
+                      </Button>
+                      <Button type="button" variant="outline" onClick={exportDepositTransactions} disabled={filteredDepositTransactions.length === 0}>
+                        <Download className="h-4 w-4" />
+                        Export CSV
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <Card className="bg-emerald-50/80 dark:bg-emerald-500/10">
+                      <CardContent className="p-4">
+                        <p className="text-sm font-semibold text-muted-foreground">Completed Deposits</p>
+                        <p className="mt-2 text-2xl font-black text-emerald-700 dark:text-emerald-300">
+                          ₦{depositStats.completedTotal.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{depositStats.completedCount} transaction(s)</p>
+                      </CardContent>
+                    </Card>
+                    <Card className="bg-amber-50/80 dark:bg-amber-500/10">
+                      <CardContent className="p-4">
+                        <p className="text-sm font-semibold text-muted-foreground">Pending / Other</p>
+                        <p className="mt-2 text-2xl font-black text-amber-700 dark:text-amber-300">
+                          ₦{depositStats.pendingTotal.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{depositStats.pendingCount} transaction(s)</p>
+                      </CardContent>
+                    </Card>
+                    <Card className="bg-purple-50/80 dark:bg-purple-500/10">
+                      <CardContent className="p-4">
+                        <p className="text-sm font-semibold text-muted-foreground">All Deposit Rows</p>
+                        <p className="mt-2 text-2xl font-black text-purple-700 dark:text-purple-300">
+                          ₦{depositStats.total.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{depositStats.count} total row(s)</p>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <div className="relative max-w-xl">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={depositSearchQuery}
+                      onChange={(event) => setDepositSearchQuery(event.target.value)}
+                      placeholder="Search email, reference, type, status..."
+                      className="pl-10"
+                    />
+                  </div>
+
+                  <div className="overflow-x-auto rounded-xl border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Date</TableHead>
+                          <TableHead>User</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Reference</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Amount</TableHead>
+                          <TableHead className="text-right">Balance After</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {depositTransactionsLoading ? (
+                          <TableRow>
+                            <TableCell colSpan={7} className="py-10 text-center">
+                              <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin text-primary" />
+                              Loading deposit transactions...
+                            </TableCell>
+                          </TableRow>
+                        ) : filteredDepositTransactions.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                              No deposit transactions found.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          filteredDepositTransactions.map((tx) => (
+                            <TableRow key={tx.id}>
+                              <TableCell className="whitespace-nowrap text-sm">
+                                {tx.created_at ? format(new Date(tx.created_at), 'MMM d, yyyy HH:mm') : 'Unknown'}
+                                {tx.created_at && (
+                                  <p className="text-xs text-muted-foreground">
+                                    {formatDistanceToNow(new Date(tx.created_at), { addSuffix: true })}
+                                  </p>
+                                )}
+                              </TableCell>
+                              <TableCell className="min-w-[220px]">
+                                <p className="font-semibold">{tx.user_email || tx.user_name || 'Unknown user'}</p>
+                                <p className="font-mono text-xs text-muted-foreground">{tx.user_id}</p>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className="capitalize">
+                                  {String(tx.type || 'deposit').replace(/_/g, ' ')}
+                                </Badge>
+                                {tx.description && (
+                                  <p className="mt-1 max-w-[260px] truncate text-xs text-muted-foreground" title={tx.description}>
+                                    {tx.description}
+                                  </p>
+                                )}
+                              </TableCell>
+                              <TableCell className="min-w-[180px]">
+                                <p className="font-mono text-xs">{tx.reference || '-'}</p>
+                                {tx.ercas_reference && (
+                                  <p className="font-mono text-xs text-muted-foreground">Ercas: {tx.ercas_reference}</p>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Badge
+                                  variant={isCompletedDeposit(tx.status) ? 'default' : 'outline'}
+                                  className={isCompletedDeposit(tx.status) ? 'bg-emerald-600 hover:bg-emerald-600' : ''}
+                                >
+                                  {tx.status || 'unknown'}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="whitespace-nowrap text-right font-black text-emerald-600 dark:text-emerald-400">
+                                +₦{Number(tx.amount || 0).toLocaleString()}
+                              </TableCell>
+                              <TableCell className="whitespace-nowrap text-right">
+                                {tx.balance_after == null ? '-' : `₦${Number(tx.balance_after || 0).toLocaleString()}`}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
                   </div>
                 </CardContent>
               </Card>
