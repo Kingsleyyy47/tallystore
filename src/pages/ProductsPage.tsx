@@ -23,19 +23,22 @@ import ProductTemplateCard from '@/components/ProductTemplateCard'
 import CategorySidebar from '@/components/CategorySidebar'
 import CategoryLogo from '@/components/CategoryLogo'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
+import { useAuth } from '@/contexts/SimpleAuth'
 import {
   getAllProductGroups,
   getAvailableAccountIdsByProductGroup,
   getCategories,
+  getAppSetting,
   getRecentlyRestockedProductGroupIds,
   getTopSellingProductGroupIds,
+  getUserPurchaseHistory,
   testConnection,
   type Category,
   type ProductGroup,
 } from '@/lib/supabase'
 
 type ProductCollection = 'popular' | 'refilled' | 'new'
-type SortMode = 'newest' | 'price-low' | 'price-high' | 'stock'
+type SortMode = 'recommended' | 'newest' | 'price-low' | 'price-high' | 'stock'
 
 const PAGE_SIZE = 12
 
@@ -53,6 +56,7 @@ function isPurchasable(productGroup: ProductGroup) {
 
 export default function ProductsPage() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [categories, setCategories] = useState<Category[]>([])
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([])
   const [loading, setLoading] = useState(true)
@@ -61,11 +65,14 @@ export default function ProductsPage() {
   const [restockedIds, setRestockedIds] = useState<string[]>([])
   const [, setAccountMap] = useState<Record<string, string>>({})
   const [topSellingIds, setTopSellingIds] = useState<string[]>([])
+  const [myProductGroupCounts, setMyProductGroupCounts] = useState<Record<string, number>>({})
+  const [myCategoryCounts, setMyCategoryCounts] = useState<Record<string, number>>({})
+  const [recommendationAutomationEnabled, setRecommendationAutomationEnabled] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
   const [activeCollection, setActiveCollection] = useState<ProductCollection>('popular')
-  const [sortMode, setSortMode] = useState<SortMode>('newest')
+  const [sortMode, setSortMode] = useState<SortMode>('recommended')
   const [currentPage, setCurrentPage] = useState(1)
 
   const loadData = useCallback(async (showPageLoader = false) => {
@@ -76,17 +83,20 @@ export default function ProductsPage() {
       const connectionOk = await testConnection()
       if (!connectionOk) throw new Error('Failed to connect to database')
 
-      const [categoriesData, productGroupsData, accountMapData, topSellingData] = await Promise.all([
+      const [categoriesData, productGroupsData, accountMapData, topSellingData, automationSetting] = await Promise.all([
         getCategories(),
         getAllProductGroups(),
         getAvailableAccountIdsByProductGroup(),
         getTopSellingProductGroupIds(12),
+        getAppSetting('sales_recommendation_automation_enabled'),
       ])
 
+      const automationEnabled = automationSetting !== 'false'
       setCategories(categoriesData)
       setProductGroups(productGroupsData)
       setAccountMap(accountMapData)
-      setTopSellingIds(topSellingData)
+      setTopSellingIds(automationEnabled ? topSellingData : [])
+      setRecommendationAutomationEnabled(automationEnabled)
       setError(null)
 
       getRecentlyRestockedProductGroupIds(8).then(setRestockedIds).catch((err) => {
@@ -104,6 +114,25 @@ export default function ProductsPage() {
   useEffect(() => {
     loadData(true)
   }, [loadData])
+
+  useEffect(() => {
+    if (!recommendationAutomationEnabled || !user?.id) {
+      setMyProductGroupCounts({})
+      setMyCategoryCounts({})
+      return
+    }
+
+    getUserPurchaseHistory(user.id)
+      .then(({ productGroupCounts, categoryCounts }) => {
+        setMyProductGroupCounts(productGroupCounts)
+        setMyCategoryCounts(categoryCounts)
+      })
+      .catch((err) => {
+        console.error('Error loading customer recommendation profile:', err)
+        setMyProductGroupCounts({})
+        setMyCategoryCounts({})
+      })
+  }, [recommendationAutomationEnabled, user?.id])
 
   useEffect(() => {
     const refreshVisibleData = () => {
@@ -156,6 +185,23 @@ export default function ProductsPage() {
     [categories],
   )
 
+  const recommendationScore = useCallback(
+    (productGroup: ProductGroup) => {
+      if (!recommendationAutomationEnabled) return 0
+
+      const personalProductScore = (myProductGroupCounts[productGroup.id] || 0) * 10000
+      const personalCategoryScore = (myCategoryCounts[productGroup.category_id] || 0) * 1200
+      const globalRank = topSellingIds.indexOf(productGroup.id)
+      const globalScore = globalRank === -1 ? 0 : Math.max(0, 800 - globalRank * 40)
+      const stockScore = Math.min(Number(productGroup.stock_count || 0), 100)
+      const freshnessDays = Math.max(0, (Date.now() - new Date(productGroup.created_at).getTime()) / (24 * 60 * 60 * 1000))
+      const freshnessScore = Math.max(0, 80 - freshnessDays)
+
+      return personalProductScore + personalCategoryScore + globalScore + stockScore + freshnessScore
+    },
+    [myCategoryCounts, myProductGroupCounts, recommendationAutomationEnabled, topSellingIds],
+  )
+
   const sortedProductGroups = useMemo(() => {
     const searched = activeProductGroups.filter((productGroup) => {
       const category = categoryForProduct(productGroup)
@@ -178,29 +224,33 @@ export default function ProductsPage() {
       if (sortMode === 'price-high') return b.price - a.price
       if (sortMode === 'stock') return b.stock_count - a.stock_count
 
-      const aTopRank = topSellingIds.indexOf(a.id)
-      const bTopRank = topSellingIds.indexOf(b.id)
-      if (aTopRank !== -1 || bTopRank !== -1) {
-        if (aTopRank === -1) return 1
-        if (bTopRank === -1) return -1
-        return aTopRank - bTopRank
+      if (sortMode === 'recommended' && recommendationAutomationEnabled) {
+        const scoreA = recommendationScore(a)
+        const scoreB = recommendationScore(b)
+        if (scoreA !== scoreB) return scoreB - scoreA
       }
 
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     })
-  }, [activeProductGroups, categoryForProduct, searchTerm, selectedCategory, sortMode, topSellingIds])
+  }, [activeProductGroups, categoryForProduct, recommendationAutomationEnabled, recommendationScore, searchTerm, selectedCategory, sortMode])
 
   const topSellingProductGroups = useMemo(() => {
-    const ranked = topSellingIds
-      .map((id) => activeProductGroups.find((productGroup) => productGroup.id === id))
-      .filter((productGroup): productGroup is ProductGroup => !!productGroup && isPurchasable(productGroup))
+    if (!recommendationAutomationEnabled) return []
+    const ranked = [...activeProductGroups]
+      .filter(isPurchasable)
+      .sort((a, b) => {
+        const scoreA = recommendationScore(a)
+        const scoreB = recommendationScore(b)
+        if (scoreA !== scoreB) return scoreB - scoreA
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      })
 
     const fillIns = [...activeProductGroups]
       .filter((productGroup) => isPurchasable(productGroup) && !ranked.some((rankedProduct) => rankedProduct.id === productGroup.id))
       .sort((a, b) => a.stock_count - b.stock_count)
 
     return [...ranked, ...fillIns].slice(0, 9)
-  }, [activeProductGroups, topSellingIds])
+  }, [activeProductGroups, recommendationAutomationEnabled, recommendationScore])
 
   const restockedProductGroups = useMemo(
     () =>
@@ -476,6 +526,7 @@ export default function ProductsPage() {
                 onChange={(event) => setSortMode(event.target.value as SortMode)}
                 className="h-10 min-w-0 rounded-lg border border-slate-200 bg-white/85 px-3 text-sm font-semibold outline-none dark:border-white/10 dark:bg-[#080d15]"
               >
+                <option value="recommended">Recommended</option>
                 <option value="newest">Newest</option>
                 <option value="stock">Most stock</option>
                 <option value="price-low">Lowest price</option>

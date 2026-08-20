@@ -15,6 +15,7 @@ import GlobalPaymentChecker from '@/components/GlobalPaymentChecker'
 import LoginWelcomeDialog from '@/components/LoginWelcomeDialog'
 import ChatWidget from '@/components/ChatWidget'
 import MobileBottomNav from '@/components/MobileBottomNav'
+import VisitorTracker from '@/components/VisitorTracker'
 
 // ⚠️ MAINTENANCE MODE - Set to false to restore normal site
 const MAINTENANCE_MODE = false;
@@ -112,6 +113,7 @@ const App = () => {
           <ChatWidget />
           <AuthProvider>
           <CurrencyProvider>
+            <VisitorTracker />
             <GlobalPaymentChecker />
             <Routes>
               {/* Public Routes */}

@@ -13,6 +13,7 @@ import { useAuth } from '@/contexts/SimpleAuth'
 import {
   getCategories,
   getAllProductGroups,
+  getAppSetting,
   getTopSellingProductGroupIds,
   getUserPurchaseHistory,
   type Category,
@@ -42,20 +43,37 @@ export default function CategoryPage() {
   // whatever default ordering came back from the DB.
   const [globalRank, setGlobalRank] = useState<Record<string, number>>({})
   const [myPurchaseCounts, setMyPurchaseCounts] = useState<Record<string, number>>({})
+  const [recommendationAutomationEnabled, setRecommendationAutomationEnabled] = useState(true)
 
   useEffect(() => {
-    getTopSellingProductGroupIds(200)
-      .then((ids) => {
+    let cancelled = false
+
+    getAppSetting('sales_recommendation_automation_enabled')
+      .then(async (setting) => {
+        const enabled = setting !== 'false'
+        if (cancelled) return
+        setRecommendationAutomationEnabled(enabled)
+        if (!enabled) {
+          setGlobalRank({})
+          setMyPurchaseCounts({})
+          return
+        }
+
+        const ids = await getTopSellingProductGroupIds(200)
+        if (cancelled) return
         const rank: Record<string, number> = {}
         ids.forEach((id, index) => { rank[id] = index })
         setGlobalRank(rank)
+
+        if (user?.id) {
+          const { productGroupCounts } = await getUserPurchaseHistory(user.id)
+          if (!cancelled) setMyPurchaseCounts(productGroupCounts)
+        }
       })
       .catch(() => {})
 
-    if (user?.id) {
-      getUserPurchaseHistory(user.id)
-        .then(({ productGroupCounts }) => setMyPurchaseCounts(productGroupCounts))
-        .catch(() => {})
+    return () => {
+      cancelled = true
     }
   }, [user?.id])
 
@@ -138,6 +156,7 @@ export default function CategoryPage() {
       case 'az':
         return a.name.localeCompare(b.name)
       case 'frequently-bought': {
+        if (!recommendationAutomationEnabled) return a.name.localeCompare(b.name)
         const rankA = globalRank[a.id] ?? Infinity
         const rankB = globalRank[b.id] ?? Infinity
         if (rankA !== rankB) return rankA - rankB
@@ -145,6 +164,7 @@ export default function CategoryPage() {
       }
       case 'recommended':
       default: {
+        if (!recommendationAutomationEnabled) return a.price - b.price
         // Rebuy signal first (products this user has personally bought
         // before), then overall popularity rank, then price as a tiebreaker.
         const mineA = myPurchaseCounts[a.id] || 0

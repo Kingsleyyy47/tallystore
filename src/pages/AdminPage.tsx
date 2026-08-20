@@ -37,6 +37,17 @@ import {
   ToggleRight,
   Star,
   PhoneCall,
+  History,
+  Smartphone,
+  Bitcoin,
+  Gift,
+  Megaphone,
+  WalletCards,
+  Target,
+  BarChart3,
+  UserPlus,
+  MousePointerClick,
+  Sparkles,
 } from 'lucide-react'
 import { PERMISSIONS, type PermissionKey } from '@/lib/staffPermissions'
 import Navbar from '@/components/NavbarAuth'
@@ -101,7 +112,8 @@ const ADMIN_TABS = [
   { value: 'discount-codes', label: 'Discount Codes' },
   { value: 'categories', label: 'Categories' },
   { value: 'users', label: 'Users' },
-  { value: 'transactions', label: 'Transactions' },
+  { value: 'sales', label: 'Sales' },
+  { value: 'histories', label: 'Histories' },
   { value: 'email', label: 'Email' },
   { value: 'staff', label: 'Staff Roles' },
 ] as const
@@ -188,6 +200,25 @@ type AdminDepositTransaction = {
   user_name?: string | null
 }
 
+type AdminHistoryKind = 'all' | 'deposits' | 'products' | 'sms' | 'crypto' | 'bills' | 'giftcards' | 'social'
+
+type AdminHistoryRow = {
+  id: string
+  kind: Exclude<AdminHistoryKind, 'all'>
+  date: string
+  user_id?: string | null
+  user_email?: string | null
+  user_name?: string | null
+  title: string
+  subtitle?: string | null
+  amount?: number | null
+  status?: string | null
+  reference?: string | null
+  source: string
+  detail?: string | null
+  raw?: Record<string, any>
+}
+
 function isDepositTransaction(tx: { type?: string | null; amount?: number | null }) {
   const type = String(tx.type || '').toLowerCase()
   const amount = Number(tx.amount || 0)
@@ -198,6 +229,19 @@ function isDepositTransaction(tx: { type?: string | null; amount?: number | null
 
 function isCompletedDeposit(status?: string | null) {
   return ['completed', 'success', 'successful', 'credited'].includes(String(status || '').toLowerCase())
+}
+
+function formatAdminNaira(value?: number | null) {
+  const amount = Number(value || 0)
+  return `₦${amount.toLocaleString('en-NG', { maximumFractionDigits: 2 })}`
+}
+
+function normalizeStatus(status?: string | null) {
+  return String(status || 'unknown').replace(/_/g, ' ')
+}
+
+function isPositiveStatus(status?: string | null) {
+  return ['completed', 'success', 'successful', 'credited', 'active', 'processing'].includes(String(status || '').toLowerCase())
 }
 
 // Mock admin stats
@@ -278,10 +322,23 @@ export default function AdminPage() {
   const [userOrders, setUserOrders] = useState<any[]>([])
   const [isAdjusting, setIsAdjusting] = useState(false)
 
-  // Website-wide deposit / top-up transaction history
-  const [depositTransactions, setDepositTransactions] = useState<AdminDepositTransaction[]>([])
-  const [depositTransactionsLoading, setDepositTransactionsLoading] = useState(false)
-  const [depositSearchQuery, setDepositSearchQuery] = useState('')
+  // Website-wide activity histories
+  const [historyRows, setHistoryRows] = useState<AdminHistoryRow[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historySearchQuery, setHistorySearchQuery] = useState('')
+  const [historyKind, setHistoryKind] = useState<AdminHistoryKind>('all')
+  const [historyErrors, setHistoryErrors] = useState<Record<string, string>>({})
+
+  // Sales analytics and recommendation automation
+  const [salesOrders, setSalesOrders] = useState<any[]>([])
+  const [salesProfiles, setSalesProfiles] = useState<any[]>([])
+  const [salesVisits, setSalesVisits] = useState<any[]>([])
+  const [salesLoading, setSalesLoading] = useState(false)
+  const [salesTargetInput, setSalesTargetInput] = useState('0')
+  const [salesTargetSaving, setSalesTargetSaving] = useState(false)
+  const [recommendationAutomationEnabled, setRecommendationAutomationEnabled] = useState(true)
+  const [recommendationAutomationSaving, setRecommendationAutomationSaving] = useState(false)
+  const [salesErrors, setSalesErrors] = useState<Record<string, string>>({})
 
   // Referral commission setting
   const [referralCommissionPct, setReferralCommissionPct] = useState('5')
@@ -1451,30 +1508,177 @@ export default function AdminPage() {
     }
   }
 
-  const loadDepositTransactions = useCallback(async () => {
-    setDepositTransactionsLoading(true)
-    try {
-      const allRows: any[] = []
-      const batchSize = 1000
-      let from = 0
+  const loadAdminHistories = useCallback(async () => {
+    setHistoryLoading(true)
+    const nextErrors: Record<string, string> = {}
 
-      while (true) {
+    const readRows = async (label: string, table: string, limit = 1000) => {
+      try {
         const { data, error } = await supabase
-          .from('transactions')
-          .select('id,user_id,type,amount,status,reference,ercas_reference,balance_after,description,created_at')
+          .from(table as any)
+          .select('*')
           .order('created_at', { ascending: false })
-          .range(from, from + batchSize - 1)
+          .limit(limit)
 
         if (error) throw error
-
-        const rows = data || []
-        allRows.push(...rows)
-        if (rows.length < batchSize) break
-        from += batchSize
+        return (data || []) as any[]
+      } catch (err: any) {
+        console.warn(`Failed to load ${label}:`, err)
+        nextErrors[label] = err?.message || `Could not load ${label}.`
+        return [] as any[]
       }
+    }
 
-      const deposits = allRows.filter(isDepositTransaction)
-      const userIds = Array.from(new Set(deposits.map((tx) => tx.user_id).filter(Boolean)))
+    try {
+      const [
+        txRows,
+        productOrderRows,
+        smsOrderRows,
+        cryptoTxRows,
+        cryptoWithdrawalRows,
+        billsRows,
+        giftRows,
+        socialRows,
+      ] = await Promise.all([
+        readRows('Deposits', 'transactions', 5000),
+        readRows('Product orders', 'orders', 5000),
+        readRows('SMS orders', 'sms_orders', 5000),
+        readRows('Crypto deposits', 'crypto_transactions', 5000),
+        readRows('Crypto withdrawals', 'crypto_withdrawals', 5000),
+        readRows('Bills and airtime', 'bills_transactions', 5000),
+        readRows('Gift cards and eSIMs', 'bitrefill_orders', 5000),
+        readRows('Social boost', 'smm_orders', 5000),
+      ])
+
+      const productGroupById = new Map(productGroups.map((group) => [group.id, group]))
+      const categoryById = new Map(categories.map((category) => [category.id, category]))
+      const smmServiceById = new Map(smmServices.map((service) => [Number(service.id), service]))
+
+      const rows: AdminHistoryRow[] = [
+        ...txRows.filter(isDepositTransaction).map((tx): AdminHistoryRow => ({
+          id: `deposit-${tx.id}`,
+          kind: 'deposits',
+          date: tx.created_at,
+          user_id: tx.user_id,
+          title: tx.description || normalizeStatus(tx.type) || 'Wallet deposit',
+          subtitle: tx.ercas_reference ? `Ercas ${tx.ercas_reference}` : 'Wallet funding',
+          amount: Number(tx.amount || 0),
+          status: tx.status,
+          reference: tx.reference || tx.ercas_reference,
+          source: 'Wallet deposits',
+          detail: tx.balance_after == null ? null : `Balance after ${formatAdminNaira(tx.balance_after)}`,
+          raw: tx,
+        })),
+        ...productOrderRows.map((order): AdminHistoryRow => {
+          const group = productGroupById.get(order.product_group_id)
+          const category = group?.category_id ? categoryById.get(group.category_id)?.name : null
+          const details = order.account_details || {}
+          const quantity = Number(details.quantity || 1)
+          return {
+            id: `product-${order.id}`,
+            kind: 'products',
+            date: order.created_at,
+            user_id: order.user_id,
+            title: details.product_name || group?.name || 'Product order',
+            subtitle: `${quantity} item${quantity === 1 ? '' : 's'}${details.category || category ? ` • ${details.category || category}` : ''}`,
+            amount: Number(order.amount || 0),
+            status: order.status,
+            reference: `ORD-${String(order.id || '').slice(0, 8).toUpperCase()}`,
+            source: 'Product orders',
+            detail: order.product_group_id || null,
+            raw: order,
+          }
+        }),
+        ...smsOrderRows.map((order): AdminHistoryRow => ({
+          id: `sms-${order.id}`,
+          kind: 'sms',
+          date: order.created_at,
+          user_id: order.user_id,
+          title: order.service_name || order.service_id || 'SMS number',
+          subtitle: [order.order_type?.toUpperCase(), order.phone_number, order.country_code?.toUpperCase()].filter(Boolean).join(' • '),
+          amount: Number(order.price_ngn || 0),
+          status: order.status,
+          reference: order.reference || order.provider_request_id,
+          source: 'SMS orders',
+          detail: order.refunded_at ? `Refunded ${formatAdminNaira(order.refund_amount_ngn)}` : order.completed_at ? 'Code received' : null,
+          raw: order,
+        })),
+        ...cryptoTxRows.map((tx): AdminHistoryRow => ({
+          id: `crypto-tx-${tx.id}`,
+          kind: 'crypto',
+          date: tx.created_at,
+          user_id: tx.user_id,
+          title: `${tx.crypto_type || 'Crypto'} ${normalizeStatus(tx.transaction_type || 'deposit')}`,
+          subtitle: tx.nowpayments_network || tx.payment_provider || 'Crypto deposit',
+          amount: Number(tx.naira_amount || 0),
+          status: tx.status,
+          reference: tx.payment_reference || tx.nowpayments_payment_id,
+          source: 'Crypto deposits',
+          detail: tx.crypto_amount ? `${tx.crypto_amount} ${tx.crypto_type || ''}`.trim() : null,
+          raw: tx,
+        })),
+        ...cryptoWithdrawalRows.map((withdrawal): AdminHistoryRow => ({
+          id: `crypto-withdrawal-${withdrawal.id}`,
+          kind: 'crypto',
+          date: withdrawal.created_at,
+          user_id: withdrawal.user_id,
+          title: `Withdrawal to ${withdrawal.bank_name || 'bank'}`,
+          subtitle: [withdrawal.account_name, withdrawal.account_number].filter(Boolean).join(' • '),
+          amount: Number(withdrawal.amount || 0),
+          status: withdrawal.status,
+          reference: withdrawal.payment_reference || withdrawal.sagecloud_reference,
+          source: 'Crypto withdrawals',
+          detail: withdrawal.net_amount ? `Net ${formatAdminNaira(withdrawal.net_amount)} • Fee ${formatAdminNaira(withdrawal.fee)}` : null,
+          raw: withdrawal,
+        })),
+        ...billsRows.map((bill): AdminHistoryRow => ({
+          id: `bill-${bill.id}`,
+          kind: 'bills',
+          date: bill.created_at,
+          user_id: bill.user_id,
+          title: `${bill.service_provider || 'Bills'} ${normalizeStatus(bill.transaction_type)}`,
+          subtitle: [bill.beneficiary_phone, bill.payment_source].filter(Boolean).join(' • '),
+          amount: Number(bill.amount || 0),
+          status: bill.status,
+          reference: bill.reference || bill.sagecloud_reference,
+          source: 'Bills and airtime',
+          detail: bill.service_code || null,
+          raw: bill,
+        })),
+        ...giftRows.map((gift): AdminHistoryRow => ({
+          id: `gift-${gift.id}`,
+          kind: 'giftcards',
+          date: gift.created_at,
+          user_id: gift.user_id,
+          title: gift.product_name || 'Gift card / eSIM',
+          subtitle: `${gift.quantity || 1} item${Number(gift.quantity || 1) === 1 ? '' : 's'} • ${gift.payment_source || 'wallet'}`,
+          amount: Number(gift.amount_ngn || 0),
+          status: gift.status,
+          reference: gift.reference || gift.bitrefill_order_id || gift.bitrefill_invoice_id,
+          source: 'Gift cards and eSIMs',
+          detail: gift.redemption_code || gift.redemption_link ? 'Redemption delivered' : gift.currency ? `${gift.amount_original || ''} ${gift.currency}`.trim() : null,
+          raw: gift,
+        })),
+        ...socialRows.map((order): AdminHistoryRow => {
+          const service = smmServiceById.get(Number(order.service_id))
+          return {
+            id: `social-${order.id}`,
+            kind: 'social',
+            date: order.created_at,
+            user_id: order.user_id,
+            title: service?.name || `Social service ${order.service_id || ''}`.trim(),
+            subtitle: [service?.platform, `${Number(order.quantity || 0).toLocaleString()} units`, order.link].filter(Boolean).join(' • '),
+            amount: Number(order.amount_ngn || 0),
+            status: order.status,
+            reference: order.reference || order.external_order_id,
+            source: 'Social boost',
+            detail: order.remains != null ? `${Number(order.remains || 0).toLocaleString()} remains` : null,
+            raw: order,
+          }
+        }),
+      ]
+
+      const userIds = Array.from(new Set(rows.map((row) => row.user_id).filter(Boolean))) as string[]
       const profileMap = new Map<string, { email?: string | null; full_name?: string | null }>()
 
       for (let i = 0; i < userIds.length; i += 500) {
@@ -1485,7 +1689,7 @@ export default function AdminPage() {
           .in('id', slice)
 
         if (error) {
-          console.warn('Failed to load profiles for deposit transactions:', error)
+          nextErrors.Profiles = error.message
           continue
         }
 
@@ -1494,33 +1698,90 @@ export default function AdminPage() {
         }
       }
 
-      setDepositTransactions(
-        deposits.map((tx) => {
-          const profile = profileMap.get(tx.user_id)
-          return {
-            ...tx,
-            user_email: profile?.email || null,
-            user_name: profile?.full_name || null,
-          } as AdminDepositTransaction
-        }),
+      setHistoryRows(
+        rows
+          .map((row) => {
+            const profile = row.user_id ? profileMap.get(row.user_id) : null
+            return {
+              ...row,
+              user_email: profile?.email || null,
+              user_name: profile?.full_name || null,
+            }
+          })
+          .sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()),
       )
-    } catch (err: any) {
-      console.error('Failed to load deposit transactions:', err)
-      toast({
-        title: 'Failed to load transactions',
-        description: err?.message || 'Could not fetch website deposits.',
-        variant: 'destructive',
-      })
+      setHistoryErrors(nextErrors)
+
+      if (Object.keys(nextErrors).length > 0) {
+        toast({
+          title: 'Some histories could not load',
+          description: Object.keys(nextErrors).join(', '),
+          variant: 'destructive',
+        })
+      }
     } finally {
-      setDepositTransactionsLoading(false)
+      setHistoryLoading(false)
     }
-  }, [toast])
+  }, [categories, productGroups, smmServices, toast])
 
   useEffect(() => {
-    if (adminTab === 'transactions' && depositTransactions.length === 0) {
-      loadDepositTransactions()
+    if (adminTab === 'histories' && historyRows.length === 0) {
+      loadAdminHistories()
     }
-  }, [adminTab, depositTransactions.length, loadDepositTransactions])
+  }, [adminTab, historyRows.length, loadAdminHistories])
+
+  const loadSalesAnalytics = useCallback(async () => {
+    setSalesLoading(true)
+    const nextErrors: Record<string, string> = {}
+
+    const readRows = async (label: string, table: string, limit = 10000) => {
+      try {
+        const { data, error } = await supabase
+          .from(table as any)
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(limit)
+
+        if (error) throw error
+        return (data || []) as any[]
+      } catch (err: any) {
+        console.warn(`Failed to load ${label}:`, err)
+        nextErrors[label] = err?.message || `Could not load ${label}.`
+        return [] as any[]
+      }
+    }
+
+    try {
+      const [orders, profiles, visits, target, automation] = await Promise.all([
+        readRows('Orders', 'orders', 10000),
+        readRows('Customers', 'profiles', 10000),
+        readRows('Visitors', 'site_visits', 10000),
+        getAppSetting('sales_monthly_target_ngn').catch((err) => {
+          nextErrors.Target = err?.message || 'Could not load sales target.'
+          return null
+        }),
+        getAppSetting('sales_recommendation_automation_enabled').catch((err) => {
+          nextErrors.Automation = err?.message || 'Could not load automation setting.'
+          return null
+        }),
+      ])
+
+      setSalesOrders(orders)
+      setSalesProfiles(profiles)
+      setSalesVisits(visits)
+      setSalesTargetInput(target || '0')
+      setRecommendationAutomationEnabled(automation !== 'false')
+      setSalesErrors(nextErrors)
+    } finally {
+      setSalesLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (adminTab === 'sales' && salesOrders.length === 0) {
+      loadSalesAnalytics()
+    }
+  }, [adminTab, loadSalesAnalytics, salesOrders.length])
 
   // Add new category
   const handleAddCategory = async () => {
@@ -1843,32 +2104,39 @@ export default function AdminPage() {
     lowStock: productGroups.filter(pg => pg.stock_count < 5).length
   }
 
-  const filteredDepositTransactions = useMemo(() => {
-    const query = depositSearchQuery.trim().toLowerCase()
-    if (!query) return depositTransactions
+  const filteredHistoryRows = useMemo(() => {
+    const query = historySearchQuery.trim().toLowerCase()
+    const kindFiltered = historyKind === 'all'
+      ? historyRows
+      : historyRows.filter((row) => row.kind === historyKind)
 
-    return depositTransactions.filter((tx) => {
+    if (!query) return kindFiltered
+
+    return kindFiltered.filter((row) => {
       const haystack = [
-        tx.user_email,
-        tx.user_name,
-        tx.user_id,
-        tx.type,
-        tx.status,
-        tx.reference,
-        tx.ercas_reference,
-        tx.description,
+        row.user_email,
+        row.user_name,
+        row.user_id,
+        row.kind,
+        row.source,
+        row.title,
+        row.subtitle,
+        row.status,
+        row.reference,
+        row.detail,
       ].join(' ').toLowerCase()
       return haystack.includes(query)
     })
-  }, [depositSearchQuery, depositTransactions])
+  }, [historyKind, historyRows, historySearchQuery])
 
-  const depositStats = useMemo(() => {
-    return depositTransactions.reduce(
+  const historyStats = useMemo(() => {
+    return historyRows.reduce(
       (acc, tx) => {
         const amount = Number(tx.amount || 0)
         acc.count += 1
         acc.total += amount
-        if (isCompletedDeposit(tx.status)) {
+        acc.byKind[tx.kind] = (acc.byKind[tx.kind] || 0) + 1
+        if (isPositiveStatus(tx.status)) {
           acc.completedCount += 1
           acc.completedTotal += amount
         } else {
@@ -1877,9 +2145,187 @@ export default function AdminPage() {
         }
         return acc
       },
-      { count: 0, total: 0, completedCount: 0, completedTotal: 0, pendingCount: 0, pendingTotal: 0 },
+      {
+        count: 0,
+        total: 0,
+        completedCount: 0,
+        completedTotal: 0,
+        pendingCount: 0,
+        pendingTotal: 0,
+        byKind: {} as Record<string, number>,
+      },
     )
-  }, [depositTransactions])
+  }, [historyRows])
+
+  const visibleHistorySections = useMemo(() => {
+    const sections: Array<{
+      key: Exclude<AdminHistoryKind, 'all'>
+      title: string
+      description: string
+      icon: ReactNode
+    }> = [
+      { key: 'deposits', title: 'Deposit History', description: 'Wallet top-ups, credits, and successful deposit records.', icon: <WalletCards className="h-5 w-5" /> },
+      { key: 'products', title: 'Product Order History', description: 'Social account product purchases from the main inventory.', icon: <ShoppingBag className="h-5 w-5" /> },
+      { key: 'sms', title: 'SMS History', description: 'US/Canada SMS number purchases, cancellations, and refunds.', icon: <PhoneCall className="h-5 w-5" /> },
+      { key: 'crypto', title: 'Crypto History', description: 'Crypto sell deposits and crypto balance withdrawals.', icon: <Bitcoin className="h-5 w-5" /> },
+      { key: 'bills', title: 'Bills & Airtime History', description: 'Airtime, data, and Nigerian bill payment records.', icon: <Smartphone className="h-5 w-5" /> },
+      { key: 'giftcards', title: 'Gift Card & eSIM History', description: 'Bitrefill gift card and eSIM purchases.', icon: <Gift className="h-5 w-5" /> },
+      { key: 'social', title: 'Social Boost History', description: 'SMM/social boost orders and their latest statuses.', icon: <Megaphone className="h-5 w-5" /> },
+    ]
+
+    return sections.map((section) => ({
+      ...section,
+      rows: filteredHistoryRows.filter((row) => row.kind === section.key),
+      totalRows: historyRows.filter((row) => row.kind === section.key).length,
+    }))
+  }, [filteredHistoryRows, historyRows])
+
+  const salesAnalytics = useMemo(() => {
+    const now = new Date()
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const weekStart = new Date(now)
+    weekStart.setDate(now.getDate() - 7)
+    const monthStart = new Date(now)
+    monthStart.setDate(now.getDate() - 30)
+    const calendarMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const previousWeekStart = new Date(now)
+    previousWeekStart.setDate(now.getDate() - 14)
+
+    const productGroupById = new Map(productGroups.map((group) => [group.id, group]))
+    const categoryById = new Map(categories.map((category) => [category.id, category]))
+    const profileById = new Map(salesProfiles.map((profile) => [profile.id, profile]))
+    const completedOrders = salesOrders.filter((order) => String(order.status || '').toLowerCase() === 'completed')
+
+    const getQuantity = (order: any) => {
+      const details = order.account_details || {}
+      const quantity = Number(details.quantity || 1)
+      return Number.isFinite(quantity) && quantity > 0 ? quantity : 1
+    }
+
+    const daily = new Map<string, { date: string; revenue: number; orders: number; units: number }>()
+    const products = new Map<string, { id: string; name: string; category: string; revenue: number; orders: number; units: number; stock: number }>()
+    const customers = new Map<string, { id: string; email: string; name: string; revenue: number; orders: number; units: number; lastOrder: string }>()
+    const categoryTrend = new Map<string, { category: string; recent: number; previous: number; recentUnits: number; previousUnits: number }>()
+
+    for (const order of completedOrders) {
+      const createdAt = new Date(order.created_at)
+      const day = Number.isNaN(createdAt.getTime()) ? 'Unknown' : format(createdAt, 'yyyy-MM-dd')
+      const amount = Number(order.amount || 0)
+      const units = getQuantity(order)
+      const details = order.account_details || {}
+      const group = productGroupById.get(order.product_group_id)
+      const categoryName = details.category || (group?.category_id ? categoryById.get(group.category_id)?.name : null) || 'Uncategorized'
+      const productId = order.product_group_id || details.product_name || order.id
+      const productName = details.product_name || group?.name || 'Unknown product'
+
+      const dailyEntry = daily.get(day) || { date: day, revenue: 0, orders: 0, units: 0 }
+      dailyEntry.revenue += amount
+      dailyEntry.orders += 1
+      dailyEntry.units += units
+      daily.set(day, dailyEntry)
+
+      const productEntry = products.get(productId) || {
+        id: productId,
+        name: productName,
+        category: categoryName,
+        revenue: 0,
+        orders: 0,
+        units: 0,
+        stock: Number(group?.stock_count || 0),
+      }
+      productEntry.revenue += amount
+      productEntry.orders += 1
+      productEntry.units += units
+      products.set(productId, productEntry)
+
+      const profile = profileById.get(order.user_id)
+      const customerEntry = customers.get(order.user_id) || {
+        id: order.user_id,
+        email: profile?.email || 'Unknown customer',
+        name: profile?.full_name || '',
+        revenue: 0,
+        orders: 0,
+        units: 0,
+        lastOrder: order.created_at,
+      }
+      customerEntry.revenue += amount
+      customerEntry.orders += 1
+      customerEntry.units += units
+      if (new Date(order.created_at).getTime() > new Date(customerEntry.lastOrder).getTime()) {
+        customerEntry.lastOrder = order.created_at
+      }
+      customers.set(order.user_id, customerEntry)
+
+      const trendEntry = categoryTrend.get(categoryName) || { category: categoryName, recent: 0, previous: 0, recentUnits: 0, previousUnits: 0 }
+      if (createdAt >= weekStart) {
+        trendEntry.recent += amount
+        trendEntry.recentUnits += units
+      } else if (createdAt >= previousWeekStart && createdAt < weekStart) {
+        trendEntry.previous += amount
+        trendEntry.previousUnits += units
+      }
+      categoryTrend.set(categoryName, trendEntry)
+    }
+
+    const dailyRows = Array.from(daily.values()).sort((a, b) => b.revenue - a.revenue)
+    const productRows = Array.from(products.values()).sort((a, b) => b.revenue - a.revenue || b.units - a.units)
+    const customerRows = Array.from(customers.values()).sort((a, b) => b.revenue - a.revenue || b.orders - a.orders)
+    const trendRows = Array.from(categoryTrend.values())
+      .map((trend) => ({
+        ...trend,
+        growth: trend.previous > 0 ? ((trend.recent - trend.previous) / trend.previous) * 100 : trend.recent > 0 ? 100 : 0,
+      }))
+      .filter((trend) => trend.recent > 0 || trend.previous > 0)
+      .sort((a, b) => b.growth - a.growth || b.recent - a.recent)
+
+    const countProfilesSince = (date: Date) =>
+      salesProfiles.filter((profile) => profile.created_at && new Date(profile.created_at) >= date).length
+
+    const uniqueVisitorsSince = (date: Date) =>
+      new Set(
+        salesVisits
+          .filter((visit) => visit.created_at && new Date(visit.created_at) >= date)
+          .map((visit) => visit.visitor_id || visit.user_id || visit.id),
+      ).size
+
+    const visitsSince = (date: Date) =>
+      salesVisits.filter((visit) => visit.created_at && new Date(visit.created_at) >= date).length
+
+    const monthlyRevenue = completedOrders
+      .filter((order) => order.created_at && new Date(order.created_at) >= calendarMonthStart)
+      .reduce((sum, order) => sum + Number(order.amount || 0), 0)
+    const monthlyTarget = Number(salesTargetInput || 0)
+
+    return {
+      totalRevenue: completedOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0),
+      totalOrders: completedOrders.length,
+      totalUnits: completedOrders.reduce((sum, order) => sum + getQuantity(order), 0),
+      bestDay: dailyRows[0] || null,
+      bestProduct: productRows[0] || null,
+      highSellingProducts: productRows.slice(0, 8),
+      bestCustomers: customerRows.slice(0, 8),
+      marketTrends: trendRows.slice(0, 8),
+      newCustomers: {
+        today: countProfilesSince(dayStart),
+        week: countProfilesSince(weekStart),
+        month: countProfilesSince(monthStart),
+      },
+      visitors: {
+        today: uniqueVisitorsSince(dayStart),
+        week: uniqueVisitorsSince(weekStart),
+        month: uniqueVisitorsSince(monthStart),
+        visitsToday: visitsSince(dayStart),
+        visitsWeek: visitsSince(weekStart),
+        visitsMonth: visitsSince(monthStart),
+      },
+      target: {
+        monthlyRevenue,
+        monthlyTarget,
+        progress: monthlyTarget > 0 ? Math.min(100, (monthlyRevenue / monthlyTarget) * 100) : 0,
+        remaining: Math.max(0, monthlyTarget - monthlyRevenue),
+      },
+    }
+  }, [categories, productGroups, salesOrders, salesProfiles, salesTargetInput, salesVisits])
 
   if (loading) {
     return (
@@ -2059,20 +2505,20 @@ export default function AdminPage() {
     return orders.reduce((sum, order) => sum + (order.amount || 0), 0).toLocaleString()
   }
 
-  const exportDepositTransactions = () => {
+  const exportHistoryRows = () => {
     const rows = [
-      ['Date', 'User', 'User ID', 'Type', 'Amount', 'Status', 'Reference', 'Ercas Reference', 'Balance After', 'Description'],
-      ...filteredDepositTransactions.map((tx) => [
-        tx.created_at ? format(new Date(tx.created_at), 'yyyy-MM-dd HH:mm:ss') : '',
-        tx.user_email || tx.user_name || 'Unknown user',
-        tx.user_id || '',
-        tx.type || '',
-        String(tx.amount || 0),
-        tx.status || '',
-        tx.reference || '',
-        tx.ercas_reference || '',
-        String(tx.balance_after ?? ''),
-        tx.description || '',
+      ['Date', 'History', 'Source', 'User', 'User ID', 'Item', 'Details', 'Amount', 'Status', 'Reference'],
+      ...filteredHistoryRows.map((row) => [
+        row.date ? format(new Date(row.date), 'yyyy-MM-dd HH:mm:ss') : '',
+        row.kind,
+        row.source,
+        row.user_email || row.user_name || 'Unknown user',
+        row.user_id || '',
+        row.title || '',
+        [row.subtitle, row.detail].filter(Boolean).join(' | '),
+        String(row.amount || 0),
+        row.status || '',
+        row.reference || '',
       ]),
     ]
 
@@ -2081,9 +2527,47 @@ export default function AdminPage() {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `tallystore-deposit-transactions-${format(new Date(), 'yyyy-MM-dd')}.csv`
+    anchor.download = `tallystore-${historyKind}-history-${format(new Date(), 'yyyy-MM-dd')}.csv`
     anchor.click()
     URL.revokeObjectURL(url)
+  }
+
+  const handleSaveSalesTarget = async () => {
+    const target = Number(salesTargetInput)
+    if (!Number.isFinite(target) || target < 0) {
+      toast({ title: 'Invalid target', description: 'Enter a valid monthly sales target.', variant: 'destructive' })
+      return
+    }
+
+    setSalesTargetSaving(true)
+    try {
+      const ok = await upsertAppSetting('sales_monthly_target_ngn', String(Math.round(target)))
+      if (!ok) throw new Error('Could not save sales target')
+      toast({ title: 'Sales target saved', description: `Monthly target set to ${formatAdminNaira(target)}.` })
+    } catch (err: any) {
+      toast({ title: 'Failed to save target', description: err?.message || 'Please try again.', variant: 'destructive' })
+    } finally {
+      setSalesTargetSaving(false)
+    }
+  }
+
+  const handleToggleRecommendationAutomation = async (enabled: boolean) => {
+    setRecommendationAutomationSaving(true)
+    try {
+      const ok = await upsertAppSetting('sales_recommendation_automation_enabled', enabled ? 'true' : 'false')
+      if (!ok) throw new Error('Could not save automation setting')
+      setRecommendationAutomationEnabled(enabled)
+      toast({
+        title: enabled ? 'Recommendation automation enabled' : 'Recommendation automation disabled',
+        description: enabled
+          ? 'Customer product ordering will prioritize likely buys and trending products.'
+          : 'Customer product ordering will stop using sales-based ranking.',
+      })
+    } catch (err: any) {
+      toast({ title: 'Failed to save automation', description: err?.message || 'Please try again.', variant: 'destructive' })
+    } finally {
+      setRecommendationAutomationSaving(false)
+    }
   }
 
   const handleAddProduct = async () => {
@@ -3265,9 +3749,9 @@ export default function AdminPage() {
             </div>
 
             <div className="hidden w-full pb-2 md:block">
-              <TabsList className="grid w-full grid-cols-5 gap-1 lg:grid-cols-11">
+              <TabsList className="flex h-auto w-full flex-wrap justify-start gap-2 rounded-2xl p-2">
                 {ADMIN_TABS.map((tab) => (
-                  <TabsTrigger key={tab.value} value={tab.value} className="min-w-0 px-2 text-xs lg:text-sm">
+                  <TabsTrigger key={tab.value} value={tab.value} className="min-w-[120px] flex-1 px-3 text-xs lg:flex-none lg:text-sm">
                     <span className="truncate">{tab.label}</span>
                   </TabsTrigger>
                 ))}
@@ -4250,148 +4734,510 @@ export default function AdminPage() {
               </Card>
             </TabsContent>
 
-            {/* Deposit Transaction History */}
-            <TabsContent value="transactions" className="space-y-6">
-              <Card>
-                <CardHeader>
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            {/* Sales Intelligence */}
+            <TabsContent value="sales" className="space-y-6">
+              <Card className="overflow-hidden">
+                <CardHeader className="border-b bg-gradient-to-r from-emerald-50 via-white to-purple-50 dark:from-emerald-950/25 dark:via-card dark:to-purple-950/25">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                     <div>
-                      <CardTitle>Deposit Transaction History</CardTitle>
-                      <p className="text-sm text-muted-foreground">
-                        Every wallet deposit/top-up recorded on the website, across all customers.
+                      <CardTitle className="flex items-center gap-2 text-2xl">
+                        <BarChart3 className="h-6 w-6 text-primary" />
+                        Sales Intelligence
+                      </CardTitle>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Best sellers, customer growth, visitor trends, targets, and automated product ranking signals.
+                      </p>
+                    </div>
+                    <Button type="button" variant="outline" onClick={loadSalesAnalytics} disabled={salesLoading}>
+                      {salesLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                      Refresh sales data
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-6 p-4 md:p-6">
+                  {Object.keys(salesErrors).length > 0 && (
+                    <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                      <p className="font-bold">Some sales sources need attention.</p>
+                      <div className="mt-2 grid gap-1 md:grid-cols-2">
+                        {Object.entries(salesErrors).map(([label, message]) => (
+                          <p key={label} className="break-words">
+                            <span className="font-semibold">{label}:</span> {message}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <Card className="bg-purple-50/80 dark:bg-purple-500/10">
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-muted-foreground">Total Sales Revenue</p>
+                          <DollarSign className="h-5 w-5 text-purple-600" />
+                        </div>
+                        <p className="mt-2 text-2xl font-black text-purple-700 dark:text-purple-300">{formatAdminNaira(salesAnalytics.totalRevenue)}</p>
+                        <p className="text-xs text-muted-foreground">{salesAnalytics.totalOrders.toLocaleString()} completed order(s)</p>
+                      </CardContent>
+                    </Card>
+                    <Card className="bg-emerald-50/80 dark:bg-emerald-500/10">
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-muted-foreground">Best Day</p>
+                          <TrendingUp className="h-5 w-5 text-emerald-600" />
+                        </div>
+                        <p className="mt-2 text-xl font-black text-emerald-700 dark:text-emerald-300">
+                          {salesAnalytics.bestDay ? formatAdminNaira(salesAnalytics.bestDay.revenue) : 'No sales yet'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {salesAnalytics.bestDay ? `${format(new Date(salesAnalytics.bestDay.date), 'MMM d, yyyy')} • ${salesAnalytics.bestDay.units} units` : 'Waiting for completed orders'}
+                        </p>
+                      </CardContent>
+                    </Card>
+                    <Card className="bg-cyan-50/80 dark:bg-cyan-500/10">
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-muted-foreground">Best Product</p>
+                          <ShoppingBag className="h-5 w-5 text-cyan-600" />
+                        </div>
+                        <p className="mt-2 truncate text-xl font-black text-cyan-700 dark:text-cyan-300">
+                          {salesAnalytics.bestProduct?.name || 'No product yet'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {salesAnalytics.bestProduct ? `${salesAnalytics.bestProduct.units} units • ${formatAdminNaira(salesAnalytics.bestProduct.revenue)}` : 'No completed product orders'}
+                        </p>
+                      </CardContent>
+                    </Card>
+                    <Card className="bg-orange-50/80 dark:bg-orange-500/10">
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-muted-foreground">Best Customer</p>
+                          <Users className="h-5 w-5 text-orange-600" />
+                        </div>
+                        <p className="mt-2 truncate text-xl font-black text-orange-700 dark:text-orange-300">
+                          {salesAnalytics.bestCustomers[0]?.email || 'No customer yet'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {salesAnalytics.bestCustomers[0] ? `${formatAdminNaira(salesAnalytics.bestCustomers[0].revenue)} • ${salesAnalytics.bestCustomers[0].orders} orders` : 'No completed customer orders'}
+                        </p>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Target className="h-5 w-5 text-primary" />
+                          Sales Target
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                          <Input
+                            type="number"
+                            min="0"
+                            value={salesTargetInput}
+                            onChange={(event) => setSalesTargetInput(event.target.value)}
+                            placeholder="Monthly target in NGN"
+                          />
+                          <Button onClick={handleSaveSalesTarget} disabled={salesTargetSaving}>
+                            {salesTargetSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                            Save target
+                          </Button>
+                        </div>
+                        <div>
+                          <div className="mb-2 flex items-center justify-between text-sm">
+                            <span className="font-semibold">This month</span>
+                            <span className="text-muted-foreground">
+                              {formatAdminNaira(salesAnalytics.target.monthlyRevenue)} / {formatAdminNaira(salesAnalytics.target.monthlyTarget)}
+                            </span>
+                          </div>
+                          <div className="h-3 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-purple-600 to-emerald-500"
+                              style={{ width: `${salesAnalytics.target.progress}%` }}
+                            />
+                          </div>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            {salesAnalytics.target.monthlyTarget > 0
+                              ? `${salesAnalytics.target.progress.toFixed(1)}% complete • ${formatAdminNaira(salesAnalytics.target.remaining)} remaining`
+                              : 'Set a monthly target to track sales progress.'}
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Sparkles className="h-5 w-5 text-primary" />
+                          Recommendation Automation
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="flex items-center justify-between gap-3 rounded-xl border p-4">
+                          <div>
+                            <p className="font-bold">Customer product switching</p>
+                            <p className="text-sm text-muted-foreground">
+                              Uses trending products, top buys, and personal purchase history to reorder customer product lists.
+                            </p>
+                          </div>
+                          <Switch
+                            checked={recommendationAutomationEnabled}
+                            disabled={recommendationAutomationSaving}
+                            onCheckedChange={handleToggleRecommendationAutomation}
+                          />
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                          <div className="rounded-xl border p-3">
+                            <p className="font-black text-lg">{salesAnalytics.highSellingProducts.length}</p>
+                            <p className="text-muted-foreground">Products ranked</p>
+                          </div>
+                          <div className="rounded-xl border p-3">
+                            <p className="font-black text-lg">{salesAnalytics.marketTrends.length}</p>
+                            <p className="text-muted-foreground">Trends found</p>
+                          </div>
+                          <div className="rounded-xl border p-3">
+                            <p className="font-black text-lg">{recommendationAutomationEnabled ? 'On' : 'Off'}</p>
+                            <p className="text-muted-foreground">Automation</p>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <AdminControlSection title="High Selling Products" description="Products ranked by completed revenue and units sold.">
+                      <div className="space-y-3">
+                        {salesAnalytics.highSellingProducts.length === 0 ? (
+                          <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">No completed product sales yet.</p>
+                        ) : salesAnalytics.highSellingProducts.map((product, index) => (
+                          <div key={product.id} className="flex items-center justify-between gap-3 rounded-xl border p-3">
+                            <div className="min-w-0">
+                              <p className="truncate font-black">{index + 1}. {product.name}</p>
+                              <p className="text-xs text-muted-foreground">{product.category} • {product.units} units • stock {product.stock}</p>
+                            </div>
+                            <Badge variant="outline" className="whitespace-nowrap">{formatAdminNaira(product.revenue)}</Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </AdminControlSection>
+
+                    <AdminControlSection title="Best Customers" description="Customers ranked by completed purchases.">
+                      <div className="space-y-3">
+                        {salesAnalytics.bestCustomers.length === 0 ? (
+                          <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">No completed customer sales yet.</p>
+                        ) : salesAnalytics.bestCustomers.map((customer, index) => (
+                          <div key={customer.id} className="flex items-center justify-between gap-3 rounded-xl border p-3">
+                            <div className="min-w-0">
+                              <p className="truncate font-black">{index + 1}. {customer.email}</p>
+                              <p className="text-xs text-muted-foreground">{customer.orders} orders • {customer.units} units • last {formatDistanceToNow(new Date(customer.lastOrder), { addSuffix: true })}</p>
+                            </div>
+                            <Badge variant="outline" className="whitespace-nowrap">{formatAdminNaira(customer.revenue)}</Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </AdminControlSection>
+                  </div>
+
+                  <div className="grid gap-4 lg:grid-cols-3">
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <UserPlus className="h-5 w-5 text-primary" />
+                          New Customers
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="grid grid-cols-3 gap-2 text-center">
+                        <div className="rounded-xl border p-3"><p className="text-2xl font-black">{salesAnalytics.newCustomers.today}</p><p className="text-xs text-muted-foreground">Today</p></div>
+                        <div className="rounded-xl border p-3"><p className="text-2xl font-black">{salesAnalytics.newCustomers.week}</p><p className="text-xs text-muted-foreground">7 days</p></div>
+                        <div className="rounded-xl border p-3"><p className="text-2xl font-black">{salesAnalytics.newCustomers.month}</p><p className="text-xs text-muted-foreground">30 days</p></div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <MousePointerClick className="h-5 w-5 text-primary" />
+                          Visitor Trend
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="grid grid-cols-3 gap-2 text-center">
+                        <div className="rounded-xl border p-3"><p className="text-2xl font-black">{salesAnalytics.visitors.today}</p><p className="text-xs text-muted-foreground">{salesAnalytics.visitors.visitsToday} visits</p></div>
+                        <div className="rounded-xl border p-3"><p className="text-2xl font-black">{salesAnalytics.visitors.week}</p><p className="text-xs text-muted-foreground">{salesAnalytics.visitors.visitsWeek} visits</p></div>
+                        <div className="rounded-xl border p-3"><p className="text-2xl font-black">{salesAnalytics.visitors.month}</p><p className="text-xs text-muted-foreground">{salesAnalytics.visitors.visitsMonth} visits</p></div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Market Trends</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        {salesAnalytics.marketTrends.length === 0 ? (
+                          <p className="rounded-xl border border-dashed p-4 text-center text-sm text-muted-foreground">No weekly trend yet.</p>
+                        ) : salesAnalytics.marketTrends.slice(0, 4).map((trend) => (
+                          <div key={trend.category} className="flex items-center justify-between rounded-xl border p-3">
+                            <div className="min-w-0">
+                              <p className="truncate font-bold">{trend.category}</p>
+                              <p className="text-xs text-muted-foreground">{trend.recentUnits} units this week</p>
+                            </div>
+                            <Badge variant={trend.growth >= 0 ? 'default' : 'destructive'}>{trend.growth >= 0 ? '+' : ''}{trend.growth.toFixed(0)}%</Badge>
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* Website Histories */}
+            <TabsContent value="histories" className="space-y-6">
+              <Card className="overflow-hidden">
+                <CardHeader className="border-b bg-gradient-to-r from-purple-50 via-white to-cyan-50 dark:from-purple-950/30 dark:via-card dark:to-cyan-950/20">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2 text-2xl">
+                        <History className="h-6 w-6 text-primary" />
+                        Website Histories
+                      </CardTitle>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Deposits, products, SMS, crypto, bills, gift cards, and social boost activity across the whole website.
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button type="button" variant="outline" onClick={loadDepositTransactions} disabled={depositTransactionsLoading}>
-                        {depositTransactionsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                      <Button type="button" variant="outline" onClick={loadAdminHistories} disabled={historyLoading}>
+                        {historyLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                         Refresh
                       </Button>
-                      <Button type="button" variant="outline" onClick={exportDepositTransactions} disabled={filteredDepositTransactions.length === 0}>
+                      <Button type="button" variant="outline" onClick={exportHistoryRows} disabled={filteredHistoryRows.length === 0}>
                         <Download className="h-4 w-4" />
                         Export CSV
                       </Button>
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-5">
+                <CardContent className="space-y-5 p-4 md:p-6">
                   <div className="grid gap-3 md:grid-cols-3">
                     <Card className="bg-emerald-50/80 dark:bg-emerald-500/10">
                       <CardContent className="p-4">
-                        <p className="text-sm font-semibold text-muted-foreground">Completed Deposits</p>
+                        <p className="text-sm font-semibold text-muted-foreground">Successful / Active</p>
                         <p className="mt-2 text-2xl font-black text-emerald-700 dark:text-emerald-300">
-                          ₦{depositStats.completedTotal.toLocaleString()}
+                          {formatAdminNaira(historyStats.completedTotal)}
                         </p>
-                        <p className="text-xs text-muted-foreground">{depositStats.completedCount} transaction(s)</p>
+                        <p className="text-xs text-muted-foreground">{historyStats.completedCount} record(s)</p>
                       </CardContent>
                     </Card>
                     <Card className="bg-amber-50/80 dark:bg-amber-500/10">
                       <CardContent className="p-4">
-                        <p className="text-sm font-semibold text-muted-foreground">Pending / Other</p>
+                        <p className="text-sm font-semibold text-muted-foreground">Pending / Failed / Other</p>
                         <p className="mt-2 text-2xl font-black text-amber-700 dark:text-amber-300">
-                          ₦{depositStats.pendingTotal.toLocaleString()}
+                          {formatAdminNaira(historyStats.pendingTotal)}
                         </p>
-                        <p className="text-xs text-muted-foreground">{depositStats.pendingCount} transaction(s)</p>
+                        <p className="text-xs text-muted-foreground">{historyStats.pendingCount} record(s)</p>
                       </CardContent>
                     </Card>
                     <Card className="bg-purple-50/80 dark:bg-purple-500/10">
                       <CardContent className="p-4">
-                        <p className="text-sm font-semibold text-muted-foreground">All Deposit Rows</p>
+                        <p className="text-sm font-semibold text-muted-foreground">All History Rows</p>
                         <p className="mt-2 text-2xl font-black text-purple-700 dark:text-purple-300">
-                          ₦{depositStats.total.toLocaleString()}
+                          {historyStats.count.toLocaleString()}
                         </p>
-                        <p className="text-xs text-muted-foreground">{depositStats.count} total row(s)</p>
+                        <p className="text-xs text-muted-foreground">{formatAdminNaira(historyStats.total)} combined value</p>
                       </CardContent>
                     </Card>
                   </div>
 
-                  <div className="relative max-w-xl">
-                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      value={depositSearchQuery}
-                      onChange={(event) => setDepositSearchQuery(event.target.value)}
-                      placeholder="Search email, reference, type, status..."
-                      className="pl-10"
-                    />
+                  {Object.keys(historyErrors).length > 0 && (
+                    <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                      <p className="font-bold">Some history sources need attention.</p>
+                      <div className="mt-2 grid gap-1 md:grid-cols-2">
+                        {Object.entries(historyErrors).map(([label, message]) => (
+                          <p key={label} className="break-words">
+                            <span className="font-semibold">{label}:</span> {message}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid gap-3 lg:grid-cols-[220px_minmax(260px,1fr)]">
+                    <Select value={historyKind} onValueChange={(value) => setHistoryKind(value as AdminHistoryKind)}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="History type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Everything history</SelectItem>
+                        <SelectItem value="deposits">Deposits</SelectItem>
+                        <SelectItem value="products">Products</SelectItem>
+                        <SelectItem value="sms">SMS</SelectItem>
+                        <SelectItem value="crypto">Crypto</SelectItem>
+                        <SelectItem value="bills">Bills & Airtime</SelectItem>
+                        <SelectItem value="giftcards">Gift Cards & eSIMs</SelectItem>
+                        <SelectItem value="social">Social Boost</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={historySearchQuery}
+                        onChange={(event) => setHistorySearchQuery(event.target.value)}
+                        placeholder="Search customer, product, reference, status..."
+                        className="pl-10"
+                      />
+                    </div>
                   </div>
 
-                  <div className="overflow-x-auto rounded-xl border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Date</TableHead>
-                          <TableHead>User</TableHead>
-                          <TableHead>Type</TableHead>
-                          <TableHead>Reference</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead className="text-right">Amount</TableHead>
-                          <TableHead className="text-right">Balance After</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {depositTransactionsLoading ? (
-                          <TableRow>
-                            <TableCell colSpan={7} className="py-10 text-center">
-                              <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin text-primary" />
-                              Loading deposit transactions...
-                            </TableCell>
-                          </TableRow>
-                        ) : filteredDepositTransactions.length === 0 ? (
-                          <TableRow>
-                            <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
-                              No deposit transactions found.
-                            </TableCell>
-                          </TableRow>
-                        ) : (
-                          filteredDepositTransactions.map((tx) => (
-                            <TableRow key={tx.id}>
-                              <TableCell className="whitespace-nowrap text-sm">
-                                {tx.created_at ? format(new Date(tx.created_at), 'MMM d, yyyy HH:mm') : 'Unknown'}
-                                {tx.created_at && (
-                                  <p className="text-xs text-muted-foreground">
-                                    {formatDistanceToNow(new Date(tx.created_at), { addSuffix: true })}
-                                  </p>
-                                )}
-                              </TableCell>
-                              <TableCell className="min-w-[220px]">
-                                <p className="font-semibold">{tx.user_email || tx.user_name || 'Unknown user'}</p>
-                                <p className="font-mono text-xs text-muted-foreground">{tx.user_id}</p>
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant="outline" className="capitalize">
-                                  {String(tx.type || 'deposit').replace(/_/g, ' ')}
-                                </Badge>
-                                {tx.description && (
-                                  <p className="mt-1 max-w-[260px] truncate text-xs text-muted-foreground" title={tx.description}>
-                                    {tx.description}
-                                  </p>
-                                )}
-                              </TableCell>
-                              <TableCell className="min-w-[180px]">
-                                <p className="font-mono text-xs">{tx.reference || '-'}</p>
-                                {tx.ercas_reference && (
-                                  <p className="font-mono text-xs text-muted-foreground">Ercas: {tx.ercas_reference}</p>
-                                )}
-                              </TableCell>
-                              <TableCell>
-                                <Badge
-                                  variant={isCompletedDeposit(tx.status) ? 'default' : 'outline'}
-                                  className={isCompletedDeposit(tx.status) ? 'bg-emerald-600 hover:bg-emerald-600' : ''}
-                                >
-                                  {tx.status || 'unknown'}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="whitespace-nowrap text-right font-black text-emerald-600 dark:text-emerald-400">
-                                +₦{Number(tx.amount || 0).toLocaleString()}
-                              </TableCell>
-                              <TableCell className="whitespace-nowrap text-right">
-                                {tx.balance_after == null ? '-' : `₦${Number(tx.balance_after || 0).toLocaleString()}`}
-                              </TableCell>
-                            </TableRow>
-                          ))
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
+                    {visibleHistorySections.map((section) => (
+                      <button
+                        key={section.key}
+                        type="button"
+                        onClick={() => setHistoryKind(section.key)}
+                        className={cn(
+                          'flex items-center justify-between rounded-xl border px-3 py-3 text-left transition hover:border-primary/50 hover:bg-primary/5',
+                          historyKind === section.key && 'border-primary bg-primary/10 text-primary',
                         )}
-                      </TableBody>
-                    </Table>
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-xs font-black">{section.title.replace(' History', '')}</span>
+                          <span className="text-xs text-muted-foreground">{section.totalRows.toLocaleString()} rows</span>
+                        </span>
+                        <span className="text-muted-foreground">{section.icon}</span>
+                      </button>
+                    ))}
                   </div>
+
+                  {historyLoading ? (
+                    <div className="rounded-2xl border py-16 text-center">
+                      <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-primary" />
+                      <p className="font-semibold">Loading website histories...</p>
+                    </div>
+                  ) : historyKind !== 'all' ? (
+                    <div className="overflow-hidden rounded-2xl border">
+                      <div className="overflow-x-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Date</TableHead>
+                              <TableHead>Customer</TableHead>
+                              <TableHead>Item</TableHead>
+                              <TableHead>Reference</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead className="text-right">Amount</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {filteredHistoryRows.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                                  No history records match this view.
+                                </TableCell>
+                              </TableRow>
+                            ) : filteredHistoryRows.map((row) => (
+                              <TableRow key={row.id}>
+                                <TableCell className="whitespace-nowrap text-sm">
+                                  {row.date ? format(new Date(row.date), 'MMM d, yyyy HH:mm') : 'Unknown'}
+                                  {row.date && (
+                                    <p className="text-xs text-muted-foreground">
+                                      {formatDistanceToNow(new Date(row.date), { addSuffix: true })}
+                                    </p>
+                                  )}
+                                </TableCell>
+                                <TableCell className="min-w-[220px]">
+                                  <p className="font-semibold">{row.user_email || row.user_name || 'Unknown user'}</p>
+                                  <p className="font-mono text-xs text-muted-foreground">{row.user_id || '-'}</p>
+                                </TableCell>
+                                <TableCell className="min-w-[260px]">
+                                  <p className="font-semibold">{row.title}</p>
+                                  {row.subtitle && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.subtitle}>{row.subtitle}</p>}
+                                  {row.detail && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.detail}>{row.detail}</p>}
+                                </TableCell>
+                                <TableCell className="font-mono text-xs">{row.reference || '-'}</TableCell>
+                                <TableCell>
+                                  <Badge variant={isPositiveStatus(row.status) ? 'default' : 'outline'} className={cn('capitalize', isPositiveStatus(row.status) && 'bg-emerald-600 hover:bg-emerald-600')}>
+                                    {normalizeStatus(row.status)}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell className="whitespace-nowrap text-right font-black">
+                                  {row.amount == null ? '-' : formatAdminNaira(row.amount)}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {visibleHistorySections.map((section) => (
+                        <AdminControlSection
+                          key={section.key}
+                          title={`${section.title} (${section.rows.length.toLocaleString()})`}
+                          description={section.description}
+                        >
+                          {section.rows.length === 0 ? (
+                            <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                              No matching records in this history yet.
+                            </p>
+                          ) : (
+                            <div className="overflow-x-auto rounded-xl border">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead>Date</TableHead>
+                                    <TableHead>Customer</TableHead>
+                                    <TableHead>Item</TableHead>
+                                    <TableHead>Reference</TableHead>
+                                    <TableHead>Status</TableHead>
+                                    <TableHead className="text-right">Amount</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {section.rows.slice(0, 25).map((row) => (
+                                    <TableRow key={row.id}>
+                                      <TableCell className="whitespace-nowrap text-sm">
+                                        {row.date ? format(new Date(row.date), 'MMM d, yyyy HH:mm') : 'Unknown'}
+                                        {row.date && (
+                                          <p className="text-xs text-muted-foreground">
+                                            {formatDistanceToNow(new Date(row.date), { addSuffix: true })}
+                                          </p>
+                                        )}
+                                      </TableCell>
+                                      <TableCell className="min-w-[220px]">
+                                        <p className="font-semibold">{row.user_email || row.user_name || 'Unknown user'}</p>
+                                        <p className="font-mono text-xs text-muted-foreground">{row.user_id || '-'}</p>
+                                      </TableCell>
+                                      <TableCell className="min-w-[260px]">
+                                        <p className="font-semibold">{row.title}</p>
+                                        {row.subtitle && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.subtitle}>{row.subtitle}</p>}
+                                        {row.detail && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.detail}>{row.detail}</p>}
+                                      </TableCell>
+                                      <TableCell className="font-mono text-xs">{row.reference || '-'}</TableCell>
+                                      <TableCell>
+                                        <Badge variant={isPositiveStatus(row.status) ? 'default' : 'outline'} className={cn('capitalize', isPositiveStatus(row.status) && 'bg-emerald-600 hover:bg-emerald-600')}>
+                                          {normalizeStatus(row.status)}
+                                        </Badge>
+                                      </TableCell>
+                                      <TableCell className="whitespace-nowrap text-right font-black">
+                                        {row.amount == null ? '-' : formatAdminNaira(row.amount)}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                              {section.rows.length > 25 && (
+                                <p className="border-t px-4 py-3 text-xs text-muted-foreground">
+                                  Showing latest 25 of {section.rows.length.toLocaleString()} records. Use the type filter above to view/export the full filtered list.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </AdminControlSection>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </TabsContent>
