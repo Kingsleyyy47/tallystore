@@ -40,6 +40,7 @@ import { formatDistanceToNow } from "date-fns";
 import { useAuth } from "@/contexts/SimpleAuth";
 import NavbarAuth from "@/components/NavbarAuth";
 import PageBreadcrumb from "@/components/PageBreadcrumb";
+import { blockStaffPurchase } from "@/lib/staffPurchaseGuard";
 
 interface DataPlan {
   code: string;
@@ -85,7 +86,7 @@ export default function BillsPayment() {
   const [loadingPlans, setLoadingPlans] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { showBalances } = useAuth();
+  const { showBalances, isStaff, isAdmin } = useAuth();
 
   useEffect(() => {
     fetchBalance();
@@ -202,6 +203,8 @@ export default function BillsPayment() {
   };
 
   const handlePurchase = async () => {
+    if (blockStaffPurchase(isStaff, isAdmin, toast)) return;
+
     // Validation
     if (!provider) {
       toast({

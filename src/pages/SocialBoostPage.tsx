@@ -36,6 +36,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
+import { blockStaffPurchase } from '@/lib/staffPurchaseGuard';
 
 // Platform configurations with example URLs
 const PLATFORMS = [
@@ -290,7 +291,7 @@ function useDebounce<T>(value: T, delay: number): T {
 
 export default function SocialBoostPage() {
   const navigate = useNavigate();
-  const { user, walletBalance, refreshWalletBalance, showBalances } = useAuth();
+  const { user, walletBalance, refreshWalletBalance, showBalances, isStaff, isAdmin } = useAuth();
   const { toast } = useToast();
 
   const [services, setServices] = useState<SmmService[]>([]);
@@ -500,6 +501,7 @@ export default function SocialBoostPage() {
 
   const handleSubmitOrder = async () => {
     if (!selectedService || !isFormValid()) return;
+    if (blockStaffPurchase(isStaff, isAdmin, toast)) return;
     
     // Build payload - use service_id (internal DB ID) not external_id
     const payload: Record<string, string | number> = { 

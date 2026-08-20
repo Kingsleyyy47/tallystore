@@ -2,6 +2,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { createBitrefillClient } from '../_shared/bitrefill-client.ts';
 import { convertToNgn } from '../_shared/exchange-rate.ts';
+import { assertPurchasingCustomer } from '../_shared/staff-purchase-guard.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -75,6 +76,7 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
+    await assertPurchasingCustomer(supabaseAdmin, user.id);
 
     // Idempotency check
     const { data: existingOrder } = await supabaseClient

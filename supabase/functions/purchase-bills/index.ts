@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { createSageCloudClient } from '../_shared/sagecloud-client.ts';
+import { assertPurchasingCustomer } from '../_shared/staff-purchase-guard.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -99,6 +100,12 @@ serve(async (req) => {
     if (userError || !user) {
       throw new Error('Unauthorized');
     }
+
+    const supabaseAdmin = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+    );
+    await assertPurchasingCustomer(supabaseAdmin, user.id);
 
     // Parse request body - includes payment_source and idempotency_key
     const { transaction_type, amount, service_provider, phone, data_plan_code, payment_source = 'wallet', idempotency_key } = await req.json();
@@ -199,12 +206,6 @@ serve(async (req) => {
       publicKey: Deno.env.get('SAGECLOUD_PUBLIC_KEY') ?? '',
       secretKey: Deno.env.get('SAGECLOUD_SECRET_KEY') ?? '',
     });
-
-    // Initialize admin client for alerts (uses service role key)
-    const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-    );
 
     // Check SageCloud balance
     console.log('Checking SageCloud balance...');

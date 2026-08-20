@@ -28,6 +28,8 @@ import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
+import { useAuth } from '@/contexts/SimpleAuth'
+import { blockStaffPurchase } from '@/lib/staffPurchaseGuard'
 
 function WhatsAppIcon({ className }: { className?: string }) {
   return (
@@ -533,6 +535,7 @@ function SmsMessageSupportCard() {
 }
 
 function SmsNumbersSurface() {
+  const { isStaff, isAdmin } = useAuth()
   const [activeTab, setActiveTab] = useState<SmsTab>('otp')
   const [health, setHealth] = useState<SmsApiResponse<never> | null>(null)
   const [smsDiagnostics, setSmsDiagnostics] = useState<SmsDiagnostics | null>(null)
@@ -701,6 +704,7 @@ function SmsNumbersSurface() {
   }, [activeOrders.length, refreshOrders])
 
   const buyOtp = () => runAction('buy-otp', async () => {
+    if (blockStaffPurchase(isStaff, isAdmin, ({ title, description }) => toast.error(String(title || 'Purchase blocked'), { description: description ? String(description) : undefined }))) return
     if (!selectedService) throw new Error('Select an OTP service first')
 
     const result = await invokeSms<SmsOrder>('create_otp', {
@@ -719,6 +723,7 @@ function SmsNumbersSurface() {
   })
 
   const rentNumber = () => runAction('rent-number', async () => {
+    if (blockStaffPurchase(isStaff, isAdmin, ({ title, description }) => toast.error(String(title || 'Purchase blocked'), { description: description ? String(description) : undefined }))) return
     if (!selectedArea) throw new Error('Select a rental country first')
 
     const result = await invokeSms<SmsOrder>('rent_number', {

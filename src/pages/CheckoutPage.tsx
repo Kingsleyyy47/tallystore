@@ -24,11 +24,12 @@ import {
 import { useToast } from '@/hooks/use-toast'
 import { Input } from '@/components/ui/input'
 import { Tag, X } from 'lucide-react'
+import { blockStaffPurchase } from '@/lib/staffPurchaseGuard'
 
 export default function CheckoutPage() {
   const location = useLocation()
   const navigate = useNavigate()
-  const { user, walletBalance, refreshWalletBalance, showBalances } = useAuth()
+  const { user, walletBalance, refreshWalletBalance, showBalances, isStaff, isAdmin } = useAuth()
   const { toast } = useToast()
   
   // Get data from navigation state - supports both single and bulk purchases
@@ -149,6 +150,7 @@ export default function CheckoutPage() {
 
   const handlePurchase = async () => {
     if (!productGroup || !user) return
+    if (blockStaffPurchase(isStaff, isAdmin, toast)) return
 
     setPurchasing(true)
     

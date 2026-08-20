@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { assertPurchasingCustomer } from '../_shared/staff-purchase-guard.ts'
 
 // ── Inlined: forex-rates ──────────────────────────────────────────────────────
 async function getUsdToNgnRate(): Promise<number> {
@@ -1077,7 +1078,9 @@ serve(async (req) => {
       case 'countries':    return json({ success: true, data: [{ id: DAISY_COUNTRY, name: 'United States', code: 'us' }] })
       case 'rental_areas': return json({ success: true, data: [] })
       case 'orders':       return await handleOrders(admin, user.id)
-      case 'create_otp':   return await handleCreateOtp(admin, user.id, body)
+      case 'create_otp':
+        await assertPurchasingCustomer(admin, user.id)
+        return await handleCreateOtp(admin, user.id, body)
       case 'check_otp':    return await handleCheckOtp(admin, user.id, body)
       case 'cancel_otp':   return await handleCancelOtp(admin, user.id, body)
       case 'rent_number':

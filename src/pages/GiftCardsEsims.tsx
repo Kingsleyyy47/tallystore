@@ -26,6 +26,7 @@ import { useAuth } from "@/contexts/SimpleAuth";
 import { useExchangeRate } from "@/hooks/useExchangeRate";
 import NavbarAuth from "@/components/NavbarAuth";
 import PageBreadcrumb from "@/components/PageBreadcrumb";
+import { blockStaffPurchase } from "@/lib/staffPurchaseGuard";
 
 // Flip this to false once Bitrefill is fully wired up (migration run, secrets
 // set, functions deployed) and you're ready for customers to use this page.
@@ -68,7 +69,7 @@ interface BitrefillOrder {
 }
 
 export default function GiftCardsEsims() {
-  const { isAdmin, showBalances } = useAuth();
+  const { isAdmin, isStaff, showBalances } = useAuth();
   const showComingSoon = COMING_SOON && !isAdmin;
 
   const [walletBalance, setWalletBalance] = useState<number>(0);
@@ -218,6 +219,8 @@ export default function GiftCardsEsims() {
   };
 
   const handlePurchase = async () => {
+    if (blockStaffPurchase(isStaff, isAdmin, toast)) return;
+
     if (!selectedProduct) {
       toast({ title: "Select a product", description: "Choose a gift card first", variant: "destructive" });
       return;

@@ -209,6 +209,8 @@ type AdminHistoryRow = {
   user_id?: string | null
   user_email?: string | null
   user_name?: string | null
+  user_is_staff?: boolean | null
+  user_is_admin?: boolean | null
   title: string
   subtitle?: string | null
   amount?: number | null
@@ -326,7 +328,6 @@ export default function AdminPage() {
   const [historyRows, setHistoryRows] = useState<AdminHistoryRow[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historySearchQuery, setHistorySearchQuery] = useState('')
-  const [historyKind, setHistoryKind] = useState<AdminHistoryKind>('all')
   const [historyErrors, setHistoryErrors] = useState<Record<string, string>>({})
 
   // Sales analytics and recommendation automation
@@ -1555,7 +1556,7 @@ export default function AdminPage() {
       const smmServiceById = new Map(smmServices.map((service) => [Number(service.id), service]))
 
       const rows: AdminHistoryRow[] = [
-        ...txRows.filter(isDepositTransaction).map((tx): AdminHistoryRow => ({
+        ...txRows.filter((tx) => isDepositTransaction(tx) && isCompletedDeposit(tx.status)).map((tx): AdminHistoryRow => ({
           id: `deposit-${tx.id}`,
           kind: 'deposits',
           date: tx.created_at,
@@ -1679,13 +1680,13 @@ export default function AdminPage() {
       ]
 
       const userIds = Array.from(new Set(rows.map((row) => row.user_id).filter(Boolean))) as string[]
-      const profileMap = new Map<string, { email?: string | null; full_name?: string | null }>()
+      const profileMap = new Map<string, { email?: string | null; full_name?: string | null; is_staff?: boolean | null; is_admin?: boolean | null }>()
 
       for (let i = 0; i < userIds.length; i += 500) {
         const slice = userIds.slice(i, i + 500)
         const { data, error } = await supabase
           .from('profiles')
-          .select('id,email,full_name')
+          .select('id,email,full_name,is_staff,is_admin')
           .in('id', slice)
 
         if (error) {
@@ -1706,6 +1707,8 @@ export default function AdminPage() {
               ...row,
               user_email: profile?.email || null,
               user_name: profile?.full_name || null,
+              user_is_staff: profile?.is_staff ?? null,
+              user_is_admin: profile?.is_admin ?? null,
             }
           })
           .sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()),
@@ -1725,7 +1728,7 @@ export default function AdminPage() {
   }, [categories, productGroups, smmServices, toast])
 
   useEffect(() => {
-    if (adminTab === 'histories' && historyRows.length === 0) {
+    if ((adminTab === 'histories' || adminTab === 'sales') && historyRows.length === 0) {
       loadAdminHistories()
     }
   }, [adminTab, historyRows.length, loadAdminHistories])
@@ -1752,7 +1755,7 @@ export default function AdminPage() {
     }
 
     try {
-      const [orders, profiles, visits, target, automation] = await Promise.all([
+      const [orders, allProfiles, visits, target, automation] = await Promise.all([
         readRows('Orders', 'orders', 10000),
         readRows('Customers', 'profiles', 10000),
         readRows('Visitors', 'site_visits', 10000),
@@ -1766,8 +1769,28 @@ export default function AdminPage() {
         }),
       ])
 
+      const orderUserIds = Array.from(new Set(orders.map((order) => order.user_id).filter(Boolean))) as string[]
+      const profileById = new Map<string, any>((allProfiles || []).map((profile) => [profile.id, profile]))
+
+      for (let i = 0; i < orderUserIds.length; i += 500) {
+        const slice = orderUserIds.slice(i, i + 500)
+        try {
+          const { data, error } = await supabase
+            .from('profiles')
+            .select('id,email,full_name,is_staff,is_admin,created_at')
+            .in('id', slice)
+
+          if (error) throw error
+          for (const profile of data || []) {
+            profileById.set(profile.id, profile)
+          }
+        } catch (err: any) {
+          nextErrors.CustomerProfiles = err?.message || 'Could not load order customer profiles.'
+        }
+      }
+
       setSalesOrders(orders)
-      setSalesProfiles(profiles)
+      setSalesProfiles(Array.from(profileById.values()))
       setSalesVisits(visits)
       setSalesTargetInput(target || '0')
       setRecommendationAutomationEnabled(automation !== 'false')
@@ -2104,45 +2127,50 @@ export default function AdminPage() {
     lowStock: productGroups.filter(pg => pg.stock_count < 5).length
   }
 
-  const filteredHistoryRows = useMemo(() => {
+  const historySearchMatches = useCallback((row: AdminHistoryRow, query: string) => {
+    if (!query) return true
+    const haystack = [
+      row.user_email,
+      row.user_name,
+      row.user_id,
+      row.kind,
+      row.source,
+      row.title,
+      row.subtitle,
+      row.status,
+      row.reference,
+      row.detail,
+    ].join(' ').toLowerCase()
+    return haystack.includes(query)
+  }, [])
+
+  const salesFilteredHistoryRows = useMemo(() => {
     const query = historySearchQuery.trim().toLowerCase()
-    const kindFiltered = historyKind === 'all'
-      ? historyRows
-      : historyRows.filter((row) => row.kind === historyKind)
+    return historyRows
+      .filter((row) => !row.user_is_staff && !row.user_is_admin)
+      .filter((row) => historySearchMatches(row, query))
+  }, [historyRows, historySearchMatches, historySearchQuery])
 
-    if (!query) return kindFiltered
+  const depositHistoryRows = useMemo(() => {
+    const query = historySearchQuery.trim().toLowerCase()
+    return historyRows
+      .filter((row) => row.kind === 'deposits')
+      .filter((row) => isCompletedDeposit(row.status))
+      .filter((row) => !row.user_is_staff && !row.user_is_admin)
+      .filter((row) => historySearchMatches(row, query))
+  }, [historyRows, historySearchMatches, historySearchQuery])
 
-    return kindFiltered.filter((row) => {
-      const haystack = [
-        row.user_email,
-        row.user_name,
-        row.user_id,
-        row.kind,
-        row.source,
-        row.title,
-        row.subtitle,
-        row.status,
-        row.reference,
-        row.detail,
-      ].join(' ').toLowerCase()
-      return haystack.includes(query)
-    })
-  }, [historyKind, historyRows, historySearchQuery])
+  const filteredHistoryRows = depositHistoryRows
 
   const historyStats = useMemo(() => {
-    return historyRows.reduce(
+    return depositHistoryRows.reduce(
       (acc, tx) => {
         const amount = Number(tx.amount || 0)
         acc.count += 1
         acc.total += amount
         acc.byKind[tx.kind] = (acc.byKind[tx.kind] || 0) + 1
-        if (isPositiveStatus(tx.status)) {
-          acc.completedCount += 1
-          acc.completedTotal += amount
-        } else {
-          acc.pendingCount += 1
-          acc.pendingTotal += amount
-        }
+        acc.completedCount += 1
+        acc.completedTotal += amount
         return acc
       },
       {
@@ -2155,7 +2183,7 @@ export default function AdminPage() {
         byKind: {} as Record<string, number>,
       },
     )
-  }, [historyRows])
+  }, [depositHistoryRows])
 
   const visibleHistorySections = useMemo(() => {
     const sections: Array<{
@@ -2175,10 +2203,10 @@ export default function AdminPage() {
 
     return sections.map((section) => ({
       ...section,
-      rows: filteredHistoryRows.filter((row) => row.kind === section.key),
-      totalRows: historyRows.filter((row) => row.kind === section.key).length,
+      rows: salesFilteredHistoryRows.filter((row) => row.kind === section.key),
+      totalRows: historyRows.filter((row) => row.kind === section.key && !row.user_is_staff && !row.user_is_admin).length,
     }))
-  }, [filteredHistoryRows, historyRows])
+  }, [historyRows, salesFilteredHistoryRows])
 
   const salesAnalytics = useMemo(() => {
     const now = new Date()
@@ -2194,7 +2222,14 @@ export default function AdminPage() {
     const productGroupById = new Map(productGroups.map((group) => [group.id, group]))
     const categoryById = new Map(categories.map((category) => [category.id, category]))
     const profileById = new Map(salesProfiles.map((profile) => [profile.id, profile]))
-    const completedOrders = salesOrders.filter((order) => String(order.status || '').toLowerCase() === 'completed')
+    const isInternalProfile = (profile: any) => !!profile?.is_staff || !!profile?.is_admin
+    const isInternalOrder = (order: any) => {
+      const profile = order.user_id ? profileById.get(order.user_id) : null
+      return isInternalProfile(profile)
+    }
+    const completedOrders = salesOrders
+      .filter((order) => String(order.status || '').toLowerCase() === 'completed')
+      .filter((order) => !isInternalOrder(order))
 
     const getQuantity = (order: any) => {
       const details = order.account_details || {}
@@ -2241,7 +2276,7 @@ export default function AdminPage() {
       const profile = profileById.get(order.user_id)
       const customerEntry = customers.get(order.user_id) || {
         id: order.user_id,
-        email: profile?.email || 'Unknown customer',
+        email: profile?.email || profile?.full_name || `Customer ${String(order.user_id || '').slice(0, 8)}`,
         name: profile?.full_name || '',
         revenue: 0,
         orders: 0,
@@ -2279,7 +2314,7 @@ export default function AdminPage() {
       .sort((a, b) => b.growth - a.growth || b.recent - a.recent)
 
     const countProfilesSince = (date: Date) =>
-      salesProfiles.filter((profile) => profile.created_at && new Date(profile.created_at) >= date).length
+      salesProfiles.filter((profile) => !isInternalProfile(profile) && profile.created_at && new Date(profile.created_at) >= date).length
 
     const uniqueVisitorsSince = (date: Date) =>
       new Set(
@@ -2527,7 +2562,7 @@ export default function AdminPage() {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `tallystore-${historyKind}-history-${format(new Date(), 'yyyy-MM-dd')}.csv`
+    anchor.download = `tallystore-deposit-history-${format(new Date(), 'yyyy-MM-dd')}.csv`
     anchor.click()
     URL.revokeObjectURL(url)
   }
@@ -4988,11 +5023,89 @@ export default function AdminPage() {
                       </CardContent>
                     </Card>
                   </div>
+
+                  <AdminControlSection
+                    title="Section Histories"
+                    description="Customer activity grouped by website section. Each panel collapses on mobile to save space."
+                  >
+                    <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div className="relative w-full md:max-w-md">
+                        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          value={historySearchQuery}
+                          onChange={(event) => setHistorySearchQuery(event.target.value)}
+                          placeholder="Search customer, product, reference..."
+                          className="pl-10"
+                        />
+                      </div>
+                      <Button type="button" variant="outline" onClick={loadAdminHistories} disabled={historyLoading}>
+                        {historyLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                        Refresh histories
+                      </Button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {visibleHistorySections.map((section) => (
+                        <AdminControlSection
+                          key={section.key}
+                          title={`${section.title} (${section.rows.length.toLocaleString()})`}
+                          description={section.description}
+                        >
+                          {section.rows.length === 0 ? (
+                            <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                              No matching customer records in this section.
+                            </p>
+                          ) : (
+                            <div className="overflow-x-auto rounded-xl border">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead>Date</TableHead>
+                                    <TableHead>Customer</TableHead>
+                                    <TableHead>Item</TableHead>
+                                    <TableHead>Reference</TableHead>
+                                    <TableHead>Status</TableHead>
+                                    <TableHead className="text-right">Amount</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {section.rows.slice(0, 20).map((row) => (
+                                    <TableRow key={row.id}>
+                                      <TableCell className="whitespace-nowrap text-sm">
+                                        {row.date ? format(new Date(row.date), 'MMM d, yyyy HH:mm') : 'Unknown'}
+                                      </TableCell>
+                                      <TableCell className="min-w-[220px]">
+                                        <p className="font-semibold">{row.user_email || row.user_name || `Customer ${String(row.user_id || '').slice(0, 8)}`}</p>
+                                        <p className="font-mono text-xs text-muted-foreground">{row.user_id || '-'}</p>
+                                      </TableCell>
+                                      <TableCell className="min-w-[260px]">
+                                        <p className="font-semibold">{row.title}</p>
+                                        {row.subtitle && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.subtitle}>{row.subtitle}</p>}
+                                      </TableCell>
+                                      <TableCell className="font-mono text-xs">{row.reference || '-'}</TableCell>
+                                      <TableCell>
+                                        <Badge variant={isPositiveStatus(row.status) ? 'default' : 'outline'} className={cn('capitalize', isPositiveStatus(row.status) && 'bg-emerald-600 hover:bg-emerald-600')}>
+                                          {normalizeStatus(row.status)}
+                                        </Badge>
+                                      </TableCell>
+                                      <TableCell className="whitespace-nowrap text-right font-black">
+                                        {row.amount == null ? '-' : formatAdminNaira(row.amount)}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          )}
+                        </AdminControlSection>
+                      ))}
+                    </div>
+                  </AdminControlSection>
                 </CardContent>
               </Card>
             </TabsContent>
 
-            {/* Website Histories */}
+            {/* Deposit Histories */}
             <TabsContent value="histories" className="space-y-6">
               <Card className="overflow-hidden">
                 <CardHeader className="border-b bg-gradient-to-r from-purple-50 via-white to-cyan-50 dark:from-purple-950/30 dark:via-card dark:to-cyan-950/20">
@@ -5000,10 +5113,10 @@ export default function AdminPage() {
                     <div>
                       <CardTitle className="flex items-center gap-2 text-2xl">
                         <History className="h-6 w-6 text-primary" />
-                        Website Histories
+                        Deposit History
                       </CardTitle>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        Deposits, products, SMS, crypto, bills, gift cards, and social boost activity across the whole website.
+                        Completed customer wallet deposits only. Product, SMS, crypto, bills, gift card, and social histories now live under Sales.
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -5022,29 +5135,31 @@ export default function AdminPage() {
                   <div className="grid gap-3 md:grid-cols-3">
                     <Card className="bg-emerald-50/80 dark:bg-emerald-500/10">
                       <CardContent className="p-4">
-                        <p className="text-sm font-semibold text-muted-foreground">Successful / Active</p>
+                        <p className="text-sm font-semibold text-muted-foreground">Completed Deposits</p>
                         <p className="mt-2 text-2xl font-black text-emerald-700 dark:text-emerald-300">
                           {formatAdminNaira(historyStats.completedTotal)}
                         </p>
                         <p className="text-xs text-muted-foreground">{historyStats.completedCount} record(s)</p>
                       </CardContent>
                     </Card>
-                    <Card className="bg-amber-50/80 dark:bg-amber-500/10">
+                    <Card className="bg-cyan-50/80 dark:bg-cyan-500/10">
                       <CardContent className="p-4">
-                        <p className="text-sm font-semibold text-muted-foreground">Pending / Failed / Other</p>
-                        <p className="mt-2 text-2xl font-black text-amber-700 dark:text-amber-300">
-                          {formatAdminNaira(historyStats.pendingTotal)}
+                        <p className="text-sm font-semibold text-muted-foreground">Customers Funded</p>
+                        <p className="mt-2 text-2xl font-black text-cyan-700 dark:text-cyan-300">
+                          {new Set(depositHistoryRows.map((row) => row.user_id).filter(Boolean)).size.toLocaleString()}
                         </p>
-                        <p className="text-xs text-muted-foreground">{historyStats.pendingCount} record(s)</p>
+                        <p className="text-xs text-muted-foreground">Actual non-staff customers</p>
                       </CardContent>
                     </Card>
                     <Card className="bg-purple-50/80 dark:bg-purple-500/10">
                       <CardContent className="p-4">
-                        <p className="text-sm font-semibold text-muted-foreground">All History Rows</p>
-                        <p className="mt-2 text-2xl font-black text-purple-700 dark:text-purple-300">
-                          {historyStats.count.toLocaleString()}
+                        <p className="text-sm font-semibold text-muted-foreground">Latest Deposit</p>
+                        <p className="mt-2 truncate text-xl font-black text-purple-700 dark:text-purple-300">
+                          {depositHistoryRows[0] ? formatAdminNaira(depositHistoryRows[0].amount) : 'No deposits'}
                         </p>
-                        <p className="text-xs text-muted-foreground">{formatAdminNaira(historyStats.total)} combined value</p>
+                        <p className="text-xs text-muted-foreground">
+                          {depositHistoryRows[0]?.date ? formatDistanceToNow(new Date(depositHistoryRows[0].date), { addSuffix: true }) : 'Waiting for completed deposits'}
+                        </p>
                       </CardContent>
                     </Card>
                   </div>
@@ -5062,59 +5177,22 @@ export default function AdminPage() {
                     </div>
                   )}
 
-                  <div className="grid gap-3 lg:grid-cols-[220px_minmax(260px,1fr)]">
-                    <Select value={historyKind} onValueChange={(value) => setHistoryKind(value as AdminHistoryKind)}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="History type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Everything history</SelectItem>
-                        <SelectItem value="deposits">Deposits</SelectItem>
-                        <SelectItem value="products">Products</SelectItem>
-                        <SelectItem value="sms">SMS</SelectItem>
-                        <SelectItem value="crypto">Crypto</SelectItem>
-                        <SelectItem value="bills">Bills & Airtime</SelectItem>
-                        <SelectItem value="giftcards">Gift Cards & eSIMs</SelectItem>
-                        <SelectItem value="social">Social Boost</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        value={historySearchQuery}
-                        onChange={(event) => setHistorySearchQuery(event.target.value)}
-                        placeholder="Search customer, product, reference, status..."
-                        className="pl-10"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
-                    {visibleHistorySections.map((section) => (
-                      <button
-                        key={section.key}
-                        type="button"
-                        onClick={() => setHistoryKind(section.key)}
-                        className={cn(
-                          'flex items-center justify-between rounded-xl border px-3 py-3 text-left transition hover:border-primary/50 hover:bg-primary/5',
-                          historyKind === section.key && 'border-primary bg-primary/10 text-primary',
-                        )}
-                      >
-                        <span className="min-w-0">
-                          <span className="block truncate text-xs font-black">{section.title.replace(' History', '')}</span>
-                          <span className="text-xs text-muted-foreground">{section.totalRows.toLocaleString()} rows</span>
-                        </span>
-                        <span className="text-muted-foreground">{section.icon}</span>
-                      </button>
-                    ))}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={historySearchQuery}
+                      onChange={(event) => setHistorySearchQuery(event.target.value)}
+                      placeholder="Search customer, deposit reference, status..."
+                      className="pl-10"
+                    />
                   </div>
 
                   {historyLoading ? (
                     <div className="rounded-2xl border py-16 text-center">
                       <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-primary" />
-                      <p className="font-semibold">Loading website histories...</p>
+                      <p className="font-semibold">Loading completed deposits...</p>
                     </div>
-                  ) : historyKind !== 'all' ? (
+                  ) : (
                     <div className="overflow-hidden rounded-2xl border">
                       <div className="overflow-x-auto">
                         <Table>
@@ -5122,9 +5200,9 @@ export default function AdminPage() {
                             <TableRow>
                               <TableHead>Date</TableHead>
                               <TableHead>Customer</TableHead>
-                              <TableHead>Item</TableHead>
                               <TableHead>Reference</TableHead>
                               <TableHead>Status</TableHead>
+                              <TableHead>Balance After</TableHead>
                               <TableHead className="text-right">Amount</TableHead>
                             </TableRow>
                           </TableHeader>
@@ -5132,7 +5210,7 @@ export default function AdminPage() {
                             {filteredHistoryRows.length === 0 ? (
                               <TableRow>
                                 <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
-                                  No history records match this view.
+                                  No completed customer deposits match this view.
                                 </TableCell>
                               </TableRow>
                             ) : filteredHistoryRows.map((row) => (
@@ -5146,20 +5224,16 @@ export default function AdminPage() {
                                   )}
                                 </TableCell>
                                 <TableCell className="min-w-[220px]">
-                                  <p className="font-semibold">{row.user_email || row.user_name || 'Unknown user'}</p>
+                                  <p className="font-semibold">{row.user_email || row.user_name || `Customer ${String(row.user_id || '').slice(0, 8)}`}</p>
                                   <p className="font-mono text-xs text-muted-foreground">{row.user_id || '-'}</p>
-                                </TableCell>
-                                <TableCell className="min-w-[260px]">
-                                  <p className="font-semibold">{row.title}</p>
-                                  {row.subtitle && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.subtitle}>{row.subtitle}</p>}
-                                  {row.detail && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.detail}>{row.detail}</p>}
                                 </TableCell>
                                 <TableCell className="font-mono text-xs">{row.reference || '-'}</TableCell>
                                 <TableCell>
-                                  <Badge variant={isPositiveStatus(row.status) ? 'default' : 'outline'} className={cn('capitalize', isPositiveStatus(row.status) && 'bg-emerald-600 hover:bg-emerald-600')}>
+                                  <Badge className="bg-emerald-600 capitalize hover:bg-emerald-600">
                                     {normalizeStatus(row.status)}
                                   </Badge>
                                 </TableCell>
+                                <TableCell className="text-sm text-muted-foreground">{row.detail || '-'}</TableCell>
                                 <TableCell className="whitespace-nowrap text-right font-black">
                                   {row.amount == null ? '-' : formatAdminNaira(row.amount)}
                                 </TableCell>
@@ -5168,74 +5242,6 @@ export default function AdminPage() {
                           </TableBody>
                         </Table>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {visibleHistorySections.map((section) => (
-                        <AdminControlSection
-                          key={section.key}
-                          title={`${section.title} (${section.rows.length.toLocaleString()})`}
-                          description={section.description}
-                        >
-                          {section.rows.length === 0 ? (
-                            <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-                              No matching records in this history yet.
-                            </p>
-                          ) : (
-                            <div className="overflow-x-auto rounded-xl border">
-                              <Table>
-                                <TableHeader>
-                                  <TableRow>
-                                    <TableHead>Date</TableHead>
-                                    <TableHead>Customer</TableHead>
-                                    <TableHead>Item</TableHead>
-                                    <TableHead>Reference</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead className="text-right">Amount</TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {section.rows.slice(0, 25).map((row) => (
-                                    <TableRow key={row.id}>
-                                      <TableCell className="whitespace-nowrap text-sm">
-                                        {row.date ? format(new Date(row.date), 'MMM d, yyyy HH:mm') : 'Unknown'}
-                                        {row.date && (
-                                          <p className="text-xs text-muted-foreground">
-                                            {formatDistanceToNow(new Date(row.date), { addSuffix: true })}
-                                          </p>
-                                        )}
-                                      </TableCell>
-                                      <TableCell className="min-w-[220px]">
-                                        <p className="font-semibold">{row.user_email || row.user_name || 'Unknown user'}</p>
-                                        <p className="font-mono text-xs text-muted-foreground">{row.user_id || '-'}</p>
-                                      </TableCell>
-                                      <TableCell className="min-w-[260px]">
-                                        <p className="font-semibold">{row.title}</p>
-                                        {row.subtitle && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.subtitle}>{row.subtitle}</p>}
-                                        {row.detail && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.detail}>{row.detail}</p>}
-                                      </TableCell>
-                                      <TableCell className="font-mono text-xs">{row.reference || '-'}</TableCell>
-                                      <TableCell>
-                                        <Badge variant={isPositiveStatus(row.status) ? 'default' : 'outline'} className={cn('capitalize', isPositiveStatus(row.status) && 'bg-emerald-600 hover:bg-emerald-600')}>
-                                          {normalizeStatus(row.status)}
-                                        </Badge>
-                                      </TableCell>
-                                      <TableCell className="whitespace-nowrap text-right font-black">
-                                        {row.amount == null ? '-' : formatAdminNaira(row.amount)}
-                                      </TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                              {section.rows.length > 25 && (
-                                <p className="border-t px-4 py-3 text-xs text-muted-foreground">
-                                  Showing latest 25 of {section.rows.length.toLocaleString()} records. Use the type filter above to view/export the full filtered list.
-                                </p>
-                              )}
-                            </div>
-                          )}
-                        </AdminControlSection>
-                      ))}
                     </div>
                   )}
                 </CardContent>
