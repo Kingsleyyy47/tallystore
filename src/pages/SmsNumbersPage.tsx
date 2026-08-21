@@ -707,6 +707,8 @@ function SmsNumbersSurface() {
 
   const loadSmsNumbers = useCallback(async () => {
     setLoading(true)
+    // Fire sync silently — clears orders cancelled on DaisySMS but still active in DB
+    invokeSms('sync_cancelled').catch(() => {})
     try {
       const [healthResult, orderResult] = await Promise.all([
         invokeSms<never>('health'),
