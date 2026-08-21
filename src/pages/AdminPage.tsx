@@ -129,6 +129,33 @@ import { cn } from '@/lib/utils'
 //   seedDeterministicRevenueOsModelRegistry,
 //   updateCroActionPlanStatus,
 // } from '@/lib/revenue-os'
+// ── Temporary stubs — revenue-os WIP not yet committed ──────────────────────
+const analyzePromotionGuardrails = (..._: any[]) => ({})
+const analyzeRevenueDataQuality = (..._: any[]) => ({})
+const analyzeRevenueEventDataQuality = (..._: any[]) => ({})
+const applyCroEvaluationDecisions = async (..._: any[]) => ({})
+const createProductRankingExperimentFromOpportunity = (..._: any[]) => ({})
+const decayCommercialInsights = async (..._: any[]) => ({})
+const deriveBehavioralProductRelationships = (..._: any[]) => ([])
+const deriveCroActionPlans = (..._: any[]) => ([])
+const deriveCroBanditAllocations = (..._: any[]) => ({})
+const deriveCroDriftChecks = (..._: any[]) => ([])
+const deriveCroExperimentEvaluations = (..._: any[]) => ({})
+const deriveCroSimulationRun = (..._: any[]) => ({})
+const deriveRevenueAnomalyChecks = (..._: any[]) => ({})
+const deriveRevenueProductAttributes = (..._: any[]) => ([])
+const deriveRevenueOsRuntimeIntelligence = (..._: any[]) => ({})
+const deriveCatalogueProductRelationships = (..._: any[]) => ([])
+const recordCroExperiment = async (..._: any[]) => {}
+const recordCroEvaluations = async (..._: any[]) => {}
+const recordCroActionPlans = async (..._: any[]) => {}
+const recordCatalogueProductRelationships = async (..._: any[]) => {}
+const recordRevenueProductAttributes = async (..._: any[]) => {}
+const recordRevenueDataQualityFindings = async (..._: any[]) => {}
+const recordRevenueOsRuntimeIntelligence = async (..._: any[]) => {}
+const seedDeterministicRevenueOsModelRegistry = async (..._: any[]) => {}
+const updateCroActionPlanStatus = async (..._: any[]) => {}
+// ─────────────────────────────────────────────────────────────────────────────
 
 const ADMIN_TABS = [
   { value: 'templates', label: 'Templates' },
