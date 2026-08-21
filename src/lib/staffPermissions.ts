@@ -16,6 +16,7 @@ export const PERMISSIONS = [
   { key: 'tab_bulk_upload',         label: 'Bulk Upload tab',        description: 'Upload accounts via CSV', group: 'Tabs' },
   { key: 'tab_discount_codes',      label: 'Discount Codes tab',     description: 'View, create, and toggle discount codes', group: 'Tabs' },
   { key: 'tab_sms_products',        label: 'SMS Products tab',       description: 'Enable SMS products, set favorites, and manage customer SMS pricing', group: 'Tabs' },
+  { key: 'tab_sms_orders',          label: 'SMS Orders tab',         description: 'View all customer SMS order history, cancel pending orders, and issue refunds', group: 'Tabs' },
   { key: 'tab_categories',          label: 'Categories tab',         description: 'View, create, and edit product categories', group: 'Tabs' },
   { key: 'tab_users',               label: 'Users tab',              description: 'Search and view user accounts', group: 'Tabs' },
   { key: 'tab_email',               label: 'Email / Broadcast tab',  description: 'Send emails and broadcasts to users', group: 'Tabs' },

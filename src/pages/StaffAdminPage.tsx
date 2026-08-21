@@ -977,7 +977,7 @@ export default function StaffAdminPage() {
     can(perms, 'tab_add_product')      && { key: 'add',       label: 'Add Account' },
     can(perms, 'tab_bulk_upload')      && { key: 'bulk',      label: 'Bulk Upload' },
     can(perms, 'tab_sms_products')     && { key: 'sms-products', label: 'SMS Products' },
-    can(perms, 'tab_sms_products')     && { key: 'sms-orders',   label: 'SMS Orders' },
+    can(perms, 'tab_sms_orders')       && { key: 'sms-orders',   label: 'SMS Orders' },
     can(perms, 'tab_categories')       && { key: 'categories',label: 'Categories' },
     can(perms, 'tab_discount_codes')   && { key: 'discounts', label: 'Discount Codes' },
     can(perms, 'tab_users')            && { key: 'users',     label: 'Users' },

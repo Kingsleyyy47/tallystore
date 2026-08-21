@@ -1041,13 +1041,27 @@ async function handleCancelOtp(admin: SupabaseAdmin, userId: string, body: Recor
 // ── Admin: fetch all SMS orders across all users ──────────────────────────────
 async function handleAdminSmsOrders(admin: SupabaseAdmin, userId: string) {
   await requireAdminUser(admin, userId)
-  const { data, error } = await admin
+  const { data: orders, error } = await admin
     .from('sms_orders')
-    .select('*, profiles(email, full_name)')
+    .select('*')
     .order('created_at', { ascending: false })
     .limit(500)
   if (error) throw new Error(`Failed to load SMS orders: ${error.message}`)
-  return json({ success: true, data: data || [] })
+  const rows = orders || []
+  // Fetch profiles for each unique user separately (no FK in schema cache)
+  const userIds = [...new Set(rows.map((o: any) => o.user_id).filter(Boolean))]
+  let profileMap: Record<string, { email?: string; full_name?: string }> = {}
+  if (userIds.length > 0) {
+    const { data: profiles } = await admin
+      .from('profiles')
+      .select('id, email, full_name')
+      .in('id', userIds)
+    for (const p of profiles || []) {
+      profileMap[p.id] = { email: p.email, full_name: p.full_name }
+    }
+  }
+  const data = rows.map((o: any) => ({ ...o, profiles: profileMap[o.user_id] || null }))
+  return json({ success: true, data })
 }
 
 // ── Admin: cancel any SMS order and refund the customer ───────────────────────
