@@ -130,9 +130,9 @@ import { cn } from '@/lib/utils'
 //   updateCroActionPlanStatus,
 // } from '@/lib/revenue-os'
 // ── Temporary stubs — revenue-os WIP not yet committed ──────────────────────
-const analyzePromotionGuardrails = (..._: any[]) => ({})
-const analyzeRevenueDataQuality = (..._: any[]) => ({})
-const analyzeRevenueEventDataQuality = (..._: any[]) => ({})
+const analyzePromotionGuardrails = (..._: any[]) => ([] as any[])
+const analyzeRevenueDataQuality = (..._: any[]) => ([] as any[])
+const analyzeRevenueEventDataQuality = (..._: any[]) => ([] as any[])
 const applyCroEvaluationDecisions = async (..._: any[]) => ({})
 const createProductRankingExperimentFromOpportunity = (..._: any[]) => ({})
 const decayCommercialInsights = async (..._: any[]) => ({})
@@ -142,7 +142,7 @@ const deriveCroBanditAllocations = (..._: any[]) => ({})
 const deriveCroDriftChecks = (..._: any[]) => ([])
 const deriveCroExperimentEvaluations = (..._: any[]) => ({})
 const deriveCroSimulationRun = (..._: any[]) => ({})
-const deriveRevenueAnomalyChecks = (..._: any[]) => ({})
+const deriveRevenueAnomalyChecks = (..._: any[]) => ([] as any[])
 const deriveRevenueProductAttributes = (..._: any[]) => ([])
 const deriveRevenueOsRuntimeIntelligence = (..._: any[]) => ({})
 const deriveCatalogueProductRelationships = (..._: any[]) => ([])
