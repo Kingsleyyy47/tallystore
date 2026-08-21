@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactCountryFlag from 'react-country-flag'
 import { Link } from 'react-router-dom'
 import {
   ArrowLeft,
   CalendarDays,
   ChevronRight,
+  Clock,
   Copy,
   Inbox,
   Loader2,
@@ -313,6 +314,37 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   )
 }
 
+const OTP_TIMEOUT_SECONDS = 180 // 3 minutes
+
+function useOtpCountdown(order: SmsOrder, onExpire: (order: SmsOrder) => void) {
+  const [secsLeft, setSecsLeft] = useState<number | null>(null)
+  const expiredRef = useRef(false)
+
+  useEffect(() => {
+    if (order.order_type !== 'otp' || isTerminalStatus(order.status)) return
+    const hasCode = order.messages && order.messages.length > 0
+    if (hasCode) return
+
+    const created = new Date(order.created_at).getTime()
+    const deadline = created + OTP_TIMEOUT_SECONDS * 1000
+
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+      setSecsLeft(remaining)
+      if (remaining === 0 && !expiredRef.current) {
+        expiredRef.current = true
+        onExpire(order)
+      }
+    }
+
+    tick()
+    const id = window.setInterval(tick, 1000)
+    return () => window.clearInterval(id)
+  }, [order.id, order.status, order.order_type, order.created_at])
+
+  return secsLeft
+}
+
 function SmsOrderCard({
   order,
   busy,
@@ -332,6 +364,12 @@ function SmsOrderCard({
 }) {
   const lastMessage = order.messages?.[order.messages.length - 1]
   const support = useSupportSettings()
+  const secsLeft = useOtpCountdown(order, onCancel)
+
+  const timerMins = secsLeft !== null ? String(Math.floor(secsLeft / 60)).padStart(2, '0') : null
+  const timerSecs = secsLeft !== null ? String(secsLeft % 60).padStart(2, '0') : null
+  const timerPct = secsLeft !== null ? (secsLeft / OTP_TIMEOUT_SECONDS) * 100 : 100
+  const timerUrgent = secsLeft !== null && secsLeft <= 30
 
   const copyPhone = async () => {
     if (!order.phone_number) return
@@ -396,6 +434,38 @@ function SmsOrderCard({
           </div>
         </div>
 
+        {/* OTP countdown timer */}
+        {order.order_type === 'otp' && !isTerminalStatus(order.status) && secsLeft !== null && !(order.messages && order.messages.length > 0) && (
+          <div className="mt-4">
+            <div className={cn(
+              'flex items-center justify-between rounded-2xl px-4 py-3 text-sm font-semibold transition-colors',
+              timerUrgent
+                ? 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300'
+                : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300',
+            )}>
+              <div className="flex items-center gap-2">
+                <Clock className={cn('h-4 w-4', timerUrgent && 'animate-pulse')} />
+                <span>
+                  {secsLeft === 0
+                    ? 'Cancelling automatically…'
+                    : `Auto-cancels in ${timerMins}:${timerSecs}`}
+                </span>
+              </div>
+              <span className="text-xs font-normal opacity-75">No code = full refund</span>
+            </div>
+            {/* Progress bar */}
+            <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-muted">
+              <div
+                className={cn(
+                  'h-full rounded-full transition-all duration-1000',
+                  timerUrgent ? 'bg-red-500' : 'bg-amber-400',
+                )}
+                style={{ width: `${timerPct}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         <div className="mt-4 flex flex-wrap gap-2">
           {order.order_type === 'otp' && !isTerminalStatus(order.status) && (
             <>
@@ -405,7 +475,7 @@ function SmsOrderCard({
               </Button>
               <Button type="button" variant="outline" className="rounded-2xl" disabled={busy} onClick={() => onCancel(order)}>
                 <XCircle className="h-4 w-4" />
-                Cancel
+                Cancel & Refund
               </Button>
             </>
           )}
