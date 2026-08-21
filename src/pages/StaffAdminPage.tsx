@@ -164,6 +164,63 @@ export default function StaffAdminPage() {
   const [smsMarginInputs, setSmsMarginInputs] = useState<Record<string, string>>({})
   const [smsCatalogNotice, setSmsCatalogNotice] = useState('')
 
+  // SMS Orders management
+  type StaffSmsOrder = {
+    id: string; reference: string; service_name: string; status: string
+    price_ngn: number; created_at: string; cancelled_at?: string; refunded_at?: string
+    messages?: any[]; order_type: string; provider_request_id?: string
+    profiles?: { email?: string; full_name?: string }
+  }
+  const [smsOrders, setSmsOrders] = useState<StaffSmsOrder[]>([])
+  const [smsOrdersLoading, setSmsOrdersLoading] = useState(false)
+  const [smsOrdersCancellingId, setSmsOrdersCancellingId] = useState<string | null>(null)
+  const [smsOrdersAutoCancelling, setSmsOrdersAutoCancelling] = useState(false)
+  const [smsOrdersFilter, setSmsOrdersFilter] = useState<'all' | 'pending' | 'cancelled' | 'completed'>('all')
+
+  const loadSmsOrders = useCallback(async () => {
+    setSmsOrdersLoading(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_sms_orders' } })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to load SMS orders')
+      setSmsOrders(data.data || [])
+    } catch (err: any) {
+      toast({ title: 'Failed to load SMS orders', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsOrdersLoading(false)
+    }
+  }, [toast])
+
+  const staffCancelSmsOrder = useCallback(async (orderId: string) => {
+    setSmsOrdersCancellingId(orderId)
+    try {
+      const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_cancel_sms_order', order_id: orderId } })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to cancel order')
+      toast({ title: 'Order cancelled & refunded' })
+      await loadSmsOrders()
+    } catch (err: any) {
+      toast({ title: 'Cancel failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsOrdersCancellingId(null)
+    }
+  }, [toast, loadSmsOrders])
+
+  const staffAutoCancelStale = useCallback(async () => {
+    setSmsOrdersAutoCancelling(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_auto_cancel_stale' } })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to auto-cancel')
+      toast({ title: `Auto-cancelled ${data.cancelled_count ?? 0} stale order(s)` })
+      await loadSmsOrders()
+    } catch (err: any) {
+      toast({ title: 'Auto-cancel failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsOrdersAutoCancelling(false)
+    }
+  }, [toast, loadSmsOrders])
+
   // Users
   const [userQuery, setUserQuery] = useState('')
   const [users, setUsers] = useState<any[]>([])
@@ -647,12 +704,33 @@ export default function StaffAdminPage() {
     if (!addPgId || !addUsername || !addPassword) return
     setAddingAccount(true)
     try {
-      const account = await createIndividualAccount({ product_group_id: addPgId, username: addUsername, password: addPassword, email: addEmail || undefined, status: 'available' })
-      if (!account) throw new Error('Account was not added')
-      const updatedProductGroups = await getAllProductGroups()
-      setProductGroups(updatedProductGroups)
-      toast({ title: 'Account added' })
-      setAddUsername(''); setAddPassword(''); setAddEmail('')
+      const payload = {
+        product_group_id: addPgId,
+        username: addUsername,
+        password: addPassword,
+        email: addEmail || undefined,
+      }
+      if (autoApproves(perms, 'tab_add_product')) {
+        const account = await createIndividualAccount({ ...payload, status: 'available' })
+        if (!account) throw new Error('Account was not added')
+        const updatedProductGroups = await getAllProductGroups()
+        setProductGroups(updatedProductGroups)
+        toast({ title: 'Account added' })
+        setAddUsername(''); setAddPassword(''); setAddEmail('')
+      } else {
+        const res = await submitPendingAction(
+          'tab_add_product',
+          'add_single_account',
+          `Add account for ${productGroups.find(pg => pg.id === addPgId)?.name || addPgId}`,
+          payload,
+        )
+        if (!res.success) throw new Error(res.error || 'Failed to submit for approval')
+        toast({ title: 'Submitted for approval' })
+        setAddUsername('')
+        setAddPassword('')
+        setAddEmail('')
+        loadMyPending()
+      }
     } catch (error) {
       toast({
         variant: 'destructive',
@@ -679,23 +757,43 @@ export default function StaffAdminPage() {
         return
       }
 
-      const result = await processBulkAccountUpload(parsed, bulkPgId)
-      setBulkResult(result)
+      if (autoApproves(perms, 'tab_bulk_upload')) {
+        const result = await processBulkAccountUpload(parsed, bulkPgId)
+        setBulkResult(result)
+        if (result.success) {
+          const updatedProductGroups = await getAllProductGroups()
+          setProductGroups(updatedProductGroups)
+          const updatedProduct = updatedProductGroups.find(pg => pg.id === bulkPgId)
 
-      if (result.success) {
-        const updatedProductGroups = await getAllProductGroups()
-        setProductGroups(updatedProductGroups)
-        const updatedProduct = updatedProductGroups.find(pg => pg.id === bulkPgId)
-
-        toast({
-          title: `Successfully uploaded ${result.accountsCreated} accounts`,
-          description: updatedProduct ? `${updatedProduct.stock_count ?? 0} in stock now` : undefined,
-        })
+          toast({
+            title: `Successfully uploaded ${result.accountsCreated} accounts`,
+            description: updatedProduct ? `${updatedProduct.stock_count ?? 0} in stock now` : undefined,
+          })
+          setCsvFile(null)
+          if (fileInputRef.current) fileInputRef.current.value = ''
+        } else {
+          toast({ variant: 'destructive', title: 'Upload failed', description: result.error })
+        }
+      } else {
+        const res = await submitPendingAction(
+          'tab_bulk_upload',
+          'bulk_upload_accounts',
+          `Upload accounts to ${productGroups.find(pg => pg.id === bulkPgId)?.name || bulkPgId}`,
+          {
+            product_group_id: bulkPgId,
+            parsed_rows: parsed,
+            csv_rows: parsed.length,
+          }
+        )
+        if (!res.success) throw new Error(res.error || 'Failed to submit for approval')
+        const result = { success: true, accountsCreated: parsed.length }
+        setBulkResult(result)
+        toast({ title: 'Submitted for approval', description: 'Bulk upload will apply after admin approval.' })
         setCsvFile(null)
         if (fileInputRef.current) fileInputRef.current.value = ''
-      } else {
-        toast({ variant: 'destructive', title: 'Upload failed', description: result.error })
+        loadMyPending()
       }
+
     } catch (e: any) {
       toast({ variant: 'destructive', title: 'Upload failed', description: e?.message })
     } finally { setBulkUploading(false) }
@@ -879,6 +977,7 @@ export default function StaffAdminPage() {
     can(perms, 'tab_add_product')      && { key: 'add',       label: 'Add Account' },
     can(perms, 'tab_bulk_upload')      && { key: 'bulk',      label: 'Bulk Upload' },
     can(perms, 'tab_sms_products')     && { key: 'sms-products', label: 'SMS Products' },
+    can(perms, 'tab_sms_products')     && { key: 'sms-orders',   label: 'SMS Orders' },
     can(perms, 'tab_categories')       && { key: 'categories',label: 'Categories' },
     can(perms, 'tab_discount_codes')   && { key: 'discounts', label: 'Discount Codes' },
     can(perms, 'tab_users')            && { key: 'users',     label: 'Users' },
@@ -1608,6 +1707,131 @@ export default function StaffAdminPage() {
               </CardContent>
             </Card>
           </TabsContent>
+
+          {/* SMS Orders */}
+          <TabsContent value="sms-orders" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <CardTitle>SMS Orders</CardTitle>
+                    <p className="mt-1 text-sm text-muted-foreground">All customer SMS purchases. Auto-cancel clears pending orders older than 5 minutes with no code received.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" size="sm" onClick={loadSmsOrders} disabled={smsOrdersLoading}>
+                      {smsOrdersLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                      Refresh
+                    </Button>
+                    <Button variant="destructive" size="sm" onClick={staffAutoCancelStale} disabled={smsOrdersAutoCancelling || smsOrdersLoading}>
+                      {smsOrdersAutoCancelling ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <XCircle className="mr-2 h-4 w-4" />}
+                      Auto-cancel stale (5 min+)
+                    </Button>
+                  </div>
+                </div>
+                <div className="mt-3 flex gap-2">
+                  {(['all', 'pending', 'completed', 'cancelled'] as const).map(f => (
+                    <button key={f} onClick={() => setSmsOrdersFilter(f)}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold capitalize transition-colors ${smsOrdersFilter === f ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}>
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </CardHeader>
+              <CardContent>
+                {smsOrders.length === 0 && !smsOrdersLoading && (
+                  <div className="py-8 text-center text-sm text-muted-foreground">
+                    No SMS orders yet.{' '}
+                    <button className="underline" onClick={loadSmsOrders}>Load orders</button>
+                  </div>
+                )}
+                {smsOrdersLoading && (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                )}
+                {!smsOrdersLoading && smsOrders.length > 0 && (() => {
+                  const isPending = (o: any) => !['completed', 'cancelled', 'expired', 'failed'].includes(o.status)
+                  const filtered = smsOrders.filter(o => {
+                    if (smsOrdersFilter === 'pending') return isPending(o)
+                    if (smsOrdersFilter === 'completed') return o.status === 'completed'
+                    if (smsOrdersFilter === 'cancelled') return o.status === 'cancelled'
+                    return true
+                  })
+                  const now = Date.now()
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b text-left text-xs font-semibold uppercase text-muted-foreground">
+                            <th className="pb-2 pr-4">User</th>
+                            <th className="pb-2 pr-4">Service</th>
+                            <th className="pb-2 pr-4">Amount</th>
+                            <th className="pb-2 pr-4">Status</th>
+                            <th className="pb-2 pr-4">Time pending</th>
+                            <th className="pb-2 pr-4">Refunded</th>
+                            <th className="pb-2">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {filtered.map(order => {
+                            const pending = isPending(order)
+                            const minsPending = Math.floor((now - new Date(order.created_at).getTime()) / 60000)
+                            const isStale = pending && minsPending >= 5
+                            const hasCode = order.messages && order.messages.length > 0
+                            return (
+                              <tr key={order.id} className={`text-sm ${isStale && !hasCode ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>
+                                <td className="py-2 pr-4">
+                                  <p className="font-medium">{order.profiles?.full_name || '—'}</p>
+                                  <p className="text-xs text-muted-foreground">{order.profiles?.email || '—'}</p>
+                                </td>
+                                <td className="py-2 pr-4">{order.service_name}</td>
+                                <td className="py-2 pr-4 font-semibold">₦{Number(order.price_ngn).toLocaleString()}</td>
+                                <td className="py-2 pr-4">
+                                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold capitalize ${
+                                    order.status === 'completed' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                    : order.status === 'cancelled' ? 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                                    : isStale ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+                                    : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                                  }`}>
+                                    {order.status}
+                                  </span>
+                                </td>
+                                <td className="py-2 pr-4 text-xs text-muted-foreground">
+                                  {pending
+                                    ? <span className={isStale && !hasCode ? 'font-bold text-red-600' : ''}>{minsPending}m ago</span>
+                                    : new Date(order.created_at).toLocaleDateString()}
+                                </td>
+                                <td className="py-2 pr-4">
+                                  {order.refunded_at
+                                    ? <span className="text-xs text-emerald-600">✓ Refunded</span>
+                                    : <span className="text-xs text-muted-foreground">—</span>}
+                                </td>
+                                <td className="py-2">
+                                  {pending && (
+                                    <Button size="sm" variant="destructive" className="h-7 px-2 text-xs"
+                                      disabled={smsOrdersCancellingId === order.id}
+                                      onClick={() => staffCancelSmsOrder(order.id)}>
+                                      {smsOrdersCancellingId === order.id
+                                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                                        : 'Cancel & Refund'}
+                                    </Button>
+                                  )}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                      {filtered.length === 0 && (
+                        <p className="py-6 text-center text-sm text-muted-foreground">No {smsOrdersFilter} orders.</p>
+                      )}
+                    </div>
+                  )
+                })()}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
         </Tabs>
       </div>
       <Footer />

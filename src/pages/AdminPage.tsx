@@ -102,10 +102,38 @@ import { format, formatDistanceToNow } from 'date-fns'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
+import {
+  analyzePromotionGuardrails,
+  analyzeRevenueDataQuality,
+  analyzeRevenueEventDataQuality,
+  applyCroEvaluationDecisions,
+  createProductRankingExperimentFromOpportunity,
+  decayCommercialInsights,
+  deriveBehavioralProductRelationships,
+  deriveCroActionPlans,
+  deriveCroBanditAllocations,
+  deriveCroDriftChecks,
+  deriveCroExperimentEvaluations,
+  deriveCroSimulationRun,
+  deriveRevenueAnomalyChecks,
+  deriveRevenueProductAttributes,
+  deriveRevenueOsRuntimeIntelligence,
+  deriveCatalogueProductRelationships,
+  recordCroExperiment,
+  recordCroEvaluations,
+  recordCroActionPlans,
+  recordCatalogueProductRelationships,
+  recordRevenueProductAttributes,
+  recordRevenueDataQualityFindings,
+  recordRevenueOsRuntimeIntelligence,
+  seedDeterministicRevenueOsModelRegistry,
+  updateCroActionPlanStatus,
+} from '@/lib/revenue-os'
 
 const ADMIN_TABS = [
   { value: 'templates', label: 'Templates' },
   { value: 'sms-products', label: 'SMS Products' },
+  { value: 'sms-orders', label: 'SMS Orders' },
   { value: 'products', label: 'Products' },
   { value: 'add-product', label: 'Add Product' },
   { value: 'bulk-upload', label: 'Bulk Upload' },
@@ -113,12 +141,26 @@ const ADMIN_TABS = [
   { value: 'categories', label: 'Categories' },
   { value: 'users', label: 'Users' },
   { value: 'sales', label: 'Sales' },
-  { value: 'histories', label: 'Histories' },
+  { value: 'histories', label: 'Transactions' },
   { value: 'email', label: 'Email' },
   { value: 'staff', label: 'Staff Roles' },
 ] as const
 
 type AdminTabValue = (typeof ADMIN_TABS)[number]['value']
+
+const EXPLICIT_PRODUCT_RELATIONSHIP_TYPES = [
+  'COMPATIBLE_WITH',
+  'REPLACEMENT_FOR',
+  'REQUIRES',
+  'COMPLEMENT',
+  'SUBSTITUTE',
+  'ALTERNATIVE',
+  'VARIANT',
+  'UPGRADE',
+  'DOWNGRADE',
+] as const
+
+type ExplicitProductRelationshipType = (typeof EXPLICIT_PRODUCT_RELATIONSHIP_TYPES)[number]
 import { clearExchangeRateCache } from '@/hooks/useExchangeRate'
 import { 
   Table, 
@@ -332,13 +374,65 @@ export default function AdminPage() {
 
   // Sales analytics and recommendation automation
   const [salesOrders, setSalesOrders] = useState<any[]>([])
+  const [salesSmsOrders, setSalesSmsOrders] = useState<any[]>([])
   const [salesProfiles, setSalesProfiles] = useState<any[]>([])
   const [salesVisits, setSalesVisits] = useState<any[]>([])
+  const [revenueEvents, setRevenueEvents] = useState<any[]>([])
+  const [croDecisionRows, setCroDecisionRows] = useState<any[]>([])
+  const [croExperimentRows, setCroExperimentRows] = useState<any[]>([])
+  const [croInsightRows, setCroInsightRows] = useState<any[]>([])
+  const [croRelationshipRows, setCroRelationshipRows] = useState<any[]>([])
+  const [revenueQualityRows, setRevenueQualityRows] = useState<any[]>([])
+  const [revenueFeatureRows, setRevenueFeatureRows] = useState<any[]>([])
+  const [croOpportunityRows, setCroOpportunityRows] = useState<any[]>([])
+  const [revenueForecastRows, setRevenueForecastRows] = useState<any[]>([])
+  const [croEvaluationRows, setCroEvaluationRows] = useState<any[]>([])
+  const [croSimulationRows, setCroSimulationRows] = useState<any[]>([])
+  const [croDriftRows, setCroDriftRows] = useState<any[]>([])
+  const [croModelRows, setCroModelRows] = useState<any[]>([])
+  const [revenueIdentityLinks, setRevenueIdentityLinks] = useState<any[]>([])
+  const [croActionPlanRows, setCroActionPlanRows] = useState<any[]>([])
+  const [croLifecycleActionRows, setCroLifecycleActionRows] = useState<any[]>([])
+  const [communicationPreferenceRows, setCommunicationPreferenceRows] = useState<any[]>([])
   const [salesLoading, setSalesLoading] = useState(false)
   const [salesTargetInput, setSalesTargetInput] = useState('0')
   const [salesTargetSaving, setSalesTargetSaving] = useState(false)
+  const [promotionMaxDiscountPct, setPromotionMaxDiscountPct] = useState('20')
+  const [promotionMonthlyBudgetNgn, setPromotionMonthlyBudgetNgn] = useState('0')
   const [recommendationAutomationEnabled, setRecommendationAutomationEnabled] = useState(true)
   const [recommendationAutomationSaving, setRecommendationAutomationSaving] = useState(false)
+  const [croGlobalEnabled, setCroGlobalEnabled] = useState(true)
+  const [croShadowModeEnabled, setCroShadowModeEnabled] = useState(false)
+  const [croAutonomyLevel, setCroAutonomyLevel] = useState('2')
+  const [croGlobalHoldoutPct, setCroGlobalHoldoutPct] = useState('5')
+  const [croExperimentationEnabled, setCroExperimentationEnabled] = useState(true)
+  const [croControlSaving, setCroControlSaving] = useState(false)
+  const [croActionPlanUpdatingKey, setCroActionPlanUpdatingKey] = useState<string | null>(null)
+  const [croMaintenanceEnabled, setCroMaintenanceEnabled] = useState(true)
+  const [croMaintenanceSaving, setCroMaintenanceSaving] = useState(false)
+  const [croMaintenanceRunning, setCroMaintenanceRunning] = useState(false)
+  const [croMaintenanceLastRunAt, setCroMaintenanceLastRunAt] = useState('')
+  const [croMaintenanceLastStatus, setCroMaintenanceLastStatus] = useState('never_run')
+  const [croMaintenanceLastSummary, setCroMaintenanceLastSummary] = useState<Record<string, any>>({})
+  const [croMaintenanceFreezeReason, setCroMaintenanceFreezeReason] = useState('')
+  const [lifecycleActionUpdatingKey, setLifecycleActionUpdatingKey] = useState<string | null>(null)
+  const [dataQualityScanning, setDataQualityScanning] = useState(false)
+  const [productGraphBuilding, setProductGraphBuilding] = useState(false)
+  const [explicitRelationshipSaving, setExplicitRelationshipSaving] = useState(false)
+  const [explicitRelationshipDraft, setExplicitRelationshipDraft] = useState<{
+    fromProductId: string
+    toProductId: string
+    relationshipType: ExplicitProductRelationshipType
+    strength: string
+  }>({
+    fromProductId: '',
+    toProductId: '',
+    relationshipType: 'COMPATIBLE_WITH',
+    strength: '1',
+  })
+  const [runtimeIntelligenceRefreshing, setRuntimeIntelligenceRefreshing] = useState(false)
+  const [experimentCreatingKey, setExperimentCreatingKey] = useState<string | null>(null)
+  const [evaluationRunning, setEvaluationRunning] = useState(false)
   const [salesErrors, setSalesErrors] = useState<Record<string, string>>({})
 
   // Referral commission setting
@@ -432,6 +526,64 @@ export default function AdminPage() {
   const [smsCatalogNotice, setSmsCatalogNotice] = useState('')
   const [smsExchangeRateSource, setSmsExchangeRateSource] = useState<'override' | 'live' | 'fallback' | 'unknown'>('unknown')
   const [smsRoundToNearestTen, setSmsRoundToNearestTen] = useState(false)
+
+  // SMS Orders management
+  type AdminSmsOrder = {
+    id: string; reference: string; service_name: string; status: string
+    price_ngn: number; created_at: string; cancelled_at?: string; refunded_at?: string
+    messages?: any[]; order_type: string; provider_request_id?: string
+    profiles?: { email?: string; full_name?: string }
+  }
+  const [smsOrders, setSmsOrders] = useState<AdminSmsOrder[]>([])
+  const [smsOrdersLoading, setSmsOrdersLoading] = useState(false)
+  const [smsOrdersCancellingId, setSmsOrdersCancellingId] = useState<string | null>(null)
+  const [smsOrdersAutoCancelling, setSmsOrdersAutoCancelling] = useState(false)
+  const [smsOrdersFilter, setSmsOrdersFilter] = useState<'all' | 'pending' | 'cancelled' | 'completed'>('all')
+
+  const loadSmsOrders = useCallback(async () => {
+    setSmsOrdersLoading(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_sms_orders' } })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to load SMS orders')
+      setSmsOrders(data.data || [])
+    } catch (err: any) {
+      toast({ title: 'Failed to load SMS orders', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsOrdersLoading(false)
+    }
+  }, [toast])
+
+  const adminCancelSmsOrder = useCallback(async (orderId: string) => {
+    setSmsOrdersCancellingId(orderId)
+    try {
+      const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_cancel_sms_order', order_id: orderId } })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to cancel order')
+      toast({ title: 'Order cancelled & refunded' })
+      await loadSmsOrders()
+    } catch (err: any) {
+      toast({ title: 'Cancel failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsOrdersCancellingId(null)
+    }
+  }, [toast, loadSmsOrders])
+
+  const adminAutoCancelStale = useCallback(async () => {
+    setSmsOrdersAutoCancelling(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_auto_cancel_stale' } })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to auto-cancel')
+      toast({ title: `Auto-cancelled ${data.cancelled_count ?? 0} stale order(s)` })
+      await loadSmsOrders()
+    } catch (err: any) {
+      toast({ title: 'Auto-cancel failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setSmsOrdersAutoCancelling(false)
+    }
+  }, [toast, loadSmsOrders])
+
 
   // Email / Broadcast state
   const [emailSubject, setEmailSubject] = useState('TallyStore Notification')
@@ -919,6 +1071,27 @@ export default function AdminPage() {
       } else if (action.action_type === 'adjust_balance') {
         const { user_id, amount, reason } = action.action_data
         await adminAdjustBalance(user_id, amount, reason || 'Approved staff action', user?.email || 'admin')
+      } else if (action.action_type === 'add_single_account') {
+        const { product_group_id, username, password, email } = action.action_data
+        const account = await createIndividualAccount({
+          product_group_id,
+          username,
+          password,
+          email,
+          status: 'available',
+        })
+        if (!account) throw new Error('Failed to add account')
+        const updatedProductGroups = await getAllProductGroups()
+        setProductGroups(updatedProductGroups)
+      } else if (action.action_type === 'bulk_upload_accounts') {
+        const { product_group_id, parsed_rows } = action.action_data
+        const csvRows = Array.isArray(parsed_rows) ? parsed_rows : []
+        const result = await processBulkAccountUpload(csvRows, product_group_id)
+        if (!result.success) throw new Error(result.error || 'Failed to apply bulk account upload')
+        const updatedProductGroups = await getAllProductGroups()
+        setProductGroups(updatedProductGroups)
+      } else {
+        throw new Error(`Unsupported action type: ${action.action_type}`)
       }
       await supabase
         .from('staff_pending_actions')
@@ -1755,21 +1928,90 @@ export default function AdminPage() {
     }
 
     try {
-      const [orders, allProfiles, visits, target, automation] = await Promise.all([
+      const [
+        orders,
+        allProfiles,
+        visits,
+        events,
+        decisions,
+        experiments,
+        insights,
+        relationships,
+        qualityRows,
+        featureRows,
+        opportunityRows,
+        forecastRows,
+        evaluationRows,
+        simulationRows,
+        driftRows,
+        modelRows,
+        identityLinks,
+        actionPlanRows,
+        lifecycleActionRows,
+        communicationPreferences,
+        target,
+        smsOrders,
+        automation,
+        croEnabled,
+        croShadowMode,
+        croLevel,
+        croHoldoutPct,
+        croExperimentation,
+        promoMaxDiscountPct,
+        promoMonthlyBudget,
+        maintenanceEnabled,
+        maintenanceLastRunAt,
+        maintenanceLastStatus,
+        maintenanceLastSummary,
+        maintenanceFreezeReason,
+      ] = await Promise.all([
         readRows('Orders', 'orders', 10000),
         readRows('Customers', 'profiles', 10000),
         readRows('Visitors', 'site_visits', 10000),
+        readRows('Revenue events', 'revenue_events', 10000),
+        readRows('CRO decisions', 'cro_decision_audit', 5000),
+        readRows('CRO experiments', 'cro_experiments', 1000),
+        readRows('CRO insights', 'cro_commercial_insights', 1000),
+        readRows('Product relationships', 'product_relationships', 5000),
+        readRows('Data quality checks', 'revenue_data_quality_checks', 1000),
+        readRows('Feature snapshots', 'revenue_feature_snapshots', 1000),
+        readRows('CRO opportunities', 'cro_opportunities', 1000),
+        readRows('Revenue forecasts', 'revenue_forecasts', 1000),
+        readRows('Experiment evaluations', 'cro_experiment_evaluations', 1000),
+        readRows('Simulation runs', 'cro_simulation_runs', 1000),
+        readRows('Drift checks', 'cro_drift_checks', 1000),
+        readRows('Model registry', 'cro_model_registry', 1000),
+        readRows('Revenue identity links', 'revenue_identity_links', 10000),
+        readRows('CRO action plans', 'cro_action_plans', 1000),
+        readRows('Lifecycle actions', 'cro_lifecycle_actions', 1000),
+        readRows('Communication preferences', 'customer_communication_preferences', 10000),
         getAppSetting('sales_monthly_target_ngn').catch((err) => {
           nextErrors.Target = err?.message || 'Could not load sales target.'
           return null
         }),
+        readRows('SMS orders', 'sms_orders', 10000),
         getAppSetting('sales_recommendation_automation_enabled').catch((err) => {
           nextErrors.Automation = err?.message || 'Could not load automation setting.'
           return null
         }),
+        getAppSetting('cro_global_enabled').catch(() => 'true'),
+        getAppSetting('cro_shadow_mode_enabled').catch(() => 'false'),
+        getAppSetting('cro_autonomy_level').catch(() => '2'),
+        getAppSetting('cro_global_holdout_pct').catch(() => '5'),
+        getAppSetting('cro_experimentation_enabled').catch(() => 'true'),
+        getAppSetting('cro_promotion_max_discount_pct').catch(() => '20'),
+        getAppSetting('cro_promotion_monthly_budget_ngn').catch(() => '0'),
+        getAppSetting('cro_maintenance_enabled').catch(() => 'true'),
+        getAppSetting('cro_maintenance_last_run_at').catch(() => ''),
+        getAppSetting('cro_maintenance_last_status').catch(() => 'never_run'),
+        getAppSetting('cro_maintenance_last_summary').catch(() => '{}'),
+        getAppSetting('cro_maintenance_freeze_reason').catch(() => ''),
       ])
 
-      const orderUserIds = Array.from(new Set(orders.map((order) => order.user_id).filter(Boolean))) as string[]
+      const orderUserIds = Array.from(new Set([
+        ...orders.map((order) => order.user_id).filter(Boolean),
+        ...smsOrders.map((order) => order.user_id).filter(Boolean),
+      ])) as string[]
       const profileById = new Map<string, any>((allProfiles || []).map((profile) => [profile.id, profile]))
 
       for (let i = 0; i < orderUserIds.length; i += 500) {
@@ -1790,10 +2032,44 @@ export default function AdminPage() {
       }
 
       setSalesOrders(orders)
+      setSalesSmsOrders(smsOrders)
       setSalesProfiles(Array.from(profileById.values()))
       setSalesVisits(visits)
+      setRevenueEvents(events)
+      setCroDecisionRows(decisions)
+      setCroExperimentRows(experiments)
+      setCroInsightRows(insights)
+      setCroRelationshipRows(relationships)
+      setRevenueQualityRows(qualityRows)
+      setRevenueFeatureRows(featureRows)
+      setCroOpportunityRows(opportunityRows)
+      setRevenueForecastRows(forecastRows)
+      setCroEvaluationRows(evaluationRows)
+      setCroSimulationRows(simulationRows)
+      setCroDriftRows(driftRows)
+      setCroModelRows(modelRows)
+      setRevenueIdentityLinks(identityLinks)
+      setCroActionPlanRows(actionPlanRows)
+      setCroLifecycleActionRows(lifecycleActionRows)
+      setCommunicationPreferenceRows(communicationPreferences)
       setSalesTargetInput(target || '0')
       setRecommendationAutomationEnabled(automation !== 'false')
+      setCroGlobalEnabled(croEnabled !== 'false')
+      setCroShadowModeEnabled(croShadowMode === 'true')
+      setCroAutonomyLevel(croLevel || '2')
+      setCroGlobalHoldoutPct(croHoldoutPct || '5')
+      setCroExperimentationEnabled(croExperimentation !== 'false')
+      setPromotionMaxDiscountPct(promoMaxDiscountPct || '20')
+      setPromotionMonthlyBudgetNgn(promoMonthlyBudget || '0')
+      setCroMaintenanceEnabled(maintenanceEnabled !== 'false')
+      setCroMaintenanceLastRunAt(maintenanceLastRunAt || '')
+      setCroMaintenanceLastStatus(maintenanceLastStatus || 'never_run')
+      setCroMaintenanceFreezeReason(maintenanceFreezeReason || '')
+      try {
+        setCroMaintenanceLastSummary(JSON.parse(maintenanceLastSummary || '{}'))
+      } catch {
+        setCroMaintenanceLastSummary({})
+      }
       setSalesErrors(nextErrors)
     } finally {
       setSalesLoading(false)
@@ -2316,15 +2592,23 @@ export default function AdminPage() {
     const countProfilesSince = (date: Date) =>
       salesProfiles.filter((profile) => !isInternalProfile(profile) && profile.created_at && new Date(profile.created_at) >= date).length
 
+    const trustedVisits = salesVisits.filter((visit) => !['bot', 'internal'].includes(String(visit.traffic_quality || 'human').toLowerCase()))
+
     const uniqueVisitorsSince = (date: Date) =>
       new Set(
-        salesVisits
+        trustedVisits
           .filter((visit) => visit.created_at && new Date(visit.created_at) >= date)
           .map((visit) => visit.visitor_id || visit.user_id || visit.id),
       ).size
 
     const visitsSince = (date: Date) =>
-      salesVisits.filter((visit) => visit.created_at && new Date(visit.created_at) >= date).length
+      trustedVisits.filter((visit) => visit.created_at && new Date(visit.created_at) >= date).length
+
+    const trafficQualityCounts = salesVisits.reduce<Record<string, number>>((acc, visit) => {
+      const quality = String(visit.traffic_quality || 'human')
+      acc[quality] = (acc[quality] || 0) + 1
+      return acc
+    }, {})
 
     const monthlyRevenue = completedOrders
       .filter((order) => order.created_at && new Date(order.created_at) >= calendarMonthStart)
@@ -2352,6 +2636,7 @@ export default function AdminPage() {
         visitsToday: visitsSince(dayStart),
         visitsWeek: visitsSince(weekStart),
         visitsMonth: visitsSince(monthStart),
+        trafficQualityCounts,
       },
       target: {
         monthlyRevenue,
@@ -2361,6 +2646,120 @@ export default function AdminPage() {
       },
     }
   }, [categories, productGroups, salesOrders, salesProfiles, salesTargetInput, salesVisits])
+
+  const userEmailById = useMemo(() => {
+    return new Map(salesProfiles.map((profile) => [String(profile.id), profile.email || profile.full_name || '']))
+  }, [salesProfiles])
+
+  const communicationPreferenceByUserId = useMemo(() => {
+    return new Map(communicationPreferenceRows.map((row) => [String(row.user_id), row]))
+  }, [communicationPreferenceRows])
+
+  const explicitRelationshipProductOptions = useMemo(() => {
+    return [...productGroups]
+      .filter((product) => product.is_active !== false)
+      .sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')))
+      .slice(0, 500)
+  }, [productGroups])
+
+  const revenueOsHealth = useMemo(() => {
+    const latestByCheck = new Map<string, any>()
+    for (const row of revenueQualityRows) {
+      const key = `${row.check_key || row.checkKey || 'unknown'}:${row.scope || 'global'}`
+      const previous = latestByCheck.get(key)
+      const rowTime = row.created_at ? new Date(row.created_at).getTime() : 0
+      const previousTime = previous?.created_at ? new Date(previous.created_at).getTime() : -1
+      if (!previous || rowTime >= previousTime) latestByCheck.set(key, row)
+    }
+    const latestQualityRows = Array.from(latestByCheck.values())
+    const criticalFailures = latestQualityRows.filter((row) => row.status === 'failed' && row.severity === 'critical')
+    const latestLifecycleSnapshot = revenueFeatureRows.find((row) => row.scope_type === 'store' && row.scope_id === 'customer_lifecycle') || null
+    const latestAnomalies = croDriftRows
+      .filter((row) => String(row.model_key || '').startsWith('anomaly_'))
+      .sort((a, b) => new Date(b.created_at || b.period_end || 0).getTime() - new Date(a.created_at || a.period_end || 0).getTime())
+      .slice(0, 6)
+    const customerLifecycleRows = revenueFeatureRows.filter((row) => row.scope_type === 'customer' && row.features?.lifecycle_stage)
+    const customersWithNextCandidates = customerLifecycleRows.filter((row) => Array.isArray(row.features?.next_purchase_candidates) && row.features.next_purchase_candidates.length > 0).length
+    const attributionRows = revenueFeatureRows
+      .filter((row) => row.scope_type === 'session' && String(row.snapshot_key || '').startsWith('attribution:'))
+      .sort((a, b) => Number(b.features?.visitors || 0) - Number(a.features?.visitors || 0))
+      .slice(0, 6)
+    const sourceEconomicsRows = [...revenueFeatureRows]
+      .filter((row) => row.scope_type === 'session' && String(row.snapshot_key || '').startsWith('attribution:') && Number(row.features?.visitors || 0) >= 1)
+      .sort((a, b) => Number(b.features?.revenue_per_visitor || 0) - Number(a.features?.revenue_per_visitor || 0))
+      .slice(0, 5)
+    const deviceRows = revenueFeatureRows
+      .filter((row) => row.scope_type === 'session' && String(row.snapshot_key || '').startsWith('device:'))
+      .sort((a, b) => Number(b.features?.visitors || 0) - Number(a.features?.visitors || 0))
+      .slice(0, 4)
+    const productIntelligenceRows = [...revenueFeatureRows]
+      .filter((row) => row.scope_type === 'product' && String(row.snapshot_key || '').includes(':30d'))
+      .sort((a, b) => Number(b.features?.revenue || b.features?.revenue_30d || 0) - Number(a.features?.revenue || a.features?.revenue_30d || 0))
+      .slice(0, 8)
+    const promotionFindings = analyzePromotionGuardrails({
+      discountCodes,
+      orders: salesOrders,
+      products: productGroups,
+      revenueEvents,
+      maxDiscountPct: Number(promotionMaxDiscountPct || 20),
+      monthlyBudgetNgn: Number(promotionMonthlyBudgetNgn || 0),
+    })
+    const promotionFailures = promotionFindings.filter((finding) => finding.status === 'failed')
+    const banditRows = revenueFeatureRows
+      .filter((row) => row.scope_type === 'store' && String(row.snapshot_key || '').startsWith('bandit:'))
+      .sort((a, b) => new Date(b.created_at || b.window_end || 0).getTime() - new Date(a.created_at || a.window_end || 0).getTime())
+      .slice(0, 6)
+    const lifecycleActionCounts = croLifecycleActionRows.reduce<Record<string, number>>((acc, row) => {
+      const status = String(row.status || 'unknown')
+      acc[status] = (acc[status] || 0) + 1
+      return acc
+    }, {})
+
+    return {
+      activeExperiments: croExperimentRows.filter((row) => String(row.status || '').toLowerCase() === 'running').length,
+      activeInsights: croInsightRows.filter((row) => String(row.status || '').toLowerCase() === 'active').length,
+      relationships: croRelationshipRows.length,
+      criticalFailures: criticalFailures.length,
+      featureSnapshots: revenueFeatureRows.length,
+      openOpportunities: croOpportunityRows.filter((row) => ['open', 'watching', 'testing'].includes(String(row.status || '').toLowerCase())).length,
+      proposedActionPlans: croActionPlanRows.filter((row) => ['proposed', 'approved', 'running', 'paused'].includes(String(row.status || '').toLowerCase())).length,
+      lifecycleActions: croLifecycleActionRows.length,
+      lifecycleActionCounts,
+      topLifecycleActions: [...croLifecycleActionRows]
+        .filter((row) => ['needs_consent', 'queued', 'approved'].includes(String(row.status || '').toLowerCase()))
+        .sort((a, b) => Number(b.expected_value || 0) - Number(a.expected_value || 0))
+        .slice(0, 6),
+      latestForecast: revenueForecastRows[0] || null,
+      latestSimulation: croSimulationRows[0] || null,
+      latestDrift: croDriftRows[0] || null,
+      latestAnomalies,
+      latestEvaluations: croEvaluationRows.slice(0, 6),
+      modelRegistryCount: croModelRows.length,
+      latestLifecycleSnapshot,
+      lifecycleCounts: latestLifecycleSnapshot?.features?.lifecycle_counts || {},
+      lifecycleCustomerSnapshots: customerLifecycleRows.length,
+      customersWithNextCandidates,
+      attributionRows,
+      sourceEconomicsRows,
+      deviceRows,
+      productIntelligenceRows,
+      banditRows,
+      promotionFindings,
+      promotionFailures,
+      topOpportunities: [...croOpportunityRows]
+        .filter((row) => ['open', 'watching', 'testing'].includes(String(row.status || '').toLowerCase()))
+        .sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
+        .slice(0, 6),
+      topActionPlans: [...croActionPlanRows]
+        .filter((row) => ['proposed', 'approved', 'running', 'paused'].includes(String(row.status || '').toLowerCase()))
+        .sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
+        .slice(0, 6),
+      recentQualityRows: revenueQualityRows.slice(0, 8),
+      recentExperiments: croExperimentRows.slice(0, 6),
+      recentInsights: croInsightRows.slice(0, 6),
+      recentDecisions: croDecisionRows.slice(0, 8),
+    }
+  }, [croActionPlanRows, croDecisionRows, croDriftRows, croEvaluationRows, croExperimentRows, croInsightRows, croLifecycleActionRows, croModelRows.length, croOpportunityRows, croRelationshipRows, croSimulationRows, discountCodes, productGroups, promotionMaxDiscountPct, promotionMonthlyBudgetNgn, revenueFeatureRows, revenueForecastRows, revenueQualityRows, salesOrders])
 
   if (loading) {
     return (
@@ -2562,7 +2961,7 @@ export default function AdminPage() {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `tallystore-deposit-history-${format(new Date(), 'yyyy-MM-dd')}.csv`
+    anchor.download = `tallystore-transaction-history-${format(new Date(), 'yyyy-MM-dd')}.csv`
     anchor.click()
     URL.revokeObjectURL(url)
   }
@@ -2602,6 +3001,579 @@ export default function AdminPage() {
       toast({ title: 'Failed to save automation', description: err?.message || 'Please try again.', variant: 'destructive' })
     } finally {
       setRecommendationAutomationSaving(false)
+    }
+  }
+
+  const handleSaveCroControls = async () => {
+    const autonomy = Math.min(8, Math.max(0, Math.round(Number(croAutonomyLevel || 0))))
+    const holdoutPct = Math.min(50, Math.max(0, Number(croGlobalHoldoutPct || 0)))
+    if (!Number.isFinite(holdoutPct)) {
+      toast({ title: 'Invalid holdout', description: 'Enter a holdout percentage from 0 to 50.', variant: 'destructive' })
+      return
+    }
+    setCroControlSaving(true)
+    try {
+      const results = await Promise.all([
+        upsertAppSetting('cro_global_enabled', croGlobalEnabled ? 'true' : 'false'),
+        upsertAppSetting('cro_shadow_mode_enabled', croShadowModeEnabled ? 'true' : 'false'),
+        upsertAppSetting('cro_autonomy_level', String(autonomy)),
+        upsertAppSetting('cro_global_holdout_pct', String(holdoutPct)),
+        upsertAppSetting('cro_experimentation_enabled', croExperimentationEnabled ? 'true' : 'false'),
+      ])
+      if (results.some((ok) => !ok)) throw new Error('Could not save one or more CRO controls')
+      setCroAutonomyLevel(String(autonomy))
+      setCroGlobalHoldoutPct(String(holdoutPct))
+      toast({
+        title: 'Revenue OS controls saved',
+        description: croGlobalEnabled
+          ? `CRO is active at autonomy level ${autonomy}${croShadowModeEnabled ? ' in shadow mode' : ''} with ${holdoutPct}% holdout.`
+          : 'All CRO actions are paused. The store will keep using safe default ranking.',
+      })
+    } catch (err: any) {
+      toast({ title: 'Failed to save CRO controls', description: err?.message || 'Please try again.', variant: 'destructive' })
+    } finally {
+      setCroControlSaving(false)
+    }
+  }
+
+  const handleToggleCroMaintenance = async (enabled: boolean) => {
+    setCroMaintenanceSaving(true)
+    try {
+      const ok = await upsertAppSetting('cro_maintenance_enabled', enabled ? 'true' : 'false')
+      if (!ok) throw new Error('Could not save maintenance setting')
+      setCroMaintenanceEnabled(enabled)
+      toast({
+        title: enabled ? 'Scheduled Revenue OS enabled' : 'Scheduled Revenue OS paused',
+        description: enabled
+          ? 'The hourly maintenance job can refresh intelligence and freeze CRO on critical data issues.'
+          : 'Manual scans still work, but the scheduled Revenue OS job will skip runs.',
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Maintenance setting failed',
+        description: err?.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setCroMaintenanceSaving(false)
+    }
+  }
+
+  const handleRunCroMaintenanceNow = async () => {
+    setCroMaintenanceRunning(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('revenue-os-maintenance', {
+        body: { source: 'admin_manual_run' },
+      })
+      if (error) throw error
+      if (data?.success === false) throw new Error(data?.error || 'Maintenance failed')
+      const summary = data?.summary || {}
+      setCroMaintenanceLastRunAt(new Date().toISOString())
+      setCroMaintenanceLastStatus(summary.simulation_recommendation === 'pause' ? 'paused_cro' : data?.skipped ? 'skipped_disabled' : 'ok')
+      setCroMaintenanceLastSummary(summary)
+      setCroMaintenanceFreezeReason(summary.freeze_reason || '')
+      if (summary.simulation_recommendation === 'pause') {
+        setCroGlobalEnabled(false)
+      }
+      await loadSalesAnalytics()
+      toast({
+        title: summary.simulation_recommendation === 'pause' ? 'Maintenance paused CRO' : data?.skipped ? 'Maintenance skipped' : 'Maintenance complete',
+        description: data?.skipped
+          ? 'Scheduled Revenue OS maintenance is disabled.'
+          : `${Number(summary.findings || 0).toLocaleString()} finding(s), ${Number(summary.opportunities || 0).toLocaleString()} opportunity item(s), ${Number(summary.action_plans || 0).toLocaleString()} action plan(s).`,
+        variant: summary.simulation_recommendation === 'pause' ? 'destructive' : 'default',
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Maintenance run failed',
+        description: err?.message || 'Could not run Revenue OS maintenance.',
+        variant: 'destructive',
+      })
+    } finally {
+      setCroMaintenanceRunning(false)
+    }
+  }
+
+  const handleRunRevenueDataQualityScan = async () => {
+    setDataQualityScanning(true)
+    try {
+      const findings = [
+        ...analyzeRevenueDataQuality(productGroups, categories),
+        ...analyzeRevenueEventDataQuality({
+          revenueEvents,
+          orders: salesOrders,
+          smsOrders: salesSmsOrders,
+          products: productGroups,
+          profiles: salesProfiles,
+        }),
+      ]
+      await recordRevenueDataQualityFindings(findings)
+      setRevenueQualityRows((previous) => [
+        ...findings.map((finding) => ({
+          check_key: finding.checkKey,
+          severity: finding.severity,
+          status: finding.status,
+          scope: finding.scope,
+          message: finding.message,
+          evidence: finding.evidence || {},
+          created_at: new Date().toISOString(),
+        })),
+        ...previous,
+      ])
+
+      const criticalFailures = findings.filter((finding) => finding.status === 'failed' && finding.severity === 'critical')
+      if (criticalFailures.length > 0) {
+        await upsertAppSetting('cro_global_enabled', 'false')
+        setCroGlobalEnabled(false)
+        toast({
+          title: 'Revenue OS paused',
+          description: `${criticalFailures.length} critical data issue(s) found. Customer buying still works with safe default ranking.`,
+          variant: 'destructive',
+        })
+      } else {
+        toast({
+          title: 'Data quality scan complete',
+          description: findings.some((finding) => finding.status === 'failed')
+            ? 'No critical issues found. Review warnings before increasing autonomy.'
+            : 'Catalogue, event, order, payment, and traffic checks passed.',
+        })
+      }
+    } catch (err: any) {
+      toast({
+        title: 'Data quality scan failed',
+        description: err?.message || 'Could not record scan results.',
+        variant: 'destructive',
+      })
+    } finally {
+      setDataQualityScanning(false)
+    }
+  }
+
+  const handleRebuildProductGraph = async () => {
+    setProductGraphBuilding(true)
+    try {
+      const catalogueRelationships = deriveCatalogueProductRelationships(productGroups, categories)
+      const behavioralRelationships = deriveBehavioralProductRelationships(revenueEvents, productGroups)
+      const relationships = [...catalogueRelationships, ...behavioralRelationships]
+      const attributes = deriveRevenueProductAttributes(productGroups, categories)
+      await recordRevenueProductAttributes(attributes)
+      await recordCatalogueProductRelationships(relationships)
+      await loadSalesAnalytics()
+      toast({
+        title: 'Product graph rebuilt',
+        description: relationships.length > 0
+          ? `${attributes.length.toLocaleString()} attribute value(s), ${catalogueRelationships.length.toLocaleString()} catalogue, and ${behavioralRelationships.length.toLocaleString()} behavioral relationship(s) were saved from live sellable products.`
+          : `${attributes.length.toLocaleString()} attribute value(s) saved. No eligible product relationships were found yet.`,
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Product graph rebuild failed',
+        description: err?.message || 'Could not save product relationships.',
+        variant: 'destructive',
+      })
+    } finally {
+      setProductGraphBuilding(false)
+    }
+  }
+
+  const handleSaveExplicitProductRelationship = async () => {
+    const fromProductId = explicitRelationshipDraft.fromProductId
+    const toProductId = explicitRelationshipDraft.toProductId
+    const relationshipType = explicitRelationshipDraft.relationshipType
+    const strength = Math.min(1, Math.max(0.05, Number(explicitRelationshipDraft.strength || 1)))
+
+    if (!fromProductId || !toProductId) {
+      toast({
+        title: 'Choose both products',
+        description: 'Explicit Revenue OS relationships need a source product and a target product.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (fromProductId === toProductId) {
+      toast({
+        title: 'Relationship not saved',
+        description: 'A product cannot point to itself in the product graph.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setExplicitRelationshipSaving(true)
+    try {
+      const fromProduct = productGroups.find((product) => product.id === fromProductId)
+      const toProduct = productGroups.find((product) => product.id === toProductId)
+      const now = new Date().toISOString()
+      const { error } = await supabase.from('product_relationships' as any).upsert({
+        from_product_group_id: fromProductId,
+        to_product_group_id: toProductId,
+        relationship_type: relationshipType,
+        strength,
+        confidence: 1,
+        sample_size: 1,
+        source: 'EXPLICIT',
+        metadata: {
+          owner_defined: true,
+          created_by: user?.id || null,
+          from_product_name: fromProduct?.name || null,
+          to_product_name: toProduct?.name || null,
+          note: 'Admin-defined relationship. Revenue OS should not infer or overwrite this as behavioural evidence.',
+        },
+        last_updated: now,
+      }, { onConflict: 'from_product_group_id,to_product_group_id,relationship_type,source' })
+
+      if (error) throw error
+      await loadSalesAnalytics()
+      toast({
+        title: 'Explicit relationship saved',
+        description: `${fromProduct?.name || 'Product'} now has a ${relationshipType.replace(/_/g, ' ').toLowerCase()} edge to ${toProduct?.name || 'Product'}.`,
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Relationship save failed',
+        description: err?.message || 'Could not save the explicit product graph edge.',
+        variant: 'destructive',
+      })
+    } finally {
+      setExplicitRelationshipSaving(false)
+    }
+  }
+
+  const handleRefreshRuntimeIntelligence = async () => {
+    setRuntimeIntelligenceRefreshing(true)
+    try {
+      const intelligence = deriveRevenueOsRuntimeIntelligence({
+        orders: salesOrders,
+        revenueEvents,
+        products: productGroups,
+        categories,
+        profiles: salesProfiles,
+        identityLinks: revenueIdentityLinks,
+        monthlyTarget: Number(salesTargetInput || 0),
+      })
+
+      await recordRevenueOsRuntimeIntelligence(intelligence)
+      const actionPlans = deriveCroActionPlans(intelligence.opportunities)
+      await recordCroActionPlans(actionPlans)
+      const decayedInsights = await decayCommercialInsights(croInsightRows)
+      await loadSalesAnalytics()
+      toast({
+        title: 'Revenue intelligence refreshed',
+        description: `${intelligence.featureSnapshots.length.toLocaleString()} feature snapshot(s), ${intelligence.opportunities.length.toLocaleString()} opportunity item(s), ${actionPlans.length.toLocaleString()} action plan(s), ${intelligence.forecasts.length.toLocaleString()} forecast(s), and ${decayedInsights.length.toLocaleString()} memory update(s) recorded.`,
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Revenue intelligence failed',
+        description: err?.message || 'Could not save Revenue OS runtime intelligence.',
+        variant: 'destructive',
+      })
+    } finally {
+      setRuntimeIntelligenceRefreshing(false)
+    }
+  }
+
+  const handleUpdateCroActionPlanStatus = async (plan: any, nextStatus: 'approved' | 'running' | 'paused' | 'completed' | 'rejected') => {
+    const planKey = String(plan.id || plan.action_key || plan.actionKey)
+    const currentStatus = String(plan.status || 'proposed').toLowerCase()
+    const safeToAutoRun = plan.guardrails?.safe_to_auto_run === true
+
+    if (nextStatus === 'running') {
+      if (!croGlobalEnabled) {
+        toast({
+          title: 'Revenue OS is paused',
+          description: 'Enable Revenue OS controls before running action plans.',
+          variant: 'destructive',
+        })
+        return
+      }
+      if (!safeToAutoRun && currentStatus !== 'approved' && currentStatus !== 'paused') {
+        toast({
+          title: 'Approval required',
+          description: 'Approve this bounded action before it can affect customer placement.',
+          variant: 'destructive',
+        })
+        return
+      }
+    }
+
+    setCroActionPlanUpdatingKey(planKey)
+    try {
+      await updateCroActionPlanStatus({
+        id: plan.id || null,
+        actionKey: plan.action_key || plan.actionKey || null,
+        status: nextStatus,
+        reviewerId: user?.id || null,
+        reason: `admin_${nextStatus}`,
+      })
+      setCroActionPlanRows((previous) => previous.map((row) => (
+        (row.id && row.id === plan.id) || (row.action_key && row.action_key === plan.action_key)
+          ? {
+              ...row,
+              status: nextStatus,
+              updated_at: new Date().toISOString(),
+            }
+          : row
+      )))
+      toast({
+        title: `Action plan ${nextStatus}`,
+        description: nextStatus === 'running'
+          ? 'This plan can now influence eligible customer surfaces.'
+          : 'Revenue OS action plan status updated.',
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Action plan update failed',
+        description: err?.message || 'Could not update this action plan.',
+        variant: 'destructive',
+      })
+    } finally {
+      setCroActionPlanUpdatingKey(null)
+    }
+  }
+
+  const handleLifecycleActionStatus = async (action: any, nextStatus: 'approved' | 'dismissed' | 'expired' | 'failed') => {
+    const actionKey = String(action.id || action.action_key)
+    const prefs = communicationPreferenceByUserId.get(String(action.user_id))
+    if (nextStatus === 'approved' && action.channel === 'email' && prefs?.email_lifecycle_opt_in !== true) {
+      toast({
+        title: 'Consent required',
+        description: 'This customer has not opted in to lifecycle follow-up emails.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setLifecycleActionUpdatingKey(actionKey)
+    try {
+      const { error } = await supabase
+        .from('cro_lifecycle_actions' as any)
+        .update({
+          status: nextStatus,
+          updated_at: new Date().toISOString(),
+          evidence: {
+            ...(action.evidence || {}),
+            last_status_changed_at: new Date().toISOString(),
+            last_status_changed_by: user?.id || null,
+            last_status_change_reason: `admin_${nextStatus}`,
+          },
+        })
+        .eq('id', action.id)
+      if (error) throw error
+      setCroLifecycleActionRows((previous) => previous.map((row) => row.id === action.id ? { ...row, status: nextStatus, updated_at: new Date().toISOString() } : row))
+      toast({ title: `Lifecycle action ${nextStatus}`, description: 'The lifecycle queue was updated.' })
+    } catch (err: any) {
+      toast({
+        title: 'Lifecycle update failed',
+        description: err?.message || 'Could not update lifecycle action.',
+        variant: 'destructive',
+      })
+    } finally {
+      setLifecycleActionUpdatingKey(null)
+    }
+  }
+
+  const handleSendLifecycleAction = async (action: any) => {
+    const actionKey = String(action.id || action.action_key)
+    const prefs = communicationPreferenceByUserId.get(String(action.user_id))
+    const to = userEmailById.get(String(action.user_id))
+    if (action.status !== 'approved') {
+      toast({ title: 'Approve first', description: 'Only approved lifecycle actions can be sent.', variant: 'destructive' })
+      return
+    }
+    if (action.channel !== 'email' || prefs?.email_lifecycle_opt_in !== true) {
+      toast({ title: 'Consent required', description: 'The customer must opt in to lifecycle emails before sending.', variant: 'destructive' })
+      return
+    }
+    if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(to))) {
+      toast({ title: 'Missing customer email', description: 'This action has no valid customer email.', variant: 'destructive' })
+      return
+    }
+    const recentSent = croLifecycleActionRows.find((row) => {
+      if (row.id === action.id || String(row.user_id) !== String(action.user_id)) return false
+      if (String(row.status || '').toLowerCase() !== 'sent') return false
+      const sentAt = new Date(String(row.evidence?.sent_at || row.updated_at || row.created_at || ''))
+      return Number.isFinite(sentAt.getTime()) && Date.now() - sentAt.getTime() <= 14 * 86400000
+    })
+    if (recentSent) {
+      toast({
+        title: 'Frequency cap active',
+        description: 'This customer already received a lifecycle email in the last 14 days.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setLifecycleActionUpdatingKey(actionKey)
+    try {
+      const actionLabel = String(action.recommended_action || 'follow-up').replace(/_/g, ' ').toLowerCase()
+      const product = productGroups.find((group) => group.id === action.product_group_id)
+      const message = [
+        `Hi, this is a TallyStore follow-up based on your account activity.`,
+        product ? `You may want to check ${product.name}.` : `We found a relevant ${actionLabel} for your account.`,
+        `This message was only sent because lifecycle follow-up emails are enabled in your profile preferences.`,
+        `You can turn follow-up emails off anytime from your TallyStore profile.`,
+      ].join('\n\n')
+      const html = buildEmailHtml(message)
+      const { data, error } = await supabase.functions.invoke('email/send', {
+        body: {
+          to,
+          subject: 'TallyStore follow-up',
+          html,
+        },
+      })
+      if (error || data?.success === false) throw new Error(data?.error || error?.message || 'Email failed')
+      const { error: updateError } = await supabase
+        .from('cro_lifecycle_actions' as any)
+        .update({
+          status: 'sent',
+          updated_at: new Date().toISOString(),
+          evidence: {
+            ...(action.evidence || {}),
+            sent_at: new Date().toISOString(),
+            sent_by: user?.id || null,
+            sent_to: to,
+          },
+        })
+        .eq('id', action.id)
+      if (updateError) throw updateError
+      setCroLifecycleActionRows((previous) => previous.map((row) => row.id === action.id ? { ...row, status: 'sent', updated_at: new Date().toISOString() } : row))
+      toast({ title: 'Lifecycle email sent', description: `Sent to ${to}.` })
+    } catch (err: any) {
+      toast({
+        title: 'Lifecycle send failed',
+        description: err?.message || 'Could not send lifecycle email.',
+        variant: 'destructive',
+      })
+    } finally {
+      setLifecycleActionUpdatingKey(null)
+    }
+  }
+
+  const handleCreateExperimentFromOpportunity = async (opportunity: any) => {
+    const key = opportunity.opportunity_key || opportunity.id
+    setExperimentCreatingKey(key)
+    try {
+      const experiment = createProductRankingExperimentFromOpportunity(opportunity)
+      await recordCroExperiment(experiment)
+      await loadSalesAnalytics()
+      toast({
+        title: 'Draft experiment created',
+        description: `${experiment.experiment_key} is ready for review. Set it to running when you want assignment to begin.`,
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Experiment could not be created',
+        description: err?.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setExperimentCreatingKey(null)
+    }
+  }
+
+  const handleRunRevenueEvaluation = async () => {
+    setEvaluationRunning(true)
+    try {
+      const evaluations = deriveCroExperimentEvaluations({
+        experiments: croExperimentRows,
+        revenueEvents,
+        orders: salesOrders,
+        smsOrders: salesSmsOrders,
+      })
+      const simulation = deriveCroSimulationRun({
+        decisionRows: croDecisionRows,
+        products: productGroups,
+      })
+      const banditAllocations = deriveCroBanditAllocations({
+        experiments: croExperimentRows,
+        revenueEvents,
+        orders: salesOrders,
+        smsOrders: salesSmsOrders,
+        minExplorationPct: 0.08,
+      })
+      const driftChecks = deriveCroDriftChecks(revenueFeatureRows)
+      const anomalyChecks = deriveRevenueAnomalyChecks({
+        featureRows: revenueFeatureRows,
+        revenueEvents,
+        orders: salesOrders,
+        profiles: salesProfiles,
+      })
+      const allDriftChecks = [...driftChecks, ...anomalyChecks]
+      await recordCroEvaluations({ evaluations, simulation, driftChecks: allDriftChecks })
+      if (banditAllocations.length > 0) {
+        await recordRevenueOsRuntimeIntelligence({
+          featureSnapshots: banditAllocations.map((allocation) => ({
+            snapshotKey: allocation.snapshotKey,
+            scopeType: 'store',
+            scopeId: `bandit:${allocation.experimentKey}`,
+            windowStart: null,
+            windowEnd: new Date().toISOString(),
+            features: {
+              experiment_key: allocation.experimentKey,
+              surface: allocation.surface,
+              recommendation: allocation.recommendation,
+              allocation: allocation.allocation,
+              evidence: allocation.evidence,
+            },
+          })),
+          opportunities: [],
+          insights: [],
+          forecasts: [],
+        })
+      }
+      const appliedDecisions = await applyCroEvaluationDecisions(evaluations)
+      const promotionFindings = analyzePromotionGuardrails({
+        discountCodes,
+        orders: salesOrders,
+        products: productGroups,
+        revenueEvents,
+        maxDiscountPct: Number(promotionMaxDiscountPct || 20),
+        monthlyBudgetNgn: Number(promotionMonthlyBudgetNgn || 0),
+      })
+      const criticalPromotionFailures = promotionFindings.filter((finding) => finding.status === 'failed' && finding.severity === 'critical')
+      const severeAnomalyFailures = anomalyChecks.filter((check) => check.status === 'drift' && check.driftScore >= 0.5)
+      const severeDriftFailures = driftChecks.filter((check) => check.status === 'drift' && check.driftScore >= 0.45)
+      await seedDeterministicRevenueOsModelRegistry({
+        enabled: croGlobalEnabled,
+        shadowMode: croShadowModeEnabled,
+        autonomyLevel: Math.min(8, Math.max(0, Math.round(Number(croAutonomyLevel || 0)))),
+        explorationPct: 0.05,
+        pressureLimit: 3,
+        globalHoldoutPct: Math.min(50, Math.max(0, Number(croGlobalHoldoutPct || 0))) / 100,
+        experimentationEnabled: croExperimentationEnabled,
+      })
+
+      const shouldPauseCro = simulation.recommendation === 'pause' || criticalPromotionFailures.length > 0 || severeAnomalyFailures.length > 0 || severeDriftFailures.length > 0
+      const pauseReason = simulation.recommendation === 'pause'
+        ? 'audited decisions'
+        : criticalPromotionFailures.length > 0
+          ? 'promotion settings'
+          : severeAnomalyFailures.length > 0
+            ? 'revenue anomalies'
+            : 'model drift'
+
+      if (shouldPauseCro) {
+        await upsertAppSetting('cro_global_enabled', 'false')
+        setCroGlobalEnabled(false)
+      }
+
+      await loadSalesAnalytics()
+      toast({
+        title: shouldPauseCro ? 'Evaluation found guardrail risk' : 'Revenue OS evaluation complete',
+        description: shouldPauseCro
+          ? `CRO has been paused because ${pauseReason} violated guardrails.`
+          : `${evaluations.length.toLocaleString()} experiment evaluation(s), ${banditAllocations.length.toLocaleString()} bandit allocation(s), 1 simulation, ${allDriftChecks.length.toLocaleString()} drift/anomaly check(s). Applied ${appliedDecisions.promoted} promotion(s), ${appliedDecisions.rolledBack} rollback(s), ${appliedDecisions.paused} pause(s).`,
+        variant: shouldPauseCro ? 'destructive' : 'default',
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Evaluation failed',
+        description: err?.message || 'Could not save Revenue OS evaluation results.',
+        variant: 'destructive',
+      })
+    } finally {
+      setEvaluationRunning(false)
     }
   }
 
@@ -4858,6 +5830,70 @@ export default function AdminPage() {
                     </Card>
                   </div>
 
+                  <Card className="border-purple-200/80 bg-purple-50/50 dark:border-purple-500/20 dark:bg-purple-500/10">
+                    <CardHeader className="gap-3 md:flex-row md:items-center md:justify-between">
+                      <CardTitle className="flex items-center gap-2">
+                        <Shield className="h-5 w-5 text-primary" />
+                        Revenue OS Health
+                      </CardTitle>
+                      <Button type="button" variant="outline" onClick={handleRunRevenueDataQualityScan} disabled={dataQualityScanning}>
+                        {dataQualityScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                        Run data scan
+                      </Button>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 text-sm md:grid-cols-4 xl:grid-cols-10">
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Global status</p>
+                        <p className="mt-1 text-lg font-black">{croGlobalEnabled ? 'Active' : 'Paused'}</p>
+                      </div>
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Autonomy level</p>
+                        <p className="mt-1 text-lg font-black">{croAutonomyLevel}/8</p>
+                      </div>
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Events captured</p>
+                        <p className="mt-1 text-lg font-black">{revenueEvents.length.toLocaleString()}</p>
+                      </div>
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Decision audits</p>
+                        <p className="mt-1 text-lg font-black">{croDecisionRows.length.toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">{croShadowModeEnabled ? 'Shadow mode on' : 'Live mode'}</p>
+                      </div>
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Experiments</p>
+                        <p className="mt-1 text-lg font-black">{revenueOsHealth.activeExperiments.toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">running</p>
+                      </div>
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Insights</p>
+                        <p className="mt-1 text-lg font-black">{revenueOsHealth.activeInsights.toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">active</p>
+                      </div>
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Relationships</p>
+                        <p className="mt-1 text-lg font-black">{revenueOsHealth.relationships.toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">product graph</p>
+                      </div>
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Critical failures</p>
+                        <p className={cn('mt-1 text-lg font-black', revenueOsHealth.criticalFailures > 0 ? 'text-destructive' : 'text-emerald-600')}>
+                          {revenueOsHealth.criticalFailures.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">latest scan</p>
+                      </div>
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Features</p>
+                        <p className="mt-1 text-lg font-black">{revenueOsHealth.featureSnapshots.toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">snapshots</p>
+                      </div>
+                      <div className="rounded-xl border bg-background/70 p-3">
+                        <p className="text-xs font-semibold text-muted-foreground">Opportunities</p>
+                        <p className="mt-1 text-lg font-black">{revenueOsHealth.openOpportunities.toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">open/watch</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+
                   <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
                     <Card>
                       <CardHeader>
@@ -4910,6 +5946,112 @@ export default function AdminPage() {
                         </CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-4">
+                        <div className="rounded-xl border p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="font-bold">Revenue OS active</p>
+                              <p className="text-sm text-muted-foreground">
+                                Turn this off for the kill switch. Customer pages use safe default ranking and buying still works.
+                              </p>
+                            </div>
+                            <Switch checked={croGlobalEnabled} onCheckedChange={setCroGlobalEnabled} />
+                          </div>
+                          <div className="mt-3 rounded-xl border bg-background/70 p-3">
+                            <p className="text-xs font-bold uppercase text-muted-foreground">Immutable guardrails</p>
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {[
+                                'sellable products only',
+                                'no invented prices',
+                                'no fake scarcity',
+                                'no payment record changes',
+                                'support issues hand off',
+                                'holdout preserved',
+                              ].map((guardrail) => (
+                                <Badge key={guardrail} variant="outline" className="text-[10px]">
+                                  {guardrail}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_120px_120px_auto]">
+                            <label className="flex items-center justify-between gap-3 rounded-xl bg-muted/40 px-3 py-2 text-sm">
+                              <span>
+                                <span className="block font-semibold">Shadow mode</span>
+                                <span className="text-xs text-muted-foreground">Audit decisions without changing ranking.</span>
+                              </span>
+                              <Switch checked={croShadowModeEnabled} onCheckedChange={setCroShadowModeEnabled} />
+                            </label>
+                            <Input
+                              type="number"
+                              min="0"
+                              max="8"
+                              value={croAutonomyLevel}
+                              onChange={(event) => setCroAutonomyLevel(event.target.value)}
+                              placeholder="Level"
+                            />
+                            <Input
+                              type="number"
+                              min="0"
+                              max="50"
+                              value={croGlobalHoldoutPct}
+                              onChange={(event) => setCroGlobalHoldoutPct(event.target.value)}
+                              placeholder="Holdout %"
+                            />
+                            <Button type="button" onClick={handleSaveCroControls} disabled={croControlSaving}>
+                              {croControlSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                              Save CRO
+                            </Button>
+                          </div>
+                          <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-muted/40 px-3 py-2 text-sm">
+                            <span>
+                              <span className="block font-semibold">Experiment assignment</span>
+                              <span className="text-xs text-muted-foreground">When on, running experiments can assign visitors to control or Revenue OS variants.</span>
+                            </span>
+                            <Switch checked={croExperimentationEnabled} onCheckedChange={setCroExperimentationEnabled} />
+                          </div>
+                          <div className="mt-3 rounded-xl border bg-background/70 p-3">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div>
+                                <p className="font-bold">Scheduled maintenance</p>
+                                <p className="text-xs text-muted-foreground">
+                                  Hourly Revenue OS refresh with data-quality freeze, action-plan generation, forecasts, and drift checks.
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Switch checked={croMaintenanceEnabled} disabled={croMaintenanceSaving} onCheckedChange={handleToggleCroMaintenance} />
+                                <Button type="button" size="sm" variant="outline" onClick={handleRunCroMaintenanceNow} disabled={croMaintenanceRunning}>
+                                  {croMaintenanceRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                                  Run now
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+                              <div className="rounded-lg bg-muted/40 p-2">
+                                <p className="font-semibold text-muted-foreground">Last status</p>
+                                <p className={cn('mt-1 font-black capitalize', croMaintenanceLastStatus === 'failed' || croMaintenanceLastStatus === 'paused_cro' ? 'text-destructive' : 'text-emerald-600')}>
+                                  {croMaintenanceLastStatus.replace(/_/g, ' ')}
+                                </p>
+                              </div>
+                              <div className="rounded-lg bg-muted/40 p-2">
+                                <p className="font-semibold text-muted-foreground">Last run</p>
+                                <p className="mt-1 font-black">
+                                  {croMaintenanceLastRunAt ? formatDistanceToNow(new Date(croMaintenanceLastRunAt), { addSuffix: true }) : 'Never'}
+                                </p>
+                              </div>
+                              <div className="rounded-lg bg-muted/40 p-2">
+                                <p className="font-semibold text-muted-foreground">Last output</p>
+                                <p className="mt-1 font-black">
+                                  {Number(croMaintenanceLastSummary?.findings || 0).toLocaleString()} checks • {Number(croMaintenanceLastSummary?.action_plans || 0).toLocaleString()} plans • {Number(croMaintenanceLastSummary?.lifecycle_actions || 0).toLocaleString()} lifecycle
+                                </p>
+                              </div>
+                            </div>
+                            {croMaintenanceFreezeReason && (
+                              <p className="mt-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+                                Freeze reason: {croMaintenanceFreezeReason}
+                              </p>
+                            )}
+                          </div>
+                        </div>
                         <div className="flex items-center justify-between gap-3 rounded-xl border p-4">
                           <div>
                             <p className="font-bold">Customer product switching</p>
@@ -4940,6 +6082,753 @@ export default function AdminPage() {
                       </CardContent>
                     </Card>
                   </div>
+
+                  <AdminControlSection
+                    title="Revenue OS Safety & Knowledge"
+                    description="Audit the deterministic CRO layer before increasing autonomy. These records come from stored events, checks, experiments, and product relationships."
+                  >
+                    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="text-sm text-muted-foreground">
+                        Run these before raising autonomy: clean catalogue data first, then rebuild the product graph from live sellable products.
+                      </div>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <Button type="button" variant="outline" onClick={handleRunRevenueDataQualityScan} disabled={dataQualityScanning}>
+                          {dataQualityScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                          Scan data
+                        </Button>
+                        <Button type="button" variant="outline" onClick={handleRebuildProductGraph} disabled={productGraphBuilding}>
+                          {productGraphBuilding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                          Rebuild graph
+                        </Button>
+                        <Button type="button" variant="outline" onClick={handleRefreshRuntimeIntelligence} disabled={runtimeIntelligenceRefreshing || salesLoading}>
+                          {runtimeIntelligenceRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <BarChart3 className="h-4 w-4" />}
+                          Refresh intelligence
+                        </Button>
+                        <Button type="button" variant="outline" onClick={handleRunRevenueEvaluation} disabled={evaluationRunning || salesLoading}>
+                          {evaluationRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+                          Run evaluation
+                        </Button>
+                      </div>
+                    </div>
+                    {revenueOsHealth.latestForecast && (
+                      <div className="mb-4 grid gap-3 rounded-2xl border bg-background/60 p-4 md:grid-cols-4">
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-muted-foreground">Monthly forecast</p>
+                          <p className="text-2xl font-black">{formatAdminNaira(Number(revenueOsHealth.latestForecast.median_value || 0))}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-muted-foreground">Forecast range</p>
+                          <p className="font-black">{formatAdminNaira(Number(revenueOsHealth.latestForecast.lower_bound || 0))} - {formatAdminNaira(Number(revenueOsHealth.latestForecast.upper_bound || 0))}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-muted-foreground">Target probability</p>
+                          <p className="font-black">
+                            {revenueOsHealth.latestForecast.probability_to_target == null
+                              ? 'No target'
+                              : `${Math.round(Number(revenueOsHealth.latestForecast.probability_to_target || 0) * 100)}%`}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase text-muted-foreground">Method</p>
+                          <p className="truncate font-black">{revenueOsHealth.latestForecast.method || 'DETERMINISTIC_TRAILING_RATE'}</p>
+                        </div>
+                      </div>
+                    )}
+                    <div className="mb-4 grid gap-3 md:grid-cols-5">
+                      <div className="rounded-2xl border bg-background/60 p-4">
+                        <p className="text-xs font-semibold uppercase text-muted-foreground">Latest simulation</p>
+                        <p className={cn('mt-1 text-2xl font-black capitalize', revenueOsHealth.latestSimulation?.recommendation === 'pause' ? 'text-destructive' : revenueOsHealth.latestSimulation?.recommendation === 'safe' ? 'text-emerald-600' : '')}>
+                          {revenueOsHealth.latestSimulation?.recommendation || 'No run'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {(revenueOsHealth.latestSimulation?.decisions_evaluated || 0).toLocaleString()} decisions • {(revenueOsHealth.latestSimulation?.sessions_evaluated || 0).toLocaleString()} sessions
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border bg-background/60 p-4">
+                        <p className="text-xs font-semibold uppercase text-muted-foreground">Latest drift</p>
+                        <p className={cn('mt-1 text-2xl font-black capitalize', revenueOsHealth.latestDrift?.status === 'drift' ? 'text-destructive' : revenueOsHealth.latestDrift?.status === 'stable' ? 'text-emerald-600' : '')}>
+                          {revenueOsHealth.latestDrift?.status || 'No check'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">Score {Number(revenueOsHealth.latestDrift?.drift_score || 0).toFixed(2)}</p>
+                      </div>
+                      <div className="rounded-2xl border bg-background/60 p-4">
+                        <p className="text-xs font-semibold uppercase text-muted-foreground">Model registry</p>
+                        <p className="mt-1 text-2xl font-black">{revenueOsHealth.modelRegistryCount.toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">deterministic/model records</p>
+                      </div>
+                      <div className="rounded-2xl border bg-background/60 p-4">
+                        <p className="text-xs font-semibold uppercase text-muted-foreground">Lifecycle engine</p>
+                        <p className="mt-1 text-2xl font-black">{Number(revenueOsHealth.lifecycleCustomerSnapshots || 0).toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {Number(revenueOsHealth.lifecycleCounts?.AT_RISK || 0).toLocaleString()} at risk • {Number(revenueOsHealth.lifecycleCounts?.LAPSED || 0).toLocaleString()} lapsed
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {Number(revenueOsHealth.customersWithNextCandidates || 0).toLocaleString()} with next-purchase candidates
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border bg-background/60 p-4">
+                        <p className="text-xs font-semibold uppercase text-muted-foreground">Promotion guardrails</p>
+                        <p className={cn('mt-1 text-2xl font-black', revenueOsHealth.promotionFailures.length > 0 ? 'text-destructive' : 'text-emerald-600')}>
+                          {revenueOsHealth.promotionFailures.length > 0 ? revenueOsHealth.promotionFailures.length.toLocaleString() : 'Safe'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          max {Number(promotionMaxDiscountPct || 0)}% • budget {formatAdminNaira(Number(promotionMonthlyBudgetNgn || 0))}
+                        </p>
+                      </div>
+                    </div>
+                    {revenueOsHealth.latestAnomalies.length > 0 && (
+                      <div className="mb-4 rounded-2xl border bg-background/60 p-4">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div>
+                            <p className="font-black">Anomaly Freeze Monitor</p>
+                            <p className="text-xs text-muted-foreground">Revenue, conversion, and payment-funnel anomalies that can pause CRO automatically.</p>
+                          </div>
+                          <Badge variant={revenueOsHealth.latestAnomalies.some((row) => row.status === 'drift') ? 'destructive' : 'outline'}>
+                            {revenueOsHealth.latestAnomalies.some((row) => row.status === 'drift') ? 'Freeze risk' : 'Watching'}
+                          </Badge>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          {revenueOsHealth.latestAnomalies.slice(0, 3).map((row) => (
+                            <div key={row.id || row.check_key} className="rounded-xl border p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-sm font-black">{String(row.model_key || '').replace(/_/g, ' ')}</p>
+                                <Badge variant={row.status === 'drift' ? 'destructive' : row.status === 'watch' ? 'secondary' : 'outline'} className="capitalize">
+                                  {row.status}
+                                </Badge>
+                              </div>
+                              <p className="mt-2 text-xs text-muted-foreground">Score {Number(row.drift_score || 0).toFixed(2)}</p>
+                              {row.evidence && (
+                                <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                                  {Object.entries(row.evidence).slice(0, 2).map(([key, value]) => `${key}: ${Number.isFinite(Number(value)) ? Number(value).toLocaleString() : String(value)}`).join(' • ')}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="grid gap-4 xl:grid-cols-4">
+                      <div className="space-y-3 rounded-2xl border bg-background/60 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-black">Data Quality</p>
+                          <Badge variant={revenueOsHealth.criticalFailures > 0 ? 'destructive' : 'outline'}>
+                            {revenueOsHealth.criticalFailures > 0 ? 'Needs review' : 'Stable'}
+                          </Badge>
+                        </div>
+                        {revenueOsHealth.recentQualityRows.length === 0 ? (
+                          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No scan has been recorded yet.</p>
+                        ) : revenueOsHealth.recentQualityRows.map((row, index) => (
+                          <div key={`${row.check_key || row.checkKey}-${row.scope}-${row.created_at || index}`} className="rounded-xl border p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-sm font-bold">{row.check_key || row.checkKey || 'quality_check'}</p>
+                              <Badge variant={row.severity === 'critical' ? 'destructive' : row.status === 'passed' ? 'default' : 'outline'} className="capitalize">
+                                {row.status}
+                              </Badge>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">{row.message}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="space-y-3 rounded-2xl border bg-background/60 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-black">Experiments</p>
+                          <Badge variant="outline">{croExperimentRows.length.toLocaleString()} total</Badge>
+                        </div>
+                        {revenueOsHealth.recentExperiments.length === 0 ? (
+                          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No CRO experiments recorded yet.</p>
+                        ) : revenueOsHealth.recentExperiments.map((experiment) => (
+                          <div key={experiment.id} className="rounded-xl border p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-sm font-bold">{experiment.name || experiment.hypothesis || 'Experiment'}</p>
+                              <Badge variant="outline" className="capitalize">{experiment.status || 'draft'}</Badge>
+                            </div>
+                            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{experiment.hypothesis || 'No hypothesis recorded.'}</p>
+                          </div>
+                        ))}
+                        {revenueOsHealth.latestEvaluations.length > 0 && (
+                          <div className="space-y-2 border-t pt-3">
+                            <p className="text-xs font-bold uppercase text-muted-foreground">Latest evaluations</p>
+                            {revenueOsHealth.latestEvaluations.map((evaluation) => {
+                              const evidence = evaluation.evidence || {}
+                              const qualityScore = Math.round(Number(evidence.decision_quality_score || 0) * 100)
+                              const fdrRisk = Math.round(Number(evidence.false_discovery_risk || 0) * 100)
+                              const qValue = Math.round(Number(evidence.multiple_testing_q_value || 0) * 100)
+                              const readyChecks = [
+                                evidence.sample_size_ready ? 'sample ready' : 'sample waiting',
+                                evidence.purchase_sample_ready ? 'purchase ready' : 'purchase waiting',
+                                evidence.runtime_ready ? 'runtime ready' : 'runtime waiting',
+                                evidence.minimum_practical_effect_passed ? 'MPE passed' : 'MPE waiting',
+                                evidence.false_discovery_passed ? 'FDR passed' : 'FDR waiting',
+                              ]
+                              return (
+                                <div key={evaluation.id || evaluation.evaluation_key} className="rounded-xl border p-3">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="truncate text-xs font-bold">{evaluation.experiment_key}</p>
+                                    <Badge variant={['rollback', 'pause'].includes(evaluation.decision) ? 'destructive' : evaluation.decision === 'promote' ? 'default' : 'outline'} className="capitalize">
+                                      {String(evaluation.decision || '').replace(/_/g, ' ')}
+                                    </Badge>
+                                  </div>
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    {Math.round(Number(evaluation.confidence || 0) * 100)}% confidence • quality {qualityScore}% • FDR {fdrRisk}% / q {qValue}%
+                                  </p>
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    Sample {Number(evidence.sample_size || 0).toLocaleString()} • purchases {Number(evidence.purchase_sample_size || 0).toLocaleString()} • runtime {Number(evidence.runtime_days || 0).toFixed(1)}d • MPE {formatAdminNaira(Number(evaluation.minimum_practical_effect || 0))}
+                                  </p>
+                                  <div className="mt-2 flex flex-wrap gap-1">
+                                    {readyChecks.map((check) => (
+                                      <Badge key={check} variant={check.includes('passed') || check.includes('ready') ? 'secondary' : 'outline'} className="text-[10px]">
+                                        {check}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-3 rounded-2xl border bg-background/60 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-black">Commercial Memory</p>
+                          <Badge variant="outline">{croRelationshipRows.length.toLocaleString()} graph edges</Badge>
+                        </div>
+                        <div className="rounded-xl border bg-muted/20 p-3">
+                          <div className="mb-3 flex items-center justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-black">Owner-defined relationship</p>
+                              <p className="text-xs text-muted-foreground">Use this for compatibility, replacement, required, or accessory-style edges Revenue OS should not guess.</p>
+                            </div>
+                            <Badge variant="secondary">EXPLICIT</Badge>
+                          </div>
+                          <div className="grid gap-2 md:grid-cols-2">
+                            <Select
+                              value={explicitRelationshipDraft.fromProductId}
+                              onValueChange={(value) => setExplicitRelationshipDraft((draft) => ({ ...draft, fromProductId: value }))}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="From product" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {explicitRelationshipProductOptions.map((product) => (
+                                  <SelectItem key={product.id} value={product.id}>
+                                    {product.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={explicitRelationshipDraft.toProductId}
+                              onValueChange={(value) => setExplicitRelationshipDraft((draft) => ({ ...draft, toProductId: value }))}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="To product" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {explicitRelationshipProductOptions.map((product) => (
+                                  <SelectItem key={product.id} value={product.id}>
+                                    {product.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={explicitRelationshipDraft.relationshipType}
+                              onValueChange={(value) => setExplicitRelationshipDraft((draft) => ({ ...draft, relationshipType: value as ExplicitProductRelationshipType }))}
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {EXPLICIT_PRODUCT_RELATIONSHIP_TYPES.map((type) => (
+                                  <SelectItem key={type} value={type}>
+                                    {type.replace(/_/g, ' ')}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <div className="flex gap-2">
+                              <Input
+                                type="number"
+                                min="0.05"
+                                max="1"
+                                step="0.05"
+                                value={explicitRelationshipDraft.strength}
+                                onChange={(event) => setExplicitRelationshipDraft((draft) => ({ ...draft, strength: event.target.value }))}
+                                placeholder="Strength 0.05-1"
+                              />
+                              <Button type="button" onClick={handleSaveExplicitProductRelationship} disabled={explicitRelationshipSaving}>
+                                {explicitRelationshipSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                                Save
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                        {revenueOsHealth.recentInsights.length === 0 ? (
+                          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No proven insights recorded yet.</p>
+                        ) : revenueOsHealth.recentInsights.map((insight) => (
+                          <div key={insight.id} className="rounded-xl border p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-sm font-bold">{insight.scope || 'Store insight'}</p>
+                              <Badge variant="outline" className="capitalize">{insight.status || 'active'}</Badge>
+                            </div>
+                            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{insight.finding || 'No finding recorded.'}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="space-y-3 rounded-2xl border bg-background/60 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-black">Opportunity Queue</p>
+                          <Badge variant="outline">{revenueOsHealth.openOpportunities.toLocaleString()} open</Badge>
+                        </div>
+                        {revenueOsHealth.topOpportunities.length === 0 ? (
+                          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No revenue opportunities recorded yet.</p>
+                        ) : revenueOsHealth.topOpportunities.map((opportunity) => (
+                          <div key={opportunity.id || opportunity.opportunity_key} className="rounded-xl border p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-sm font-bold">{opportunity.type || 'Opportunity'}</p>
+                              <Badge variant="outline">{Number(opportunity.priority || 0).toFixed(1)}</Badge>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {opportunity.scope} • {formatAdminNaira(Number(opportunity.expected_value || 0))} EV • {Math.round(Number(opportunity.confidence || 0) * 100)}% confidence
+                            </p>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="mt-3 w-full"
+                              onClick={() => handleCreateExperimentFromOpportunity(opportunity)}
+                              disabled={experimentCreatingKey === (opportunity.opportunity_key || opportunity.id)}
+                            >
+                              {experimentCreatingKey === (opportunity.opportunity_key || opportunity.id) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Target className="h-4 w-4" />}
+                              Draft experiment
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="space-y-3 rounded-2xl border bg-background/60 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-black">Action Plans</p>
+                          <Badge variant="outline">{revenueOsHealth.proposedActionPlans.toLocaleString()} active</Badge>
+                        </div>
+                        {revenueOsHealth.topActionPlans.length === 0 ? (
+                          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Refresh intelligence to convert opportunities into bounded action plans.</p>
+                        ) : revenueOsHealth.topActionPlans.map((plan) => {
+                          const status = String(plan.status || 'proposed').toLowerCase()
+                          const planKey = String(plan.id || plan.action_key || plan.actionKey)
+                          const updating = croActionPlanUpdatingKey === planKey
+                          return (
+                            <div key={plan.id || plan.action_key} className="rounded-xl border p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-sm font-bold">{String(plan.action_type || 'DO_NOTHING').replace(/_/g, ' ')}</p>
+                                <Badge variant={status === 'running' ? 'default' : status === 'paused' || status === 'rejected' ? 'destructive' : 'outline'} className="capitalize">
+                                  {plan.status || 'proposed'}
+                                </Badge>
+                              </div>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {plan.surface || 'products'} • {plan.scope || 'store'} • {formatAdminNaira(Number(plan.expected_value || 0))} EV
+                              </p>
+                              <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+                                {plan.guardrails?.safe_to_auto_run ? 'Safe for bounded automation after checks.' : 'Requires admin approval before execution.'}
+                              </p>
+                              <div className="mt-3 grid grid-cols-2 gap-2">
+                                {status === 'proposed' && (
+                                  <>
+                                    <Button type="button" size="sm" variant="outline" onClick={() => handleUpdateCroActionPlanStatus(plan, 'approved')} disabled={updating}>
+                                      {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                                      Approve
+                                    </Button>
+                                    <Button type="button" size="sm" variant="outline" onClick={() => handleUpdateCroActionPlanStatus(plan, 'rejected')} disabled={updating}>
+                                      <X className="h-4 w-4" />
+                                      Reject
+                                    </Button>
+                                  </>
+                                )}
+                                {(status === 'approved' || status === 'paused') && (
+                                  <>
+                                    <Button type="button" size="sm" onClick={() => handleUpdateCroActionPlanStatus(plan, 'running')} disabled={updating || !croGlobalEnabled}>
+                                      {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                                      Run
+                                    </Button>
+                                    <Button type="button" size="sm" variant="outline" onClick={() => handleUpdateCroActionPlanStatus(plan, 'rejected')} disabled={updating}>
+                                      <X className="h-4 w-4" />
+                                      Reject
+                                    </Button>
+                                  </>
+                                )}
+                                {status === 'running' && (
+                                  <>
+                                    <Button type="button" size="sm" variant="outline" onClick={() => handleUpdateCroActionPlanStatus(plan, 'paused')} disabled={updating}>
+                                      {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
+                                      Pause
+                                    </Button>
+                                    <Button type="button" size="sm" variant="outline" onClick={() => handleUpdateCroActionPlanStatus(plan, 'completed')} disabled={updating}>
+                                      <CheckCircle2 className="h-4 w-4" />
+                                      Complete
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      <div className="space-y-3 rounded-2xl border bg-background/60 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="font-black">Lifecycle Queue</p>
+                            <p className="text-xs text-muted-foreground">Repeat-purchase and reactivation actions. Outbound rows require consent and review.</p>
+                          </div>
+                          <Badge variant="outline">{Number(revenueOsHealth.lifecycleActions || 0).toLocaleString()} total</Badge>
+                        </div>
+                        {revenueOsHealth.topLifecycleActions.length === 0 ? (
+                          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No lifecycle actions queued yet. Scheduled maintenance will populate this from real customer history.</p>
+                        ) : revenueOsHealth.topLifecycleActions.map((action) => {
+                          const status = String(action.status || 'needs_consent')
+                          const prefs = communicationPreferenceByUserId.get(String(action.user_id))
+                          const hasLifecycleEmailConsent = action.channel === 'email' && prefs?.email_lifecycle_opt_in === true
+                          const updating = lifecycleActionUpdatingKey === String(action.id || action.action_key)
+                          return (
+                            <div key={action.id || action.action_key} className="rounded-xl border p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-sm font-bold">{String(action.recommended_action || 'NO_OFFER').replace(/_/g, ' ')}</p>
+                                <Badge variant={status === 'needs_consent' ? 'secondary' : status === 'approved' ? 'default' : 'outline'} className="capitalize">
+                                  {status.replace(/_/g, ' ')}
+                                </Badge>
+                              </div>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {action.lifecycle_stage || 'stage'} • {action.channel || 'email'} • {formatAdminNaira(Number(action.expected_value || 0))} EV
+                              </p>
+                              <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{action.reason || 'Permissioned lifecycle action.'}</p>
+                              <div className="mt-2 flex items-center justify-between gap-2 rounded-lg bg-muted/40 p-2 text-xs">
+                                <span className="truncate">{userEmailById.get(String(action.user_id)) || `Customer ${String(action.user_id || '').slice(0, 8)}`}</span>
+                                <Badge variant={hasLifecycleEmailConsent ? 'outline' : 'secondary'}>
+                                  {hasLifecycleEmailConsent ? 'consented' : 'no consent'}
+                                </Badge>
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-1 text-xs">
+                                <Badge variant="outline">14d frequency cap</Badge>
+                                <Badge variant={Number(action.pressure_score || action.evidence?.lifecycle_pressure_score || 0) > 0 ? 'secondary' : 'outline'}>
+                                  pressure {Number(action.pressure_score || action.evidence?.lifecycle_pressure_score || 0)}
+                                </Badge>
+                              </div>
+                              <div className="mt-3 grid grid-cols-2 gap-2">
+                                {status === 'needs_consent' && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleLifecycleActionStatus(action, 'dismissed')}
+                                    disabled={updating}
+                                  >
+                                    <X className="h-4 w-4" />
+                                    Dismiss
+                                  </Button>
+                                )}
+                                {hasLifecycleEmailConsent && ['needs_consent', 'queued'].includes(status) && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleLifecycleActionStatus(action, 'approved')}
+                                    disabled={updating}
+                                  >
+                                    {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                                    Approve
+                                  </Button>
+                                )}
+                                {status === 'approved' && (
+                                  <>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      onClick={() => handleSendLifecycleAction(action)}
+                                      disabled={updating || !hasLifecycleEmailConsent}
+                                    >
+                                      {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                                      Send
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => handleLifecycleActionStatus(action, 'dismissed')}
+                                      disabled={updating}
+                                    >
+                                      <X className="h-4 w-4" />
+                                      Dismiss
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                        <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                          <div className="rounded-xl border p-2">
+                            <p className="font-black">{Number(revenueOsHealth.lifecycleActionCounts?.needs_consent || 0).toLocaleString()}</p>
+                            <p className="text-muted-foreground">needs consent</p>
+                          </div>
+                          <div className="rounded-xl border p-2">
+                            <p className="font-black">{Number(revenueOsHealth.lifecycleActionCounts?.approved || 0).toLocaleString()}</p>
+                            <p className="text-muted-foreground">approved</p>
+                          </div>
+                          <div className="rounded-xl border p-2">
+                            <p className="font-black">{Number(revenueOsHealth.lifecycleActionCounts?.sent || 0).toLocaleString()}</p>
+                            <p className="text-muted-foreground">sent</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4 rounded-2xl border bg-background/60 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-black">Decision Arbitration</p>
+                          <p className="text-xs text-muted-foreground">Latest next-best-action decisions with pressure and guardrail context.</p>
+                        </div>
+                        <Badge variant="outline">{croDecisionRows.length.toLocaleString()} audits</Badge>
+                      </div>
+                      {revenueOsHealth.recentDecisions.length === 0 ? (
+                        <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No CRO decisions audited yet.</p>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                          {revenueOsHealth.recentDecisions.map((decision) => {
+                            const metadata = decision.metadata || {}
+                            const action = String(decision.selected_action || metadata.nextBestAction || 'DO_NOTHING')
+                            const pressureScore = Number(metadata.pressureScore || 0)
+                            return (
+                              <div key={decision.id || decision.decision_id} className="rounded-xl border p-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="truncate text-sm font-black">{action.replace(/_/g, ' ')}</p>
+                                  <Badge variant={action === 'DO_NOTHING' ? 'secondary' : action === 'SUPPORT_HANDOFF' ? 'destructive' : 'outline'}>
+                                    {Math.round(Number(decision.confidence || metadata.actionConfidence || 0) * 100)}%
+                                  </Badge>
+                                </div>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  {decision.surface || 'surface'} • pressure {pressureScore.toFixed(1)}
+                                </p>
+                                <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+                                  {metadata.actionReason || 'highest_scored_action'}
+                                </p>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-4 rounded-2xl border bg-background/60 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-black">Promotion Guardrails</p>
+                          <p className="text-xs text-muted-foreground">Bounded promotion checks for discount percent, budget, expiry, scope, and sellable products.</p>
+                        </div>
+                        <Badge variant={revenueOsHealth.promotionFailures.length > 0 ? 'destructive' : 'outline'}>
+                          {revenueOsHealth.promotionFailures.length > 0 ? 'Review needed' : 'Clear'}
+                        </Badge>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        {revenueOsHealth.promotionFindings.slice(0, 8).map((finding, index) => (
+                          <div key={`${finding.checkKey}:${finding.code || index}`} className="rounded-xl border p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-sm font-black">{finding.code || finding.checkKey.replace(/_/g, ' ')}</p>
+                              <Badge variant={finding.status === 'failed' ? finding.severity === 'critical' ? 'destructive' : 'secondary' : 'outline'} className="capitalize">
+                                {finding.status}
+                              </Badge>
+                            </div>
+                            <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{finding.message}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-4 rounded-2xl border bg-background/60 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-black">Product Commercial Intelligence</p>
+                          <p className="text-xs text-muted-foreground">Revenue, conversion efficiency, price position, stock coverage, and reversal risk from real customer activity.</p>
+                        </div>
+                        <Badge variant="outline">{revenueOsHealth.productIntelligenceRows.length.toLocaleString()} product(s)</Badge>
+                      </div>
+                      {revenueOsHealth.productIntelligenceRows.length === 0 ? (
+                        <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Refresh intelligence after product views and purchases to see commercial product health.</p>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                          {revenueOsHealth.productIntelligenceRows.map((row) => {
+                            const features = row.features || {}
+                            const revenue = Number(features.revenue || features.revenue_30d || 0)
+                            const views = Number(features.impressions || features.views_30d || 0)
+                            const clicks = Number(features.clicks || features.clicks_30d || 0)
+                            const daysOfInventory = Number(features.days_of_inventory)
+                            return (
+                              <div key={row.snapshot_key || row.scope_id} className="rounded-xl border p-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <p className="line-clamp-2 text-sm font-black">{features.name || row.scope_id}</p>
+                                  <Badge variant={Number(features.reversal_rate || 0) > 0.08 ? 'destructive' : 'outline'}>
+                                    {Math.round(Number(features.reversal_rate || 0) * 100)}% rev
+                                  </Badge>
+                                </div>
+                                <p className="mt-2 text-lg font-black">{formatAdminNaira(revenue)}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {views.toLocaleString()} views • {clicks.toLocaleString()} clicks • CVR {Math.round(Number(features.order_rate_per_impression || features.conversion_proxy || 0) * 1000) / 10}%
+                                </p>
+                                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                                  <div className="rounded-lg bg-muted/40 p-2">
+                                    <p className="text-muted-foreground">RPI</p>
+                                    <p className="font-black">{formatAdminNaira(Number(features.revenue_per_impression || features.revenue_per_view || 0))}</p>
+                                  </div>
+                                  <div className="rounded-lg bg-muted/40 p-2">
+                                    <p className="text-muted-foreground">Price pct.</p>
+                                    <p className="font-black">{features.category_price_percentile == null ? '-' : `${Math.round(Number(features.category_price_percentile) * 100)}%`}</p>
+                                  </div>
+                                  <div className="rounded-lg bg-muted/40 p-2">
+                                    <p className="text-muted-foreground">Stock days</p>
+                                    <p className="font-black">{Number.isFinite(daysOfInventory) ? Math.round(daysOfInventory).toLocaleString() : '-'}</p>
+                                  </div>
+                                  <div className="rounded-lg bg-muted/40 p-2">
+                                    <p className="text-muted-foreground">Units</p>
+                                    <p className="font-black">{Number(features.units_sold || features.units_30d || 0).toLocaleString()}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-4 rounded-2xl border bg-background/60 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-black">Device Funnel Diagnostics</p>
+                          <p className="text-xs text-muted-foreground">Conversion and payment health split by device, so mobile and desktop issues do not hide inside one average.</p>
+                        </div>
+                        <Badge variant="outline">{revenueOsHealth.deviceRows.length.toLocaleString()} device(s)</Badge>
+                      </div>
+                      {revenueOsHealth.deviceRows.length === 0 ? (
+                        <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Refresh intelligence after customer events to see device funnel health.</p>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                          {revenueOsHealth.deviceRows.map((row) => (
+                            <div key={row.snapshot_key || row.scope_id} className="rounded-xl border p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-sm font-black capitalize">{row.features?.device || 'unknown'}</p>
+                                <Badge variant="outline">{Number(row.features?.visitors || 0).toLocaleString()} visitors</Badge>
+                              </div>
+                              <p className="mt-2 text-xs text-muted-foreground">
+                                CVR {Math.round(Number(row.features?.conversion_rate || 0) * 1000) / 10}% • RPV {formatAdminNaira(Number(row.features?.revenue_per_visitor || 0))}
+                              </p>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                Pay fail {Math.round(Number(row.features?.payment_failure_rate || 0) * 1000) / 10}% • abandon {Math.round(Number(row.features?.checkout_abandonment_rate || 0) * 1000) / 10}%
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-4 rounded-2xl border bg-background/60 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-black">Attribution & Traffic Quality</p>
+                          <p className="text-xs text-muted-foreground">Normalized source/channel performance from trusted first-party events.</p>
+                        </div>
+                        <Badge variant="outline">
+                          {Number(salesAnalytics.visitors.trafficQualityCounts?.bot || 0).toLocaleString()} bot visits filtered
+                        </Badge>
+                      </div>
+                      {revenueOsHealth.attributionRows.length === 0 ? (
+                        <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Refresh intelligence after new visits to see attribution performance.</p>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          {revenueOsHealth.attributionRows.map((row) => (
+                            <div key={row.snapshot_key || row.scope_id} className="rounded-xl border p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-sm font-black">{row.features?.channel || 'unknown'} / {row.features?.source || 'unknown'}</p>
+                                <Badge variant="outline">{Number(row.features?.visitors || 0).toLocaleString()} visitors</Badge>
+                              </div>
+                              <p className="mt-2 text-xs text-muted-foreground">
+                                CVR {Math.round(Number(row.features?.conversion_rate || 0) * 1000) / 10}% • RPV {formatAdminNaira(Number(row.features?.revenue_per_visitor || 0))}
+                              </p>
+                              {row.features?.campaign && <p className="mt-1 truncate text-xs text-muted-foreground">Campaign: {row.features.campaign}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-4 rounded-2xl border bg-background/60 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-black">Acquisition Source Economics</p>
+                          <p className="text-xs text-muted-foreground">First-party source value ranked by revenue per visitor. Spend is not assumed unless you add it later.</p>
+                        </div>
+                        <Badge variant="outline">{revenueOsHealth.sourceEconomicsRows.length.toLocaleString()} source(s)</Badge>
+                      </div>
+                      {revenueOsHealth.sourceEconomicsRows.length === 0 ? (
+                        <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Refresh intelligence after attributed traffic to see source economics.</p>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                          {revenueOsHealth.sourceEconomicsRows.map((row) => (
+                            <div key={row.snapshot_key || row.scope_id} className="rounded-xl border p-3">
+                              <p className="truncate text-sm font-black">{row.features?.source || 'unknown'}</p>
+                              <p className="mt-1 truncate text-xs text-muted-foreground">{row.features?.channel || 'unknown'}{row.features?.campaign ? ` • ${row.features.campaign}` : ''}</p>
+                              <p className="mt-3 text-lg font-black">{formatAdminNaira(Number(row.features?.revenue_per_visitor || 0))}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {Number(row.features?.visitors || 0).toLocaleString()} visitors • CVR {Math.round(Number(row.features?.conversion_rate || 0) * 1000) / 10}%
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-4 rounded-2xl border bg-background/60 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-black">Contextual Bandit Allocations</p>
+                          <p className="text-xs text-muted-foreground">Safe traffic-weight recommendations for running experiment variants. Bandits allocate among approved variants only.</p>
+                        </div>
+                        <Badge variant="outline">{revenueOsHealth.banditRows.length.toLocaleString()} snapshot(s)</Badge>
+                      </div>
+                      {revenueOsHealth.banditRows.length === 0 ? (
+                        <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">Run evaluation after an experiment has traffic to generate allocation advice.</p>
+                      ) : (
+                        <div className="grid gap-3 lg:grid-cols-2">
+                          {revenueOsHealth.banditRows.map((row) => {
+                            const allocation = Array.isArray(row.features?.allocation) ? row.features.allocation : []
+                            const recommendation = String(row.features?.recommendation || 'insufficient_data')
+                            return (
+                              <div key={row.snapshot_key || row.id} className="rounded-xl border p-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="truncate text-sm font-black">{row.features?.experiment_key || row.scope_id || 'experiment'}</p>
+                                  <Badge variant={recommendation === 'pause' ? 'destructive' : recommendation === 'allocate' ? 'default' : 'outline'} className="capitalize">
+                                    {recommendation.replace(/_/g, ' ')}
+                                  </Badge>
+                                </div>
+                                <div className="mt-3 space-y-2">
+                                  {allocation.length === 0 ? (
+                                    <p className="text-xs text-muted-foreground">No variant allocation data yet.</p>
+                                  ) : allocation.map((variant: any) => (
+                                    <div key={variant.variantId} className="rounded-lg bg-muted/40 p-2">
+                                      <div className="flex items-center justify-between gap-2 text-xs">
+                                        <span className="truncate font-bold">{variant.variantId}</span>
+                                        <span className="font-black">{Math.round(Number(variant.weight || 0) * 100)}%</span>
+                                      </div>
+                                      <div className="mt-1 h-2 overflow-hidden rounded-full bg-background">
+                                        <div className="h-full rounded-full bg-primary" style={{ width: `${Math.round(Number(variant.weight || 0) * 100)}%` }} />
+                                      </div>
+                                      <p className="mt-1 text-xs text-muted-foreground">
+                                        reward {formatAdminNaira(Number(variant.reward || 0))}/visitor • {Number(variant.visitors || 0).toLocaleString()} visitors • {Math.round(Number(variant.confidence || 0) * 100)}% confidence
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </AdminControlSection>
 
                   <div className="grid gap-4 lg:grid-cols-2">
                     <AdminControlSection title="High Selling Products" description="Products ranked by completed revenue and units sold.">
@@ -5105,7 +6994,7 @@ export default function AdminPage() {
               </Card>
             </TabsContent>
 
-            {/* Deposit Histories */}
+            {/* Transaction History */}
             <TabsContent value="histories" className="space-y-6">
               <Card className="overflow-hidden">
                 <CardHeader className="border-b bg-gradient-to-r from-purple-50 via-white to-cyan-50 dark:from-purple-950/30 dark:via-card dark:to-cyan-950/20">
@@ -5113,10 +7002,10 @@ export default function AdminPage() {
                     <div>
                       <CardTitle className="flex items-center gap-2 text-2xl">
                         <History className="h-6 w-6 text-primary" />
-                        Deposit History
+                        Transaction History
                       </CardTitle>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        Completed customer wallet deposits only. Product, SMS, crypto, bills, gift card, and social histories now live under Sales.
+                        Completed customer wallet deposit transactions only. Product, SMS, crypto, bills, gift card, and social histories live under Sales.
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -5135,7 +7024,7 @@ export default function AdminPage() {
                   <div className="grid gap-3 md:grid-cols-3">
                     <Card className="bg-emerald-50/80 dark:bg-emerald-500/10">
                       <CardContent className="p-4">
-                        <p className="text-sm font-semibold text-muted-foreground">Completed Deposits</p>
+                        <p className="text-sm font-semibold text-muted-foreground">Completed Transactions</p>
                         <p className="mt-2 text-2xl font-black text-emerald-700 dark:text-emerald-300">
                           {formatAdminNaira(historyStats.completedTotal)}
                         </p>
@@ -5153,12 +7042,12 @@ export default function AdminPage() {
                     </Card>
                     <Card className="bg-purple-50/80 dark:bg-purple-500/10">
                       <CardContent className="p-4">
-                        <p className="text-sm font-semibold text-muted-foreground">Latest Deposit</p>
+                        <p className="text-sm font-semibold text-muted-foreground">Latest Transaction</p>
                         <p className="mt-2 truncate text-xl font-black text-purple-700 dark:text-purple-300">
-                          {depositHistoryRows[0] ? formatAdminNaira(depositHistoryRows[0].amount) : 'No deposits'}
+                          {depositHistoryRows[0] ? formatAdminNaira(depositHistoryRows[0].amount) : 'No transactions'}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {depositHistoryRows[0]?.date ? formatDistanceToNow(new Date(depositHistoryRows[0].date), { addSuffix: true }) : 'Waiting for completed deposits'}
+                          {depositHistoryRows[0]?.date ? formatDistanceToNow(new Date(depositHistoryRows[0].date), { addSuffix: true }) : 'Waiting for completed transactions'}
                         </p>
                       </CardContent>
                     </Card>
@@ -5182,7 +7071,7 @@ export default function AdminPage() {
                     <Input
                       value={historySearchQuery}
                       onChange={(event) => setHistorySearchQuery(event.target.value)}
-                      placeholder="Search customer, deposit reference, status..."
+                      placeholder="Search customer, transaction reference, status..."
                       className="pl-10"
                     />
                   </div>
@@ -5190,7 +7079,7 @@ export default function AdminPage() {
                   {historyLoading ? (
                     <div className="rounded-2xl border py-16 text-center">
                       <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-primary" />
-                      <p className="font-semibold">Loading completed deposits...</p>
+                      <p className="font-semibold">Loading completed transactions...</p>
                     </div>
                   ) : (
                     <div className="overflow-hidden rounded-2xl border">
@@ -5210,7 +7099,7 @@ export default function AdminPage() {
                             {filteredHistoryRows.length === 0 ? (
                               <TableRow>
                                 <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
-                                  No completed customer deposits match this view.
+                                  No completed customer transactions match this view.
                                 </TableCell>
                               </TableRow>
                             ) : filteredHistoryRows.map((row) => (
@@ -5630,6 +7519,138 @@ export default function AdminPage() {
                       )
                     })
                   )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* SMS Orders Management */}
+            <TabsContent value="sms-orders" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <CardTitle>SMS Orders</CardTitle>
+                      <p className="mt-1 text-sm text-muted-foreground">All customer SMS purchases. Auto-cancel cancels pending orders older than 5 minutes with no code.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="outline" size="sm" onClick={loadSmsOrders} disabled={smsOrdersLoading}>
+                        {smsOrdersLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                        Refresh
+                      </Button>
+                      <Button variant="destructive" size="sm" onClick={adminAutoCancelStale} disabled={smsOrdersAutoCancelling || smsOrdersLoading}>
+                        {smsOrdersAutoCancelling ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <XCircle className="mr-2 h-4 w-4" />}
+                        Auto-cancel stale (5 min+)
+                      </Button>
+                    </div>
+                  </div>
+                  {/* Filter */}
+                  <div className="mt-3 flex gap-2">
+                    {(['all', 'pending', 'completed', 'cancelled'] as const).map(f => (
+                      <button
+                        key={f}
+                        onClick={() => setSmsOrdersFilter(f)}
+                        className={`rounded-full px-3 py-1 text-xs font-semibold capitalize transition-colors ${smsOrdersFilter === f ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {smsOrders.length === 0 && !smsOrdersLoading && (
+                    <div className="py-8 text-center text-sm text-muted-foreground">
+                      No SMS orders yet.{' '}
+                      <button className="underline" onClick={loadSmsOrders}>Load orders</button>
+                    </div>
+                  )}
+                  {smsOrdersLoading && (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                    </div>
+                  )}
+                  {!smsOrdersLoading && smsOrders.length > 0 && (() => {
+                    const isPending = (o: any) => !['completed', 'cancelled', 'expired', 'failed'].includes(o.status)
+                    const filtered = smsOrders.filter(o => {
+                      if (smsOrdersFilter === 'pending') return isPending(o)
+                      if (smsOrdersFilter === 'completed') return o.status === 'completed'
+                      if (smsOrdersFilter === 'cancelled') return o.status === 'cancelled'
+                      return true
+                    })
+                    const now = Date.now()
+                    return (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b text-left text-xs font-semibold uppercase text-muted-foreground">
+                              <th className="pb-2 pr-4">User</th>
+                              <th className="pb-2 pr-4">Service</th>
+                              <th className="pb-2 pr-4">Amount</th>
+                              <th className="pb-2 pr-4">Status</th>
+                              <th className="pb-2 pr-4">Time pending</th>
+                              <th className="pb-2 pr-4">Refunded</th>
+                              <th className="pb-2">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y">
+                            {filtered.map(order => {
+                              const pending = isPending(order)
+                              const minsPending = Math.floor((now - new Date(order.created_at).getTime()) / 60000)
+                              const isStale = pending && minsPending >= 5
+                              const hasCode = order.messages && order.messages.length > 0
+                              return (
+                                <tr key={order.id} className={`text-sm ${isStale && !hasCode ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>
+                                  <td className="py-2 pr-4">
+                                    <p className="font-medium">{order.profiles?.full_name || '—'}</p>
+                                    <p className="text-xs text-muted-foreground">{order.profiles?.email || '—'}</p>
+                                  </td>
+                                  <td className="py-2 pr-4">{order.service_name}</td>
+                                  <td className="py-2 pr-4 font-semibold">₦{Number(order.price_ngn).toLocaleString()}</td>
+                                  <td className="py-2 pr-4">
+                                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold capitalize ${
+                                      order.status === 'completed' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                      : order.status === 'cancelled' ? 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                                      : isStale ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+                                      : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                                    }`}>
+                                      {order.status}
+                                    </span>
+                                  </td>
+                                  <td className="py-2 pr-4 text-xs text-muted-foreground">
+                                    {pending
+                                      ? <span className={isStale && !hasCode ? 'font-bold text-red-600' : ''}>{minsPending}m ago</span>
+                                      : new Date(order.created_at).toLocaleDateString()}
+                                  </td>
+                                  <td className="py-2 pr-4">
+                                    {order.refunded_at
+                                      ? <span className="text-xs text-emerald-600">✓ Refunded</span>
+                                      : <span className="text-xs text-muted-foreground">—</span>}
+                                  </td>
+                                  <td className="py-2">
+                                    {pending && (
+                                      <Button
+                                        size="sm"
+                                        variant="destructive"
+                                        className="h-7 px-2 text-xs"
+                                        disabled={smsOrdersCancellingId === order.id}
+                                        onClick={() => adminCancelSmsOrder(order.id)}
+                                      >
+                                        {smsOrdersCancellingId === order.id
+                                          ? <Loader2 className="h-3 w-3 animate-spin" />
+                                          : 'Cancel & Refund'}
+                                      </Button>
+                                    )}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                        {filtered.length === 0 && (
+                          <p className="py-6 text-center text-sm text-muted-foreground">No {smsOrdersFilter} orders.</p>
+                        )}
+                      </div>
+                    )
+                  })()}
                 </CardContent>
               </Card>
             </TabsContent>
