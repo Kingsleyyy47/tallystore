@@ -319,12 +319,17 @@ const OTP_TIMEOUT_SECONDS = 180 // 3 minutes
 function useOtpCountdown(order: SmsOrder, onExpire: (order: SmsOrder) => void) {
   const [secsLeft, setSecsLeft] = useState<number | null>(null)
   const expiredRef = useRef(false)
+  const messagesLen = (order.messages ?? []).length
 
   useEffect(() => {
     if (order.order_type !== 'otp' || isTerminalStatus(order.status)) return
-    const hasCode = order.messages && order.messages.length > 0
-    if (hasCode) return
+    // Code has arrived — stop the timer and never auto-cancel
+    if (messagesLen > 0) {
+      setSecsLeft(null)
+      return
+    }
 
+    expiredRef.current = false // reset each time effect re-runs with no code
     const created = new Date(order.created_at).getTime()
     const deadline = created + OTP_TIMEOUT_SECONDS * 1000
 
@@ -340,7 +345,7 @@ function useOtpCountdown(order: SmsOrder, onExpire: (order: SmsOrder) => void) {
     tick()
     const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
-  }, [order.id, order.status, order.order_type, order.created_at])
+  }, [order.id, order.status, order.order_type, order.created_at, messagesLen])
 
   return secsLeft
 }
@@ -819,6 +824,17 @@ function SmsNumbersSurface() {
   })
 
   const cancelOrder = (order: SmsOrder) => runAction(`cancel-${order.id}`, async () => {
+    // Always fetch the live order before cancelling — the closure may be stale
+    const { data: live } = await supabase
+      .from('sms_orders')
+      .select('id, status, messages')
+      .eq('id', order.id)
+      .single()
+    if (live && (isTerminalStatus(live.status) || (live.messages && live.messages.length > 0))) {
+      toast.error('Cannot cancel — a code has already been received for this order.')
+      await refreshOrders()
+      return
+    }
     await invokeSms<SmsOrder>(order.order_type === 'otp' ? 'cancel_otp' : 'cancel_rental', { order_id: order.id })
     toast.success('Order cancelled')
     window.dispatchEvent(new Event('transactionAdded'))
