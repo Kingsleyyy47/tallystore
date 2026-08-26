@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Loader2, Star, Crown, Search, CheckCircle2, Clock, RefreshCw, User } from 'lucide-react'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
+import { useAuth } from '@/contexts/SimpleAuth'
 import { RecommendationStrip } from '@/components/RecommendationCard'
 import { useRecommendations } from '@/hooks/useRecommendations'
 import { format } from 'date-fns'
@@ -398,6 +399,7 @@ function OrderHistory({ orders, loading, onRefresh, onPoll }: {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function TelegramStarsPage() {
   const { toast } = useToast()
+  const { user, isAdmin, isStaff } = useAuth()
   const { recommendations: recs } = useRecommendations({ limit: 3 })
   const [starPricing, setStarPricing] = useState<StarPricing | null>(null)
   const [premiumProducts, setPremiumProducts] = useState<PremiumProduct[]>([])
@@ -453,6 +455,33 @@ export default function TelegramStarsPage() {
   const onOrderCreated = () => {
     loadOrders()
     window.dispatchEvent(new Event('transactionAdded'))
+  }
+
+  // Only admin and staff can access — everyone else sees coming soon
+  if (!isAdmin && !isStaff) {
+    return (
+      <div className="min-h-screen flex flex-col bg-background">
+        <Navbar />
+        <main className="flex-1 flex items-center justify-center px-4 py-16">
+          <div className="text-center max-w-md space-y-5">
+            <div className="flex items-center justify-center gap-3 mb-2">
+              <Star className="h-10 w-10 text-amber-400 fill-amber-400" />
+              <Crown className="h-10 w-10 text-purple-500" />
+            </div>
+            <h1 className="text-3xl font-bold">Telegram Stars & Premium</h1>
+            <p className="text-muted-foreground">
+              We're working on something exciting! Telegram Stars and Premium gifting is coming soon.
+              You'll be able to send Stars and Telegram Premium to any user instantly.
+            </p>
+            <div className="inline-flex items-center gap-2 rounded-full bg-amber-100 px-4 py-1.5 text-sm font-semibold text-amber-700 dark:bg-amber-400/15 dark:text-amber-300">
+              <Clock className="h-4 w-4" />
+              Coming Soon
+            </div>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    )
   }
 
   return (

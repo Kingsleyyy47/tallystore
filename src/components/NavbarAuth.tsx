@@ -15,6 +15,7 @@ import {
   PackageCheck,
   PhoneCall,
   Rocket,
+  Star,
   ShieldCheck,
   ShoppingBag,
   Smartphone,
@@ -256,6 +257,10 @@ export default function Navbar() {
                       <Link to="/social-boost" className={`${desktopDropdownItemClass} text-pink-600 dark:text-pink-400`}>
                         <Rocket className="h-4 w-4" />
                         Social Boost
+                      </Link>
+                      <Link to="/telegram-stars" className={`${desktopDropdownItemClass} text-sky-600 dark:text-sky-400`}>
+                        <Star className="h-4 w-4" />
+                        Telegram Stars & Premium
                       </Link>
                       
                       {/* Install app in dropdown */}
