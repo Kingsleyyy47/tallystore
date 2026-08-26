@@ -56,11 +56,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const isWisdomAdmin = userEmail?.toLowerCase() === ADMIN_EMAIL
 
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('is_staff, wallet_balance')
-        .eq('id', userId)
-        .single()
+      // Race the profiles query against a 6-second timeout so a slow/hung
+      // Supabase connection never freezes the auth spinner indefinitely.
+      const timeoutPromise = new Promise<{ data: null; error: Error }>(resolve =>
+        setTimeout(() => resolve({ data: null, error: new Error('profiles query timeout') }), 6000)
+      )
+      const { data, error } = await Promise.race([
+        supabase.from('profiles').select('is_staff, wallet_balance').eq('id', userId).single(),
+        timeoutPromise,
+      ])
 
       if (error) {
         setIsAdmin(isWisdomAdmin)

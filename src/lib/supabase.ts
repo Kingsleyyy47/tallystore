@@ -215,11 +215,13 @@ export interface Transaction {
 // STEP 1B: Basic database functions
 export async function getCategories(): Promise<Category[]> {
   try {
-    const { data, error } = await supabase
-      .from('categories')
-      .select('*')
-      .eq('is_active', true)
-      .order('name')
+    const timeout = new Promise<{ data: null; error: Error }>(resolve =>
+      setTimeout(() => resolve({ data: null, error: new Error('getCategories timeout') }), 8000)
+    )
+    const { data, error } = await Promise.race([
+      supabase.from('categories').select('*').eq('is_active', true).order('name'),
+      timeout,
+    ])
 
     if (error) {
       console.error('Supabase error:', error)
@@ -235,11 +237,13 @@ export async function getCategories(): Promise<Category[]> {
 
 export async function getAllProductGroups(): Promise<ProductGroup[]> {
   try {
-    const { data, error } = await supabase
-      .from('product_groups')
-      .select('*')
-      .eq('is_active', true)
-      .order('name')
+    const timeout = new Promise<{ data: null; error: Error }>(resolve =>
+      setTimeout(() => resolve({ data: null, error: new Error('getAllProductGroups timeout') }), 8000)
+    )
+    const { data, error } = await Promise.race([
+      supabase.from('product_groups').select('*').eq('is_active', true).order('name'),
+      timeout,
+    ])
 
     if (error) {
       console.error('Supabase error:', error)
