@@ -25,14 +25,14 @@ export default function PaymentSuccessPage() {
   const supportUrl = support.whatsappUrl || support.telegramUrl || '';
 
   const [isVerifying, setIsVerifying] = useState(true);
-  const paymentVerified = verificationResult?.success === true;
-  const { recommendations } = useRecommendations({ enabled: paymentVerified, limit: 3 });
   const [verificationResult, setVerificationResult] = useState<{
     success: boolean;
     status: string;
     amount: number;
     message: string;
   } | null>(null);
+  const paymentVerified = verificationResult?.success === true;
+  const { recommendations } = useRecommendations({ enabled: paymentVerified, limit: 3 });
 
   useEffect(() => {
     trackRevenueEvent({

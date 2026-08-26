@@ -1,28 +1,27 @@
 /**
  * useRecommendations
  *
- * Fetches a short list of active products to show as CRO recommendations.
- * Excludes the current product/category if provided so recs are always fresh.
+ * Fetches a small number of active products for CRO recommendation cards.
+ * Uses a direct lightweight Supabase query — NOT getAllProductGroups() —
+ * to avoid loading the full catalog on every page.
  *
- * Returns at most `limit` products (default 3).
+ * Deferred: fetch starts after a 1.5s idle delay so it never blocks
+ * the main page content from rendering.
  */
 
 import { useEffect, useState } from 'react'
-import { getAllProductGroups, getCategories } from '@/lib/supabase'
-import { isCustomerSellableProduct } from '@/lib/productAvailability'
+import { supabase } from '@/lib/supabase'
 import type { RecommendationProduct } from '@/components/RecommendationCard'
 
 export type UseRecommendationsOptions = {
-  /** Exclude this product group ID from results */
   excludeProductId?: string | null
-  /** Prefer products from a different category than this one */
   excludeCategoryId?: string | null
-  /** Prefer products from this specific category */
   preferCategoryId?: string | null
-  /** Max products to return. Default 3. */
   limit?: number
-  /** Only run fetch if true. Useful for gating behind a condition (e.g. payment verified). */
+  /** Only fetch if true (e.g. gate on payment verified). Default true. */
   enabled?: boolean
+  /** Delay in ms before fetch starts. Default 1500 (after page paint). */
+  delayMs?: number
 }
 
 export function useRecommendations({
@@ -31,6 +30,7 @@ export function useRecommendations({
   preferCategoryId,
   limit = 3,
   enabled = true,
+  delayMs = 1500,
 }: UseRecommendationsOptions = {}): {
   recommendations: RecommendationProduct[]
   loading: boolean
@@ -41,57 +41,59 @@ export function useRecommendations({
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
 
     async function load() {
+      if (cancelled) return
       setLoading(true)
       try {
-        const [groups, categories] = await Promise.all([
-          getAllProductGroups(),
-          getCategories(),
-        ])
+        // Fetch only the columns we need, server-side filtered
+        // Fetch a small pool (limit × 6) and pick randomly client-side
+        const fetchLimit = Math.min(limit * 6, 24)
 
-        const categoryMap = new Map(categories.map((c) => [c.id, c]))
+        let query = supabase
+          .from('product_groups')
+          .select('id, name, price, description, category_id, is_active, stock_count, categories(name)')
+          .eq('is_active', true)
+          .gt('stock_count', 0)
+          .limit(fetchLimit)
 
-        // Filter to sellable, active products
-        let sellable = groups.filter((g) => {
-          if (!isCustomerSellableProduct(g)) return false
-          if (g.id === excludeProductId) return false
-          return true
-        })
+        if (excludeProductId) query = query.neq('id', excludeProductId)
+        if (preferCategoryId) query = query.eq('category_id', preferCategoryId)
+        else if (excludeCategoryId) query = query.neq('category_id', excludeCategoryId)
 
-        // Score: prefer different category from current page (cross-sell),
-        // or preferred category if specified
-        const scored = sellable.map((g) => {
-          let score = Math.random() // base randomness so every load is fresh
-          if (preferCategoryId && g.category_id === preferCategoryId) score += 2
-          if (excludeCategoryId && g.category_id !== excludeCategoryId) score += 1
-          return { g, score }
-        })
+        const { data, error } = await query
 
-        scored.sort((a, b) => b.score - a.score)
-        const top = scored.slice(0, limit).map(({ g }) => {
-          const cat = g.category_id ? categoryMap.get(g.category_id) : null
-          return {
-            id:           g.id,
-            name:         g.name,
-            price:        Number(g.price || 0),
-            href:         `/product/${g.id}`,
-            categoryName: cat?.name || null,
-            description:  g.description || null,
-          } satisfies RecommendationProduct
-        })
+        if (error || !data?.length) return
 
-        if (!cancelled) setRecommendations(top)
+        // Shuffle and take `limit`
+        const shuffled = [...data].sort(() => Math.random() - 0.5).slice(0, limit)
+
+        const recs: RecommendationProduct[] = shuffled.map((g: any) => ({
+          id:           g.id,
+          name:         g.name,
+          price:        Number(g.price || 0),
+          href:         `/product/${g.id}`,
+          categoryName: (g.categories as any)?.name || null,
+          description:  g.description || null,
+        }))
+
+        if (!cancelled) setRecommendations(recs)
       } catch (_) {
-        // non-critical — silently swallow
+        // non-critical
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
 
-    load()
-    return () => { cancelled = true }
-  }, [enabled, excludeProductId, excludeCategoryId, preferCategoryId, limit])
+    // Defer so it never competes with the primary page queries
+    timer = setTimeout(load, delayMs)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [enabled, excludeProductId, excludeCategoryId, preferCategoryId, limit, delayMs])
 
   return { recommendations, loading }
 }
