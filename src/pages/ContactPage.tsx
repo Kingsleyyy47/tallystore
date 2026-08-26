@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { useEffect } from 'react'
 import { Clock, CreditCard, LifeBuoy, MessageCircle, PackageCheck, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import NavbarAuth from '@/components/NavbarAuth'
@@ -12,6 +13,7 @@ import {
   RevampSectionTitle,
   RevampVisual,
 } from '@/components/RevampLayout'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 const helpTopics = [
   {
@@ -39,6 +41,22 @@ export default function ContactPage() {
   const primaryUrl = support.whatsappUrl || support.telegramUrl || ''
   const primaryLabel = support.whatsappUrl ? 'Open WhatsApp' : support.telegramUrl ? 'Open Telegram' : 'Visit Support Center'
   const hasSupport = Boolean(primaryUrl)
+
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      surface: 'contact',
+      metadata: { has_direct_support: hasSupport },
+    })
+  }, [hasSupport])
+
+  const trackContactCta = (surface: string, destination: string) => {
+    trackRevenueEvent({
+      eventType: surface.includes('support') ? 'SUPPORT_HANDOFF' : 'OFFER_ACCEPTED',
+      surface,
+      metadata: { destination },
+    })
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -74,18 +92,18 @@ export default function ContactPage() {
               <div className="mt-6 grid gap-3 sm:flex">
                 {hasSupport ? (
                   <Button asChild size="lg" className="bg-white text-emerald-700 hover:bg-emerald-50">
-                    <a href={primaryUrl} target="_blank" rel="noopener noreferrer">
+                    <a href={primaryUrl} target="_blank" rel="noopener noreferrer" onClick={() => trackContactCta('contact_primary_support', primaryLabel)}>
                       {primaryLabel}
                     </a>
                   </Button>
                 ) : (
                   <Button asChild size="lg" className="bg-white text-emerald-700 hover:bg-emerald-50">
-                    <Link to="/support">{primaryLabel}</Link>
+                    <Link to="/support" onClick={() => trackContactCta('contact_support_center', '/support')}>{primaryLabel}</Link>
                   </Button>
                 )}
                 {support.whatsappUrl && support.telegramUrl && (
                   <Button asChild size="lg" variant="outline" className="border-white/40 bg-white/10 text-white hover:bg-white/20">
-                    <a href={support.telegramUrl} target="_blank" rel="noopener noreferrer">
+                    <a href={support.telegramUrl} target="_blank" rel="noopener noreferrer" onClick={() => trackContactCta('contact_secondary_support', 'telegram')}>
                       Telegram support
                     </a>
                   </Button>
@@ -104,10 +122,10 @@ export default function ContactPage() {
             </p>
             <div className="mt-5 grid gap-2">
               <Button asChild variant="outline" className="justify-start">
-                <Link to="/wallet">Open Wallet</Link>
+                <Link to="/wallet" onClick={() => trackContactCta('contact_wallet_cta', '/wallet')}>Open Wallet</Link>
               </Button>
               <Button asChild variant="outline" className="justify-start">
-                <Link to="/orders">Open Order History</Link>
+                <Link to="/orders" onClick={() => trackContactCta('contact_orders_cta', '/orders')}>Open Order History</Link>
               </Button>
             </div>
           </RevampCard>

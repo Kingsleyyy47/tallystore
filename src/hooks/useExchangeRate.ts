@@ -1,23 +1,24 @@
 import { useEffect, useState } from 'react'
 import { getAppSetting } from '@/lib/supabase'
 
-const FALLBACK_RATE = 1600 // NGN per 1 USD, used if no override and live fetch fails
 const LIVE_RATE_URL = 'https://open.er-api.com/v6/latest/USD'
 const CACHE_KEY = 'tallystore_ngn_usd_rate_cache'
 const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
+const STALE_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // only used if admin/live rate is temporarily unavailable
 
 interface RateCache {
   rate: number
-  source: 'override' | 'live' | 'fallback'
+  source: 'override' | 'live' | 'stale_cache'
   timestamp: number
 }
 
-function readCache(): RateCache | null {
+function readCache(maxAgeMs = CACHE_TTL_MS): RateCache | null {
   try {
     const raw = sessionStorage.getItem(CACHE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as RateCache
-    if (Date.now() - parsed.timestamp > CACHE_TTL_MS) return null
+    if (!Number.isFinite(parsed.rate) || parsed.rate <= 0) return null
+    if (Date.now() - parsed.timestamp > maxAgeMs) return null
     return parsed
   } catch {
     return null
@@ -45,11 +46,11 @@ export function clearExchangeRateCache() {
 
 /**
  * Returns the current NGN-per-USD exchange rate.
- * Priority: admin override (app_settings.ngn_usd_rate) > live API > fallback constant.
+ * Priority: admin override (app_settings.ngn_usd_rate) > live API > recent cached real rate.
  */
 export function useExchangeRate() {
-  const [rate, setRate] = useState<number>(FALLBACK_RATE)
-  const [source, setSource] = useState<'override' | 'live' | 'fallback'>('fallback')
+  const [rate, setRate] = useState<number | null>(null)
+  const [source, setSource] = useState<'override' | 'live' | 'stale_cache' | 'unavailable'>('unavailable')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -98,13 +99,13 @@ export function useExchangeRate() {
 
         throw new Error('Live rate unavailable')
       } catch (err) {
-        console.error('useExchangeRate: falling back to default rate', err)
+        console.error('useExchangeRate: no trusted live rate available', err)
+        const staleCache = readCache(STALE_CACHE_TTL_MS)
         if (isMounted) {
-          setRate(FALLBACK_RATE)
-          setSource('fallback')
+          setRate(staleCache?.rate ?? null)
+          setSource(staleCache ? 'stale_cache' : 'unavailable')
           setLoading(false)
         }
-        writeCache({ rate: FALLBACK_RATE, source: 'fallback', timestamp: Date.now() })
       }
     }
 
@@ -112,7 +113,7 @@ export function useExchangeRate() {
     return () => { isMounted = false }
   }, [])
 
-  const ngnToUsd = (ngnAmount: number) => ngnAmount / rate
+  const ngnToUsd = (ngnAmount: number) => (rate && rate > 0 ? ngnAmount / rate : null)
 
   return { rate, source, loading, ngnToUsd }
 }

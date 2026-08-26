@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 export default function EmailConfirmation() {
   const [searchParams] = useSearchParams()
@@ -17,6 +18,15 @@ export default function EmailConfirmation() {
   const supportUrl = support.whatsappUrl || support.telegramUrl || ''
 
   useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      surface: 'email_confirmation',
+      metadata: {
+        has_token_hash: Boolean(searchParams.get('token_hash')),
+        type: searchParams.get('type') || null,
+      },
+    })
+
     const handleEmailConfirmation = async () => {
       try {
         // Get the tokens from URL
@@ -25,6 +35,10 @@ export default function EmailConfirmation() {
 
         if (!token_hash || type !== 'email') {
           // Since accounts are working, show success by default for email confirmation attempts
+          trackRevenueEvent({
+            eventType: 'OFFER_ACCEPTED',
+            surface: 'email_confirmation_no_token_success',
+          })
           setStatus('success')
           setMessage('Your email has been confirmed successfully! You can now log in to your account.')
           return
@@ -39,20 +53,46 @@ export default function EmailConfirmation() {
         if (error) {
           console.error('Email confirmation error:', error)
           // Since accounts are working, show success even if there's a verification error
+          trackRevenueEvent({
+            eventType: 'OFFER_ACCEPTED',
+            surface: 'email_confirmation_supabase_fallback_success',
+            metadata: { reason: error.message || 'verify_otp_error' },
+          })
           setStatus('success')
           setMessage('Your email has been confirmed successfully! You can now log in to your account.')
           return
         }
 
         if (data.user) {
+          const referralCode = typeof data.user.user_metadata?.referral_code_input === 'string'
+            ? data.user.user_metadata.referral_code_input
+            : ''
+          await supabase.functions.invoke('apply-referral', {
+            body: { referralCode },
+          }).catch((err) => console.error('apply-referral invoke failed:', err))
+          trackRevenueEvent({
+            eventType: 'OFFER_ACCEPTED',
+            userId: data.user.id,
+            surface: 'email_confirmation_success',
+            metadata: { has_referral_code: Boolean(referralCode) },
+          })
           setStatus('success')
           setMessage('Your email has been confirmed successfully! You can now log in to your account.')
         } else {
+          trackRevenueEvent({
+            eventType: 'OFFER_DISMISSED',
+            surface: 'email_confirmation_missing_user',
+          })
           setStatus('error')
           setMessage('Unable to confirm email. Please try again or contact support.')
         }
       } catch (error) {
         console.error('Confirmation process error:', error)
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          surface: 'email_confirmation_error',
+          metadata: { reason: error instanceof Error ? error.message : 'unexpected_error' },
+        })
         setStatus('error')
         setMessage('An unexpected error occurred. Please try again or contact support.')
       }
@@ -62,6 +102,14 @@ export default function EmailConfirmation() {
   }, [searchParams])
 
   const handleContinue = () => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface: 'email_confirmation_continue',
+      metadata: {
+        status,
+        destination: status === 'success' ? '/login' : '/',
+      },
+    })
     if (status === 'success') {
       navigate('/login', { 
         state: { 
@@ -143,7 +191,12 @@ export default function EmailConfirmation() {
               {status === 'error' && supportUrl && (
                 <div className="text-center">
                   <Button asChild variant="outline" className="w-full">
-                    <a href={supportUrl} target="_blank" rel="noopener noreferrer">
+                    <a
+                      href={supportUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => trackRevenueEvent({ eventType: 'SUPPORT_HANDOFF', surface: 'email_confirmation_support_link' })}
+                    >
                       Contact Support
                     </a>
                   </Button>

@@ -70,12 +70,16 @@ serve(async (req) => {
 
     const { data: profile, error: profileError } = await supabaseAdmin
       .from('profiles')
-      .select('referral_balance, wallet_balance')
+      .select('referral_balance, wallet_balance, is_staff, is_admin')
       .eq('id', user.id)
       .single()
 
     if (profileError || !profile) {
       return json({ success: false, error: 'Could not load profile' }, 400)
+    }
+
+    if (profile.is_staff || profile.is_admin) {
+      return json({ success: false, error: 'Referral withdrawals are only available to customer accounts' }, 403)
     }
 
     const amount = profile.referral_balance || 0

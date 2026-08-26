@@ -40,7 +40,7 @@ interface PublicRouteProps {
 }
 
 export function PublicRoute({ children, redirectTo }: PublicRouteProps) {
-  const { user, loading, isAdmin } = useAuth()
+  const { user, loading, isAdmin, isStaff } = useAuth()
 
   // Show loading spinner while checking auth
   if (loading) {
@@ -53,7 +53,7 @@ export function PublicRoute({ children, redirectTo }: PublicRouteProps) {
 
   // Already authenticated - redirect to appropriate dashboard
   if (user) {
-    const defaultRedirect = isAdmin ? '/admin' : '/dashboard'
+    const defaultRedirect = isAdmin ? '/admin' : isStaff ? '/staff-admin' : '/dashboard'
     return <Navigate to={redirectTo || defaultRedirect} replace />
   }
 

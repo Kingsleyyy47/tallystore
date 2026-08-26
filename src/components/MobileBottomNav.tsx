@@ -27,8 +27,8 @@ export default function MobileBottomNav() {
 
   return (
     <>
-      <div className="h-[68px] md:hidden" aria-hidden="true" />
-      <nav className="fixed inset-x-0 bottom-0 z-50 mx-auto grid h-[68px] w-full max-w-[430px] grid-cols-5 border-x border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] text-[9px] font-bold text-slate-600 shadow-[0_-16px_45px_rgba(15,23,42,0.18)] backdrop-blur dark:border-white/10 dark:bg-[#070a12]/95 dark:text-slate-400 min-[340px]:text-[11px] md:hidden">
+      <div className="h-[72px] md:hidden" aria-hidden="true" />
+      <nav className="fixed inset-x-0 bottom-0 z-50 grid min-h-[68px] w-full grid-cols-5 border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] text-[9px] font-bold text-slate-600 shadow-[0_-16px_45px_rgba(15,23,42,0.18)] backdrop-blur dark:border-white/10 dark:bg-[#070a12]/95 dark:text-slate-400 min-[340px]:text-[10px] min-[380px]:text-[11px] md:hidden">
         {items.map((item) => {
           const Icon = item.icon
           return (
@@ -36,12 +36,12 @@ export default function MobileBottomNav() {
               key={item.label}
               to={item.href}
               className={cn(
-                'grid min-w-0 place-items-center gap-0.5 px-1 py-2 transition hover:text-slate-950 dark:hover:text-white',
+                'grid min-w-0 place-items-center gap-0.5 px-0.5 py-2 text-center transition hover:text-slate-950 dark:hover:text-white',
                 item.active && 'text-purple-600 dark:text-purple-400',
               )}
             >
               <Icon className="h-5 w-5" />
-              <span className="max-w-full text-center leading-tight">{item.label}</span>
+              <span className="max-w-full break-words leading-[1.05]">{item.label}</span>
             </Link>
           )
         })}

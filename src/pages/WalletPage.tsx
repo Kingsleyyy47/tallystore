@@ -24,6 +24,8 @@ import {
 } from 'lucide-react'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
+import { RecommendationStrip } from '@/components/RecommendationCard'
+import { useRecommendations } from '@/hooks/useRecommendations'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { TopUpWallet } from '@/components/TopUpWallet'
 import { PaymentVerificationCard } from '@/components/PaymentVerificationCard'
@@ -31,6 +33,7 @@ import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
 import { useToast } from '@/hooks/use-toast'
 import { getUserTransactions } from '@/lib/supabase'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 type WalletTab = 'all' | 'funding' | 'purchase' | 'withdrawal'
 
@@ -103,6 +106,7 @@ const formatDateTime = (value: string) => {
 
 export default function WalletPage() {
   const { user, walletBalance, walletLoading, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
+  const { recommendations: recs } = useRecommendations({ limit: 3 })
   const { currency, formatPrice } = useCurrency()
   const { toast } = useToast()
   const [transactions, setTransactions] = useState<any[]>([])
@@ -130,10 +134,16 @@ export default function WalletPage() {
 
   useEffect(() => {
     if (user) {
+      trackRevenueEvent({
+        eventType: 'PAGE_VIEWED',
+        userId: user.id,
+        surface: 'wallet',
+        metadata: { currency },
+      })
       refreshWalletBalance()
       loadTransactions()
     }
-  }, [user, refreshWalletBalance, loadTransactions])
+  }, [currency, loadTransactions, refreshWalletBalance, user])
 
   useEffect(() => {
     const handleTransactionUpdate = () => {
@@ -177,6 +187,16 @@ export default function WalletPage() {
   const handleDownload = () => {
     if (transactions.length === 0) return
 
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'wallet_transaction_export',
+      metadata: {
+        transaction_count: transactions.length,
+        active_tab: activeTab,
+      },
+    })
+
     const rows = [
       ['Transaction', 'Type', 'Amount', 'Status', 'Reference', 'Date'],
       ...transactions.map((transaction) => [
@@ -199,6 +219,11 @@ export default function WalletPage() {
   }
 
   const handleTopUpSuccess = () => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'wallet_topup_completed_refresh',
+    })
     refreshWalletBalance()
     loadTransactions()
     toast({
@@ -212,6 +237,30 @@ export default function WalletPage() {
   const totalTopupsDisplay = showBalances ? formatPrice(totalTopups) : '***'
   const totalSpentDisplay = showBalances ? formatPrice(totalSpent) : '***'
   const currencySymbol = currency === 'USD' ? '$' : '₦'
+
+  const handleWalletTabChange = (value: WalletTab) => {
+    setActiveTab(value)
+    trackRevenueEvent({
+      eventType: 'FILTER_USED',
+      userId: user?.id || null,
+      surface: 'wallet_transactions',
+      metadata: {
+        filter: value,
+        transaction_count: transactions.length,
+      },
+    })
+  }
+
+  const handleWalletSupportClick = (surface: string) => {
+    trackRevenueEvent({
+      eventType: 'SUPPORT_HANDOFF',
+      userId: user?.id || null,
+      surface,
+      metadata: {
+        active_tab: activeTab,
+      },
+    })
+  }
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_18%_0%,rgba(168,85,247,0.12),transparent_30rem),linear-gradient(180deg,#f8fafc_0%,#eef2f7_100%)] text-slate-950 dark:bg-[radial-gradient(circle_at_18%_0%,rgba(126,51,231,0.18),transparent_30rem),linear-gradient(180deg,#05070d_0%,#07111d_100%)] dark:text-white">
@@ -262,7 +311,15 @@ export default function WalletPage() {
                       Your Balance
                       <button
                         type="button"
-                        onClick={toggleBalanceVisibility}
+                        onClick={() => {
+                          trackRevenueEvent({
+                            eventType: showBalances ? 'OFFER_DISMISSED' : 'OFFER_ACCEPTED',
+                            userId: user?.id || null,
+                            surface: 'wallet_balance_visibility',
+                            metadata: { next_visible: !showBalances },
+                          })
+                          toggleBalanceVisibility()
+                        }}
                         className="grid h-7 w-7 place-items-center rounded-full text-purple-100 transition hover:bg-white/10 hover:text-white"
                         aria-label={showBalances ? 'Hide balances' : 'Show balances'}
                       >
@@ -313,6 +370,7 @@ export default function WalletPage() {
 
                 <Link
                   to="/support"
+                  onClick={() => handleWalletSupportClick('wallet_withdraw_shortcut')}
                   className="flex min-h-[82px] min-w-0 items-center gap-2.5 rounded-xl border border-slate-200 bg-white/85 p-3 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[88px] sm:gap-3 sm:p-4"
                 >
                   <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
@@ -326,6 +384,7 @@ export default function WalletPage() {
 
                 <Link
                   to="/support"
+                  onClick={() => handleWalletSupportClick('wallet_transfer_shortcut')}
                   className="flex min-h-[82px] min-w-0 items-center gap-2.5 rounded-xl border border-slate-200 bg-white/85 p-3 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:min-h-[88px] sm:gap-3 sm:p-4"
                 >
                   <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-purple-300/40 text-purple-600 dark:text-purple-300 sm:h-11 sm:w-11">
@@ -360,7 +419,7 @@ export default function WalletPage() {
                   <button
                     key={value}
                     type="button"
-                    onClick={() => setActiveTab(value)}
+                    onClick={() => handleWalletTabChange(value)}
                     className={`relative min-w-0 px-1 py-2.5 text-center text-[11px] font-black leading-tight transition min-[360px]:text-xs sm:px-3 sm:text-sm ${
                       activeTab === value
                         ? 'text-purple-700 dark:text-purple-300'
@@ -559,6 +618,7 @@ export default function WalletPage() {
               </div>
               <Link
                 to="/support"
+                onClick={() => handleWalletSupportClick('wallet_need_help_card')}
                 className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 text-sm font-black text-purple-700 transition hover:bg-purple-50 dark:border-white/10 dark:text-purple-300 dark:hover:bg-white/[0.06]"
               >
                 Contact Support
@@ -584,6 +644,12 @@ export default function WalletPage() {
             </article>
           </aside>
         </div>
+      {recs.length > 0 && (
+        <div className="mx-auto max-w-2xl px-4 pb-8">
+          <RecommendationStrip products={recs} surface="wallet_page" actionType="SHOW_ALTERNATIVE" userId={user?.id} title="Ready to buy something?" />
+        </div>
+      )}
+
       </main>
 
       <Footer />

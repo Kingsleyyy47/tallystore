@@ -24,7 +24,7 @@ interface CryptoBalanceCardProps {
 
 export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
   const { isAdmin, showBalances } = useAuth();
-  const { formatPrice } = useCurrency();
+  const { currency, formatPrice } = useCurrency();
   const [balance, setBalance] = useState<number>(0);
   const [tallyStoreBalance, setTallyStoreBalance] = useState<number>(0);
   const [loading, setLoading] = useState(true);
@@ -122,7 +122,9 @@ export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
     if (amount > balance) {
       toast({
         title: "Insufficient Balance",
-        description: `You only have ₦${balance.toLocaleString()} available`,
+        description: showBalances
+          ? `You only have ${formatPrice(balance)} available`
+          : "You do not have enough available crypto balance for this transfer",
         variant: "destructive",
       });
       return;
@@ -136,27 +138,21 @@ export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
       if (!user) throw new Error("Not authenticated");
 
       // Call the transfer function
-      const { data, error } = await supabase.rpc('transfer_crypto_to_wallet', {
+      const { error } = await supabase.rpc('transfer_crypto_to_wallet', {
         p_user_id: user.id,
         p_amount: amount,
       });
 
       if (error) throw error;
 
-      // Create balance transfer record
-      await supabase.from('balance_transfers').insert({
-        user_id: user.id,
-        amount: amount,
-        from_balance: 'crypto',
-        to_balance: 'tallystore',
-      });
-
       // Refresh balances
       await fetchBalances();
 
       toast({
         title: "Transfer Successful! ✅",
-        description: `₦${amount.toLocaleString()} transferred to your TallyStore balance`,
+        description: showBalances
+          ? `${formatPrice(amount)} transferred to your TallyStore balance`
+          : "Your TallyStore balance has been updated",
       });
 
       // Close modal and reset
@@ -300,13 +296,13 @@ export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Crypto Balance</p>
                 <p className="text-lg font-bold text-orange-600">
-                  {showBalances ? `₦${balance.toLocaleString()}` : '***'}
+                  {showBalances ? formatPrice(balance) : '***'}
                 </p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1">TallyStore Balance</p>
                 <p className="text-lg font-bold text-green-600">
-                  {showBalances ? `₦${tallyStoreBalance.toLocaleString()}` : '***'}
+                  {showBalances ? formatPrice(tallyStoreBalance) : '***'}
                 </p>
               </div>
             </div>
@@ -317,7 +313,7 @@ export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-                    ₦
+                    {currency === 'USD' ? '$' : '₦'}
                   </span>
                   <Input
                     id="transfer-amount"
@@ -341,7 +337,7 @@ export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Available: {showBalances ? `₦${balance.toLocaleString()}` : '***'}
+                Available: {showBalances ? formatPrice(balance) : '***'}
               </p>
             </div>
 
@@ -358,13 +354,13 @@ export function CryptoBalanceCard({ onWithdrawClick }: CryptoBalanceCardProps) {
                       <div className="flex justify-between">
                         <span>Crypto Balance:</span>
                         <span className="font-medium">
-                          -₦{parseFloat(transferAmount).toLocaleString()}
+                          -{formatPrice(parseFloat(transferAmount))}
                         </span>
                       </div>
                       <div className="flex justify-between">
                         <span>TallyStore Balance:</span>
                         <span className="font-medium text-green-600">
-                          +₦{parseFloat(transferAmount).toLocaleString()}
+                          +{formatPrice(parseFloat(transferAmount))}
                         </span>
                       </div>
                     </div>

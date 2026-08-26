@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -21,9 +21,14 @@ import {
 } from 'lucide-react'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
+import { RecommendationStrip } from '@/components/RecommendationCard'
+import { useRecommendations } from '@/hooks/useRecommendations'
 import WalletBalanceWidget from '@/components/WalletBalanceWidget'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
+import { useAuth } from '@/contexts/SimpleAuth'
+import { trackRevenueEvent } from '@/lib/revenue-os'
+import { useCurrency } from '@/contexts/CurrencyContext'
 
 // Web service packages
 const webServices = [
@@ -61,7 +66,7 @@ const webServices = [
       'FREE hosting for 1 year',
       '3 design changes included'
     ],
-    benefits: 'Bring in 5-10 new customers monthly (worth ₦500k+ yearly)',
+    benefits: 'Bring in 5-10 new customers monthly with a stronger yearly pipeline',
     ideal: 'Perfect for: Growing businesses, service providers, consultants'
   },
   {
@@ -81,7 +86,7 @@ const webServices = [
       'FREE hosting for 1 year',
       'Easy-to-use admin panel'
     ],
-    benefits: 'Make money 24/7 without lifting a finger. Our client made ₦2M in 6 months!',
+    benefits: 'Accept online orders and keep your storefront open even when you are busy',
     ideal: 'Perfect for: Clothing stores, electronics, food vendors, any retailer'
   }
 ]
@@ -100,7 +105,7 @@ const benefits = [
   },
   { 
     title: 'Look Professional', 
-    description: 'Customers trust businesses with websites 10x more',
+    description: 'Give customers a clear place to verify what you offer',
     icon: Award 
   },
   { 
@@ -122,6 +127,9 @@ const benefits = [
 
 export default function WebServicesPage() {
   const support = useSupportSettings()
+  const { user } = useAuth()
+  const { recommendations: recs } = useRecommendations({ limit: 3 })
+  const { formatPrice } = useCurrency()
   const supportUrl = support.whatsappUrl || support.telegramUrl || ''
   const [selectedService, setSelectedService] = useState('')
   const [formData, setFormData] = useState({
@@ -138,7 +146,49 @@ export default function WebServicesPage() {
   const [showForm, setShowForm] = useState(false)
   const [submitSuccess, setSubmitSuccess] = useState(false)
 
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'web_services',
+      metadata: {
+        package_count: webServices.length,
+        has_support_url: Boolean(supportUrl),
+      },
+    })
+
+    const today = new Date().toISOString().slice(0, 10)
+    webServices.forEach((service, index) => {
+      trackRevenueEvent({
+        eventType: 'OFFER_SHOWN',
+        userId: user?.id || null,
+        surface: 'web_services_package',
+        metadata: {
+          service_id: service.id,
+          service_name: service.name,
+          position: index + 1,
+          price_ngn: service.price,
+          duration: service.duration,
+          manually_configured_offer: true,
+        },
+        eventId: `OFFER_SHOWN:${today}:web_services:${service.id}`,
+      })
+    })
+  }, [supportUrl, user?.id])
+
   const handleServiceSelect = (serviceId: string) => {
+    const service = webServices.find((entry) => entry.id === serviceId)
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'web_services_package',
+      metadata: {
+        service_id: serviceId,
+        service_name: service?.name || null,
+        price_ngn: service?.price || null,
+        action: 'open_quote_form',
+      },
+    })
     setSelectedService(serviceId)
     setShowForm(true)
     setFormData(prev => ({ ...prev, projectType: serviceId }))
@@ -146,7 +196,21 @@ export default function WebServicesPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    // In real app, this would send to backend
+    const selected = webServices.find((entry) => entry.id === selectedService)
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'web_services_quote_form',
+      metadata: {
+        service_id: selectedService || formData.projectType || null,
+        service_name: selected?.name || null,
+        budget_range: formData.budget || null,
+        timeline: formData.timeline || null,
+        has_company: Boolean(formData.company),
+        has_feature_notes: Boolean(formData.features.trim()),
+        has_description: Boolean(formData.description.trim()),
+      },
+    })
     console.log('Form submitted:', formData)
     setSubmitSuccess(true)
     setShowForm(false)
@@ -154,6 +218,18 @@ export default function WebServicesPage() {
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }))
+  }
+
+  const handleSupportClick = (surface: string) => {
+    trackRevenueEvent({
+      eventType: 'SUPPORT_HANDOFF',
+      userId: user?.id || null,
+      surface,
+      metadata: {
+        destination: supportUrl ? 'configured_support_url' : 'support_center',
+        selected_service_id: selectedService || null,
+      },
+    })
   }
 
   return (
@@ -178,7 +254,7 @@ export default function WebServicesPage() {
           </p>
           <div className="inline-flex items-center gap-2 bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300 px-6 py-3 rounded-lg border border-green-200 dark:border-green-800">
             <Check className="h-5 w-5" />
-            <span className="font-semibold">Starting at just ₦50,000 • Ready in 3-5 days</span>
+            <span className="font-semibold">Starting at just {formatPrice(50000)} • Ready in 3-5 days</span>
           </div>
         </div>
 
@@ -218,32 +294,32 @@ export default function WebServicesPage() {
         <div className="mb-16 bg-gradient-to-br from-primary/10 to-primary/5 dark:from-primary/20 dark:to-primary/10 rounded-2xl p-8 sm:p-12 border border-primary/20">
           <div className="text-center mb-8">
             <h2 className="text-2xl sm:text-3xl font-bold mb-4">
-              How Much Money Can You Make?
+              What a Website Helps You Do
             </h2>
             <p className="text-muted-foreground max-w-2xl mx-auto">
-              Real numbers from real businesses that invested in a website
+              A website gives customers a clearer path to discover, contact, and buy from you.
             </p>
           </div>
           
           <div className="grid md:grid-cols-3 gap-6">
             <Card className="p-6 text-center bg-white dark:bg-gray-800">
-              <div className="text-3xl font-bold text-green-600 mb-2">₦600k+</div>
+              <div className="text-3xl font-bold text-green-600 mb-2">More reach</div>
               <p className="text-sm text-muted-foreground">
-                Extra sales yearly from just 5 new customers/month (₦150k website investment)
+                Help customers find your business from search, social links, and direct referrals.
               </p>
             </Card>
             
             <Card className="p-6 text-center bg-white dark:bg-gray-800 border-2 border-primary">
-              <div className="text-3xl font-bold text-primary mb-2">₦2M</div>
+              <div className="text-3xl font-bold text-primary mb-2">24/7</div>
               <p className="text-sm text-muted-foreground">
-                Made by our fashion store client in 6 months with online store (₦300k investment)
+                Let people inspect your services, send enquiries, or place orders outside business hours.
               </p>
             </Card>
             
             <Card className="p-6 text-center bg-white dark:bg-gray-800">
-              <div className="text-3xl font-bold text-orange-600 mb-2">10x</div>
+              <div className="text-3xl font-bold text-orange-600 mb-2">Trust</div>
               <p className="text-sm text-muted-foreground">
-                More customers trust businesses with professional websites vs those without
+                Present prices, photos, policies, and contact details in one organized place.
               </p>
             </Card>
           </div>
@@ -255,7 +331,7 @@ export default function WebServicesPage() {
             Choose What's Right for Your Business
           </h2>
           <p className="text-center text-muted-foreground mb-8">
-            All packages include FREE hosting for 1 year (₦12,000 value)
+            All packages include FREE hosting for 1 year ({formatPrice(12000)} value)
           </p>
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {webServices.map((service) => (
@@ -275,7 +351,7 @@ export default function WebServicesPage() {
                   <CardTitle className="text-xl mb-2">{service.name}</CardTitle>
                   <p className="text-sm text-muted-foreground font-medium mb-3">{service.tagline}</p>
                   <div className="text-3xl font-bold text-primary">
-                    ₦{service.price.toLocaleString()}
+                    {formatPrice(service.price)}
                   </div>
                   <CardDescription className="flex items-center justify-center gap-1 mt-2">
                     <Clock className="h-4 w-4" />
@@ -286,7 +362,7 @@ export default function WebServicesPage() {
                 <CardContent className="space-y-4">
                   <div className="bg-green-50 dark:bg-green-950 p-3 rounded-lg border border-green-200 dark:border-green-800">
                     <p className="text-sm font-medium text-green-800 dark:text-green-300">
-                      💰 {service.benefits}
+                      {service.benefits}
                     </p>
                   </div>
                   
@@ -381,11 +457,11 @@ export default function WebServicesPage() {
                         <SelectValue placeholder="Select budget range" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="under-100k">Under ₦100,000</SelectItem>
-                        <SelectItem value="100k-300k">₦100,000 - ₦300,000</SelectItem>
-                        <SelectItem value="300k-500k">₦300,000 - ₦500,000</SelectItem>
-                        <SelectItem value="500k-1m">₦500,000 - ₦1,000,000</SelectItem>
-                        <SelectItem value="above-1m">Above ₦1,000,000</SelectItem>
+                        <SelectItem value="under-100k">Under {formatPrice(100000)}</SelectItem>
+                        <SelectItem value="100k-300k">{formatPrice(100000)} - {formatPrice(300000)}</SelectItem>
+                        <SelectItem value="300k-500k">{formatPrice(300000)} - {formatPrice(500000)}</SelectItem>
+                        <SelectItem value="500k-1m">{formatPrice(500000)} - {formatPrice(1000000)}</SelectItem>
+                        <SelectItem value="above-1m">Above {formatPrice(1000000)}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -437,7 +513,15 @@ export default function WebServicesPage() {
                   <Button 
                     type="button" 
                     variant="outline" 
-                    onClick={() => setShowForm(false)}
+                    onClick={() => {
+                      trackRevenueEvent({
+                        eventType: 'OFFER_DISMISSED',
+                        userId: user?.id || null,
+                        surface: 'web_services_quote_form',
+                        metadata: { service_id: selectedService || formData.projectType || null },
+                      })
+                      setShowForm(false)
+                    }}
                     className="h-12"
                   >
                     Cancel
@@ -470,7 +554,7 @@ export default function WebServicesPage() {
               <Award className="h-12 w-12 text-primary mx-auto mb-4" />
               <h3 className="font-semibold text-lg mb-2">Proven Results</h3>
               <p className="text-muted-foreground text-sm">
-                Our clients increase sales by 5-10x within months of launch
+                Clear project scope, practical delivery timelines, and simple handover.
               </p>
             </Card>
             
@@ -502,13 +586,13 @@ export default function WebServicesPage() {
                   <p className="text-xs text-muted-foreground mb-3">Get in touch about your project directly.</p>
                   {supportUrl ? (
                     <Button asChild variant="default" size="sm" className="mt-3 bg-emerald-600 hover:bg-emerald-700">
-                      <a href={supportUrl} target="_blank" rel="noopener noreferrer">
+                      <a href={supportUrl} target="_blank" rel="noopener noreferrer" onClick={() => handleSupportClick('web_services_contact_card')}>
                         Message us
                       </a>
                     </Button>
                   ) : (
                     <Button asChild variant="default" size="sm" className="mt-3 bg-emerald-600 hover:bg-emerald-700">
-                      <a href="/support">Support Center</a>
+                      <a href="/support" onClick={() => handleSupportClick('web_services_contact_card')}>Support Center</a>
                     </Button>
                   )}
                 </div>
@@ -521,13 +605,13 @@ export default function WebServicesPage() {
                   <p className="text-xs text-muted-foreground mb-3">Send your business name, project type, and timeline.</p>
                   {supportUrl ? (
                     <Button asChild variant="outline" size="sm">
-                      <a href={supportUrl} target="_blank" rel="noopener noreferrer">
+                      <a href={supportUrl} target="_blank" rel="noopener noreferrer" onClick={() => handleSupportClick('web_services_questions_card')}>
                         Message support
                       </a>
                     </Button>
                   ) : (
                     <Button asChild variant="outline" size="sm">
-                      <a href="/support">Visit support</a>
+                      <a href="/support" onClick={() => handleSupportClick('web_services_questions_card')}>Visit support</a>
                     </Button>
                   )}
                 </div>
@@ -536,12 +620,18 @@ export default function WebServicesPage() {
             
             <div className="mt-6 p-4 bg-yellow-50 dark:bg-yellow-950 rounded-lg border border-yellow-200 dark:border-yellow-800 text-center">
               <p className="text-sm font-medium text-yellow-800 dark:text-yellow-300">
-                ⚡ Limited Offer: Book this month and get FREE logo design (₦15,000 value)
+                Prepare your logo, photos, product list, and preferred contact links before requesting a quote.
               </p>
             </div>
           </CardContent>
         </Card>
       </div>
+
+      {recs.length > 0 && (
+        <div className="mx-auto max-w-7xl px-4 pb-10">
+          <RecommendationStrip products={recs} surface="web_services_page" actionType="SHOW_ALTERNATIVE" userId={user?.id} title="Explore more products" />
+        </div>
+      )}
 
       <Footer />
     </div>

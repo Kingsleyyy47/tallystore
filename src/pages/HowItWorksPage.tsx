@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
@@ -23,8 +24,20 @@ import {
   Tag,
   Sparkles,
 } from 'lucide-react'
+import { useAuth } from '@/contexts/SimpleAuth'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 export default function HowItWorksPage() {
+  const { user } = useAuth()
+
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'how_it_works',
+    })
+  }, [user?.id])
+
   return (
     <div className="min-h-screen bg-background">
       <NavbarAuth />
@@ -120,7 +133,7 @@ export default function HowItWorksPage() {
           </div>
 
           <p className="text-muted-foreground mb-6">
-            You can fund your wallet using either of two payment gateways. They work differently,
+            You can fund your wallet using either of two payment methods. They work differently,
             so pick whichever fits how you like to pay:
           </p>
 
@@ -131,7 +144,7 @@ export default function HowItWorksPage() {
                   <div className="p-2.5 rounded-lg bg-blue-100 dark:bg-blue-900/30">
                     <CreditCard className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                   </div>
-                  <CardTitle>Ercas Pay</CardTitle>
+                  <CardTitle>Secure Checkout</CardTitle>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3 text-sm text-muted-foreground">
@@ -140,7 +153,7 @@ export default function HowItWorksPage() {
                   where you can pay by card, bank transfer, or USSD.
                 </p>
                 <p>
-                  <span className="font-medium text-foreground">Heads up:</span> because Ercas Pay
+                  <span className="font-medium text-foreground">Heads up:</span> because secure checkout
                   generates a fresh checkout session every time, the bank account number you're
                   asked to pay into can be different on each top-up. That's normal — always pay into
                   whichever account number is shown on the checkout screen in front of you at that
@@ -156,12 +169,12 @@ export default function HowItWorksPage() {
                   <div className="p-2.5 rounded-lg bg-purple-100 dark:bg-purple-900/30">
                     <Landmark className="h-5 w-5 text-purple-600 dark:text-purple-400" />
                   </div>
-                  <CardTitle>PocketFi</CardTitle>
+                  <CardTitle>Bank Transfer</CardTitle>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3 text-sm text-muted-foreground">
                 <p>
-                  PocketFi gives you <span className="font-medium text-foreground">one permanent virtual
+                  Bank transfer gives you <span className="font-medium text-foreground">one permanent virtual
                   bank account</span> tied to your TallyStore account — it's generated once and stays
                   the same every time.
                 </p>
@@ -179,7 +192,7 @@ export default function HowItWorksPage() {
             <CardContent className="p-5 flex items-start gap-3">
               <ShieldCheck className="h-5 w-5 text-primary mt-0.5 flex-shrink-0" />
               <p className="text-sm text-muted-foreground">
-                Both gateways are connected directly to your account, and both credit your wallet
+                Both payment methods are connected directly to your account, and both credit your wallet
                 automatically — you never need to message support to confirm a deposit went through.
                 If a deposit doesn't reflect after a few minutes, check Wallet → Transaction History
                 before reaching out.
@@ -237,7 +250,15 @@ export default function HowItWorksPage() {
           </div>
 
           <div className="mt-6 text-center">
-            <Link to="/referrals">
+            <Link
+              to="/referrals"
+              onClick={() => trackRevenueEvent({
+                eventType: 'OFFER_ACCEPTED',
+                userId: user?.id || null,
+                surface: 'how_it_works_rewards_cta',
+                metadata: { destination: 'referrals' },
+              })}
+            >
               <Button>
                 <Gift className="h-4 w-4 mr-2" />
                 Open Rewards
@@ -267,9 +288,9 @@ export default function HowItWorksPage() {
                 </AccordionItem>
 
                 <AccordionItem value="q2">
-                  <AccordionTrigger>Why does Ercas Pay show me a different account number each time?</AccordionTrigger>
+                  <AccordionTrigger>Why does checkout show me a different account number each time?</AccordionTrigger>
                   <AccordionContent>
-                    Ercas Pay creates a brand-new secure checkout session for every top-up, and the
+                    Secure checkout creates a brand-new payment session for every top-up, and the
                     bank account tied to that session can change. Always use the number shown on the
                     screen at the time of payment — it's still your money landing in your wallet, just
                     routed through a fresh session each time.
@@ -277,10 +298,10 @@ export default function HowItWorksPage() {
                 </AccordionItem>
 
                 <AccordionItem value="q3">
-                  <AccordionTrigger>What's the difference between Ercas Pay and PocketFi?</AccordionTrigger>
+                  <AccordionTrigger>What's the difference between checkout and bank transfer?</AccordionTrigger>
                   <AccordionContent>
-                    Ercas Pay is a one-time checkout (card, bank transfer, or USSD) that you go
-                    through each time you top up. PocketFi gives you one fixed account number you can
+                    Secure checkout is a one-time flow (card, bank transfer, or USSD) that you go
+                    through each time you top up. Bank transfer gives you one fixed account number you can
                     save and transfer to anytime, without going through checkout again.
                   </AccordionContent>
                 </AccordionItem>
@@ -288,7 +309,7 @@ export default function HowItWorksPage() {
                 <AccordionItem value="q4">
                   <AccordionTrigger>My deposit hasn't shown up yet — what do I do?</AccordionTrigger>
                   <AccordionContent>
-                    Give it a few minutes — both gateways credit automatically. Check Wallet →
+                    Give it a few minutes — both payment methods credit automatically. Check Wallet →
                     Transaction History first. If it still hasn't appeared after that, contact
                     Support with your payment reference.
                   </AccordionContent>
@@ -325,7 +346,16 @@ export default function HowItWorksPage() {
 
           <div className="mt-8 text-center text-sm text-muted-foreground">
             Still have a question?{' '}
-            <Link to="/support" className="text-primary hover:underline font-medium">
+            <Link
+              to="/support"
+              className="text-primary hover:underline font-medium"
+              onClick={() => trackRevenueEvent({
+                eventType: 'SUPPORT_HANDOFF',
+                userId: user?.id || null,
+                surface: 'how_it_works',
+                metadata: { destination: 'support' },
+              })}
+            >
               Reach out to Support
             </Link>
           </div>

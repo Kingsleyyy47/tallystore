@@ -4,25 +4,10 @@ import { getGlobalActivityFeed, type GlobalActivityItem } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useCurrency } from '@/contexts/CurrencyContext'
 
-// Site-wide "social proof" activity feed shown on every page. Mixes real,
-// masked activity (deposits + completed orders, fetched via the
-// get_recent_activity_feed Postgres function) with a small pool of simulated
-// filler entries so the feed never looks empty or stale. Dismissible per
-// browser session via sessionStorage.
+// Site-wide activity feed shown on every page. It only shows real, masked
+// deposits and completed orders from get_recent_activity_feed().
 
 const DISMISS_KEY = 'global_activity_feed_dismissed'
-const GATEWAYS = ['Ercas Pay', 'PocketFi'] as const
-const SIM_NAMES = ['Chi***', 'Tha***', 'Emm***', 'Big***', 'Uch***', 'Mar***', 'Dav***', 'Fav***', 'Pre***', 'Jos***']
-const SIM_PRODUCT_LABELS = [
-  'TikTok Aged Account',
-  'Facebook Aged Account',
-  'Instagram Account',
-  'Twitter (X) Account',
-  'HMA VPN',
-  'SMS Verification Number',
-  'Telegram Account',
-]
-const SIM_DEPOSIT_AMOUNTS = [500, 1000, 1500, 2000, 3000, 5000, 10000]
 
 interface FeedRow {
   id: string
@@ -31,33 +16,6 @@ interface FeedRow {
   amount: number
   label: string
   ts: number // ms epoch, used for relative time + sorting
-}
-
-function randomFrom<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]
-}
-
-function makeSimulatedRow(): FeedRow {
-  const isDeposit = Math.random() < 0.5
-  const ts = Date.now() - Math.floor(Math.random() * 60_000)
-  if (isDeposit) {
-    return {
-      id: `sim-${ts}-${Math.random()}`,
-      kind: 'deposit',
-      maskedName: randomFrom(SIM_NAMES),
-      amount: randomFrom(SIM_DEPOSIT_AMOUNTS),
-      label: `via ${randomFrom(GATEWAYS)}`,
-      ts,
-    }
-  }
-  return {
-    id: `sim-${ts}-${Math.random()}`,
-    kind: 'order',
-    maskedName: randomFrom(SIM_NAMES),
-    amount: 0,
-    label: randomFrom(SIM_PRODUCT_LABELS),
-    ts,
-  }
 }
 
 function fromRealItem(item: GlobalActivityItem, index: number): FeedRow {
@@ -96,34 +54,23 @@ export default function GlobalActivityFeed() {
     rowsRef.current = rows
   }, [rows])
 
-  // Restore dismissal state (per browser session) and seed with simulated
-  // rows immediately so the feed never renders empty while real data loads.
+  // Restore dismissal state per browser session.
   useEffect(() => {
     try {
       setDismissed(sessionStorage.getItem(DISMISS_KEY) === 'true')
     } catch {
       // sessionStorage unavailable (e.g. privacy mode) - default to shown
     }
-    setRows(Array.from({ length: 5 }, makeSimulatedRow).sort((a, b) => b.ts - a.ts))
   }, [])
 
-  // Pull real activity on mount and periodically, merging it in front of
-  // whatever simulated rows are currently showing.
+  // Pull real activity on mount and periodically.
   useEffect(() => {
     let isMounted = true
 
     const loadReal = async () => {
       const real = await getGlobalActivityFeed(MAX_ROWS)
-      if (!isMounted || real.length === 0) return
-
-      setRows((prev) => {
-        const realRows = real.map(fromRealItem)
-        const simStillRecent = prev.filter((r) => r.id.startsWith('sim-'))
-        const merged = [...realRows, ...simStillRecent]
-          .sort((a, b) => b.ts - a.ts)
-          .slice(0, MAX_ROWS)
-        return merged
-      })
+      if (!isMounted) return
+      setRows(real.map(fromRealItem).sort((a, b) => b.ts - a.ts).slice(0, MAX_ROWS))
     }
 
     loadReal()
@@ -132,15 +79,6 @@ export default function GlobalActivityFeed() {
       isMounted = false
       window.clearInterval(refreshInterval)
     }
-  }, [])
-
-  // Periodically inject a fresh simulated row at the top so the feed feels
-  // alive between real-data refreshes, capped at MAX_ROWS total.
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      setRows((prev) => [makeSimulatedRow(), ...prev].slice(0, MAX_ROWS))
-    }, 18_000 + Math.random() * 9_000)
-    return () => window.clearInterval(interval)
   }, [])
 
   // Re-render every 30s purely to keep relative timestamps ("2m ago") fresh.
@@ -196,7 +134,11 @@ export default function GlobalActivityFeed() {
 
         {!collapsed && (
           <div className="max-h-[280px] overflow-y-auto divide-y">
-            {rows.map((row) => (
+            {rows.length === 0 ? (
+              <div className="px-3 py-4 text-xs text-muted-foreground">
+                Recent verified activity will appear here after completed purchases or deposits.
+              </div>
+            ) : rows.map((row) => (
               <div key={row.id} className="flex items-center gap-2.5 px-3 py-2">
                 <div
                   className={cn(

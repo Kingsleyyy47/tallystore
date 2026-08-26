@@ -77,7 +77,21 @@ Users have TWO balances in `profiles`:
 ## Key Secrets (Supabase Edge Functions)
 - `SAGECLOUD_PUBLIC_KEY`, `SAGECLOUD_SECRET_KEY`
 - `NOWPAYMENTS_API_KEY`, `NOWPAYMENTS_IPN_SECRET`
-- `SMM_PANEL_API_KEY` (940e5626409a55af066916ebdd7f3561)
+- `SMM_PANEL_API_KEY`
+- `DAISYSMS_API_KEY`, `DAISYSMS_WEBHOOK_SECRET`
+- `POCKETFI_PUBLIC_KEY`, `POCKETFI_BUSINESS_ID`, `POCKETFI_SECRET_API_KEY`
+- `ERCASPAY_SECRET_KEY`
+- `REVENUE_OS_CRON_SECRET`
+- Optional dedicated cron secrets: `PAYMENT_RECOVERY_CRON_SECRET`, `SMM_CRON_SECRET`
+
+Provider webhook deployment notes:
+- `nowpayments-webhook` must have JWT verification off and must receive a valid `x-nowpayments-sig` signed with `NOWPAYMENTS_IPN_SECRET`.
+- `webhook-pocketfi` must have JWT verification off and must receive `POCKETFI_WEBHOOK_SECRET` or `POCKETFI_SECRET_API_KEY` by header, bearer token, `?token=...`, or supported HMAC signature.
+- `smsbus?webhook=1` must have JWT verification off and must receive `DAISYSMS_WEBHOOK_SECRET` by header, bearer token, or `?token=...`.
+- `apply-referral` must keep JWT verification on.
+- `revenue-os-maintenance` must have JWT verification off for scheduled calls, and scheduled/external cron must send `x-cron-secret: REVENUE_OS_CRON_SECRET`.
+- `check-pending-payments` must have JWT verification off for scheduled calls, and scheduled/external cron must send `x-cron-secret: PAYMENT_RECOVERY_CRON_SECRET` or `REVENUE_OS_CRON_SECRET`.
+- `smm-check-all-orders` must have JWT verification off for scheduled calls, and scheduled/external cron must send `x-cron-secret: SMM_CRON_SECRET` or `REVENUE_OS_CRON_SECRET`.
 
 ## Frontend Routes
 | Route | Page | Access |

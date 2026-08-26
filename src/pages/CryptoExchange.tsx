@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,10 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import NavbarAuth from "@/components/NavbarAuth";
 import PageBreadcrumb from "@/components/PageBreadcrumb";
+import { useAuth } from "@/contexts/SimpleAuth";
+import { blockStaffPurchase } from "@/lib/staffPurchaseGuard";
+import { getRevenueRequestContext, getRevenueVisitorId, trackRevenueEvent } from "@/lib/revenue-os";
+import { useCurrency } from "@/contexts/CurrencyContext";
 
 interface CryptoOption {
   ticker: string;
@@ -59,19 +63,94 @@ export default function CryptoExchange() {
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [copied, setCopied] = useState(false);
   const [availableCryptos, setAvailableCryptos] = useState<CryptoOption[]>([]);
+  const [personalCryptoCounts, setPersonalCryptoCounts] = useState<Record<string, number>>({});
   const [cryptoSearchOpen, setCryptoSearchOpen] = useState(false);
   const [cryptoSearchQuery, setCryptoSearchQuery] = useState("");
   const [minAmount, setMinAmount] = useState<number>(0);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { user: authUser, isStaff, isAdmin } = useAuth();
+  const { formatPrice } = useCurrency();
 
-  // Popular cryptocurrencies for quick access
-  const popularCryptos = ["btc", "eth", "usdt", "usdc", "bnb", "ltc", "trx", "xrp"];
+  const fetchPersonalCryptoCounts = useCallback(async () => {
+    if (!authUser?.id) {
+      setPersonalCryptoCounts({});
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('crypto_transactions')
+        .select('crypto_type, status')
+        .eq('user_id', authUser.id)
+        .limit(200);
+      if (error) throw error;
+
+      const counts: Record<string, number> = {};
+      (data || []).forEach((tx) => {
+        const status = String(tx.status || '').toLowerCase();
+        if (!['completed', 'success', 'successful'].includes(status)) return;
+        const key = String(tx.crypto_type || '').toLowerCase();
+        if (key) counts[key] = (counts[key] || 0) + 1;
+      });
+      setPersonalCryptoCounts(counts);
+    } catch (error) {
+      console.error('Error fetching personal crypto counts:', error);
+      setPersonalCryptoCounts({});
+    }
+  }, [authUser?.id]);
 
   // Fetch available cryptocurrencies from NowPayments
   useEffect(() => {
     fetchAvailableCryptos();
   }, []);
+
+  useEffect(() => {
+    fetchPersonalCryptoCounts();
+  }, [fetchPersonalCryptoCounts]);
+
+  const orderedAvailableCryptos = useMemo(() => {
+    return [...availableCryptos].sort((left, right) => {
+      const leftKey = left.ticker.toLowerCase();
+      const rightKey = right.ticker.toLowerCase();
+      const personalDiff = (personalCryptoCounts[rightKey] || 0) - (personalCryptoCounts[leftKey] || 0);
+      if (personalDiff !== 0) return personalDiff;
+      return left.name.localeCompare(right.name);
+    });
+  }, [availableCryptos, personalCryptoCounts]);
+
+  useEffect(() => {
+    const day = new Date().toISOString().slice(0, 10);
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: authUser?.id || null,
+      surface: 'crypto_sell',
+      eventId: `PAGE_VIEWED:${day}:crypto_sell:${authUser?.id || 'anon'}`,
+      metadata: { selected_crypto: crypto.toUpperCase(), selected_network: network || null },
+    });
+  }, [authUser?.id, crypto, network]);
+
+  useEffect(() => {
+    if (orderedAvailableCryptos.length === 0) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const actorKey = authUser?.id || getRevenueVisitorId() || 'anonymous';
+    orderedAvailableCryptos.slice(0, 40).forEach((coin, index) => {
+      trackRevenueEvent({
+        eventType: 'PRODUCT_IMPRESSION',
+        userId: authUser?.id || null,
+        surface: 'crypto_sell_assets',
+        eventId: `PRODUCT_IMPRESSION:${day}:${actorKey}:crypto_sell:${coin.ticker}`,
+        metadata: {
+          crypto_type: coin.ticker.toUpperCase(),
+          crypto_name: coin.name,
+          networks: coin.networks,
+          customer_repeat_asset: (personalCryptoCounts[coin.ticker.toLowerCase()] || 0) > 0,
+          personal_sell_count: personalCryptoCounts[coin.ticker.toLowerCase()] || 0,
+          position: index + 1,
+        },
+      });
+    });
+  }, [authUser?.id, orderedAvailableCryptos, personalCryptoCounts]);
 
   // Countdown timer for deposit expiry
   useEffect(() => {
@@ -114,6 +193,50 @@ export default function CryptoExchange() {
     }
   }, [crypto]);
 
+  useEffect(() => {
+    const cryptoAmount = parseFloat(amount);
+    if (!cryptoAmount || cryptoAmount <= 0 || !nairaAmount || nairaAmount <= 0) return;
+    if (cryptoAmount < minAmount) return;
+
+    const day = new Date().toISOString().slice(0, 10);
+    const selectedCoin = availableCryptos.find((coin) => coin.ticker.toLowerCase() === crypto.toLowerCase());
+    trackRevenueEvent({
+      eventType: 'PAYMENT_PROVIDER_LOADED',
+      userId: authUser?.id || null,
+      surface: 'crypto_sell',
+      eventId: `PAYMENT_PROVIDER_LOADED:${day}:crypto_sell:${authUser?.id || 'anon'}:${crypto.toUpperCase()}:${network || 'auto'}:${cryptoAmount}:${nairaAmount}`,
+      metadata: {
+        provider: 'nowpayments',
+        crypto_type: crypto.toUpperCase(),
+        crypto_name: selectedCoin?.name || null,
+        crypto_amount: cryptoAmount,
+        client_display_naira_amount: nairaAmount,
+        network: network && network !== 'auto' ? network : null,
+        minimum_crypto_amount: minAmount,
+        personal_sell_count: personalCryptoCounts[crypto.toLowerCase()] || 0,
+      },
+    });
+  }, [amount, authUser?.id, availableCryptos, crypto, minAmount, nairaAmount, network, personalCryptoCounts]);
+
+  const selectCrypto = (value: string) => {
+    const selectedCoin = availableCryptos.find((coin) => coin.ticker.toLowerCase() === value.toLowerCase());
+    setCrypto(value);
+    setCryptoSearchOpen(false);
+    setCryptoSearchQuery("");
+    trackRevenueEvent({
+      eventType: 'PRODUCT_CLICKED',
+      userId: authUser?.id || null,
+      surface: 'crypto_sell_assets',
+      eventId: `PRODUCT_CLICKED:${crypto.randomUUID()}:crypto_sell:${value}`,
+      metadata: {
+        crypto_type: value.toUpperCase(),
+        crypto_name: selectedCoin?.name || null,
+        networks: selectedCoin?.networks || [],
+        personal_sell_count: personalCryptoCounts[value.toLowerCase()] || 0,
+      },
+    });
+  };
+
   const fetchAvailableCryptos = async () => {
     try {
       setLoadingCryptos(true);
@@ -129,7 +252,6 @@ export default function CryptoExchange() {
         throw new Error(data.error || 'Failed to fetch cryptocurrencies');
       }
 
-      console.log(`✅ Loaded ${data.count} cryptocurrencies from NowPayments`);
       setAvailableCryptos(data.cryptocurrencies);
 
     } catch (error: any) {
@@ -186,7 +308,6 @@ export default function CryptoExchange() {
       }
 
       setNairaAmount(data.ngn_amount);
-      console.log(`Live rate: ${cryptoAmt} ${crypto.toUpperCase()} = ₦${data.ngn_amount.toLocaleString()}`);
 
     } catch (error: any) {
       console.error('Error fetching price estimate:', error);
@@ -205,6 +326,8 @@ export default function CryptoExchange() {
   };
 
   const handleSell = async () => {
+    if (blockStaffPurchase(isStaff, isAdmin, toast)) return;
+
     const cryptoAmount = parseFloat(amount);
 
     // Validation
@@ -236,89 +359,65 @@ export default function CryptoExchange() {
     }
 
     setLoading(true);
+    const clientAttemptId = `crypto-sell-${Date.now()}-${globalThis.crypto.randomUUID()}`;
 
     try {
       // Get fresh user data from Supabase (not cached session)
       const { data: { user }, error: authError } = await supabase.auth.getUser();
-      
-      console.log('🔐 Auth check:', {
-        hasUser: !!user,
-        userId: user?.id,
-        userEmail: user?.email,
-        authError: authError,
-      });
 
       if (authError || !user) {
-        console.error('❌ Not authenticated:', { authError, hasUser: !!user });
+        console.error('Not authenticated:', { hasError: !!authError, hasUser: !!user });
         
         // Try to refresh the session
-        console.log('🔄 Attempting to refresh session...');
         const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
         
         if (refreshError || !session) {
-          console.error('❌ Session refresh failed:', refreshError);
+          console.error('Session refresh failed:', { hasError: !!refreshError });
           throw new Error("Your session expired. Please log out and log back in.");
         }
         
-        console.log('✅ Session refreshed, retrying...');
         // Retry getting user after refresh
         const { data: { user: refreshedUser }, error: retryError } = await supabase.auth.getUser();
         
         if (retryError || !refreshedUser) {
-          console.error('❌ Still not authenticated after refresh:', retryError);
+          console.error('Still not authenticated after refresh:', { hasError: !!retryError });
           throw new Error("Authentication failed. Please log out and log back in.");
         }
         
-        console.log('✅ User authenticated after refresh:', refreshedUser.id);
-      } else {
-        console.log('✅ User authenticated, calling Edge Function...');
       }
 
-      // Get session token for explicit authorization
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session?.access_token) {
-        console.error('❌ No access token found in session');
-        throw new Error("Session error. Please log out and log back in.");
-      }
-
-      console.log('✅ Got access token, length:', session.access_token.length);
-
-      // Call Edge Function to create sell order with explicit auth
-      // Using fetch directly to debug 401 errors
-      const response = await fetch('https://dssvvswvqnxanyzfhixf.supabase.co/functions/v1/create-crypto-sell-order', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      trackRevenueEvent({
+        eventType: 'BUY_CLICKED',
+        userId: user?.id || authUser?.id || null,
+        surface: 'crypto_sell',
+        eventId: `BUY_CLICKED:crypto_sell:${clientAttemptId}`,
+        metadata: {
           crypto_type: crypto.toUpperCase(),
           crypto_amount: cryptoAmount,
-          naira_amount: nairaAmount,
-          network: network && network !== 'auto' ? network : undefined,
-        }),
+          client_display_naira_amount: nairaAmount,
+          network: network && network !== 'auto' ? network : null,
+          personal_sell_count: personalCryptoCounts[crypto.toLowerCase()] || 0,
+        },
       });
 
-      const responseText = await response.text();
-      let data;
-      try {
-        data = JSON.parse(responseText);
-      } catch (e) {
-        console.error('❌ Failed to parse response JSON:', responseText);
-        throw new Error(`Server returned non-JSON response: ${response.status} ${response.statusText}`);
-      }
+      const { data, error } = await supabase.functions.invoke('create-crypto-sell-order', {
+        body: {
+          crypto_type: crypto.toUpperCase(),
+          crypto_amount: cryptoAmount,
+          client_display_naira_amount: nairaAmount,
+          network: network && network !== 'auto' ? network : undefined,
+          idempotency_key: clientAttemptId,
+          revenue_context: getRevenueRequestContext(),
+        },
+      });
 
-      if (!response.ok) {
-        console.error('❌ Edge function HTTP error:', response.status, response.statusText);
-        console.error('❌ Error body:', data);
-        throw new Error(data.error || data.error_details || `HTTP Error: ${response.status}`);
+      if (error) {
+        console.error('Edge function error:', error);
+        throw new Error(error.message || 'Failed to create sell order');
       }
-
-      console.log('✅ Edge function response:', data);
 
       if (!data.success) {
-        console.error('❌ Backend error:', data);
+        console.error('Backend error:', { hasDetails: !!data.error_details, hasError: !!data.error });
         const errorMsg = data.error_details || data.error || 'Failed to create sell order';
         throw new Error(errorMsg);
       }
@@ -332,7 +431,7 @@ export default function CryptoExchange() {
         transactionId: data.transaction_id,
         cryptoType: crypto.toUpperCase(),
         cryptoAmount: payment.pay_amount, // Use NowPayments' calculated amount (includes fee)
-        nairaAmount: nairaAmount,
+        nairaAmount: Number(data.naira_amount || nairaAmount),
         depositAddress: payment.pay_address,
         expiresAt: payment.expiration_date,
         network: payment.network || network,
@@ -419,11 +518,17 @@ export default function CryptoExchange() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const selectedCrypto = availableCryptos.find(c => c.ticker === crypto);
-  const filteredCryptos = availableCryptos.filter(c => 
+  const selectedCrypto = orderedAvailableCryptos.find(c => c.ticker === crypto);
+  const filteredCryptos = orderedAvailableCryptos.filter(c =>
     c.ticker.toLowerCase().includes(cryptoSearchQuery.toLowerCase()) ||
     c.name.toLowerCase().includes(cryptoSearchQuery.toLowerCase())
   );
+  const personalFilteredCryptos = filteredCryptos.filter(c => (personalCryptoCounts[c.ticker.toLowerCase()] || 0) > 0);
+  const featuredCryptos = personalFilteredCryptos.length > 0
+    ? personalFilteredCryptos
+    : cryptoSearchQuery.trim() ? [] : filteredCryptos.slice(0, 8);
+  const featuredTickers = new Set(featuredCryptos.map(c => c.ticker));
+  const remainingCryptos = filteredCryptos.filter(c => !featuredTickers.has(c.ticker));
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
@@ -458,7 +563,7 @@ export default function CryptoExchange() {
             </h2>
           </div>
           <p className="text-sm sm:text-base text-muted-foreground px-4">
-            Powered by NowPayments • Live rates • Instant conversion
+            Live rates • Instant conversion to your balance
           </p>
         </div>
 
@@ -513,17 +618,14 @@ export default function CryptoExchange() {
                     />
                     <CommandList>
                       <CommandEmpty>No cryptocurrency found.</CommandEmpty>
-                      <CommandGroup heading="Popular">
-                        {filteredCryptos
-                          .filter(c => popularCryptos.includes(c.ticker))
-                          .map((c) => (
+                      {featuredCryptos.length > 0 && (
+                        <CommandGroup heading={personalFilteredCryptos.length > 0 ? "Your recent assets" : "Available now"}>
+                          {featuredCryptos.map((c) => (
                             <CommandItem
                               key={c.ticker}
                               value={c.ticker}
                               onSelect={(value) => {
-                                setCrypto(value);
-                                setCryptoSearchOpen(false);
-                                setCryptoSearchQuery("");
+                                selectCrypto(value);
                               }}
                             >
                               <Bitcoin className="mr-2 h-4 w-4" />
@@ -531,18 +633,15 @@ export default function CryptoExchange() {
                               <span className="ml-2 text-xs text-muted-foreground">({c.ticker.toUpperCase()})</span>
                             </CommandItem>
                           ))}
-                      </CommandGroup>
+                        </CommandGroup>
+                      )}
                       <CommandGroup heading="All Cryptocurrencies">
-                        {filteredCryptos
-                          .filter(c => !popularCryptos.includes(c.ticker))
-                          .map((c) => (
+                        {remainingCryptos.map((c) => (
                             <CommandItem
                               key={c.ticker}
                               value={c.ticker}
                               onSelect={(value) => {
-                                setCrypto(value);
-                                setCryptoSearchOpen(false);
-                                setCryptoSearchQuery("");
+                                selectCrypto(value);
                               }}
                             >
                               <Bitcoin className="mr-2 h-4 w-4" />
@@ -626,7 +725,7 @@ export default function CryptoExchange() {
                     <div className="flex justify-between items-center">
                       <span className="text-sm text-muted-foreground">Live Rate:</span>
                       <span className="text-sm font-medium text-green-700">
-                        Updated from NowPayments ✓
+                        Updated live
                       </span>
                     </div>
                     <div className="flex justify-between items-center">
@@ -637,7 +736,7 @@ export default function CryptoExchange() {
                       <div className="flex justify-between items-center">
                         <span className="font-semibold text-base">You'll Receive:</span>
                         <span className="text-3xl font-bold text-green-700">
-                          ₦{nairaAmount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {formatPrice(nairaAmount)}
                         </span>
                       </div>
                     </div>

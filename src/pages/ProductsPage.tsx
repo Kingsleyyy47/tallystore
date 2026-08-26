@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   ArrowRight,
@@ -24,34 +24,44 @@ import CategorySidebar from '@/components/CategorySidebar'
 import CategoryLogo from '@/components/CategoryLogo'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useAuth } from '@/contexts/SimpleAuth'
+import { isCustomerSellableProduct } from '@/lib/productAvailability'
 import {
   getAllProductGroups,
   getAvailableAccountIdsByProductGroup,
   getCategories,
   getAppSetting,
   getRecentlyRestockedProductGroupIds,
+  getFavoriteProductGroupIds,
   getTopSellingProductGroupIds,
   getUserPurchaseHistory,
   testConnection,
   type Category,
   type ProductGroup,
 } from '@/lib/supabase'
+import {
+  auditCroDecision,
+  decideNextBestCommerceAction,
+  estimatePurchaseIntent,
+  getCustomerPressureState,
+  getRevenueVisitorId,
+  loadCustomerRelationshipBoosts,
+  loadRevenueOsSettings,
+  loadRunningCroActionPlans,
+  loadRunningCroExperiments,
+  rankProductsForRevenueOs,
+  retrieveProductsForQuery,
+  resolveCroAssignment,
+  trackRevenueEvent,
+  type RevenueOsSettings,
+} from '@/lib/revenue-os'
 
 type ProductCollection = 'popular' | 'refilled' | 'new'
 type SortMode = 'recommended' | 'newest' | 'price-low' | 'price-high' | 'stock'
 
 const PAGE_SIZE = 12
 
-function canAutoFulfill(productGroup: ProductGroup) {
-  return !!(
-    (productGroup.auto_fulfill_enabled && productGroup.muabanvia_product_id) ||
-    productGroup.shopclone_product_id ||
-    productGroup.shopviaclone_product_id
-  )
-}
-
 function isPurchasable(productGroup: ProductGroup) {
-  return productGroup.stock_count > 0 || canAutoFulfill(productGroup)
+  return isCustomerSellableProduct(productGroup)
 }
 
 export default function ProductsPage() {
@@ -65,15 +75,25 @@ export default function ProductsPage() {
   const [restockedIds, setRestockedIds] = useState<string[]>([])
   const [, setAccountMap] = useState<Record<string, string>>({})
   const [topSellingIds, setTopSellingIds] = useState<string[]>([])
+  const [favoriteProductIds, setFavoriteProductIds] = useState<string[]>([])
   const [myProductGroupCounts, setMyProductGroupCounts] = useState<Record<string, number>>({})
   const [myCategoryCounts, setMyCategoryCounts] = useState<Record<string, number>>({})
+  const [myProductLastPurchasedAt, setMyProductLastPurchasedAt] = useState<Record<string, string>>({})
+  const [myCategoryLastPurchasedAt, setMyCategoryLastPurchasedAt] = useState<Record<string, string>>({})
+  const [myLastProductGroupId, setMyLastProductGroupId] = useState<string | null>(null)
+  const [relationshipBoosts, setRelationshipBoosts] = useState<Record<string, number>>({})
   const [recommendationAutomationEnabled, setRecommendationAutomationEnabled] = useState(true)
+  const [revenueOsSettings, setRevenueOsSettings] = useState<RevenueOsSettings | null>(null)
+  const [runningCroExperiments, setRunningCroExperiments] = useState<any[]>([])
+  const [runningCroActionPlans, setRunningCroActionPlans] = useState<any[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
   const [activeCollection, setActiveCollection] = useState<ProductCollection>('popular')
   const [sortMode, setSortMode] = useState<SortMode>('recommended')
   const [currentPage, setCurrentPage] = useState(1)
+  const didTrackInitialFilter = useRef(false)
+  const didTrackInitialSort = useRef(false)
 
   const loadData = useCallback(async (showPageLoader = false) => {
     try {
@@ -83,20 +103,28 @@ export default function ProductsPage() {
       const connectionOk = await testConnection()
       if (!connectionOk) throw new Error('Failed to connect to database')
 
-      const [categoriesData, productGroupsData, accountMapData, topSellingData, automationSetting] = await Promise.all([
+      const [categoriesData, productGroupsData, accountMapData, topSellingData, favoriteIds, automationSetting, revenueSettings, experiments, actionPlans] = await Promise.all([
         getCategories(),
         getAllProductGroups(),
         getAvailableAccountIdsByProductGroup(),
         getTopSellingProductGroupIds(12),
+        getFavoriteProductGroupIds(),
         getAppSetting('sales_recommendation_automation_enabled'),
+        loadRevenueOsSettings(),
+        loadRunningCroExperiments(),
+        loadRunningCroActionPlans(),
       ])
 
-      const automationEnabled = automationSetting !== 'false'
+      const automationEnabled = automationSetting !== 'false' && revenueSettings.enabled
       setCategories(categoriesData)
       setProductGroups(productGroupsData)
       setAccountMap(accountMapData)
       setTopSellingIds(automationEnabled ? topSellingData : [])
+      setFavoriteProductIds(automationEnabled ? favoriteIds : [])
       setRecommendationAutomationEnabled(automationEnabled)
+      setRevenueOsSettings(revenueSettings)
+      setRunningCroExperiments(experiments)
+      setRunningCroActionPlans(actionPlans)
       setError(null)
 
       getRecentlyRestockedProductGroupIds(8).then(setRestockedIds).catch((err) => {
@@ -116,22 +144,47 @@ export default function ProductsPage() {
   }, [loadData])
 
   useEffect(() => {
+    let cancelled = false
+
     if (!recommendationAutomationEnabled || !user?.id) {
       setMyProductGroupCounts({})
       setMyCategoryCounts({})
-      return
+      setMyProductLastPurchasedAt({})
+      setMyCategoryLastPurchasedAt({})
+      setMyLastProductGroupId(null)
+      setRelationshipBoosts({})
+      return () => {
+        cancelled = true
+      }
     }
 
     getUserPurchaseHistory(user.id)
-      .then(({ productGroupCounts, categoryCounts }) => {
+      .then(({ productGroupCounts, categoryCounts, lastPurchasedAtByProductGroup, lastPurchasedAtByCategory, lastProductGroupId }) => {
+        if (cancelled) return null
         setMyProductGroupCounts(productGroupCounts)
         setMyCategoryCounts(categoryCounts)
+        setMyProductLastPurchasedAt(lastPurchasedAtByProductGroup)
+        setMyCategoryLastPurchasedAt(lastPurchasedAtByCategory)
+        setMyLastProductGroupId(lastProductGroupId)
+        return loadCustomerRelationshipBoosts(productGroupCounts, lastPurchasedAtByProductGroup)
+      })
+      .then((boosts) => {
+        if (!cancelled && boosts) setRelationshipBoosts(boosts)
       })
       .catch((err) => {
+        if (cancelled) return
         console.error('Error loading customer recommendation profile:', err)
         setMyProductGroupCounts({})
         setMyCategoryCounts({})
+        setMyProductLastPurchasedAt({})
+        setMyCategoryLastPurchasedAt({})
+        setMyLastProductGroupId(null)
+        setRelationshipBoosts({})
       })
+
+    return () => {
+      cancelled = true
+    }
   }, [recommendationAutomationEnabled, user?.id])
 
   useEffect(() => {
@@ -156,8 +209,57 @@ export default function ProductsPage() {
     setCurrentPage(1)
   }, [searchTerm, selectedCategory, sortMode])
 
+  useEffect(() => {
+    const query = searchTerm.trim()
+    if (query.length < 2) return
+
+    const timeout = window.setTimeout(() => {
+      trackRevenueEvent({
+        eventType: 'SEARCHED',
+        userId: user?.id || null,
+        surface: 'products',
+        metadata: {
+          query,
+          selectedCategory,
+          sortMode,
+        },
+      })
+    }, 500)
+
+    return () => window.clearTimeout(timeout)
+  }, [searchTerm, selectedCategory, sortMode, user?.id])
+
+  useEffect(() => {
+    if (!didTrackInitialFilter.current) {
+      didTrackInitialFilter.current = true
+      return
+    }
+
+    trackRevenueEvent({
+      eventType: 'FILTER_USED',
+      userId: user?.id || null,
+      categoryId: selectedCategory === 'all' ? null : selectedCategory,
+      surface: 'products',
+      metadata: { selectedCategory },
+    })
+  }, [selectedCategory, user?.id])
+
+  useEffect(() => {
+    if (!didTrackInitialSort.current) {
+      didTrackInitialSort.current = true
+      return
+    }
+
+    trackRevenueEvent({
+      eventType: 'SORT_USED',
+      userId: user?.id || null,
+      surface: 'products',
+      metadata: { sortMode },
+    })
+  }, [sortMode, user?.id])
+
   const activeProductGroups = useMemo(
-    () => productGroups.filter((productGroup) => productGroup.is_active),
+    () => productGroups.filter(isCustomerSellableProduct),
     [productGroups],
   )
 
@@ -185,35 +287,85 @@ export default function ProductsPage() {
     [categories],
   )
 
-  const recommendationScore = useCallback(
-    (productGroup: ProductGroup) => {
-      if (!recommendationAutomationEnabled) return 0
+  const croAssignment = useMemo(() => resolveCroAssignment({
+    surface: 'products',
+    settings: revenueOsSettings,
+    experiments: runningCroExperiments,
+    visitorId: getRevenueVisitorId(),
+    userId: user?.id || null,
+  }), [revenueOsSettings, runningCroExperiments, user?.id])
 
-      const personalProductScore = (myProductGroupCounts[productGroup.id] || 0) * 10000
-      const personalCategoryScore = (myCategoryCounts[productGroup.category_id] || 0) * 1200
-      const globalRank = topSellingIds.indexOf(productGroup.id)
-      const globalScore = globalRank === -1 ? 0 : Math.max(0, 800 - globalRank * 40)
-      const stockScore = Math.min(Number(productGroup.stock_count || 0), 100)
-      const freshnessDays = Math.max(0, (Date.now() - new Date(productGroup.created_at).getTime()) / (24 * 60 * 60 * 1000))
-      const freshnessScore = Math.max(0, 80 - freshnessDays)
+  const retrievalBaseProductGroups = useMemo(() => {
+    return activeProductGroups.filter((productGroup) => selectedCategory === 'all' || productGroup.category_id === selectedCategory)
+  }, [activeProductGroups, selectedCategory])
 
-      return personalProductScore + personalCategoryScore + globalScore + stockScore + freshnessScore
-    },
-    [myCategoryCounts, myProductGroupCounts, recommendationAutomationEnabled, topSellingIds],
+  const productRetrievalResults = useMemo(
+    () => retrieveProductsForQuery(retrievalBaseProductGroups, categories, searchTerm),
+    [categories, retrievalBaseProductGroups, searchTerm],
   )
 
-  const sortedProductGroups = useMemo(() => {
-    const searched = activeProductGroups.filter((productGroup) => {
-      const category = categoryForProduct(productGroup)
-      const query = searchTerm.trim().toLowerCase()
-      const matchesSearch =
-        query.length === 0 ||
-        productGroup.name.toLowerCase().includes(query) ||
-        productGroup.description?.toLowerCase().includes(query) ||
-        category?.name.toLowerCase().includes(query)
-      const matchesCategory = selectedCategory === 'all' || productGroup.category_id === selectedCategory
-      return matchesSearch && matchesCategory
+  const retrievalScoreById = useMemo(
+    () => new Map(productRetrievalResults.map((result) => [result.product.id, result.score])),
+    [productRetrievalResults],
+  )
+
+  const retrievedProductGroups = useMemo(
+    () => productRetrievalResults.map((result) => result.product),
+    [productRetrievalResults],
+  )
+
+  const revenueOsRankedProducts = useMemo(() => {
+    if (!recommendationAutomationEnabled) return []
+    return rankProductsForRevenueOs(retrievedProductGroups, categories, {
+      surface: 'products',
+      query: searchTerm,
+      selectedCategoryId: selectedCategory,
+      topSellingIds,
+      favoriteProductIds,
+      restockedIds,
+      actionPlans: runningCroActionPlans,
+      relationshipBoosts,
+      customer: {
+        productGroupCounts: myProductGroupCounts,
+        categoryCounts: myCategoryCounts,
+        lastPurchasedAtByProductGroup: myProductLastPurchasedAt,
+        lastPurchasedAtByCategory: myCategoryLastPurchasedAt,
+        lastProductGroupId: myLastProductGroupId,
+      },
+      settings: revenueOsSettings || undefined,
+      assignment: croAssignment,
     })
+  }, [categories, croAssignment, favoriteProductIds, myCategoryCounts, myCategoryLastPurchasedAt, myLastProductGroupId, myProductGroupCounts, myProductLastPurchasedAt, recommendationAutomationEnabled, relationshipBoosts, restockedIds, retrievedProductGroups, revenueOsSettings, runningCroActionPlans, searchTerm, selectedCategory, topSellingIds])
+
+  const revenueOsScoreById = useMemo(() => {
+    return new Map(revenueOsRankedProducts.map((ranked) => [ranked.product.id, ranked]))
+  }, [revenueOsRankedProducts])
+  const revenueOsCanRank = recommendationAutomationEnabled && croAssignment.rankingEnabled
+  const nextBestAction = useMemo(() => decideNextBestCommerceAction(revenueOsRankedProducts, {
+    purchaseIntent: estimatePurchaseIntent({
+      query: searchTerm,
+      selectedCategoryId: selectedCategory,
+      hasRequestedProduct: searchTerm.trim().length >= 4 && revenueOsRankedProducts.some((ranked) => ranked.reasons.includes('query_relevance')),
+      pressure: getCustomerPressureState(),
+    }),
+    surface: 'products',
+    query: searchTerm,
+    selectedCategoryId: selectedCategory,
+    customer: {
+      productGroupCounts: myProductGroupCounts,
+      categoryCounts: myCategoryCounts,
+      lastPurchasedAtByProductGroup: myProductLastPurchasedAt,
+      lastPurchasedAtByCategory: myCategoryLastPurchasedAt,
+      lastProductGroupId: myLastProductGroupId,
+    },
+    pressure: getCustomerPressureState(),
+    settings: revenueOsSettings || undefined,
+    assignment: croAssignment,
+  }), [croAssignment, myCategoryCounts, myCategoryLastPurchasedAt, myLastProductGroupId, myProductGroupCounts, myProductLastPurchasedAt, revenueOsRankedProducts, revenueOsSettings, searchTerm, selectedCategory])
+
+  const sortedProductGroups = useMemo(() => {
+    const query = searchTerm.trim()
+    const searched = [...retrievedProductGroups]
 
     return searched.sort((a, b) => {
       const aPurchasable = isPurchasable(a)
@@ -224,33 +376,77 @@ export default function ProductsPage() {
       if (sortMode === 'price-high') return b.price - a.price
       if (sortMode === 'stock') return b.stock_count - a.stock_count
 
-      if (sortMode === 'recommended' && recommendationAutomationEnabled) {
-        const scoreA = recommendationScore(a)
-        const scoreB = recommendationScore(b)
+      if (sortMode === 'recommended' && revenueOsCanRank) {
+        if (query.length > 0) {
+          const relevanceA = retrievalScoreById.get(a.id) || 0
+          const relevanceB = retrievalScoreById.get(b.id) || 0
+          if (relevanceA !== relevanceB) return relevanceB - relevanceA
+        }
+        const scoreA = revenueOsScoreById.get(a.id)?.score || 0
+        const scoreB = revenueOsScoreById.get(b.id)?.score || 0
         if (scoreA !== scoreB) return scoreB - scoreA
       }
 
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     })
-  }, [activeProductGroups, categoryForProduct, recommendationAutomationEnabled, recommendationScore, searchTerm, selectedCategory, sortMode])
+  }, [retrievalScoreById, retrievedProductGroups, revenueOsCanRank, revenueOsScoreById, searchTerm, sortMode])
+
+  const collectionRankedProducts = useMemo(() => {
+    if (!recommendationAutomationEnabled || !revenueOsCanRank) return []
+    return rankProductsForRevenueOs(activeProductGroups, categories, {
+      surface: 'products_collection_rails',
+      query: '',
+      selectedCategoryId: 'all',
+      topSellingIds,
+      favoriteProductIds,
+      restockedIds,
+      actionPlans: runningCroActionPlans,
+      relationshipBoosts,
+      customer: {
+        productGroupCounts: myProductGroupCounts,
+        categoryCounts: myCategoryCounts,
+        lastPurchasedAtByProductGroup: myProductLastPurchasedAt,
+        lastPurchasedAtByCategory: myCategoryLastPurchasedAt,
+        lastProductGroupId: myLastProductGroupId,
+      },
+      settings: revenueOsSettings || undefined,
+      assignment: croAssignment,
+    })
+  }, [activeProductGroups, categories, croAssignment, favoriteProductIds, myCategoryCounts, myCategoryLastPurchasedAt, myLastProductGroupId, myProductGroupCounts, myProductLastPurchasedAt, recommendationAutomationEnabled, relationshipBoosts, restockedIds, revenueOsCanRank, revenueOsSettings, runningCroActionPlans, topSellingIds])
 
   const topSellingProductGroups = useMemo(() => {
-    if (!recommendationAutomationEnabled) return []
-    const ranked = [...activeProductGroups]
+    const safeFallback = [...activeProductGroups]
       .filter(isPurchasable)
       .sort((a, b) => {
-        const scoreA = recommendationScore(a)
-        const scoreB = recommendationScore(b)
-        if (scoreA !== scoreB) return scoreB - scoreA
+        if (b.stock_count !== a.stock_count) return b.stock_count - a.stock_count
         return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       })
+      .slice(0, 9)
+
+    if (!revenueOsCanRank) return safeFallback
+
+    const byId = new Map(activeProductGroups.map((productGroup) => [productGroup.id, productGroup]))
+    const pushUnique = (target: ProductGroup[], productGroup?: ProductGroup | null) => {
+      if (!productGroup || !isPurchasable(productGroup) || target.some((item) => item.id === productGroup.id)) return
+      target.push(productGroup)
+    }
+
+    const result: ProductGroup[] = []
+    favoriteProductIds.forEach((id) => pushUnique(result, byId.get(id)))
+    collectionRankedProducts
+      .filter((ranked) => ranked.reasons.some((reason) => ['customer_repeat_purchase_fit', 'customer_related_product', 'customer_category_affinity', 'customer_recent_category_interest'].includes(reason)))
+      .forEach((ranked) => pushUnique(result, ranked.product))
+    topSellingIds.forEach((id) => pushUnique(result, byId.get(id)))
+    restockedIds.forEach((id) => pushUnique(result, byId.get(id)))
+    collectionRankedProducts.forEach((ranked) => pushUnique(result, ranked.product))
 
     const fillIns = [...activeProductGroups]
-      .filter((productGroup) => isPurchasable(productGroup) && !ranked.some((rankedProduct) => rankedProduct.id === productGroup.id))
+      .filter((productGroup) => isPurchasable(productGroup) && !result.some((rankedProduct) => rankedProduct.id === productGroup.id))
       .sort((a, b) => a.stock_count - b.stock_count)
 
-    return [...ranked, ...fillIns].slice(0, 9)
-  }, [activeProductGroups, recommendationAutomationEnabled, recommendationScore])
+    const mixed = [...result, ...fillIns].slice(0, 9)
+    return mixed.length > 0 ? mixed : safeFallback
+  }, [activeProductGroups, collectionRankedProducts, favoriteProductIds, restockedIds, revenueOsCanRank, topSellingIds])
 
   const restockedProductGroups = useMemo(
     () =>
@@ -278,14 +474,106 @@ export default function ProductsPage() {
   const totalPages = Math.max(1, Math.ceil(sortedProductGroups.length / PAGE_SIZE))
   const pageProductGroups = sortedProductGroups.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
 
+  useEffect(() => {
+    if (!recommendationAutomationEnabled || revenueOsRankedProducts.length === 0) return
+    auditCroDecision({
+      userId: user?.id || null,
+      surface: 'products',
+      selected: nextBestAction.selected || revenueOsRankedProducts[0] || null,
+      candidates: revenueOsRankedProducts.slice(0, 12),
+      metadata: {
+        searchTerm,
+        selectedCategory,
+        sortMode,
+        nextBestAction: nextBestAction.action,
+        actionReason: nextBestAction.reason,
+        actionConfidence: nextBestAction.confidence,
+        expectedValue: nextBestAction.expectedValue,
+        pressureScore: nextBestAction.pressureScore,
+        actionCandidates: nextBestAction.candidates.slice(0, 8),
+        actionArbitration: nextBestAction.arbitration,
+      },
+      assignment: croAssignment,
+    })
+  }, [croAssignment, nextBestAction, recommendationAutomationEnabled, revenueOsRankedProducts, searchTerm, selectedCategory, sortMode, user?.id])
+
+  useEffect(() => {
+    if (!revenueOsCanRank || !nextBestAction.selected || nextBestAction.action === 'DO_NOTHING') return
+    const today = new Date().toISOString().slice(0, 10)
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
+    trackRevenueEvent({
+      eventType: 'RECOMMENDATION_SHOWN',
+      userId: user?.id || null,
+      productGroupId: nextBestAction.selected.product.id,
+      categoryId: nextBestAction.selected.product.category_id,
+      surface: 'products_next_best_action',
+      experimentId: croAssignment.experimentId,
+      variantId: croAssignment.variantId,
+      metadata: {
+        action: nextBestAction.action,
+        reason: nextBestAction.reason,
+        confidence: nextBestAction.confidence,
+        pressureScore: nextBestAction.pressureScore,
+        assignmentMode: croAssignment.mode,
+      },
+      eventId: `RECOMMENDATION_SHOWN:${today}:${actorKey}:products:${croAssignment.variantId || croAssignment.mode}:${nextBestAction.action}:${nextBestAction.selected.product.id}`,
+    })
+  }, [croAssignment.experimentId, croAssignment.mode, croAssignment.variantId, nextBestAction, revenueOsCanRank, user?.id])
+
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10)
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
+    pageProductGroups.forEach((productGroup, index) => {
+      trackRevenueEvent({
+        eventType: 'PRODUCT_IMPRESSION',
+        userId: user?.id || null,
+        productGroupId: productGroup.id,
+        categoryId: productGroup.category_id,
+        surface: 'products_grid',
+        experimentId: croAssignment.experimentId,
+        variantId: croAssignment.variantId,
+        metadata: { position: index + 1, page: currentPage, sortMode, selectedCategory, assignmentMode: croAssignment.mode },
+        eventId: `PRODUCT_IMPRESSION:${today}:${actorKey}:products:${currentPage}:${croAssignment.variantId || croAssignment.mode}:${productGroup.id}`,
+      })
+    })
+  }, [croAssignment.experimentId, croAssignment.mode, croAssignment.variantId, currentPage, pageProductGroups, selectedCategory, sortMode, user?.id])
+
   const goToProduct = (productGroup: ProductGroup) => {
     const category = categoryForProduct(productGroup)
+    const isRecommendationShow = !!(
+      nextBestAction.selected?.product.id === productGroup.id &&
+      ['SHOW_REQUESTED_PRODUCT', 'SHOW_ALTERNATIVE', 'SHOW_UPGRADE', 'SHOW_DOWNGRADE', 'SHOW_COMPLEMENT', 'SHOW_TRENDING', 'POST_PURCHASE_RECOMMENDATION'].includes(nextBestAction.action)
+    )
+    const productClickType = isRecommendationShow ? 'RECOMMENDATION_CLICKED' : 'PRODUCT_CLICKED'
+
+    trackRevenueEvent({
+      eventType: productClickType,
+      userId: user?.id || null,
+      productGroupId: productGroup.id,
+      categoryId: productGroup.category_id,
+      surface: 'products_grid',
+      experimentId: croAssignment.experimentId,
+      variantId: croAssignment.variantId,
+      metadata: { sortMode, selectedCategory, assignmentMode: croAssignment.mode },
+      eventId: `${productClickType}:${crypto.randomUUID()}:products_grid:${productGroup.id}:${nextBestAction.action || 'none'}`,
+    })
+    trackRevenueEvent({
+      eventType: 'BUY_CLICKED',
+      userId: user?.id || null,
+      productGroupId: productGroup.id,
+      categoryId: productGroup.category_id,
+      surface: 'products_grid',
+      experimentId: croAssignment.experimentId,
+      variantId: croAssignment.variantId,
+      metadata: { price: productGroup.price, assignmentMode: croAssignment.mode },
+    })
     navigate('/checkout', {
       state: {
         productGroup,
         category,
         quantity: 1,
         isBulkPurchase: false,
+        croAssignment,
       },
     })
   }
@@ -301,9 +589,30 @@ export default function ProductsPage() {
           category,
           quantity,
           isBulkPurchase: quantity > 1,
+          croAssignment,
         },
       })
     }
+  }
+
+  const handleProductView = (productGroup: ProductGroup) => {
+    const isRecommendationShow = !!(
+      nextBestAction.selected?.product.id === productGroup.id &&
+      ['SHOW_REQUESTED_PRODUCT', 'SHOW_ALTERNATIVE', 'SHOW_UPGRADE', 'SHOW_DOWNGRADE', 'SHOW_COMPLEMENT', 'SHOW_TRENDING', 'POST_PURCHASE_RECOMMENDATION'].includes(nextBestAction.action)
+    )
+    const productClickType = isRecommendationShow ? 'RECOMMENDATION_CLICKED' : 'PRODUCT_CLICKED'
+
+    trackRevenueEvent({
+      eventType: productClickType,
+      userId: user?.id || null,
+      productGroupId: productGroup.id,
+      categoryId: productGroup.category_id,
+      surface: 'products_grid',
+      experimentId: croAssignment.experimentId,
+      variantId: croAssignment.variantId,
+      metadata: { sortMode, selectedCategory, assignmentMode: croAssignment.mode },
+      eventId: `${productClickType}:${Date.now()}:products_grid:${productGroup.id}:${nextBestAction.action || 'none'}`,
+    })
   }
 
   if (loading) {
@@ -570,11 +879,12 @@ export default function ProductsPage() {
                   {pageProductGroups.map((productGroup) => {
                     const category = categoryForProduct(productGroup)
                     return category ? (
-                      <ProductTemplateCard
+                    <ProductTemplateCard
                         key={productGroup.id}
                         productGroup={productGroup}
                         category={category}
                         onPurchase={handlePurchase}
+                        onView={handleProductView}
                       />
                     ) : null
                   })}

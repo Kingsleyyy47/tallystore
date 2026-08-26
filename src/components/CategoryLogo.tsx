@@ -21,7 +21,7 @@ export default function CategoryLogo({
         src={style.image}
         alt=""
         aria-hidden="true"
-        className={cn('h-5 w-5 shrink-0 rounded-[4px] object-cover', className)}
+        className={cn('h-5 w-5 shrink-0 rounded-[4px] object-contain', className)}
         loading="lazy"
         onError={() => setImageFailed(true)}
       />

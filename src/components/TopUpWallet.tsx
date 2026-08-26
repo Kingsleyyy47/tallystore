@@ -9,8 +9,10 @@ import { useAuth } from '@/contexts/SimpleAuth';
 import { initiatePayment, type PaymentData } from '@/services/ercaspay';
 import { getOrCreatePocketFiAccount, type PocketFiAccount } from '@/services/pocketfi';
 import { getAppSetting } from '@/lib/supabase';
+import { getRevenueRequestContext } from '@/lib/revenue-os';
 import { useToast } from '@/hooks/use-toast';
 import { useExchangeRate } from '@/hooks/useExchangeRate';
+import { useCurrency } from '@/contexts/CurrencyContext';
 import { cn } from '@/lib/utils';
 
 interface TopUpWalletProps {
@@ -47,9 +49,10 @@ export function TopUpWallet({
   const [loadingAccount, setLoadingAccount] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
-  const { user, walletBalance, refreshWalletBalance } = useAuth();
+  const { user, walletBalance, refreshWalletBalance, showBalances } = useAuth();
   const { toast } = useToast();
   const { ngnToUsd } = useExchangeRate();
+  const { formatPrice } = useCurrency();
 
   // Baseline balance captured when the PocketFi account panel is shown, so we can detect
   // the webhook crediting the wallet without a transaction reference to poll against.
@@ -146,13 +149,13 @@ export function TopUpWallet({
       const credited = walletBalance - pocketfiBaselineBalance;
       toast({
         title: "Payment Received! 🎉",
-        description: `₦${credited.toLocaleString()} has been added to your wallet.`,
+        description: showBalances ? `${formatPrice(credited)} has been added to your wallet.` : 'Your wallet has been updated.',
       });
       window.dispatchEvent(new CustomEvent('transactionAdded'));
       setPocketfiBaselineBalance(walletBalance);
       onSuccess?.();
     }
-  }, [walletBalance, pocketfiBaselineBalance, gateway]);
+  }, [walletBalance, pocketfiBaselineBalance, gateway, showBalances, formatPrice, onSuccess, toast]);
 
   const handleCopy = async (value: string, field: string) => {
     try {
@@ -182,7 +185,7 @@ export function TopUpWallet({
     if (!topUpAmount || topUpAmount < 100) {
       toast({
         title: "Invalid Amount",
-        description: "Please enter an amount of at least ₦100.",
+        description: `Please enter an amount of at least ${formatPrice(100)}.`,
         variant: "destructive",
       });
       return;
@@ -191,7 +194,7 @@ export function TopUpWallet({
     if (topUpAmount > 1000000) {
       toast({
         title: "Amount Too Large",
-        description: "Maximum top-up amount is ₦1,000,000.",
+        description: `Maximum top-up amount is ${formatPrice(1000000)}.`,
         variant: "destructive",
       });
       return;
@@ -253,7 +256,7 @@ export function TopUpWallet({
             <div class="loader">
               <div class="spinner"></div>
               <h2>Processing your payment...</h2>
-              <p>Please wait while we redirect you to Ercas Pay</p>
+              <p>Please wait while we redirect you to secure checkout</p>
             </div>
           </body>
         </html>
@@ -266,16 +269,15 @@ export function TopUpWallet({
         customerName: 'Tally Store Customer', // Use a clean, simple name
         customerEmail: user.email,
         redirectUrl: `${window.location.origin}/wallet`, // Redirect back to wallet after payment
-        description: `Wallet top-up of ₦${topUpAmount.toLocaleString()}`,
+        description: 'Wallet top-up',
         metadata: {
           user_id: user.id, // Use user_id to match webhook payload structure
           userId: user.id,  // Keep userId for backward compatibility
           type: 'wallet_topup',
           originalAmount: topUpAmount
-        }
+        },
+        revenue_context: getRevenueRequestContext(),
       };
-
-      console.log('🚀 Initiating wallet top-up via Ercas Pay...', paymentData);
 
       const response = await initiatePayment(paymentData);
 
@@ -307,7 +309,6 @@ export function TopUpWallet({
         // Check if payment window is still open and not blocked
         if (paymentWindow && !paymentWindow.closed) {
           // SUCCESS: Redirect the already-open window to payment gateway
-          console.log('✅ Redirecting payment window to:', checkoutUrl);
           paymentWindow.location.href = checkoutUrl;
           
           // Close the modal and show success message
@@ -318,7 +319,6 @@ export function TopUpWallet({
           });
         } else {
           // FALLBACK: Window was blocked or closed - use same-window redirect
-          console.log('⚠️ Popup blocked - using same-window redirect');
           toast({
             title: "Redirecting to Payment",
             description: "Opening payment gateway...",
@@ -336,7 +336,7 @@ export function TopUpWallet({
       }
 
     } catch (error: any) {
-      console.error('❌ Top-up error:', error);
+      console.error('Top-up error:', error);
       
       // Close the payment window on error
       paymentWindow?.close();
@@ -349,14 +349,6 @@ export function TopUpWallet({
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('en-NG', {
-      style: 'currency',
-      currency: 'NGN',
-      minimumFractionDigits: 0,
-    }).format(value);
   };
 
   return (
@@ -383,10 +375,10 @@ export function TopUpWallet({
         </DialogHeader>
 
         <div className="space-y-6">
-          {/* Payment Gateway Selection — only shown when Ercas is admin-enabled */}
+          {/* Payment method selection: only shown when checkout is admin-enabled. */}
           {ercasEnabled && (
             <div className="space-y-3">
-              <Label>Payment Gateway</Label>
+              <Label>Payment Method</Label>
               <div className="grid grid-cols-2 gap-2">
                 <Button
                   type="button"
@@ -394,7 +386,7 @@ export function TopUpWallet({
                   size="sm"
                   onClick={() => setGateway('ercaspay')}
                 >
-                  Ercas Pay
+                  Secure Checkout
                 </Button>
                 <Button
                   type="button"
@@ -402,7 +394,7 @@ export function TopUpWallet({
                   size="sm"
                   onClick={() => setGateway('pocketfi')}
                 >
-                  PocketFi
+                  Bank Transfer
                 </Button>
               </div>
             </div>
@@ -422,7 +414,7 @@ export function TopUpWallet({
                       onClick={() => handleQuickAmount(quickAmount)}
                       className="text-xs"
                     >
-                      {formatCurrency(quickAmount)}
+                      {formatPrice(quickAmount)}
                     </Button>
                   ))}
                 </div>
@@ -430,7 +422,7 @@ export function TopUpWallet({
 
               {/* Custom Amount */}
               <div className="space-y-2">
-                <Label htmlFor="amount">Custom Amount (₦)</Label>
+                <Label htmlFor="amount">Custom Amount</Label>
                 <Input
                   id="amount"
                   type="number"
@@ -441,12 +433,15 @@ export function TopUpWallet({
                   max="1000000"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Minimum: ₦100, Maximum: ₦1,000,000
+                  Minimum: {formatPrice(100)}, Maximum: {formatPrice(1000000)}
                 </p>
               </div>
 
               {/* Payment Summary */}
-              {amount && parseInt(amount) >= 100 && (
+              {amount && parseInt(amount) >= 100 && (() => {
+                const amountNumber = parseInt(amount)
+                const usdEquivalent = Number.isFinite(amountNumber) ? ngnToUsd(amountNumber) : null
+                return (
                 <Card>
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm">Payment Summary</CardTitle>
@@ -455,15 +450,17 @@ export function TopUpWallet({
                     <div className="space-y-2 text-sm">
                       <div className="flex justify-between">
                         <span>Amount:</span>
-                        <span className="font-medium">{formatCurrency(parseInt(amount))}</span>
+                        <span className="font-medium">{formatPrice(amountNumber)}</span>
                       </div>
                       <div className="flex justify-between text-xs text-muted-foreground">
                         <span>USD Equivalent:</span>
-                        <span>≈ ${ngnToUsd(parseInt(amount)).toFixed(2)}</span>
+                        {usdEquivalent !== null && Number.isFinite(usdEquivalent) && (
+                          <span>≈ ${usdEquivalent.toFixed(2)}</span>
+                        )}
                       </div>
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>Gateway:</span>
-                        <span>Ercas Pay</span>
+                        <span>Payment method:</span>
+                        <span>Secure Checkout</span>
                       </div>
                       <div className="flex justify-between text-xs text-muted-foreground">
                         <span>Payment Methods:</span>
@@ -472,7 +469,8 @@ export function TopUpWallet({
                     </div>
                   </CardContent>
                 </Card>
-              )}
+                )
+              })()}
 
               {/* Action Buttons */}
               <div className="flex gap-3">
@@ -502,7 +500,7 @@ export function TopUpWallet({
 
               {/* Security Note */}
               <div className="text-xs text-muted-foreground text-center">
-                🔒 Secure payment powered by Ercas Pay
+                Secure payment processing
               </div>
             </>
           )}
@@ -588,7 +586,7 @@ export function TopUpWallet({
               </div>
 
               <div className="text-xs text-muted-foreground text-center">
-                🔒 Secure bank transfer powered by PocketFi
+                Secure bank transfer processing
               </div>
             </>
           )}

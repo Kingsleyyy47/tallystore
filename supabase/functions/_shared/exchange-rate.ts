@@ -1,15 +1,14 @@
 /**
  * Server-side NGN/USD exchange rate resolution for Edge Functions.
  * Mirrors the client-side logic in src/hooks/useExchangeRate.ts:
- * priority = admin override (app_settings.ngn_usd_rate) -> live API -> fallback constant.
+ * priority = admin override (app_settings.ngn_usd_rate) -> live API.
  *
  * Edge functions can't import from src/, so this is a small standalone copy.
  */
 
-const FALLBACK_RATE = 1600; // NGN per 1 USD
 const LIVE_RATE_URL = 'https://open.er-api.com/v6/latest/USD';
 
-export async function getNgnUsdRate(supabaseAdmin: any): Promise<{ rate: number; source: 'override' | 'live' | 'fallback' }> {
+export async function getNgnUsdRate(supabaseAdmin: any): Promise<{ rate: number; source: 'override' | 'live' }> {
   try {
     const { data, error } = await supabaseAdmin
       .from('app_settings')
@@ -35,10 +34,10 @@ export async function getNgnUsdRate(supabaseAdmin: any): Promise<{ rate: number;
       return { rate: liveRate, source: 'live' };
     }
   } catch (_err) {
-    // fall through to fallback
+    // handled below
   }
 
-  return { rate: FALLBACK_RATE, source: 'fallback' };
+  throw new Error('NGN/USD exchange rate is temporarily unavailable. Set ngn_usd_rate in app settings or try again when the live rate service is reachable.');
 }
 
 /** Convert an amount in `currency` (currently only USD is supported) to NGN. */

@@ -1,0 +1,2 @@
+# Referral attribution is user-authenticated and must not run anonymously.
+verify_jwt = true

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -8,6 +8,7 @@ import { ArrowLeft, Loader2, Mail, Lock, ShieldCheck, Sparkles } from 'lucide-re
 import NavbarAuth from '@/components/NavbarAuth'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 const ADMIN_EMAIL = 'wisdomthedev@gmail.com'
 
@@ -31,10 +32,22 @@ export default function LoginPage() {
   const { toast } = useToast()
   const navigate = useNavigate()
 
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      surface: 'login',
+    })
+  }, [])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
     if (!email || !password) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: 'login_email',
+        metadata: { reason: 'missing_fields' },
+      })
       toast({
         title: "Missing fields",
         description: "Please enter both email and password",
@@ -44,11 +57,25 @@ export default function LoginPage() {
     }
 
     setIsLoading(true)
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface: 'login_email_attempt',
+      metadata: {
+        email_domain: email.includes('@') ? email.split('@').pop()?.toLowerCase() || null : null,
+      },
+    })
 
     try {
       const result = await signIn(email, password)
       
       if (result.success) {
+        trackRevenueEvent({
+          eventType: 'OFFER_ACCEPTED',
+          surface: 'login_email_success',
+          metadata: {
+            destination: email.trim().toLowerCase() === ADMIN_EMAIL ? 'admin' : 'dashboard',
+          },
+        })
         toast({
           title: "Welcome back!",
           description: "You have been logged in successfully"
@@ -56,6 +83,11 @@ export default function LoginPage() {
         
         navigate(email.trim().toLowerCase() === ADMIN_EMAIL ? '/admin' : '/dashboard')
       } else {
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          surface: 'login_email_failed',
+          metadata: { reason: result.error || 'invalid_credentials' },
+        })
         toast({
           title: "Login failed",
           description: result.error || "Invalid email or password",
@@ -63,6 +95,11 @@ export default function LoginPage() {
         })
       }
     } catch (error) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: 'login_email_error',
+        metadata: { reason: error instanceof Error ? error.message : 'unexpected_error' },
+      })
       toast({
         title: "Login error",
         description: "An unexpected error occurred",
@@ -75,11 +112,20 @@ export default function LoginPage() {
 
   const handleGoogleSignIn = async () => {
     setIsGoogleLoading(true)
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface: 'login_google_attempt',
+    })
 
     try {
       const result = await signInWithGoogle()
 
       if (!result.success) {
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          surface: 'login_google_failed',
+          metadata: { reason: result.error || 'google_sign_in_failed' },
+        })
         toast({
           title: "Google sign in failed",
           description: result.error || "Please try again",
@@ -88,6 +134,11 @@ export default function LoginPage() {
         setIsGoogleLoading(false)
       }
     } catch (error) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: 'login_google_error',
+        metadata: { reason: error instanceof Error ? error.message : 'unexpected_error' },
+      })
       toast({
         title: "Google sign in error",
         description: "An unexpected error occurred",

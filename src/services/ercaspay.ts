@@ -8,6 +8,7 @@ export interface PaymentData {
   description?: string
   redirectUrl?: string
   metadata?: Record<string, any>
+  revenue_context?: Record<string, unknown>
 }
 
 export interface PaymentResponse {

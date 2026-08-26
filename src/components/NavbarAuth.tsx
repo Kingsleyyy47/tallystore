@@ -82,10 +82,9 @@ export default function Navbar() {
     };
   }, []);
 
-  // Mock data for display - now using actual user data from context
-  const mockProfile = {
+  const profileDisplay = {
     username: user?.email?.split('@')[0] || 'User',
-    wallet_balance: walletBalance, // Now using real wallet balance
+    wallet_balance: walletBalance,
   }
 
   const handleScroll = useCallback(() => {
@@ -181,7 +180,7 @@ export default function Navbar() {
                 <div className="relative group">
                   <Button variant="ghost" className="flex items-center gap-2">
                     <User className="h-4 w-4" />
-                    {mockProfile.username}
+                    {profileDisplay.username}
                     <svg className="h-4 w-4 transition-transform group-hover:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
@@ -248,7 +247,7 @@ export default function Navbar() {
                       </Link>
                       <Link to="/gift-cards" className={desktopDropdownItemClass}>
                         <Smartphone className="h-4 w-4" />
-                        Gift Cards & eSIMs
+                        Gift Cards
                       </Link>
                       <Link to="/us-canada" className={desktopDropdownItemClass}>
                         <PhoneCall className="h-4 w-4" />
@@ -288,7 +287,7 @@ export default function Navbar() {
                     {walletLoading ? (
                       <span className="inline-block h-4 w-16 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
                     ) : (
-                      <>{showBalances ? formatPrice(mockProfile.wallet_balance || 0) : '***'}</>
+                      <>{showBalances ? formatPrice(profileDisplay.wallet_balance || 0) : '***'}</>
                     )}
                   </Link>
                 )}
@@ -465,7 +464,7 @@ export default function Navbar() {
                         {walletLoading ? (
                           <span className="inline-block h-4 w-16 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
                         ) : (
-                          <>Balance: {showBalances ? formatPrice(mockProfile.wallet_balance || 0) : '***'}</>
+                          <>Balance: {showBalances ? formatPrice(profileDisplay.wallet_balance || 0) : '***'}</>
                         )}
                       </div>
                     )}
@@ -496,7 +495,7 @@ export default function Navbar() {
                     <Link to="/gift-cards" onClick={() => setIsMobileMenuOpen(false)}>
                       <Button variant="ghost" className={mobileMenuButtonClass}>
                         <Smartphone className="h-4 w-4 shrink-0" />
-                        Gift Cards & eSIMs
+                        Gift Cards
                       </Button>
                     </Link>
 

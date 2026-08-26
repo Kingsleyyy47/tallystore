@@ -3,12 +3,29 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 };
+
+function isAuthorizedCron(req: Request) {
+  const serviceRole = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+  const auth = req.headers.get('authorization') || '';
+  if (serviceRole && auth === `Bearer ${serviceRole}`) return true;
+
+  const cronSecret = Deno.env.get('PAYMENT_RECOVERY_CRON_SECRET') || Deno.env.get('REVENUE_OS_CRON_SECRET') || '';
+  const providedSecret = req.headers.get('x-cron-secret') || '';
+  return Boolean(cronSecret && providedSecret === cronSecret);
+}
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  if (!isAuthorizedCron(req)) {
+    return new Response(
+      JSON.stringify({ error: 'Unauthorized' }),
+      { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    );
   }
 
   try {
@@ -65,7 +82,7 @@ serve(async (req) => {
     // Process each pending payment
     for (const payment of pendingPayments) {
       try {
-        console.log(`[CHECK-PENDING] Checking payment ${payment.id} (ref: ${payment.transaction_reference})`);
+        console.log('[CHECK-PENDING] Checking pending payment.');
 
         // Update last_check_at and increment check_count
         await supabase
@@ -79,7 +96,7 @@ serve(async (req) => {
         // Check if payment is too old (>48 hours) - mark as expired
         const paymentAge = Date.now() - new Date(payment.created_at).getTime();
         if (paymentAge > 48 * 60 * 60 * 1000) {
-          console.log(`[CHECK-PENDING] Payment ${payment.id} expired (age: ${paymentAge}ms)`);
+          console.log(`[CHECK-PENDING] Pending payment expired (age: ${paymentAge}ms)`);
           await supabase
             .from('pending_payments')
             .update({

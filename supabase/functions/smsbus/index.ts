@@ -1,8 +1,217 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 
+// ── revenue-events.ts (inlined) ──
+export const REVENUE_EVENT_TYPES = [
+  'SESSION_STARTED',
+  'PAGE_VIEWED',
+  'PRODUCT_IMPRESSION',
+  'PRODUCT_VIEWED',
+  'SEARCHED',
+  'FILTER_USED',
+  'SORT_USED',
+  'PRODUCT_CLICKED',
+  'BUY_CLICKED',
+  'PAYMENT_STARTED',
+  'PAYMENT_PROVIDER_LOADED',
+  'PAYMENT_ATTEMPTED',
+  'PAYMENT_COMPLETED',
+  'PAYMENT_FAILED',
+  'PRODUCT_PURCHASED',
+  'PRODUCT_PURCHASE_REVERSED',
+  'PRODUCT_REJECTED',
+  'SMS_ORDER_CANCELLED',
+  'SMS_ORDER_COMPLETED',
+  'SMS_ORDER_REFUNDED',
+  'RECOMMENDATION_SHOWN',
+  'RECOMMENDATION_CLICKED',
+  'RECOMMENDATION_DISMISSED',
+  'PROMOTION_SHOWN',
+  'PROMOTION_CLICKED',
+  'OFFER_SHOWN',
+  'OFFER_ACCEPTED',
+  'OFFER_DISMISSED',
+  'CHAT_OPENED',
+  'CHAT_MESSAGE',
+  'CHAT_INTENT',
+  'CHAT_PRODUCT_SHOWN',
+  'SUPPORT_HANDOFF',
+  'CHECKOUT_ABANDONED',
+  'RETURN_VISIT',
+] as const
+
+export type RevenueEventType = (typeof REVENUE_EVENT_TYPES)[number]
+
+export type RevenueRequestContext = {
+  visitor_id?: string | null
+  session_id?: string | null
+  path?: string | null
+  referrer?: string | null
+  device?: string | null
+  display_currency?: string | null
+  attribution?: Record<string, unknown> | null
+  traffic_quality?: string | null
+}
+
+const knownRevenueEventTypes = new Set<string>(REVENUE_EVENT_TYPES as readonly string[])
+
+export function isKnownRevenueEventType(eventType: string): eventType is RevenueEventType {
+  return knownRevenueEventTypes.has(eventType)
+}
+
+export function sanitizeRevenueEventType(source: string, eventType: string): RevenueEventType | null {
+  if (!isKnownRevenueEventType(eventType)) {
+    console.warn(`Unsupported revenue event type from ${source}: ${eventType}`)
+    return null
+  }
+  return eventType
+}
+
+const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
+
+async function sha256Hex(value: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+export async function sanitizeRevenueEventId(source: string, eventId: string) {
+  const normalizedSource = source.replace(/[^a-z0-9_-]+/gi, '_').slice(0, 48) || 'event'
+  const hash = await sha256Hex(`${source}:${eventId}`)
+  return `server:${normalizedSource}:${hash.slice(0, 48)}`
+}
+
+function sanitizeRevenueMetadataValue(value: unknown, depth = 0): unknown {
+  if (value == null) return value
+  if (depth > 4) return '[truncated]'
+
+  if (typeof value === 'number' || typeof value === 'boolean') return value
+
+  if (typeof value === 'string') {
+    const redacted = value
+      .replace(/https?:\/\/[^\s"'<>]+/gi, '[redacted_url]')
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted_email]')
+      .replace(/(?:\+?\d[\s().-]*){10,}/g, '[redacted_number]')
+      .replace(/\b(?:[a-f0-9]{32,}|[A-Za-z0-9_-]{48,})\b/g, '[redacted_token]')
+    return redacted.length > 240 ? `${redacted.slice(0, 240)}...` : redacted
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 30).map((item) => sanitizeRevenueMetadataValue(item, depth + 1))
+  }
+
+  if (typeof value === 'object') {
+    const output: Record<string, unknown> = {}
+    for (const [key, child] of Object.entries(value as Record<string, unknown>).slice(0, 80)) {
+      output[key] = SENSITIVE_REVENUE_METADATA_KEY.test(key)
+        ? '[redacted]'
+        : sanitizeRevenueMetadataValue(child, depth + 1)
+    }
+    return output
+  }
+
+  return String(value)
+}
+
+export function sanitizeRevenueMetadata(metadata: Record<string, unknown> = {}) {
+  return sanitizeRevenueMetadataValue(metadata) as Record<string, unknown>
+}
+
+function cleanRevenueContextText(value: unknown, maxLength = 240) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed ? trimmed.slice(0, maxLength) : null
+}
+
+function cleanRevenueContextId(value: unknown) {
+  const text = cleanRevenueContextText(value, 120)
+  if (!text) return null
+  return /^[a-z0-9:_-]{8,120}$/i.test(text) ? text : null
+}
+
+function cleanRevenueContextPath(value: unknown) {
+  const text = cleanRevenueContextText(value, 240)
+  if (!text) return null
+  try {
+    const url = new URL(text, 'https://tallystore.local')
+    return url.pathname || '/'
+  } catch {
+    return text.split('?')[0].slice(0, 240) || null
+  }
+}
+
+function cleanRevenueContextReferrer(value: unknown) {
+  const text = cleanRevenueContextText(value, 240)
+  if (!text) return null
+  try {
+    const url = new URL(text)
+    return `${url.origin}${url.pathname || '/'}`.slice(0, 240)
+  } catch {
+    return null
+  }
+}
+
+export function sanitizeRevenueRequestContext(input: unknown): RevenueRequestContext {
+  const context = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  const device = cleanRevenueContextText(context.device, 40)
+  const displayCurrency = cleanRevenueContextText(context.display_currency, 12)
+  const trafficQuality = cleanRevenueContextText(context.traffic_quality, 40)
+  const attribution = context.attribution && typeof context.attribution === 'object'
+    ? sanitizeRevenueMetadata(context.attribution as Record<string, unknown>)
+    : null
+
+  return {
+    visitor_id: cleanRevenueContextId(context.visitor_id),
+    session_id: cleanRevenueContextId(context.session_id),
+    path: cleanRevenueContextPath(context.path),
+    referrer: cleanRevenueContextReferrer(context.referrer),
+    device: device && ['mobile', 'desktop', 'tablet', 'unknown'].includes(device.toLowerCase()) ? device.toLowerCase() : null,
+    display_currency: displayCurrency && /^[A-Z]{3,8}$/.test(displayCurrency) ? displayCurrency : null,
+    attribution,
+    traffic_quality: trafficQuality && /^[a-z_ -]{3,40}$/i.test(trafficQuality) ? trafficQuality.toLowerCase().replace(/\s+/g, '_') : null,
+  }
+}
+
+export function revenueContextEventColumns(context?: RevenueRequestContext | null) {
+  return {
+    visitor_id: context?.visitor_id || null,
+    session_id: context?.session_id || null,
+    path: context?.path || null,
+    referrer: context?.referrer || null,
+    device: context?.device || null,
+  }
+}
+
+export function revenueContextMetadata(context?: RevenueRequestContext | null) {
+  if (!context) return {}
+  return {
+    display_currency: context.display_currency || undefined,
+    attribution: context.attribution || undefined,
+    traffic_quality: context.traffic_quality || undefined,
+  }
+}
+
+
+// ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
+
+// ── staff-purchase-guard.ts ──
+export async function assertPurchasingCustomer(admin: any, userId: string) {
+  const { data: profile, error } = await admin
+    .from('profiles')
+    .select('is_staff, is_admin')
+    .eq('id', userId)
+    .single()
+
+  if (error) {
+    throw new Error('Could not verify purchase permission')
+  }
+
+  if (profile?.is_staff || profile?.is_admin) {
+    throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
+  }
+}
+
 // ── Inlined: forex-rates ──────────────────────────────────────────────────────
-async function getUsdToNgnRate(): Promise<number> {
+async function getUsdToNgnRate(): Promise<number | null> {
   try {
     const res = await fetch('https://api.exchangerate-api.com/v4/latest/USD')
     if (!res.ok) throw new Error(`Exchange rate API failed: ${res.status}`)
@@ -11,11 +220,11 @@ async function getUsdToNgnRate(): Promise<number> {
     if (!rate || rate <= 0) throw new Error('Invalid NGN rate')
     return rate
   } catch {
-    return 1650 // fallback
+    return null
   }
 }
 
-async function getSmsExchangeRate(admin: SupabaseAdmin): Promise<{ rate: number; source: 'override' | 'live' | 'fallback' }> {
+async function getSmsExchangeRate(admin: SupabaseAdmin): Promise<{ rate: number; source: 'override' | 'live' }> {
   try {
     const { data } = await admin.from('app_settings').select('value').eq('key', 'ngn_usd_rate').maybeSingle()
     const rate = Number(data?.value)
@@ -26,7 +235,7 @@ async function getSmsExchangeRate(admin: SupabaseAdmin): Promise<{ rate: number;
 
   const liveRate = await getUsdToNgnRate()
   if (liveRate > 0) return { rate: liveRate, source: 'live' }
-  return { rate: 1600, source: 'fallback' }
+  throw new Error('SMS pricing is temporarily unavailable. Set ngn_usd_rate in app settings or try again when live rates recover.')
 }
 
 // ── Inlined: daisysms-client ──────────────────────────────────────────────────
@@ -341,7 +550,7 @@ function extractCode(text: string): string | null {
 // ── Main function ─────────────────────────────────────────────────────────────
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-daisysms-webhook-secret, x-webhook-secret',
 }
 
 const TERMINAL_STATUSES = ['completed', 'cancelled', 'expired', 'failed']
@@ -358,6 +567,37 @@ function generateReference(prefix = 'SMS') {
 }
 
 function getDaisyKey() { return Deno.env.get('DAISYSMS_API_KEY') || '' }
+
+function constantTimeEquals(a: string, b: string) {
+  const encoder = new TextEncoder()
+  const left = encoder.encode(a)
+  const right = encoder.encode(b)
+  if (left.length !== right.length) return false
+
+  let diff = 0
+  for (let i = 0; i < left.length; i += 1) diff |= left[i] ^ right[i]
+  return diff === 0
+}
+
+function verifyDaisyWebhook(req: Request) {
+  const secret = Deno.env.get('DAISYSMS_WEBHOOK_SECRET') || ''
+  if (!secret) {
+    console.error('DAISYSMS_WEBHOOK_SECRET is not configured. Refusing unsigned SMS webhook.')
+    return false
+  }
+
+  const url = new URL(req.url)
+  const bearer = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '').trim()
+  const supplied = (
+    req.headers.get('x-daisysms-webhook-secret') ||
+    req.headers.get('x-webhook-secret') ||
+    url.searchParams.get('token') ||
+    bearer ||
+    ''
+  ).trim()
+
+  return supplied ? constantTimeEquals(supplied, secret) : false
+}
 
 const DEFAULT_SMS_MARGIN_NGN = 700
 
@@ -377,6 +617,37 @@ function friendlyError(error: unknown): string {
 }
 
 type SupabaseAdmin = ReturnType<typeof createClient>
+
+async function recordRevenueEvent(
+  admin: SupabaseAdmin,
+  input: {
+    eventType: RevenueEventType
+    eventId: string
+    userId?: string | null
+    surface?: string
+    revenueContext?: RevenueRequestContext | null
+    metadata?: Record<string, unknown>
+  },
+) {
+  const eventType = sanitizeRevenueEventType('smsbus', input.eventType)
+  if (!eventType) return
+
+  const { error } = await admin.from('revenue_events').upsert({
+    event_id: await sanitizeRevenueEventId('smsbus', input.eventId),
+    event_type: eventType,
+    ...revenueContextEventColumns(input.revenueContext),
+    user_id: input.userId || null,
+    surface: input.surface || 'sms',
+    metadata: sanitizeRevenueMetadata({
+      ...input.metadata,
+      ...revenueContextMetadata(input.revenueContext),
+    }),
+  }, { onConflict: 'event_id', ignoreDuplicates: true })
+
+  if (error) {
+    console.error(`Failed to record SMS revenue event ${eventType}:`, error.message)
+  }
+}
 
 type SmsProductSetting = {
   service_code: string
@@ -404,6 +675,7 @@ type SmsCatalogItem = {
   price_ngn: number
   available_count: number
   customer_buy_count: number
+  personal_buy_count: number
   recommended_score: number
   is_enabled: boolean
   is_favorite: boolean
@@ -451,6 +723,25 @@ async function requireSmsProductAccess(admin: SupabaseAdmin, userId: string, req
   if (!permission?.is_enabled) throw new Error('SMS product permission required')
   if (requireAutoApprove && permission.auto_approve === false) {
     throw new Error('SMS product changes require approval')
+  }
+}
+
+async function requireStaffPermission(admin: SupabaseAdmin, userId: string, permissionKey: string, requireAutoApprove = false) {
+  const { data: profile, error } = await admin.from('profiles').select('is_admin, is_staff').eq('id', userId).single()
+  if (error || !profile) throw new Error('Admin access required')
+  if (profile.is_admin) return
+  if (!profile.is_staff) throw new Error('Admin access required')
+
+  const { data: permission } = await admin
+    .from('staff_permissions')
+    .select('is_enabled, auto_approve')
+    .eq('user_id', userId)
+    .eq('permission_key', permissionKey)
+    .maybeSingle()
+
+  if (!permission?.is_enabled) throw new Error('Staff permission required')
+  if (requireAutoApprove && permission.auto_approve === false) {
+    throw new Error('This staff action requires approval')
   }
 }
 
@@ -520,38 +811,59 @@ async function syncSmsProductSettings(admin: SupabaseAdmin, services: DaisyServi
   if (error) throw new Error(`Failed to sync SMS products: ${error.message}`)
 }
 
-async function getSmsServiceBuyCounts(admin: SupabaseAdmin) {
+async function getSmsServiceBuyCounts(admin: SupabaseAdmin, userId?: string | null) {
   const counts = new Map<string, number>()
-  const { data, error } = await admin
+  let query = admin
     .from('sms_orders')
-    .select('service_id, status, refunded_at, order_type, created_at')
-    .order('created_at', { ascending: false })
-    .limit(5000)
+    .select('service_id, status, refunded_at, order_type, created_at, user_id')
+  if (userId) query = query.eq('user_id', userId)
+  const { data, error } = await query.order('created_at', { ascending: false }).limit(5000)
 
   if (error) {
     console.warn('Failed to load SMS buy counts:', error.message)
     return counts
   }
 
+  const userIds = [...new Set((data || []).map((row: any) => row.user_id).filter(Boolean))]
+  const customerUserIds = new Set<string>()
+  for (let i = 0; i < userIds.length; i += 500) {
+    const slice = userIds.slice(i, i + 500)
+    const { data: profiles, error: profilesError } = await admin
+      .from('profiles')
+      .select('id, is_staff, is_admin')
+      .in('id', slice)
+
+    if (profilesError) {
+      console.warn('Failed to load SMS buyer profiles:', profilesError.message)
+      continue
+    }
+
+    for (const profile of profiles || []) {
+      if (!profile.is_staff && !profile.is_admin) customerUserIds.add(profile.id)
+    }
+  }
+
   for (const row of data || []) {
+    if (!customerUserIds.has(row.user_id)) continue
     if (row.order_type && row.order_type !== 'otp') continue
     if (!row.service_id || row.refunded_at) continue
-    if (['cancelled', 'expired', 'failed'].includes(String(row.status || '').toLowerCase())) continue
+    if (String(row.status || '').toLowerCase() !== 'completed') continue
     counts.set(row.service_id, (counts.get(row.service_id) || 0) + 1)
   }
 
   return counts
 }
 
-function getRecommendedScore(isFavorite: boolean, buyCount: number, availableCount: number, priceNgn: number) {
+function getRecommendedScore(isFavorite: boolean, buyCount: number, personalBuyCount: number, availableCount: number, priceNgn: number) {
   const favoriteBoost = isFavorite ? 2500 : 0
-  const buyBoost = buyCount * 100
+  const personalBoost = personalBuyCount * 3500
+  const buyBoost = buyCount * 120
   const stockBoost = Math.min(availableCount, 100)
   const pricePenalty = Math.min(Math.floor(priceNgn / 1000), 50)
-  return favoriteBoost + buyBoost + stockBoost - pricePenalty
+  return favoriteBoost + personalBoost + buyBoost + stockBoost - pricePenalty
 }
 
-async function buildSmsCatalog(admin: SupabaseAdmin) {
+async function buildSmsCatalog(admin: SupabaseAdmin, userId?: string | null) {
   const key = getDaisyKey()
   if (!key) return { products: [] as SmsCatalogItem[], diagnostics: null, exchangeRate: 0, globalMarginNgn: DEFAULT_SMS_MARGIN_NGN }
 
@@ -571,12 +883,16 @@ async function buildSmsCatalog(admin: SupabaseAdmin) {
   if (error) throw new Error(`Failed to load SMS product settings: ${error.message}`)
 
   const settings = new Map<string, SmsProductSetting>((settingsRows || []).map((row: SmsProductSetting) => [row.service_code, row]))
-  const buyCounts = await getSmsServiceBuyCounts(admin)
+  const [buyCounts, personalBuyCounts] = await Promise.all([
+    getSmsServiceBuyCounts(admin),
+    userId ? getSmsServiceBuyCounts(admin, userId) : Promise.resolve(new Map<string, number>()),
+  ])
   const products = services.map((svc, index) => {
     const setting = settings.get(svc.code) || { service_code: svc.code }
     const pricing = priceSmsService(svc.priceUsd, exchangeRate, setting, globalMarginNgn, roundAutoPricesToNearestTen)
     const isFavorite = setting.is_favorite === true
     const buyCount = buyCounts.get(svc.code) || 0
+    const personalBuyCount = personalBuyCounts.get(svc.code) || 0
     return {
       service_id: svc.code,
       service_code: svc.code,
@@ -593,7 +909,8 @@ async function buildSmsCatalog(admin: SupabaseAdmin) {
       price_ngn: pricing.priceNgn,
       available_count: svc.count,
       customer_buy_count: buyCount,
-      recommended_score: getRecommendedScore(isFavorite, buyCount, svc.count, pricing.priceNgn),
+      personal_buy_count: personalBuyCount,
+      recommended_score: getRecommendedScore(isFavorite, buyCount, personalBuyCount, svc.count, pricing.priceNgn),
       is_enabled: setting.is_enabled !== false,
       is_favorite: isFavorite,
       price_override_ngn: optionalNaira(setting.price_override_ngn),
@@ -602,7 +919,13 @@ async function buildSmsCatalog(admin: SupabaseAdmin) {
     }
   })
 
-  products.sort((a, b) => b.recommended_score - a.recommended_score || b.customer_buy_count - a.customer_buy_count || b.available_count - a.available_count || a.price_ngn - b.price_ngn)
+  products.sort((a, b) =>
+    b.recommended_score - a.recommended_score ||
+    b.personal_buy_count - a.personal_buy_count ||
+    b.customer_buy_count - a.customer_buy_count ||
+    b.available_count - a.available_count ||
+    a.price_ngn - b.price_ngn
+  )
   return { products, diagnostics, exchangeRate, exchangeRateSource, globalMarginNgn, roundAutoPricesToNearestTen }
 }
 
@@ -621,7 +944,42 @@ async function debitWallet(admin: SupabaseAdmin, userId: string, amount: number)
   throw new Error('Wallet balance changed during purchase. Please try again.')
 }
 
-async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: string; reference: string; price_ngn: number }, reason: string) {
+async function recordSmsRefundRevenueEvents(
+  admin: SupabaseAdmin,
+  order: { id: string; user_id: string; reference: string; price_ngn: number; service_id?: string | null },
+  amount: number,
+  refundRef: string,
+  reason: string,
+  alreadyRefunded = false,
+) {
+  const metadata = {
+    order_id: order.id,
+    reference: order.reference,
+    refund_reference: refundRef,
+    amount_ngn: amount,
+    service_code: order.service_id || null,
+    reason,
+    already_refunded: alreadyRefunded,
+  }
+
+  await recordRevenueEvent(admin, {
+    eventType: 'SMS_ORDER_REFUNDED',
+    eventId: `sms:SMS_ORDER_REFUNDED:${order.id}:${refundRef}`,
+    userId: order.user_id,
+    surface: 'sms',
+    metadata,
+  })
+
+  await recordRevenueEvent(admin, {
+    eventType: 'PRODUCT_PURCHASE_REVERSED',
+    eventId: `sms:PRODUCT_PURCHASE_REVERSED:${order.id}:${refundRef}`,
+    userId: order.user_id,
+    surface: 'sms',
+    metadata,
+  })
+}
+
+async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: string; reference: string; price_ngn: number; service_id?: string | null }, reason: string) {
   const amount = Number(order.price_ngn || 0)
   if (amount <= 0) return { refunded: true, amount: 0 }
   const refundRef = `REFUND-${order.reference}`
@@ -631,7 +989,10 @@ async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: 
     .select('refunded_at, refund_reference')
     .eq('id', order.id)
     .maybeSingle()
-  if (currentOrder?.refunded_at) return { refunded: true, amount, reference: currentOrder.refund_reference, alreadyRefunded: true }
+  if (currentOrder?.refunded_at) {
+    await recordSmsRefundRevenueEvents(admin, order, amount, currentOrder.refund_reference || refundRef, reason, true)
+    return { refunded: true, amount, reference: currentOrder.refund_reference, alreadyRefunded: true }
+  }
 
   const { data: existing } = await admin.from('transactions').select('id, status').eq('reference', refundRef).maybeSingle()
   if (existing?.status === 'completed') {
@@ -639,6 +1000,7 @@ async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: 
       .update({ refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef })
       .eq('id', order.id)
       .is('refunded_at', null)
+    await recordSmsRefundRevenueEvents(admin, order, amount, refundRef, reason, true)
     return { refunded: true, amount, reference: refundRef, alreadyRefunded: true }
   }
 
@@ -658,6 +1020,7 @@ async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: 
     if (updated) {
       await admin.from('transactions').update({ status: 'completed', balance_after: next }).eq('id', tx.id)
       await admin.from('sms_orders').update({ refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef }).eq('id', order.id).is('refunded_at', null)
+      await recordSmsRefundRevenueEvents(admin, order, amount, refundRef, reason)
       return { refunded: true, amount, reference: refundRef }
     }
   }
@@ -670,6 +1033,32 @@ async function recordPurchase(admin: SupabaseAdmin, userId: string, reference: s
     user_id: userId, type: 'purchase', amount: -amount,
     balance_after: balanceAfter, description, reference, status: 'completed',
   })
+}
+
+function publicSmsOrder(order: any) {
+  if (!order) return order
+  return {
+    id: order.id,
+    reference: order.reference,
+    order_type: order.order_type,
+    service_id: order.service_id,
+    service_code: order.service_id,
+    service_name: order.service_name,
+    phone_number: order.phone_number,
+    area_code: order.area_code,
+    country_code: order.country_code,
+    price_ngn: order.price_ngn,
+    status: order.status,
+    messages: Array.isArray(order.messages) ? order.messages : [],
+    expires_at: order.expires_at,
+    keep_at: order.keep_at,
+    rent_months: order.rent_months,
+    refunded_at: order.refunded_at,
+    refund_amount_ngn: order.refund_amount_ngn,
+    created_at: order.created_at,
+    completed_at: order.completed_at,
+    cancelled_at: order.cancelled_at,
+  }
 }
 
 async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, order: any) {
@@ -690,6 +1079,18 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
         .select()
         .single()
       const nextOrder = updated || { ...order, status: 'cancelled', cancelled_at: new Date().toISOString() }
+      await recordRevenueEvent(admin, {
+        eventType: 'SMS_ORDER_CANCELLED',
+        eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
+        userId: order.user_id,
+        surface: 'sms',
+        metadata: {
+          order_id: order.id,
+          reference: order.reference,
+          service_code: order.service_id,
+          reason: 'provider_no_activation',
+        },
+      })
       await refundWallet(admin, nextOrder, `Auto-refund for expired SMS order: ${order.reference}`)
       const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
       return refunded || nextOrder
@@ -715,6 +1116,18 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
       .select()
       .single()
     const nextOrder = updated || { ...order, status: 'cancelled', cancelled_at: new Date().toISOString() }
+    await recordRevenueEvent(admin, {
+      eventType: 'SMS_ORDER_CANCELLED',
+      eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
+      userId: order.user_id,
+      surface: 'sms',
+      metadata: {
+        order_id: order.id,
+        reference: order.reference,
+        service_code: order.service_id,
+        reason: 'provider_cancelled',
+      },
+    })
     await refundWallet(admin, nextOrder, `Auto-refund for cancelled SMS order: ${order.reference}`)
     const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
     return refunded || nextOrder
@@ -729,11 +1142,59 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
       messages: nextMessages,
       completed_at: new Date().toISOString(),
     }).eq('id', order.id).select().single()
+    await recordRevenueEvent(admin, {
+      eventType: 'SMS_ORDER_COMPLETED',
+      eventId: `sms:SMS_ORDER_COMPLETED:${order.id}`,
+      userId: order.user_id,
+      surface: 'sms',
+      metadata: {
+        order_id: order.id,
+        reference: order.reference,
+        service_code: order.service_id,
+        has_code: true,
+      },
+    })
     try { await daisyMarkDone(apiKey, activationId) } catch { /* ignore */ }
     return updated || { ...order, status: 'completed', messages: nextMessages }
   }
 
   return order
+}
+
+async function cancelSmsOrderAndRefund(
+  admin: SupabaseAdmin,
+  order: any,
+  reason: string,
+  refundDescription: string,
+  surface = 'sms',
+  actorUserId?: string | null,
+) {
+  const cancelledAt = new Date().toISOString()
+  const { data: updated } = await admin
+    .from('sms_orders')
+    .update({ status: 'cancelled', cancelled_at: order.cancelled_at || cancelledAt })
+    .eq('id', order.id)
+    .select()
+    .single()
+  const nextOrder = updated || { ...order, status: 'cancelled', cancelled_at: order.cancelled_at || cancelledAt }
+
+  await recordRevenueEvent(admin, {
+    eventType: 'SMS_ORDER_CANCELLED',
+    eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
+    userId: order.user_id,
+    surface,
+    metadata: {
+      order_id: order.id,
+      reference: order.reference,
+      service_code: order.service_id,
+      reason,
+      actor_user_id: actorUserId || null,
+    },
+  })
+
+  await refundWallet(admin, nextOrder, refundDescription)
+  const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
+  return refunded || nextOrder
 }
 
 // ── Action handlers ───────────────────────────────────────────────────────────
@@ -749,8 +1210,25 @@ async function handleHealth() {
   }
 }
 
-async function handleServices(admin: SupabaseAdmin) {
-  const { products, diagnostics } = await buildSmsCatalog(admin)
+async function handleServices(admin: SupabaseAdmin, userId: string) {
+  const { products, diagnostics } = await buildSmsCatalog(admin, userId)
+  const customerProducts = products
+    .filter((service) => service.is_enabled && service.available_count > 0 && service.price_ngn > 0)
+    .map((service) => ({
+      service_id: service.service_id,
+      service_code: service.service_code,
+      service_name: service.service_name,
+      country_id: service.country_id,
+      country_code: service.country_code,
+      available_count: service.available_count,
+      price_ngn: service.price_ngn,
+      is_enabled: service.is_enabled,
+      is_favorite: service.is_favorite,
+      customer_buy_count: service.customer_buy_count,
+      personal_buy_count: service.personal_buy_count,
+      recommended_score: service.recommended_score,
+      pricing_mode: service.pricing_mode,
+    }))
   const customerDiagnostics = diagnostics ? {
     configured: diagnostics.configured,
     country_id: diagnostics.country_id,
@@ -761,7 +1239,7 @@ async function handleServices(admin: SupabaseAdmin) {
   } : null
   return json({
     success: true,
-    data: products.filter((service) => service.is_enabled && service.available_count > 0 && service.price_ngn > 0),
+    data: customerProducts,
     diagnostics: customerDiagnostics,
   })
 }
@@ -869,70 +1347,102 @@ async function handleOrders(admin: SupabaseAdmin, userId: string) {
   if (error) throw new Error(`Failed to load orders: ${error.message}`)
 
   const orders = data || []
-  if (!key) return json({ success: true, data: orders })
+  if (!key) return json({ success: true, data: orders.map(publicSmsOrder) })
 
   const reconciled = await Promise.all(
     orders.map((order) => reconcileOtpOrderStatus(admin, key, order).catch((err) => {
-      console.warn('Failed to reconcile SMS order:', order.id, err)
+      console.warn('Failed to reconcile SMS order:', err instanceof Error ? err.message : 'Unknown error')
       return order
     })),
   )
 
-  return json({ success: true, data: reconciled })
+  return json({ success: true, data: reconciled.map(publicSmsOrder) })
 }
 
 async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
+  await assertPurchasingCustomer(admin, userId)
+
   const key = getDaisyKey()
   if (!key) throw new Error('SMS service is not configured')
   const serviceCode = String(body.service_id || body.project_id || '')
   if (!serviceCode) throw new Error('service_id is required')
   const idempotencyKey = String(body.idempotency_key || '')
   if (!idempotencyKey || idempotencyKey.length < 10) throw new Error('Valid idempotency_key is required')
+  const revenueContext = sanitizeRevenueRequestContext(body.revenue_context)
 
   const { data: existing } = await admin.from('sms_orders').select('*').eq('user_id', userId).eq('idempotency_key', idempotencyKey).maybeSingle()
-  if (existing) return json({ success: true, data: existing, idempotency_hit: true })
+  if (existing) return json({ success: true, data: publicSmsOrder(existing), idempotency_hit: true })
 
   const { products, exchangeRate, globalMarginNgn, roundAutoPricesToNearestTen } = await buildSmsCatalog(admin)
   const svc = products.find(s => s.service_code === serviceCode)
   if (!svc || !svc.is_enabled || svc.available_count <= 0) throw new Error('Service not available')
 
   const estimatedPriceNgn = svc.price_ngn
-  const expectedPriceRaw = body.expected_price_ngn
-  const expectedPriceNgn = expectedPriceRaw === undefined || expectedPriceRaw === null || expectedPriceRaw === ''
-    ? null
-    : Math.round(Number(expectedPriceRaw))
-  if (expectedPriceNgn !== null && (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn < 0)) {
-    throw new Error('Invalid expected price')
+  const expectedPriceNgn = Math.round(Number(body.expected_price_ngn))
+  if (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0) {
+    throw new Error('Current displayed price is required. Please refresh and try again.')
   }
-  if (expectedPriceNgn !== null && expectedPriceNgn !== estimatedPriceNgn) {
+  if (expectedPriceNgn !== estimatedPriceNgn) {
     throw new Error(`Price changed from NGN ${expectedPriceNgn.toLocaleString()} to NGN ${estimatedPriceNgn.toLocaleString()}. Please refresh and try again.`)
   }
 
-  const { data: profile } = await admin.from('profiles').select('wallet_balance').eq('id', userId).single()
-  if (!profile || Number(profile.wallet_balance || 0) < estimatedPriceNgn) {
-    throw new Error(`Insufficient wallet balance. Required: ₦${estimatedPriceNgn.toLocaleString()}`)
-  }
+  await recordRevenueEvent(admin, {
+    eventType: 'PAYMENT_STARTED',
+    eventId: `sms:PAYMENT_STARTED:${idempotencyKey}`,
+    userId,
+    surface: 'sms',
+    revenueContext,
+    metadata: {
+      service_code: serviceCode,
+      service_name: svc.service_name,
+      expected_price_ngn: expectedPriceNgn,
+      displayed_price_ngn: estimatedPriceNgn,
+      idempotency_key: idempotencyKey,
+    },
+  })
+  await recordRevenueEvent(admin, {
+    eventType: 'PAYMENT_ATTEMPTED',
+    eventId: `sms:PAYMENT_ATTEMPTED:${idempotencyKey}`,
+    userId,
+    surface: 'sms',
+    revenueContext,
+    metadata: {
+      service_code: serviceCode,
+      service_name: svc.service_name,
+      expected_price_ngn: expectedPriceNgn,
+      displayed_price_ngn: estimatedPriceNgn,
+      idempotency_key: idempotencyKey,
+    },
+  })
 
-  const maxProviderPriceUsd = Math.max(
-    svc.provider_cost_usd * 1.25,
-    svc.provider_cost_usd + 0.05,
-    estimatedPriceNgn / exchangeRate,
-  )
-  const number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd)
-  const effectiveProviderUsd = number.priceUsd ?? svc.provider_cost_usd
-  const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true)
-  if (effectivePricing.providerCostNgn > estimatedPriceNgn) {
-    try { await daisyCancelNumber(key, number.activationId) } catch { /* ignore */ }
-    throw new Error('Service price changed before purchase. Please refresh and try again.')
-  }
   const priceNgn = estimatedPriceNgn
-  const marginUsd = Math.max(0, (priceNgn - effectivePricing.providerCostNgn) / exchangeRate)
-  const marginNgn = Math.max(0, priceNgn - effectivePricing.providerCostNgn)
-  const totalUsd = priceNgn / exchangeRate
   const reference = generateReference('SMS')
   let debit: { prev: number; next: number } | null = null
+  let number: { activationId: string; phoneNumber: string; priceUsd?: number } | null = null
 
   try {
+    const { data: profile } = await admin.from('profiles').select('wallet_balance').eq('id', userId).single()
+    if (!profile || Number(profile.wallet_balance || 0) < estimatedPriceNgn) {
+      throw new Error(`Insufficient wallet balance. Required: ₦${estimatedPriceNgn.toLocaleString()}`)
+    }
+
+    const maxProviderPriceUsd = Math.max(
+      svc.provider_cost_usd * 1.25,
+      svc.provider_cost_usd + 0.05,
+      estimatedPriceNgn / exchangeRate,
+    )
+    number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd)
+    const effectiveProviderUsd = number.priceUsd ?? svc.provider_cost_usd
+    const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true)
+    if (effectivePricing.providerCostNgn > estimatedPriceNgn) {
+      try { await daisyCancelNumber(key, number.activationId) } catch { /* ignore */ }
+      number = null
+      throw new Error('Service price changed before purchase. Please refresh and try again.')
+    }
+    const marginUsd = Math.max(0, (priceNgn - effectivePricing.providerCostNgn) / exchangeRate)
+    const marginNgn = Math.max(0, priceNgn - effectivePricing.providerCostNgn)
+    const totalUsd = priceNgn / exchangeRate
+
     debit = await debitWallet(admin, userId, priceNgn)
     const { data: order, error: orderErr } = await admin.from('sms_orders').insert({
       user_id: userId, reference, idempotency_key: idempotencyKey, order_type: 'otp',
@@ -960,10 +1470,60 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     }).select().single()
     if (orderErr || !order) throw new Error(`Failed to create order: ${orderErr?.message}`)
     await recordPurchase(admin, userId, reference, priceNgn, debit.next, `SMS OTP: ${svc.service_name}`)
-    return json({ success: true, data: order, new_balance: debit.next })
+    await recordRevenueEvent(admin, {
+      eventType: 'PAYMENT_COMPLETED',
+      eventId: `sms:PAYMENT_COMPLETED:${idempotencyKey}`,
+      userId,
+      surface: 'sms',
+      revenueContext,
+      metadata: {
+        order_id: order.id,
+        reference,
+        service_code: serviceCode,
+        service_name: svc.service_name,
+        amount_ngn: priceNgn,
+        balance_after: debit.next,
+        idempotency_key: idempotencyKey,
+      },
+    })
+    await recordRevenueEvent(admin, {
+      eventType: 'PRODUCT_PURCHASED',
+      eventId: `sms:PRODUCT_PURCHASED:${idempotencyKey}`,
+      userId,
+      surface: 'sms',
+      revenueContext,
+      metadata: {
+        order_id: order.id,
+        reference,
+        service_code: serviceCode,
+        service_name: svc.service_name,
+        amount_ngn: priceNgn,
+        provider_cost_usd: effectiveProviderUsd,
+        margin_ngn: marginNgn,
+        idempotency_key: idempotencyKey,
+      },
+    })
+    return json({ success: true, data: publicSmsOrder(order), new_balance: debit.next })
   } catch (err) {
-    try { await daisyCancelNumber(key, number.activationId) } catch { /* ignore */ }
+    if (number?.activationId) {
+      try { await daisyCancelNumber(key, number.activationId) } catch { /* ignore */ }
+    }
     if (debit) await refundWallet(admin, { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: priceNgn }, `Auto-refund for failed SMS order: ${svc.service_name}`)
+    await recordRevenueEvent(admin, {
+      eventType: 'PAYMENT_FAILED',
+      eventId: `sms:PAYMENT_FAILED:${idempotencyKey}`,
+      userId,
+      surface: 'sms',
+      revenueContext,
+      metadata: {
+        reference,
+        service_code: serviceCode,
+        service_name: svc.service_name,
+        amount_ngn: priceNgn,
+        idempotency_key: idempotencyKey,
+        error: err instanceof Error ? err.message : 'Unknown SMS purchase error',
+      },
+    })
     throw err
   }
 }
@@ -976,24 +1536,51 @@ async function handleCheckOtp(admin: SupabaseAdmin, userId: string, body: Record
     if (order.status === 'cancelled' && !order.refunded_at) {
       await refundWallet(admin, order, `Refund for cancelled SMS order: ${order.reference}`)
       const { data: refreshed } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-      return json({ success: true, data: refreshed || order })
+      return json({ success: true, data: publicSmsOrder(refreshed || order) })
     }
-    return json({ success: true, data: order })
+    return json({ success: true, data: publicSmsOrder(order) })
   }
 
   const activationId = order.provider_request_id
   if (!activationId) throw new Error('Order is missing activation ID')
 
-  const result = await daisyGetStatus(key, activationId)
+  let result: DaisyStatus
+  try {
+    result = await daisyGetStatus(key, activationId)
+  } catch (error: any) {
+    if (error?.code === 'NO_ACTIVATION') {
+      const refunded = await cancelSmsOrderAndRefund(
+        admin,
+        order,
+        'check_status_no_activation',
+        `Auto-refund for expired SMS order: ${order.reference}`,
+      )
+      return json({ success: true, data: publicSmsOrder(refunded) })
+    }
+    throw error
+  }
 
   if (result.status === 'waiting') {
     await admin.from('sms_orders').update({ status: 'waiting' }).eq('id', order.id)
-    return json({ success: true, data: { ...order, status: 'waiting' }, waiting: true })
+    return json({ success: true, data: publicSmsOrder({ ...order, status: 'waiting' }), waiting: true })
   }
   if (result.status === 'cancelled') {
     await admin.from('sms_orders').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', order.id)
+    await recordRevenueEvent(admin, {
+      eventType: 'SMS_ORDER_CANCELLED',
+      eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
+      userId: order.user_id,
+      surface: 'sms',
+      metadata: {
+        order_id: order.id,
+        reference: order.reference,
+        service_code: order.service_id,
+        reason: 'check_status_cancelled',
+      },
+    })
     await refundWallet(admin, order, `Auto-refund for cancelled SMS order: ${order.reference}`)
-    return json({ success: true, data: { ...order, status: 'cancelled' } })
+    const { data: refreshed } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
+    return json({ success: true, data: publicSmsOrder(refreshed || { ...order, status: 'cancelled' }) })
   }
   if (result.status === 'ok') {
     const messages = Array.isArray(order.messages) ? order.messages : []
@@ -1002,10 +1589,22 @@ async function handleCheckOtp(admin: SupabaseAdmin, userId: string, body: Record
     const { data: updated } = await admin.from('sms_orders').update({
       status: 'completed', messages: nextMessages, completed_at: new Date().toISOString(),
     }).eq('id', order.id).select().single()
+    await recordRevenueEvent(admin, {
+      eventType: 'SMS_ORDER_COMPLETED',
+      eventId: `sms:SMS_ORDER_COMPLETED:${order.id}`,
+      userId: order.user_id,
+      surface: 'sms',
+      metadata: {
+        order_id: order.id,
+        reference: order.reference,
+        service_code: order.service_id,
+        has_code: true,
+      },
+    })
     try { await daisyMarkDone(key, activationId) } catch { /* ignore */ }
-    return json({ success: true, data: updated })
+    return json({ success: true, data: publicSmsOrder(updated) })
   }
-  return json({ success: true, data: order, waiting: true })
+  return json({ success: true, data: publicSmsOrder(order), waiting: true })
 }
 
 async function handleCancelOtp(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
@@ -1016,13 +1615,23 @@ async function handleCancelOtp(admin: SupabaseAdmin, userId: string, body: Recor
     if (order.status === 'cancelled' && !order.refunded_at) {
       await refundWallet(admin, order, `Refund for cancelled SMS order: ${order.reference}`)
       const { data: refreshed } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-      return json({ success: true, data: refreshed || order, already_final: true })
+      return json({ success: true, data: publicSmsOrder(refreshed || order), already_final: true })
     }
-    return json({ success: true, data: order, already_final: true })
+    return json({ success: true, data: publicSmsOrder(order), already_final: true })
   }
   if (!order.provider_request_id) throw new Error('Order is missing activation ID')
 
   const cancelResult = await daisyCancelNumber(key, order.provider_request_id)
+  if (cancelResult.response === 'NO_ACTIVATION') {
+    const refunded = await cancelSmsOrderAndRefund(
+      admin,
+      order,
+      'customer_cancelled_no_activation',
+      `Refund for expired SMS order: ${order.reference}`,
+    )
+    return json({ success: true, data: publicSmsOrder(refunded) })
+  }
+
   if (!cancelResult.cancelled) {
     const reason = cancelResult.response === 'ACCESS_READY'
       ? 'This number is already ready or has received a code, so it cannot be cancelled.'
@@ -1033,14 +1642,26 @@ async function handleCancelOtp(admin: SupabaseAdmin, userId: string, body: Recor
   }
 
   const { data: updated } = await admin.from('sms_orders').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', order.id).select().single()
+  await recordRevenueEvent(admin, {
+    eventType: 'SMS_ORDER_CANCELLED',
+    eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
+    userId: order.user_id,
+    surface: 'sms',
+    metadata: {
+      order_id: order.id,
+      reference: order.reference,
+      service_code: order.service_id,
+      reason: 'customer_cancelled',
+    },
+  })
   await refundWallet(admin, order, `Refund for cancelled SMS order: ${order.reference}`)
   const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-  return json({ success: true, data: refunded || updated })
+  return json({ success: true, data: publicSmsOrder(refunded || updated) })
 }
 
 // ── Admin: fetch all SMS orders across all users ──────────────────────────────
 async function handleAdminSmsOrders(admin: SupabaseAdmin, userId: string) {
-  await requireAdminUser(admin, userId)
+  await requireStaffPermission(admin, userId, 'tab_sms_orders')
   const { data: orders, error } = await admin
     .from('sms_orders')
     .select('*')
@@ -1050,23 +1671,31 @@ async function handleAdminSmsOrders(admin: SupabaseAdmin, userId: string) {
   const rows = orders || []
   // Fetch profiles for each unique user separately (no FK in schema cache)
   const userIds = [...new Set(rows.map((o: any) => o.user_id).filter(Boolean))]
-  let profileMap: Record<string, { email?: string; full_name?: string }> = {}
+  const profileMap: Record<string, { email?: string; full_name?: string; is_staff?: boolean; is_admin?: boolean }> = {}
   if (userIds.length > 0) {
     const { data: profiles } = await admin
       .from('profiles')
-      .select('id, email, full_name')
+      .select('id, email, full_name, is_staff, is_admin')
       .in('id', userIds)
     for (const p of profiles || []) {
-      profileMap[p.id] = { email: p.email, full_name: p.full_name }
+      profileMap[p.id] = { email: p.email, full_name: p.full_name, is_staff: p.is_staff, is_admin: p.is_admin }
     }
   }
-  const data = rows.map((o: any) => ({ ...o, profiles: profileMap[o.user_id] || null }))
+  const data = rows
+    .filter((o: any) => {
+      const profile = profileMap[o.user_id]
+      return !!profile && profile.is_staff !== true && profile.is_admin !== true
+    })
+    .map((o: any) => {
+      const profile = profileMap[o.user_id]
+      return { ...o, profiles: profile ? { email: profile.email, full_name: profile.full_name } : null }
+    })
   return json({ success: true, data })
 }
 
 // ── Admin: cancel any SMS order and refund the customer ───────────────────────
 async function handleAdminCancelSmsOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
-  await requireAdminUser(admin, userId)
+  await requireStaffPermission(admin, userId, 'tab_sms_orders', true)
   const orderId = String(body.order_id || '')
   if (!orderId) throw new Error('order_id is required')
 
@@ -1095,6 +1724,19 @@ async function handleAdminCancelSmsOrder(admin: SupabaseAdmin, userId: string, b
     .eq('id', orderId)
     .select()
     .single()
+  await recordRevenueEvent(admin, {
+    eventType: 'SMS_ORDER_CANCELLED',
+    eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
+    userId: order.user_id,
+    surface: 'sms_admin',
+    metadata: {
+      order_id: order.id,
+      reference: order.reference,
+      service_code: order.service_id,
+      reason: 'admin_cancelled',
+      admin_user_id: userId,
+    },
+  })
   await refundWallet(admin, order, `Admin refund for cancelled SMS order: ${order.reference}`)
   const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', orderId).single()
   return json({ success: true, data: refunded || updated })
@@ -1102,7 +1744,7 @@ async function handleAdminCancelSmsOrder(admin: SupabaseAdmin, userId: string, b
 
 // ── Admin: auto-cancel all orders pending 5+ minutes with no code ─────────────
 async function handleAdminAutoCancelStale(admin: SupabaseAdmin, userId: string) {
-  await requireAdminUser(admin, userId)
+  await requireStaffPermission(admin, userId, 'tab_sms_orders', true)
   const key = getDaisyKey()
   const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString()
 
@@ -1111,7 +1753,6 @@ async function handleAdminAutoCancelStale(admin: SupabaseAdmin, userId: string) 
     .select('*')
     .not('status', 'in', `(${TERMINAL_STATUSES.map(s => `"${s}"`).join(',')})`)
     .lt('created_at', cutoff)
-    .is('messages', null) // no messages/code received
 
   const orders = (staleOrders || []).filter((o: any) => !o.messages || (Array.isArray(o.messages) && o.messages.length === 0))
 
@@ -1125,6 +1766,19 @@ async function handleAdminAutoCancelStale(admin: SupabaseAdmin, userId: string) 
         status: 'cancelled',
         cancelled_at: new Date().toISOString(),
       }).eq('id', order.id)
+      await recordRevenueEvent(admin, {
+        eventType: 'SMS_ORDER_CANCELLED',
+        eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
+        userId: order.user_id,
+        surface: 'sms_admin',
+        metadata: {
+          order_id: order.id,
+          reference: order.reference,
+          service_code: order.service_id,
+          reason: 'admin_auto_cancel_stale',
+          admin_user_id: userId,
+        },
+      })
       await refundWallet(admin, order, `Auto-refund for stale SMS order: ${order.reference}`)
       cancelled.push(order.reference)
     } catch { /* skip individual failures */ }
@@ -1159,6 +1813,18 @@ async function handleSyncCancelled(admin: SupabaseAdmin, userId: string) {
           status: 'cancelled',
           cancelled_at: new Date().toISOString(),
         }).eq('id', order.id)
+        await recordRevenueEvent(admin, {
+          eventType: 'SMS_ORDER_CANCELLED',
+          eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
+          userId: order.user_id,
+          surface: 'sms',
+          metadata: {
+            order_id: order.id,
+            reference: order.reference,
+            service_code: order.service_id,
+            reason: 'sync_cancelled',
+          },
+        })
         await refundWallet(admin, order, `Refund for cancelled SMS order: ${order.reference}`)
         cancelledRefs.push(order.reference)
       }
@@ -1170,6 +1836,18 @@ async function handleSyncCancelled(admin: SupabaseAdmin, userId: string) {
             status: 'cancelled',
             cancelled_at: new Date().toISOString(),
           }).eq('id', order.id)
+          await recordRevenueEvent(admin, {
+            eventType: 'SMS_ORDER_CANCELLED',
+            eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
+            userId: order.user_id,
+            surface: 'sms',
+            metadata: {
+              order_id: order.id,
+              reference: order.reference,
+              service_code: order.service_id,
+              reason: 'sync_no_activation',
+            },
+          })
           await refundWallet(admin, order, `Refund for expired SMS order: ${order.reference}`)
           cancelledRefs.push(order.reference)
         } catch (_) { /* ignore */ }
@@ -1181,8 +1859,12 @@ async function handleSyncCancelled(admin: SupabaseAdmin, userId: string) {
   return json({ success: true, synced: activeOrders.length, cancelled: cancelledRefs })
 }
 
-// ── DaisySMS webhook (no auth — called by DaisySMS server) ───────────────────
+// ── DaisySMS webhook (shared-secret auth, called by DaisySMS server) ─────────
 async function handleDaisyWebhook(req: Request) {
+  if (!verifyDaisyWebhook(req)) {
+    return new Response('unauthorized', { status: 401 })
+  }
+
   const admin = createClient(
     Deno.env.get('SUPABASE_URL') ?? '',
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -1203,6 +1885,18 @@ async function handleDaisyWebhook(req: Request) {
   await admin.from('sms_orders').update({
     status: 'completed', messages: nextMessages, completed_at: new Date().toISOString(),
   }).eq('id', order.id)
+  await recordRevenueEvent(admin, {
+    eventType: 'SMS_ORDER_COMPLETED',
+    eventId: `sms:SMS_ORDER_COMPLETED:${order.id}`,
+    userId: order.user_id,
+    surface: 'sms_webhook',
+    metadata: {
+      order_id: order.id,
+      reference: order.reference,
+      service_code: order.service_id,
+      has_code: true,
+    },
+  })
 
   return new Response('ok', { status: 200 })
 }
@@ -1211,7 +1905,8 @@ async function handleDaisyWebhook(req: Request) {
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
-  // DaisySMS webhook — no auth header, identified by ?webhook=1
+  // DaisySMS webhook — provider callback identified by ?webhook=1 and
+  // authenticated with DAISYSMS_WEBHOOK_SECRET.
   const url = new URL(req.url)
   if (req.method === 'POST' && url.searchParams.get('webhook') === '1') {
     return await handleDaisyWebhook(req)
@@ -1224,7 +1919,7 @@ serve(async (req) => {
 
     switch (action) {
       case 'health':       return await handleHealth()
-      case 'services':     return await handleServices(admin)
+      case 'services':     return await handleServices(admin, user.id)
       case 'admin_sms_products':
         return await handleAdminSmsProducts(admin, user.id)
       case 'admin_update_sms_product':

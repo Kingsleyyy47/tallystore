@@ -8,7 +8,6 @@ import {
   Facebook,
   Headphones,
   Instagram,
-  Menu,
   KeyRound,
   MessageCircle,
   MoreHorizontal,
@@ -19,16 +18,13 @@ import {
   Smile,
   Sparkles,
   Star,
-  User,
   Wallet,
   Zap,
 } from "lucide-react"
 import NavbarAuth from "@/components/NavbarAuth"
 import Footer from "@/components/Footer"
-import { ThemeToggle } from "@/components/ThemeToggle"
 import HomepageLiveActivity from "@/components/HomepageLiveActivity"
 import CategoryLogo from "@/components/CategoryLogo"
-import { useAuth } from "@/contexts/SimpleAuth"
 import { getCategoryStyle } from "@/lib/categoryStyles"
 import {
   formatCount,
@@ -39,6 +35,10 @@ import {
   type Category,
   type ProductGroup,
 } from "@/lib/supabase"
+import { isCustomerSellableProduct } from "@/lib/productAvailability"
+import { trackRevenueEvent } from "@/lib/revenue-os"
+import { RecommendationStrip } from "@/components/RecommendationCard"
+import { useRecommendations } from "@/hooks/useRecommendations"
 
 type HomepageStat = {
   label: string
@@ -52,7 +52,7 @@ const FALLBACK_CATEGORIES = [
     name: "Facebook Accounts",
     description: "Verified accounts ready for use",
     icon: Facebook,
-    image: "/category-icons/facebook.jpg",
+    image: getCategoryStyle("Facebook Accounts").image,
     href: "/products",
     bg: "bg-blue-600",
     color: "text-white",
@@ -71,7 +71,7 @@ const FALLBACK_CATEGORIES = [
     name: "Snapchat Accounts",
     description: "Active accounts with clean reputation",
     icon: MessageCircle,
-    image: "/category-icons/snapchat.jpg",
+    image: getCategoryStyle("Snapchat Accounts").image,
     href: "/products",
     bg: "bg-yellow-300",
     color: "text-black",
@@ -81,7 +81,7 @@ const FALLBACK_CATEGORIES = [
     name: "TikTok Accounts",
     description: "Optimized for content creation",
     icon: Sparkles,
-    image: "/category-icons/tiktok.jpg",
+    image: getCategoryStyle("TikTok Accounts").image,
     href: "/products",
     bg: "bg-black",
     color: "text-white",
@@ -95,14 +95,6 @@ const FALLBACK_CATEGORIES = [
     bg: "bg-violet-700",
     color: "text-white",
   },
-]
-
-const CATEGORY_IMAGE_BY_KEY = [
-  { key: "facebook", image: "/category-icons/facebook.jpg" },
-  { key: "snapchat", image: "/category-icons/snapchat.jpg" },
-  { key: "tiktok", image: "/category-icons/tiktok.jpg" },
-  { key: "tik tok", image: "/category-icons/tiktok.jpg" },
-  { key: "discord", image: "/category-icons/discord.jpg" },
 ]
 
 const whyCards = [
@@ -159,7 +151,8 @@ function buildCategoryCards(categories: Category[], productGroups: ProductGroup[
   if (categories.length === 0) return FALLBACK_CATEGORIES
 
   const stockByCategory = productGroups.reduce<Record<string, number>>((acc, group) => {
-    acc[group.category_id] = (acc[group.category_id] || 0) + Number(group.stock_count || 0)
+    const stock = Number(group.stock_count || 0)
+    acc[group.category_id] = (acc[group.category_id] || 0) + (stock > 0 ? stock : 1)
     return acc
   }, {})
 
@@ -168,14 +161,12 @@ function buildCategoryCards(categories: Category[], productGroups: ProductGroup[
     .slice(0, 5)
     .map((category) => {
       const style = getCategoryStyle(category.name)
-      const normalizedName = category.name.toLowerCase()
-      const matchedImage = style.image || CATEGORY_IMAGE_BY_KEY.find((item) => normalizedName.includes(item.key))?.image
       return {
         id: category.id,
         name: category.name,
         description: category.description || `${formatCount(stockByCategory[category.id] || 0)} accounts available`,
         icon: style.icon,
-        image: matchedImage,
+        image: style.image,
         href: `/category/${category.id}`,
         bg: style.bg,
         color: style.color,
@@ -183,17 +174,30 @@ function buildCategoryCards(categories: Category[], productGroups: ProductGroup[
     })
 }
 
+function countDisplayableStock(productGroups: ProductGroup[]) {
+  return productGroups.reduce((sum, product) => {
+    const stock = Number(product.stock_count || 0)
+    return sum + (stock > 0 ? stock : 1)
+  }, 0)
+}
+
 const Index = () => {
+  const { recommendations: recs } = useRecommendations({ limit: 4 })
   const [categories, setCategories] = useState<Category[]>([])
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([])
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const { user, signOut } = useAuth()
   const [stats, setStats] = useState<HomepageStat[]>([
-    { label: "Happy Customers", value: "10K+", icon: PackageCheck },
-    { label: "Accounts Delivered", value: "50K+", icon: ShoppingBag },
-    { label: "Success Rate", value: "99.9%", icon: ShieldCheck },
-    { label: "Support Available", value: "24/7", icon: Headphones },
+    { label: "Customers", value: "0", icon: PackageCheck },
+    { label: "Orders Delivered", value: "0", icon: ShoppingBag },
+    { label: "Accounts Available", value: "0", icon: ShieldCheck },
+    { label: "Product Categories", value: "0", icon: Headphones },
   ])
+
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      surface: 'home',
+    })
+  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -209,16 +213,33 @@ const Index = () => {
 
         if (!mounted) return
 
+        const customerSellableProducts = productData.filter(isCustomerSellableProduct)
+
         setCategories(categoryData)
-        setProductGroups(productData)
+        setProductGroups(customerSellableProducts)
+        const availableAccounts = countDisplayableStock(customerSellableProducts)
         setStats([
-          { label: "Happy Customers", value: formatCount(Math.max(userCount, 10000)), icon: PackageCheck },
-          { label: "Accounts Delivered", value: formatCount(Math.max(salesStats.totalSales, 50000)), icon: ShoppingBag },
-          { label: "Success Rate", value: "99.9%", icon: ShieldCheck },
-          { label: "Support Available", value: "24/7", icon: Headphones },
+          { label: "Customers", value: formatCount(userCount), icon: PackageCheck },
+          { label: "Orders Delivered", value: formatCount(salesStats.totalSales), icon: ShoppingBag },
+          { label: "Accounts Available", value: formatCount(availableAccounts), icon: ShieldCheck },
+          { label: "Product Categories", value: formatCount(categoryData.length), icon: Headphones },
         ])
+        trackRevenueEvent({
+          eventType: 'PAGE_VIEWED',
+          surface: 'home_catalogue_loaded',
+          metadata: {
+            category_count: categoryData.length,
+            product_group_count: customerSellableProducts.length,
+            available_accounts: availableAccounts,
+          },
+        })
       } catch (error) {
         console.error("Failed to load homepage data:", error)
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          surface: 'home_catalogue_load_failed',
+          metadata: { reason: error instanceof Error ? error.message : 'homepage_load_failed' },
+        })
       }
     }
 
@@ -229,110 +250,19 @@ const Index = () => {
   }, [])
 
   const categoryCards = useMemo(() => buildCategoryCards(categories, productGroups), [categories, productGroups])
-  const totalStock = productGroups.reduce((total, group) => total + Number(group.stock_count || 0), 0)
-  const handleMobileSignOut = async () => {
-    await signOut()
-    setMobileMenuOpen(false)
+  const totalStock = countDisplayableStock(productGroups)
+
+  const trackHomeCta = (destination: string, surface: string, metadata: Record<string, unknown> = {}) => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface,
+      metadata: { destination, ...metadata },
+    })
   }
 
   return (
     <div className="min-h-screen bg-[#f6f7fb] text-slate-950 dark:bg-[#05070d] dark:text-white">
-      <div className="hidden md:block">
-        <NavbarAuth />
-      </div>
-
-      <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/92 px-5 py-4 backdrop-blur dark:border-white/10 dark:bg-[#070a12]/92 md:hidden">
-        <div className="relative flex items-center justify-between">
-          <button
-            type="button"
-            aria-label="Open menu"
-            onClick={() => setMobileMenuOpen((open) => !open)}
-            className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-900 shadow-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-white"
-          >
-            <Menu className="h-5 w-5" />
-          </button>
-
-          <Link to="/" className="absolute left-1/2 -translate-x-1/2 text-2xl font-black tracking-normal">
-            Tally<span className="text-purple-600 dark:text-purple-400">Store</span>
-          </Link>
-
-          <div className="flex items-center gap-2">
-            <div className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-900 shadow-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-white">
-              <ThemeToggle />
-            </div>
-            <Link
-              to={user ? "/profile" : "/login"}
-              aria-label={user ? "Open profile" : "Log in or sign up"}
-              className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-900 shadow-sm transition hover:bg-slate-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
-            >
-              <User className="h-5 w-5" />
-            </Link>
-          </div>
-        </div>
-
-        {mobileMenuOpen && (
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl dark:border-white/10 dark:bg-[#0d111b]">
-            <div className="grid gap-3 text-sm font-bold">
-              {[
-                { label: "Products", href: "/products" },
-                { label: "Services", href: "/web-services" },
-                { label: "Wallet", href: "/wallet" },
-                { label: "Orders", href: "/orders" },
-                { label: "Support", href: "/support" },
-                { label: "How It Works", href: "/how-it-works" },
-              ].map((item) => (
-                <Link
-                  key={item.href}
-                  to={item.href}
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="rounded-xl px-3 py-2 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
-                >
-                  {item.label}
-                </Link>
-              ))}
-              {user ? (
-                <div className="grid gap-2 border-t border-slate-200 px-3 pt-3 dark:border-white/10">
-                  <Link
-                    to="/profile"
-                    onClick={() => setMobileMenuOpen(false)}
-                    className="rounded-xl px-3 py-2 text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
-                  >
-                    Account
-                  </Link>
-                  <button
-                    type="button"
-                    onClick={handleMobileSignOut}
-                    className="rounded-xl px-3 py-2 text-left text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10"
-                  >
-                    Sign out
-                  </button>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-2 border-t border-slate-200 px-3 pt-3 dark:border-white/10">
-                  <Link
-                    to="/login"
-                    onClick={() => setMobileMenuOpen(false)}
-                    className="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-950 hover:bg-slate-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:hover:bg-white/10"
-                  >
-                    Log in
-                  </Link>
-                  <Link
-                    to="/register"
-                    onClick={() => setMobileMenuOpen(false)}
-                    className="inline-flex h-10 items-center justify-center rounded-xl bg-purple-600 text-white hover:bg-purple-500"
-                  >
-                    Sign up
-                  </Link>
-                </div>
-              )}
-              <div className="flex items-center justify-between border-t border-slate-200 px-3 pt-3 dark:border-white/10">
-                <span className="text-slate-600 dark:text-slate-400">Theme</span>
-                <ThemeToggle />
-              </div>
-            </div>
-          </div>
-        )}
-      </header>
+      <NavbarAuth />
 
       <main className="overflow-hidden bg-[radial-gradient(circle_at_68%_8%,rgba(168,85,247,0.16),transparent_32rem),radial-gradient(circle_at_15%_28%,rgba(59,130,246,0.10),transparent_26rem),linear-gradient(180deg,#ffffff_0%,#f8fafc_62%,#f6f7fb_100%)] dark:bg-[radial-gradient(circle_at_68%_8%,rgba(141,68,255,0.28),transparent_32rem),radial-gradient(circle_at_15%_28%,rgba(96,42,164,0.22),transparent_26rem),linear-gradient(180deg,#070b13_0%,#05070d_62%,#05070d_100%)]">
         <section id="home" className="relative border-b border-slate-200/80 dark:border-white/10">
@@ -361,6 +291,7 @@ const Index = () => {
               <div className="mt-6 flex flex-col gap-2 sm:mt-7 sm:gap-3 sm:flex-row">
                 <Link
                   to="/products"
+                  onClick={() => trackHomeCta('/products', 'home_hero_products_cta')}
                   className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-purple-500 to-violet-700 px-7 text-sm font-black text-white shadow-[0_18px_42px_rgba(126,51,231,0.35)] transition hover:translate-y-[-1px] sm:w-auto"
                 >
                   Browse Products
@@ -368,6 +299,7 @@ const Index = () => {
                 </Link>
                 <Link
                   to="/how-it-works"
+                  onClick={() => trackHomeCta('/how-it-works', 'home_hero_how_it_works_cta')}
                   className="inline-flex h-12 w-full items-center justify-center rounded-lg border border-slate-200 bg-white/80 px-7 text-sm font-black text-slate-950 shadow-sm transition hover:bg-white dark:border-white/15 dark:bg-white/[0.03] dark:text-white dark:hover:bg-white/[0.07] sm:w-auto"
                 >
                   How It Works
@@ -416,7 +348,7 @@ const Index = () => {
         <section className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-6 lg:px-8">
           <div className="mb-5 flex items-center justify-between gap-4">
             <h2 className="text-2xl font-black tracking-normal">Popular Categories</h2>
-            <Link to="/products" className="hidden text-sm font-black text-purple-700 transition hover:text-purple-500 dark:text-purple-300 dark:hover:text-purple-200 sm:inline-flex">
+            <Link to="/products" onClick={() => trackHomeCta('/products', 'home_categories_view_all')} className="hidden text-sm font-black text-purple-700 transition hover:text-purple-500 dark:text-purple-300 dark:hover:text-purple-200 sm:inline-flex">
               View all categories <ArrowRight className="ml-2 h-4 w-4" />
             </Link>
           </div>
@@ -427,6 +359,7 @@ const Index = () => {
                 <Link
                   key={category.id}
                   to={category.href}
+                  onClick={() => trackHomeCta(category.href, 'home_category_card', { category_id: category.id, category_name: category.name })}
                   className="group flex min-h-0 items-center gap-3 rounded-lg border border-slate-200 bg-white/85 p-3 shadow-sm transition hover:border-purple-300/60 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35 dark:hover:bg-white/[0.055] sm:block sm:min-h-[162px] sm:p-4 sm:hover:-translate-y-1"
                 >
                   <CategoryLogo name={category.name} className="h-12 w-12" iconClassName="h-10 w-10" />
@@ -444,6 +377,7 @@ const Index = () => {
 
             <Link
               to="/products"
+              onClick={() => trackHomeCta('/products', 'home_all_categories_card')}
               className="group flex min-h-0 items-center gap-3 rounded-lg border border-slate-200 bg-white/85 p-3 shadow-sm transition hover:border-purple-300/60 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35 dark:hover:bg-white/[0.055] sm:block sm:min-h-[162px] sm:p-4 sm:hover:-translate-y-1"
             >
               <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-900 dark:bg-white/10 dark:text-white">
@@ -476,6 +410,7 @@ const Index = () => {
             </div>
             <Link
               to="/products"
+              onClick={() => trackHomeCta('/products', 'home_why_choose_us_cta')}
               className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg border border-purple-200 bg-purple-100 px-6 text-sm font-black text-purple-800 transition hover:bg-purple-200 dark:border-purple-300/25 dark:bg-purple-500/20 dark:text-white dark:hover:bg-purple-500/30"
             >
               Why Choose Us?
@@ -574,6 +509,12 @@ const Index = () => {
         </section>
 
         <HomepageLiveActivity />
+
+        {recs.length > 0 && (
+          <div className="mx-auto max-w-6xl px-4 pb-12">
+            <RecommendationStrip products={recs} surface="homepage" actionType="SHOW_ALTERNATIVE" title="Featured products" />
+          </div>
+        )}
       </main>
 
       <Footer />

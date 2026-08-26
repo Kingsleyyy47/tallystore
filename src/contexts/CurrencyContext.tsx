@@ -9,10 +9,10 @@ interface CurrencyContextValue {
   currency: Currency
   setCurrency: (c: Currency) => void
   toggleCurrency: () => void
-  rate: number
+  rate: number | null
   rateLoading: boolean
   /** Converts an NGN amount to the currently selected display currency (raw number). */
-  convert: (ngnAmount: number) => number
+  convert: (ngnAmount: number) => number | null
   /** Formats an NGN amount as a price string in the currently selected currency, e.g. "₦1,500" or "$0.94". */
   formatPrice: (ngnAmount: number) => string
 }
@@ -45,7 +45,9 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
 
   const formatPrice = (ngnAmount: number) => {
     if (currency === 'USD') {
-      return `$${ngnToUsd(ngnAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      const usd = ngnToUsd(ngnAmount)
+      if (usd === null) return 'USD rate unavailable'
+      return `$${usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     }
     return `₦${ngnAmount.toLocaleString()}`
   }

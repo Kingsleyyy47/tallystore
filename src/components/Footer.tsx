@@ -3,10 +3,10 @@ import { LifeBuoy, PackageCheck, ShieldCheck, Wallet } from 'lucide-react'
 
 const shopLinks = [
   ['All Products', '/products'],
-  ['Instagram Accounts', '/category/instagram'],
-  ['TikTok Accounts', '/category/tiktok'],
-  ['Facebook Accounts', '/category/facebook'],
+  ['Digital Services', '/web-services'],
   ['US & Canada Numbers', '/us-canada'],
+  ['Social Boost', '/social-boost'],
+  ['Gift Cards', '/gift-cards'],
 ]
 
 const accountLinks = [

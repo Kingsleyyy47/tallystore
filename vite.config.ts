@@ -3,8 +3,13 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { VitePWA } from 'vite-plugin-pwa';
 
+const appBuildVersion = process.env.VITE_APP_BUILD_VERSION || `${Date.now()}`;
+
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
+  define: {
+    __APP_BUILD_VERSION__: JSON.stringify(appBuildVersion),
+  },
   server: {
     host: "::",
     port: 8080,
@@ -74,15 +79,7 @@ export default defineConfig(() => ({
           },
           {
             urlPattern: /^https:\/\/.*\.supabase\.co\/.*/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'supabase-cache',
-              networkTimeoutSeconds: 10,
-              expiration: {
-                maxEntries: 50,
-                maxAgeSeconds: 60 * 5 // 5 minutes
-              }
-            }
+            handler: 'NetworkOnly',
           }
         ]
       },

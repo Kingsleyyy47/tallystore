@@ -18,7 +18,7 @@ async function checkPocketFiTransaction(transactionRef: string) {
 }
 
 export function usePaymentStatusChecker() {
-  const { user, refreshWalletBalance } = useAuth();
+  const { user, refreshWalletBalance, showBalances } = useAuth();
   const { toast } = useToast();
   const checkIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -30,7 +30,6 @@ export function usePaymentStatusChecker() {
     const checkPendingPayments = async () => {
       // Stricter lock to prevent multiple simultaneous checks
       if (isCheckingRef.current) {
-        console.log('🚫 Another transaction is being processed, skipping check');
         return;
       }
 
@@ -49,18 +48,14 @@ export function usePaymentStatusChecker() {
           return;
         }
 
-        console.log('🔍 Checking payment status:', transactionRef);
-        
         // Check if already processing this transaction
         if (processingTransactionsRef.current.has(transactionRef)) {
-          console.log('⏳ Transaction already being processed, skipping:', transactionRef);
           return;
         }
         
         // Check if this transaction was already processed
         const processedTransactions = JSON.parse(localStorage.getItem('processed_transactions') || '[]');
         if (processedTransactions.includes(transactionRef)) {
-          console.log('✅ Transaction already processed, cleaning up:', transactionRef);
           localStorage.removeItem('pending_topup');
           return;
         }
@@ -73,12 +68,9 @@ export function usePaymentStatusChecker() {
         const result = transaction.gateway === 'pocketfi'
           ? await checkPocketFiTransaction(transactionRef)
           : await verifyAndCreditWalletSecure(transactionRef);
-        console.log('📊 Verification result:', result);
         
         if (result.success) {
           // Payment successful and wallet credited
-          console.log('💰 Payment verified and wallet credited:', result.amount);
-          
           await refreshWalletBalance();
           
           // Mark transaction as processed
@@ -92,7 +84,9 @@ export function usePaymentStatusChecker() {
             title: result.already_processed ? "Payment Already Processed! ✅" : "Payment Successful! 🎉",
             description: result.already_processed 
               ? `Your wallet balance is up to date.`
-              : `₦${result.amount?.toLocaleString()} has been added to your wallet.`,
+              : showBalances
+                ? `₦${result.amount?.toLocaleString()} has been added to your wallet.`
+                : `Your wallet has been updated.`,
           });
           
           // Notify UI to reload transactions
@@ -105,7 +99,6 @@ export function usePaymentStatusChecker() {
           }
         } else if (result.error?.includes('PENDING') || result.error?.includes('pending')) {
           // Still pending - keep checking
-          console.log('⏳ Payment still pending...');
         } else {
           // Payment failed - clean up
           localStorage.removeItem('pending_topup');
@@ -154,7 +147,7 @@ export function usePaymentStatusChecker() {
         clearInterval(checkIntervalRef.current);
       }
     };
-  }, [user, refreshWalletBalance, toast]);
+  }, [user, refreshWalletBalance, showBalances, toast]);
 
   // Also check when window gets focus (user returns from payment tab)
   useEffect(() => {
@@ -165,7 +158,6 @@ export function usePaymentStatusChecker() {
         setTimeout(async () => {
           // Check lock first
           if (isCheckingRef.current) {
-            console.log('🚫 Another transaction is being processed, skipping focus check');
             return;
           }
 
@@ -173,18 +165,14 @@ export function usePaymentStatusChecker() {
             const transaction = JSON.parse(pendingTopup);
             const transactionRef = transaction.transactionReference;
             
-            console.log('🔎 Checking payment on window focus:', transactionRef);
-            
             // Check if already processing this transaction
             if (processingTransactionsRef.current.has(transactionRef)) {
-              console.log('⏳ Transaction already being processed on focus, skipping:', transactionRef);
               return;
             }
             
             // Check if this transaction was already processed
             const processedTransactions = JSON.parse(localStorage.getItem('processed_transactions') || '[]');
             if (processedTransactions.includes(transactionRef)) {
-              console.log('✅ Transaction already processed on focus, cleaning up:', transactionRef);
               localStorage.removeItem('pending_topup');
               return;
             }
@@ -197,11 +185,8 @@ export function usePaymentStatusChecker() {
             const result = transaction.gateway === 'pocketfi'
               ? await checkPocketFiTransaction(transactionRef)
               : await verifyAndCreditWalletSecure(transactionRef);
-            console.log('📋 Focus verification result:', result);
             
             if (result.success) {
-              console.log('💰 Focus check: Payment verified and wallet credited:', result.amount);
-              
               await refreshWalletBalance();
               
               // Mark transaction as processed
@@ -215,7 +200,9 @@ export function usePaymentStatusChecker() {
                 title: result.already_processed ? "Payment Already Processed! ✅" : "Payment Successful! 🎉",
                 description: result.already_processed 
                   ? `Your wallet balance is up to date.`
-                  : `₦${result.amount?.toLocaleString()} has been added to your wallet.`,
+                  : showBalances
+                    ? `₦${result.amount?.toLocaleString()} has been added to your wallet.`
+                    : `Your wallet has been updated.`,
               });
               
               // Notify UI to reload transactions
@@ -236,5 +223,5 @@ export function usePaymentStatusChecker() {
 
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
-  }, [user, refreshWalletBalance, toast]);
+  }, [user, refreshWalletBalance, showBalances, toast]);
 }

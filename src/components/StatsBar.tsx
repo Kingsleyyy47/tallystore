@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Users, ShoppingBag, LayoutGrid, ShieldCheck } from 'lucide-react'
-import { getUserCount, getAdminSalesStats, getCategories, formatCount } from '@/lib/supabase'
+import { getUserCount, getAdminSalesStats, getCategories, getAllProductGroups, formatCount } from '@/lib/supabase'
 
 interface Stat {
   label: string
@@ -17,19 +17,21 @@ export default function StatsBar() {
 
     const loadStats = async () => {
       try {
-        const [userCount, salesStats, categories] = await Promise.all([
+        const [userCount, salesStats, categories, productGroups] = await Promise.all([
           getUserCount(),
           getAdminSalesStats(),
           getCategories(),
+          getAllProductGroups(),
         ])
 
         if (!isMounted) return
 
+        const availableAccounts = productGroups.reduce((sum, product) => sum + Number(product.stock_count || 0), 0)
         setStats([
           { label: 'Active Users', value: formatCount(userCount), icon: Users },
           { label: 'Orders Delivered', value: formatCount(salesStats.totalSales), icon: ShoppingBag },
           { label: 'Categories', value: formatCount(categories.length), icon: LayoutGrid },
-          { label: 'Verified Accounts', value: '100%', icon: ShieldCheck },
+          { label: 'Accounts Available', value: formatCount(availableAccounts), icon: ShieldCheck },
         ])
       } catch (error) {
         console.error('Error loading stats:', error)

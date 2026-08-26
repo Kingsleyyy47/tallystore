@@ -1,0 +1,3 @@
+# PocketFi calls this endpoint without a Supabase JWT.
+# The function verifies POCKETFI_WEBHOOK_SECRET/POCKETFI_SECRET_API_KEY itself.
+verify_jwt = false

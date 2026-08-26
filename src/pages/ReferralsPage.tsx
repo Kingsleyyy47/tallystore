@@ -10,9 +10,12 @@ import Footer from '@/components/Footer'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
 import { getReferralStats, withdrawReferralBalance } from '@/lib/supabase'
+import { trackRevenueEvent } from '@/lib/revenue-os'
+import { useCurrency } from '@/contexts/CurrencyContext'
 
 export default function ReferralsPage() {
   const { user, refreshWalletBalance, showBalances } = useAuth()
+  const { formatPrice } = useCurrency()
   const { toast } = useToast()
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
@@ -30,6 +33,17 @@ export default function ReferralsPage() {
     try {
       const data = await getReferralStats(user.id)
       setStats(data)
+      trackRevenueEvent({
+        eventType: 'PAGE_VIEWED',
+        userId: user.id,
+        surface: 'referrals_loaded',
+        metadata: {
+          has_referral_code: Boolean(data.referralCode),
+          total_referred: data.totalReferred,
+          earning_count: data.earnings.length,
+          has_withdrawable_balance: data.referralBalance > 0,
+        },
+      })
     } catch (error) {
       console.error('Failed to load referral stats:', error)
     } finally {
@@ -38,6 +52,13 @@ export default function ReferralsPage() {
   }
 
   useEffect(() => {
+    if (user?.id) {
+      trackRevenueEvent({
+        eventType: 'PAGE_VIEWED',
+        userId: user.id,
+        surface: 'referrals',
+      })
+    }
     loadStats()
   }, [user?.id])
 
@@ -47,21 +68,49 @@ export default function ReferralsPage() {
 
   const handleCopy = (text: string, label: string) => {
     navigator.clipboard.writeText(text)
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'referral_share_copy',
+      metadata: {
+        copied: label.toLowerCase().includes('link') ? 'link' : 'code',
+        has_referral_code: Boolean(stats.referralCode),
+      },
+    })
     toast({ title: 'Copied!', description: `${label} copied to clipboard` })
   }
 
   const handleWithdraw = async () => {
     if (!user?.id) return
     setWithdrawing(true)
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user.id,
+      surface: 'referral_move_to_wallet_attempt',
+      metadata: {
+        amount_ngn: stats.referralBalance,
+      },
+    })
     try {
       const result = await withdrawReferralBalance(user.id)
       if (result.success) {
         toast({
           title: 'Moved to wallet',
-          description: `₦${result.amount?.toLocaleString()} moved to your wallet balance`,
+          description: showBalances
+            ? `${formatPrice(result.amount || 0)} moved to your wallet balance`
+            : 'Your wallet balance has been updated',
         })
         await refreshWalletBalance()
         await loadStats()
+        trackRevenueEvent({
+          eventType: 'OFFER_ACCEPTED',
+          userId: user.id,
+          surface: 'referral_move_to_wallet_completed',
+          metadata: {
+            amount_ngn: result.amount || stats.referralBalance,
+            commerce_source: 'referral_reward',
+          },
+        })
       } else {
         toast({
           title: 'Could not withdraw',
@@ -106,7 +155,7 @@ export default function ReferralsPage() {
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Reward Balance</p>
-                      <p className="text-xl font-bold">{showBalances ? `₦${stats.referralBalance.toLocaleString()}` : '***'}</p>
+                      <p className="text-xl font-bold">{showBalances ? formatPrice(stats.referralBalance) : '***'}</p>
                     </div>
                   </div>
                 </CardContent>
@@ -143,7 +192,15 @@ export default function ReferralsPage() {
                   <Button
                     className="w-full"
                     variant="outline"
-                    onClick={() => navigate('/referral-withdrawal')}
+                    onClick={() => {
+                      trackRevenueEvent({
+                        eventType: 'OFFER_ACCEPTED',
+                        userId: user?.id || null,
+                        surface: 'referral_bank_withdrawal_opened',
+                        metadata: { amount_ngn: stats.referralBalance },
+                      })
+                      navigate('/referral-withdrawal')
+                    }}
                     disabled={stats.referralBalance <= 0}
                   >
                     <Banknote className="h-4 w-4 mr-2" />
@@ -199,14 +256,14 @@ export default function ReferralsPage() {
                       >
                         <div>
                           <p className="text-sm font-medium">
-                            Order of ₦{earning.order_amount.toLocaleString()}
+                            Order of {formatPrice(earning.order_amount)}
                           </p>
                           <p className="text-xs text-muted-foreground">
                             {new Date(earning.created_at).toLocaleDateString()}
                           </p>
                         </div>
                         <Badge variant="secondary">
-                          +₦{earning.commission_amount.toLocaleString()}
+                          +{formatPrice(earning.commission_amount)}
                         </Badge>
                       </div>
                     ))}

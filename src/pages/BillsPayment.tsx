@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,10 @@ import { useAuth } from "@/contexts/SimpleAuth";
 import NavbarAuth from "@/components/NavbarAuth";
 import PageBreadcrumb from "@/components/PageBreadcrumb";
 import { blockStaffPurchase } from "@/lib/staffPurchaseGuard";
+import { getRevenueRequestContext, getRevenueVisitorId, trackRevenueEvent } from "@/lib/revenue-os";
+import { RecommendationStrip } from "@/components/RecommendationCard";
+import { useRecommendations } from "@/hooks/useRecommendations";
+import { useCurrency } from "@/contexts/CurrencyContext";
 
 interface DataPlan {
   code: string;
@@ -86,12 +90,148 @@ export default function BillsPayment() {
   const [loadingPlans, setLoadingPlans] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { showBalances, isStaff, isAdmin } = useAuth();
+  const { user, showBalances, isStaff, isAdmin } = useAuth();
+  const { recommendations: recs } = useRecommendations({ limit: 3 });
+  const { currency, formatPrice } = useCurrency();
+
+  const providerBuyCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const tx of transactions) {
+      const status = String(tx.status || '').toLowerCase();
+      if (!['completed', 'success', 'successful'].includes(status)) continue;
+      const key = String(tx.service_provider || '').toUpperCase();
+      if (key) counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }, [transactions]);
+
+  const dataPlanBuyCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const tx of transactions) {
+      const status = String(tx.status || '').toLowerCase();
+      if (!['completed', 'success', 'successful'].includes(status)) continue;
+      const providerKey = String(tx.service_provider || '').toUpperCase();
+      const planKey = String(tx.service_code || '').trim();
+      if (providerKey && planKey) counts.set(`${providerKey}:${planKey}`, (counts.get(`${providerKey}:${planKey}`) || 0) + 1);
+    }
+    return counts;
+  }, [transactions]);
+
+  const orderedServiceProviders = useMemo(() => {
+    return [...SERVICE_PROVIDERS].sort((left, right) => {
+      const countDiff = (providerBuyCounts.get(right.code) || 0) - (providerBuyCounts.get(left.code) || 0);
+      if (countDiff !== 0) return countDiff;
+      return SERVICE_PROVIDERS.findIndex((item) => item.code === left.code) - SERVICE_PROVIDERS.findIndex((item) => item.code === right.code);
+    });
+  }, [providerBuyCounts]);
+
+  const handleProviderChange = (nextProvider: string) => {
+    setProvider(nextProvider);
+    setSelectedPlan('');
+    const providerMeta = SERVICE_PROVIDERS.find((item) => item.code === nextProvider);
+    trackRevenueEvent({
+      eventType: 'PRODUCT_CLICKED',
+      userId: user?.id || null,
+      surface: 'bills_provider_grid',
+      eventId: `PRODUCT_CLICKED:${crypto.randomUUID()}:bills_provider:${activeTab}:${nextProvider}`,
+      metadata: {
+        transaction_type: activeTab,
+        service_provider: nextProvider,
+        service_name: providerMeta?.name || nextProvider,
+        personal_buy_count: providerBuyCounts.get(nextProvider) || 0,
+      },
+    });
+  };
 
   useEffect(() => {
     fetchBalance();
     fetchTransactionHistory();
   }, []);
+
+  useEffect(() => {
+    const day = new Date().toISOString().slice(0, 10);
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'bills_payment',
+      eventId: `PAGE_VIEWED:${day}:bills_payment:${user?.id || 'anon'}`,
+      metadata: { active_tab: activeTab },
+    });
+  }, [activeTab, user?.id]);
+
+  useEffect(() => {
+    const day = new Date().toISOString().slice(0, 10);
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous';
+    orderedServiceProviders.forEach((serviceProvider, index) => {
+      trackRevenueEvent({
+        eventType: 'PRODUCT_IMPRESSION',
+        userId: user?.id || null,
+        surface: 'bills_provider_grid',
+        eventId: `PRODUCT_IMPRESSION:${day}:${actorKey}:bills_provider:${activeTab}:${serviceProvider.code}`,
+        metadata: {
+          transaction_type: activeTab,
+          service_provider: serviceProvider.code,
+          service_name: serviceProvider.name,
+          position: index + 1,
+          personal_buy_count: providerBuyCounts.get(serviceProvider.code) || 0,
+        },
+      });
+    });
+  }, [activeTab, orderedServiceProviders, providerBuyCounts, user?.id]);
+
+  useEffect(() => {
+    if (activeTab !== 'data' || dataPlans.length === 0 || !provider) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous';
+    dataPlans.slice(0, 24).forEach((plan, index) => {
+      trackRevenueEvent({
+        eventType: 'PRODUCT_IMPRESSION',
+        userId: user?.id || null,
+        surface: 'bills_data_plans',
+        eventId: `PRODUCT_IMPRESSION:${day}:${actorKey}:bills_data:${provider}:${plan.code}`,
+        metadata: {
+          transaction_type: 'data',
+          service_provider: provider,
+          service_code: plan.code,
+          service_name: plan.name,
+          price_ngn: plan.price,
+          validity: plan.validity,
+          position: index + 1,
+          personal_buy_count: dataPlanBuyCounts.get(`${provider.toUpperCase()}:${plan.code}`) || 0,
+        },
+      });
+    });
+  }, [activeTab, dataPlanBuyCounts, dataPlans, provider, user?.id]);
+
+  useEffect(() => {
+    if (!provider) return;
+    const purchaseAmount = parseFloat(amount);
+    if (!purchaseAmount || purchaseAmount < 50) return;
+    if (activeTab === 'data' && !selectedPlan) return;
+
+    const selectedDataPlan = activeTab === 'data'
+      ? dataPlans.find((plan) => plan.code === selectedPlan) || null
+      : null;
+    const day = new Date().toISOString().slice(0, 10);
+    trackRevenueEvent({
+      eventType: 'PAYMENT_PROVIDER_LOADED',
+      userId: user?.id || null,
+      surface: 'bills_payment',
+      eventId: `PAYMENT_PROVIDER_LOADED:${day}:bills:${user?.id || 'anon'}:${activeTab}:${provider}:${selectedPlan || 'airtime'}:${purchaseAmount}:${paymentSource}`,
+      metadata: {
+        provider: paymentSource,
+        transaction_type: activeTab,
+        amount_ngn: purchaseAmount,
+        service_provider: provider,
+        service_code: activeTab === 'data' ? selectedPlan : null,
+        service_name: selectedDataPlan?.name || null,
+        personal_provider_buy_count: providerBuyCounts.get(provider) || 0,
+        personal_plan_buy_count: activeTab === 'data' && selectedPlan
+          ? dataPlanBuyCounts.get(`${provider.toUpperCase()}:${selectedPlan}`) || 0
+          : 0,
+      },
+    });
+  }, [activeTab, amount, dataPlanBuyCounts, dataPlans, paymentSource, provider, providerBuyCounts, selectedPlan, user?.id]);
 
   const fetchBalance = async () => {
     try {
@@ -127,7 +267,7 @@ export default function BillsPayment() {
   // Get the currently selected balance
   const selectedBalance = paymentSource === 'wallet' ? walletBalance : cryptoBalance;
   const formatBalance = (value: number) =>
-    showBalances ? `₦${value.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '***';
+    showBalances ? formatPrice(value) : '***';
 
   const fetchTransactionHistory = async () => {
     try {
@@ -138,7 +278,11 @@ export default function BillsPayment() {
 
       const { data, error } = await supabase
         .from('bills_transactions')
-        .select('*')
+        .select(`
+          id, reference, transaction_type, amount, status,
+          service_provider, service_code, beneficiary_phone,
+          created_at, completed_at
+        `)
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(10);
@@ -162,19 +306,21 @@ export default function BillsPayment() {
         body: { provider: selectedProvider },
       });
 
-      console.log('Full response:', response);
-      
       if (response.error) {
-        console.error('Edge Function error:', response.error);
-        console.error('Response data:', response.data);
+        console.error('Data plan function error:', response.error);
         throw response.error;
       }
 
       const { data, error } = response;
-      console.log('Data plans response:', data);
 
       if (data.success) {
-        setDataPlans(data.data);
+        const rankedPlans = [...(data.data || [])].sort((left: DataPlan, right: DataPlan) => {
+          const leftCount = dataPlanBuyCounts.get(`${selectedProvider.toUpperCase()}:${left.code}`) || 0;
+          const rightCount = dataPlanBuyCounts.get(`${selectedProvider.toUpperCase()}:${right.code}`) || 0;
+          if (rightCount !== leftCount) return rightCount - leftCount;
+          return Number(left.price || 0) - Number(right.price || 0);
+        });
+        setDataPlans(rankedPlans);
       } else {
         console.error('API returned error:', data.error, data.details);
         throw new Error(data.error || 'Failed to load data plans');
@@ -199,6 +345,21 @@ export default function BillsPayment() {
     const plan = dataPlans.find(p => p.code === planCode);
     if (plan) {
       setAmount(plan.price.toString());
+      trackRevenueEvent({
+        eventType: 'PRODUCT_CLICKED',
+        userId: user?.id || null,
+        surface: 'bills_data_plans',
+        eventId: `PRODUCT_CLICKED:${crypto.randomUUID()}:bills_data:${provider}:${plan.code}`,
+        metadata: {
+          transaction_type: 'data',
+          service_provider: provider,
+          service_code: plan.code,
+          service_name: plan.name,
+          price_ngn: plan.price,
+          validity: plan.validity,
+          personal_buy_count: dataPlanBuyCounts.get(`${provider.toUpperCase()}:${plan.code}`) || 0,
+        },
+      });
     }
   };
 
@@ -209,7 +370,7 @@ export default function BillsPayment() {
     if (!provider) {
       toast({
         title: "Select Network",
-        description: "Please select a service provider",
+        description: "Please select a network",
         variant: "destructive",
       });
       return;
@@ -228,7 +389,7 @@ export default function BillsPayment() {
     if (!purchaseAmount || purchaseAmount < 50) {
       toast({
         title: "Invalid Amount",
-        description: activeTab === 'airtime' ? "Minimum airtime is ₦50" : "Please select a data plan",
+        description: activeTab === 'airtime' ? `Minimum airtime is ${formatPrice(50)}` : "Please select a data plan",
         variant: "destructive",
       });
       return;
@@ -247,8 +408,8 @@ export default function BillsPayment() {
       toast({
         title: "Insufficient Balance",
         description: showBalances
-          ? `You need ₦${purchaseAmount.toLocaleString()} but only have ₦${selectedBalance.toLocaleString()} in your ${paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} balance`
-          : `You need ₦${purchaseAmount.toLocaleString()} in your ${paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} balance`,
+          ? `You need ${formatPrice(purchaseAmount)} but only have ${formatPrice(selectedBalance)} in your ${paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} balance`
+          : `You need ${formatPrice(purchaseAmount)} in your ${paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} balance`,
         variant: "destructive",
       });
       return;
@@ -258,6 +419,7 @@ export default function BillsPayment() {
 
     // Generate unique idempotency key for this purchase attempt
     const idempotencyKey = `${Date.now()}-${crypto.randomUUID()}`;
+    const selectedDataPlan = dataPlans.find((plan) => plan.code === selectedPlan) || null;
 
     try {
       const requestBody = {
@@ -268,19 +430,34 @@ export default function BillsPayment() {
         data_plan_code: activeTab === 'data' ? selectedPlan : null,
         payment_source: paymentSource,
         idempotency_key: idempotencyKey,
+        revenue_context: getRevenueRequestContext(),
       };
       
-      console.log('Sending purchase request:', requestBody);
+      trackRevenueEvent({
+        eventType: 'BUY_CLICKED',
+        userId: user?.id || null,
+        surface: 'bills_payment',
+        eventId: `BUY_CLICKED:bills:${idempotencyKey}`,
+        metadata: {
+          transaction_type: activeTab,
+          amount_ngn: purchaseAmount,
+          service_provider: provider,
+          service_code: activeTab === 'data' ? selectedPlan : null,
+          service_name: selectedDataPlan?.name || null,
+          personal_provider_buy_count: providerBuyCounts.get(provider) || 0,
+          personal_plan_buy_count: activeTab === 'data' && selectedPlan
+            ? dataPlanBuyCounts.get(`${provider.toUpperCase()}:${selectedPlan}`) || 0
+            : 0,
+          payment_source: paymentSource,
+        },
+      });
       
       const response = await supabase.functions.invoke('purchase-bills', {
         body: requestBody,
       });
 
-      console.log('Purchase response:', response);
-
       if (response.error) {
         console.error('Purchase error:', response.error);
-        console.error('Error data:', response.data);
         throw new Error(response.data?.error || response.error.message || 'Purchase failed');
       }
 
@@ -382,7 +559,7 @@ export default function BillsPayment() {
             Instant Airtime & Data Top-up
           </h2>
           <p className="text-sm sm:text-base text-muted-foreground px-4">
-            Powered by SageCloud • All Nigerian networks supported
+            Secure wallet checkout • All Nigerian networks supported
           </p>
         </div>
 
@@ -517,14 +694,17 @@ export default function BillsPayment() {
                       <Label htmlFor="provider-select" className="text-base font-medium">
                         Select Network
                       </Label>
-                      <Select value={provider} onValueChange={setProvider}>
+                      <Select value={provider} onValueChange={handleProviderChange}>
                         <SelectTrigger id="provider-select" className="h-12">
                           <SelectValue placeholder="Choose network..." />
                         </SelectTrigger>
                         <SelectContent>
-                          {SERVICE_PROVIDERS.map((p) => (
+                          {orderedServiceProviders.map((p) => (
                             <SelectItem key={p.code} value={p.code}>
-                              <span className={p.color}>{p.name}</span>
+                              <span className={p.color}>
+                                {p.name}
+                                {(providerBuyCounts.get(p.code) || 0) > 0 ? ` • ${providerBuyCounts.get(p.code)} previous` : ''}
+                              </span>
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -558,7 +738,7 @@ export default function BillsPayment() {
                         </Label>
                         <div className="relative">
                           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-medium">
-                            ₦
+                            {currency === 'USD' ? '$' : '₦'}
                           </span>
                           <Input
                             id="amount-input"
@@ -573,7 +753,7 @@ export default function BillsPayment() {
                           />
                         </div>
                         <p className="text-xs text-muted-foreground">
-                          Min: ₦50 | Max: ₦50,000
+                          Min: {formatPrice(50)} | Max: {formatPrice(50000)}
                         </p>
                       </div>
 
@@ -587,7 +767,7 @@ export default function BillsPayment() {
                             onClick={() => setAmount(amt.toString())}
                             className="h-10"
                           >
-                            ₦{amt}
+                            {formatPrice(amt)}
                           </Button>
                         ))}
                       </div>
@@ -606,7 +786,7 @@ export default function BillsPayment() {
                         <div className="p-6 bg-muted/50 rounded-lg border-2 border-dashed text-center">
                           <Loader2 className="w-12 h-12 mx-auto mb-3 text-muted-foreground animate-spin" />
                           <p className="text-muted-foreground">
-                            Loading real data plans from provider...
+                            Loading available data plans...
                           </p>
                         </div>
                       ) : availablePlans.length === 0 ? (
@@ -640,7 +820,7 @@ export default function BillsPayment() {
                                     />
                                   </div>
                                   <div className="text-lg font-semibold text-green-600 mb-1">
-                                    ₦{plan.price.toLocaleString()}
+                                    {formatPrice(plan.price)}
                                   </div>
                                   <div className="text-xs text-muted-foreground">
                                     Valid for {plan.validity}
@@ -677,7 +857,7 @@ export default function BillsPayment() {
                       ) : (
                         <>
                           <TrendingDown className="w-5 h-5 mr-2" />
-                          Buy {activeTab === 'airtime' ? 'Airtime' : 'Data'} ₦{parseFloat(amount || '0').toLocaleString()}
+                          Buy {activeTab === 'airtime' ? 'Airtime' : 'Data'} {formatPrice(parseFloat(amount || '0'))}
                         </>
                       )}
                     </Button>
@@ -736,7 +916,7 @@ export default function BillsPayment() {
                           </div>
                           <div className="space-y-1 text-xs text-muted-foreground">
                             <p className="font-semibold text-foreground">
-                              {tx.service_provider} - ₦{tx.amount.toLocaleString()}
+                              {tx.service_provider} - {formatPrice(tx.amount)}
                             </p>
                             <p>{tx.beneficiary_phone}</p>
                             <p className="text-xs">
@@ -753,6 +933,11 @@ export default function BillsPayment() {
           </div>
         </div>
       </div>
+      {recs.length > 0 && (
+        <div className="px-4 pb-10 max-w-7xl mx-auto">
+          <RecommendationStrip products={recs} surface="bills_payment_page" actionType="SHOW_ALTERNATIVE" userId={user?.id} title="Explore more products" />
+        </div>
+      )}
     </div>
   );
 }

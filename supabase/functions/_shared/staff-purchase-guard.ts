@@ -9,7 +9,7 @@ export async function assertPurchasingCustomer(admin: any, userId: string) {
     throw new Error('Could not verify purchase permission')
   }
 
-  if (profile?.is_staff && !profile?.is_admin) {
-    throw new Error('Staff accounts can browse and check out, but only customer accounts can complete purchases.')
+  if (profile?.is_staff || profile?.is_admin) {
+    throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
   }
 }

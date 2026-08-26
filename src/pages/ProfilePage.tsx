@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Calendar, CreditCard, KeyRound, Mail, PackageCheck, ShieldCheck, User, Wallet } from 'lucide-react'
+import { Bell, Calendar, CreditCard, KeyRound, Mail, PackageCheck, ShieldCheck, User, Wallet } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
-import { getUserTransactions } from '@/lib/supabase'
+import { getUserTransactions, supabase } from '@/lib/supabase'
+import { useToast } from '@/hooks/use-toast'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 import {
   RevampCard,
   RevampFeature,
@@ -21,8 +25,14 @@ import {
 export default function ProfilePage() {
   const { user, walletBalance, showBalances } = useAuth()
   const { formatPrice } = useCurrency()
+  const { toast } = useToast()
   const [transactions, setTransactions] = useState<any[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [communicationPrefs, setCommunicationPrefs] = useState({
+    email_lifecycle_opt_in: false,
+    email_promotions_opt_in: false,
+  })
+  const [prefsSaving, setPrefsSaving] = useState(false)
 
   useEffect(() => {
     const loadUserData = async () => {
@@ -32,6 +42,17 @@ export default function ProfilePage() {
       try {
         const userTransactions = await getUserTransactions(user.id)
         setTransactions(userTransactions)
+        const { data: prefs } = await supabase
+          .from('customer_communication_preferences' as any)
+          .select('email_lifecycle_opt_in,email_promotions_opt_in')
+          .eq('user_id', user.id)
+          .maybeSingle()
+        if (prefs) {
+          setCommunicationPrefs({
+            email_lifecycle_opt_in: !!prefs.email_lifecycle_opt_in,
+            email_promotions_opt_in: !!prefs.email_promotions_opt_in,
+          })
+        }
       } catch (error) {
         console.error('Failed to load user data:', error)
       } finally {
@@ -40,6 +61,11 @@ export default function ProfilePage() {
     }
 
     if (user) {
+      trackRevenueEvent({
+        eventType: 'PAGE_VIEWED',
+        userId: user.id,
+        surface: 'profile',
+      })
       loadUserData()
     }
   }, [user])
@@ -75,6 +101,46 @@ export default function ProfilePage() {
   }
 
   const username = user.email?.split('@')[0] || 'User'
+
+  const saveCommunicationPrefs = async () => {
+    setPrefsSaving(true)
+    try {
+      const { error } = await supabase
+        .from('customer_communication_preferences' as any)
+        .upsert({
+          user_id: user.id,
+          email_lifecycle_opt_in: communicationPrefs.email_lifecycle_opt_in,
+          email_promotions_opt_in: communicationPrefs.email_promotions_opt_in,
+          consent_source: 'profile_page',
+          consent_updated_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' })
+      if (error) throw error
+      trackRevenueEvent({
+        eventType: communicationPrefs.email_lifecycle_opt_in || communicationPrefs.email_promotions_opt_in ? 'OFFER_ACCEPTED' : 'OFFER_DISMISSED',
+        userId: user.id,
+        surface: 'profile_communication_preferences',
+        metadata: {
+          email_lifecycle_opt_in: communicationPrefs.email_lifecycle_opt_in,
+          email_promotions_opt_in: communicationPrefs.email_promotions_opt_in,
+        },
+      })
+      toast({
+        title: 'Preferences saved',
+        description: communicationPrefs.email_lifecycle_opt_in
+          ? 'You can receive useful follow-up and repeat-purchase emails.'
+          : 'Lifecycle follow-up emails are off.',
+      })
+    } catch (error: any) {
+      toast({
+        title: 'Could not save preferences',
+        description: error?.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setPrefsSaving(false)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -186,15 +252,74 @@ export default function ProfilePage() {
           </div>
         </section>
 
+        <section className="mt-10">
+          <RevampSectionTitle
+            eyebrow="Preferences"
+            title="Communication choices"
+            description="Control whether TallyStore can send useful purchase follow-ups or promotional emails. These are off unless you opt in."
+          />
+          <RevampCard>
+            <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
+              <div className="space-y-4">
+                <label className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 p-4 dark:bg-white/[0.035]">
+                  <span>
+                    <span className="flex items-center gap-2 font-black text-slate-950 dark:text-white">
+                      <Bell className="h-4 w-4 text-purple-600 dark:text-purple-300" />
+                      Helpful follow-up emails
+                    </span>
+                    <span className="mt-1 block text-sm text-slate-600 dark:text-slate-400">
+                      Product follow-ups, repeat-purchase suggestions, and account-use reminders based on your own activity.
+                    </span>
+                  </span>
+                  <Switch
+                    checked={communicationPrefs.email_lifecycle_opt_in}
+                    onCheckedChange={(checked) => setCommunicationPrefs((prev) => ({ ...prev, email_lifecycle_opt_in: checked }))}
+                  />
+                </label>
+                <label className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 p-4 dark:bg-white/[0.035]">
+                  <span>
+                    <span className="flex items-center gap-2 font-black text-slate-950 dark:text-white">
+                      <Mail className="h-4 w-4 text-purple-600 dark:text-purple-300" />
+                      Promotions and offers
+                    </span>
+                    <span className="mt-1 block text-sm text-slate-600 dark:text-slate-400">
+                      Occasional offers or product drops. No fake urgency, and you can turn this off anytime.
+                    </span>
+                  </span>
+                  <Switch
+                    checked={communicationPrefs.email_promotions_opt_in}
+                    onCheckedChange={(checked) => setCommunicationPrefs((prev) => ({ ...prev, email_promotions_opt_in: checked }))}
+                  />
+                </label>
+              </div>
+              <Button onClick={saveCommunicationPrefs} disabled={prefsSaving}>
+                {prefsSaving ? 'Saving...' : 'Save preferences'}
+              </Button>
+            </div>
+          </RevampCard>
+        </section>
+
         <section className="mt-10 rounded-2xl border border-slate-200 bg-white/85 p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
           <div className="grid gap-3 sm:grid-cols-3">
-            <Link to="/wallet" className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300">
+            <Link
+              to="/wallet"
+              onClick={() => trackRevenueEvent({ eventType: 'OFFER_ACCEPTED', userId: user.id, surface: 'profile_quick_link', metadata: { destination: 'wallet' } })}
+              className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300"
+            >
               Manage Wallet
             </Link>
-            <Link to="/orders" className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300">
+            <Link
+              to="/orders"
+              onClick={() => trackRevenueEvent({ eventType: 'OFFER_ACCEPTED', userId: user.id, surface: 'profile_quick_link', metadata: { destination: 'orders' } })}
+              className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300"
+            >
               View Orders
             </Link>
-            <Link to="/support" className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300">
+            <Link
+              to="/support"
+              onClick={() => trackRevenueEvent({ eventType: 'SUPPORT_HANDOFF', userId: user.id, surface: 'profile_quick_link', metadata: { destination: 'support' } })}
+              className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300"
+            >
               Get Support
             </Link>
           </div>

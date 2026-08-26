@@ -15,6 +15,7 @@ export default function UsdPrice({ ngnAmount, className }: UsdPriceProps) {
   if (loading) return null
 
   const usd = ngnToUsd(ngnAmount)
+  if (usd === null) return null
 
   return (
     <span className={className ?? 'text-xs text-muted-foreground'}>

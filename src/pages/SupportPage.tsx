@@ -1,3 +1,4 @@
+import { useCallback, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -7,6 +8,8 @@ import Footer from '@/components/Footer'
 import WalletBalanceWidget from '@/components/WalletBalanceWidget'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
+import { useAuth } from '@/contexts/SimpleAuth'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 // WhatsApp SVG icon
 function WhatsAppIcon({ className }: { className?: string }) {
@@ -49,6 +52,7 @@ const faqItems = [
 ]
 
 export default function SupportPage() {
+  const { user } = useAuth()
   const support = useSupportSettings()
   const hasWhatsApp = Boolean(support.whatsappUrl)
   const hasTelegram = Boolean(support.telegramUrl)
@@ -59,6 +63,31 @@ export default function SupportPage() {
   const primaryColor = hasWhatsApp
     ? 'bg-white text-emerald-700 hover:bg-emerald-50'
     : 'bg-white text-sky-700 hover:bg-sky-50'
+
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'support',
+      metadata: {
+        has_whatsapp: hasWhatsApp,
+        has_telegram: hasTelegram,
+      },
+    })
+  }, [hasTelegram, hasWhatsApp, user?.id])
+
+  const handleSupportHandoff = useCallback((channel: 'whatsapp' | 'telegram' | 'primary') => {
+    trackRevenueEvent({
+      eventType: 'SUPPORT_HANDOFF',
+      userId: user?.id || null,
+      surface: 'support',
+      metadata: {
+        channel,
+        has_whatsapp: hasWhatsApp,
+        has_telegram: hasTelegram,
+      },
+    })
+  }, [hasTelegram, hasWhatsApp, user?.id])
 
   return (
     <div className="min-h-screen bg-background">
@@ -84,6 +113,7 @@ export default function SupportPage() {
                   href={support.whatsappUrl}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={() => handleSupportHandoff('whatsapp')}
                   className="inline-flex items-center gap-2 rounded-full bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-600"
                 >
                   <WhatsAppIcon className="h-4 w-4" />
@@ -95,6 +125,7 @@ export default function SupportPage() {
                   href={support.telegramUrl}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={() => handleSupportHandoff('telegram')}
                   className="inline-flex items-center gap-2 rounded-full bg-sky-500 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600"
                 >
                   <TelegramIcon className="h-4 w-4" />
@@ -120,7 +151,7 @@ export default function SupportPage() {
                 </p>
                 <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap">
                   <Button asChild size="lg" className={`${primaryColor} w-full min-w-0 justify-center whitespace-normal text-xs sm:w-auto sm:text-sm`}>
-                    <a href={primaryUrl} target="_blank" rel="noopener noreferrer">
+                    <a href={primaryUrl} target="_blank" rel="noopener noreferrer" onClick={() => handleSupportHandoff('primary')}>
                       {hasWhatsApp
                         ? <WhatsAppIcon className="mr-2 h-5 w-5" />
                         : <TelegramIcon className="mr-2 h-5 w-5" />}
@@ -129,7 +160,7 @@ export default function SupportPage() {
                   </Button>
                   {hasWhatsApp && hasTelegram && (
                     <Button asChild size="lg" variant="outline" className="w-full min-w-0 justify-center whitespace-normal border-white/40 bg-white/10 text-xs text-white hover:bg-white/20 sm:w-auto sm:text-sm">
-                      <a href={support.telegramUrl} target="_blank" rel="noopener noreferrer">
+                      <a href={support.telegramUrl} target="_blank" rel="noopener noreferrer" onClick={() => handleSupportHandoff('telegram')}>
                         <TelegramIcon className="mr-2 h-4 w-4" />
                         Telegram support
                       </a>

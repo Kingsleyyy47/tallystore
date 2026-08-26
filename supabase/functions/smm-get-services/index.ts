@@ -63,7 +63,11 @@ serve(async (req) => {
     // Build query
     let query = supabaseAdmin
       .from('smm_services')
-      .select('*')
+      .select(`
+        id, external_id, name, category, platform, service_type,
+        price_ngn, min_quantity, max_quantity,
+        has_refill, has_cancel, is_active
+      `)
       .eq('is_active', true)
       .order('platform')
       .order('category')
@@ -83,11 +87,13 @@ serve(async (req) => {
       throw new Error(`Failed to fetch services: ${servicesError.message}`);
     }
 
+    const publicServices = services || [];
+
     // Group services by platform for easier frontend rendering
-    const groupedByPlatform: Record<string, typeof services> = {};
+    const groupedByPlatform: Record<string, typeof publicServices> = {};
     const platforms: string[] = [];
 
-    for (const service of services || []) {
+    for (const service of publicServices) {
       if (!groupedByPlatform[service.platform]) {
         groupedByPlatform[service.platform] = [];
         platforms.push(service.platform);
@@ -99,10 +105,10 @@ serve(async (req) => {
       JSON.stringify({
         success: true,
         data: {
-          services: services || [],
+          services: publicServices,
           grouped: groupedByPlatform,
           platforms: platforms,
-          total: services?.length || 0,
+          total: publicServices.length,
         },
       }),
       {

@@ -17,6 +17,8 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/SimpleAuth";
 import NavbarAuth from "@/components/NavbarAuth";
 import PageBreadcrumb from "@/components/PageBreadcrumb";
+import { trackRevenueEvent } from "@/lib/revenue-os";
+import { useCurrency } from "@/contexts/CurrencyContext";
 
 interface BankAccount {
   bankCode: string;
@@ -70,7 +72,7 @@ const SOURCE_CONFIG = {
     balanceColumn: 'crypto_balance',
     title: 'Withdraw to Bank',
     heading: 'Cash Out to Your Bank',
-    subheading: "Powered by SageCloud • Transfer your balance directly to your Nigerian bank account",
+    subheading: "Transfer your balance directly to your Nigerian bank account",
     balanceLabel: 'Available Balance',
     emptyBalanceCta: { label: 'Sell Crypto First', route: '/crypto-exchange' },
     backRoute: '/dashboard',
@@ -81,7 +83,7 @@ const SOURCE_CONFIG = {
     balanceColumn: 'referral_balance',
     title: 'Withdraw Referral Earnings',
     heading: 'Cash Out Your Referral Earnings',
-    subheading: "Powered by SageCloud • Transfer your referral commission directly to your Nigerian bank account",
+    subheading: "Transfer your referral commission directly to your Nigerian bank account",
     balanceLabel: 'Referral Balance',
     emptyBalanceCta: { label: 'Invite Friends', route: '/referrals' },
     backRoute: '/referrals',
@@ -104,18 +106,28 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
   const [accountValidated, setAccountValidated] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { showBalances } = useAuth();
+  const { showBalances, user } = useAuth();
+  const { currency, formatPrice } = useCurrency();
 
   // Fetch crypto balance
   useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: `${source}_withdrawal`,
+    });
     fetchBalance();
-  }, []);
+  }, [source, user?.id]);
 
   const fetchBalance = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       
       if (!user) {
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          surface: `${source}_withdrawal_auth_required`,
+        });
         setLoadingBalance(false);
         return;
       }
@@ -129,8 +141,22 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
       if (error) throw error;
 
       setCryptoBalance((profile as any)?.[config.balanceColumn] || 0);
+      trackRevenueEvent({
+        eventType: 'PAGE_VIEWED',
+        userId: user.id,
+        surface: `${source}_withdrawal_balance_loaded`,
+        metadata: {
+          source,
+          balance_available: ((profile as any)?.[config.balanceColumn] || 0) > 0,
+        },
+      });
     } catch (error) {
       console.error('Error fetching balance:', error);
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: `${source}_withdrawal_balance_failed`,
+        metadata: { reason: error instanceof Error ? error.message : 'balance_load_failed' },
+      });
       toast({
         title: "Error",
         description: `Failed to load ${config.balanceLabel.toLowerCase()}`,
@@ -155,6 +181,17 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
     setValidatingAccount(true);
     setAccountName("");
     setAccountValidated(false);
+    const selectedBank = NIGERIAN_BANKS.find(bank => bank.code === bankCode);
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: `${source}_withdrawal_bank_validation_attempt`,
+      metadata: {
+        source,
+        bank_code: bankCode,
+        bank_name: selectedBank?.name || null,
+      },
+    });
 
     try {
       // Call Edge Function to validate account via SageCloud
@@ -170,6 +207,16 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
       if (data.success && data.account_name) {
         setAccountName(data.account_name);
         setAccountValidated(true);
+        trackRevenueEvent({
+          eventType: 'OFFER_ACCEPTED',
+          userId: user?.id || null,
+          surface: `${source}_withdrawal_bank_validation_success`,
+          metadata: {
+            source,
+            bank_code: bankCode,
+            bank_name: selectedBank?.name || null,
+          },
+        });
         
         toast({
           title: "Account Verified ✓",
@@ -180,6 +227,17 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
       }
     } catch (error: any) {
       console.error('Account validation error:', error);
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: `${source}_withdrawal_bank_validation_failed`,
+        metadata: {
+          source,
+          bank_code: bankCode,
+          bank_name: selectedBank?.name || null,
+          reason: error?.message || 'bank_validation_failed',
+        },
+      });
       
       toast({
         title: "Validation Failed",
@@ -202,28 +260,46 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
   const handleWithdraw = async () => {
     // Validation
     if (!withdrawAmount || withdrawAmount < 1000) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: `${source}_withdrawal_validation_failed`,
+        metadata: { source, reason: 'amount_below_minimum', amount_ngn: withdrawAmount || 0 },
+      });
       toast({
         title: "Invalid Amount",
-        description: "Minimum withdrawal is ₦1,000",
+        description: `Minimum withdrawal is ${formatPrice(1000)}`,
         variant: "destructive",
       });
       return;
     }
 
     if (withdrawAmount > 2000000) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: `${source}_withdrawal_validation_failed`,
+        metadata: { source, reason: 'amount_above_maximum', amount_ngn: withdrawAmount },
+      });
       toast({
         title: "Amount Too High",
-        description: "Maximum withdrawal is ₦2,000,000 per transaction",
+        description: `Maximum withdrawal is ${formatPrice(2000000)} per transaction`,
         variant: "destructive",
       });
       return;
     }
 
     if (withdrawAmount > cryptoBalance) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: `${source}_withdrawal_validation_failed`,
+        metadata: { source, reason: 'insufficient_balance', amount_ngn: withdrawAmount },
+      });
       toast({
         title: "Insufficient Balance",
         description: showBalances
-          ? `You only have ₦${cryptoBalance.toLocaleString('en-NG', { minimumFractionDigits: 2 })} available`
+          ? `You only have ${formatPrice(cryptoBalance)} available`
           : 'Your available balance is not enough for this withdrawal',
         variant: "destructive",
       });
@@ -231,6 +307,12 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
     }
 
     if (!bankCode || !accountNumber || !accountName) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: `${source}_withdrawal_validation_failed`,
+        metadata: { source, reason: 'incomplete_bank_details', amount_ngn: withdrawAmount },
+      });
       toast({
         title: "Incomplete Details",
         description: "Please fill in all bank details and verify your account",
@@ -240,6 +322,12 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
     }
 
     if (!accountValidated) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: `${source}_withdrawal_validation_failed`,
+        metadata: { source, reason: 'account_not_verified', amount_ngn: withdrawAmount },
+      });
       toast({
         title: "Account Not Verified",
         description: "Please wait for account validation to complete",
@@ -249,6 +337,12 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
     }
 
     if (accountNumber.length !== 10) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: `${source}_withdrawal_validation_failed`,
+        metadata: { source, reason: 'invalid_account_number', amount_ngn: withdrawAmount },
+      });
       toast({
         title: "Invalid Account Number",
         description: "Account number must be 10 digits",
@@ -264,6 +358,19 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
       if (!user) throw new Error("Not authenticated");
 
       const bankName = NIGERIAN_BANKS.find(b => b.code === bankCode)?.name || "";
+      trackRevenueEvent({
+        eventType: 'OFFER_ACCEPTED',
+        userId: user.id,
+        surface: `${source}_withdrawal_attempt`,
+        metadata: {
+          source,
+          amount_ngn: withdrawAmount,
+          fee_ngn: feeAmount,
+          net_amount_ngn: netAmount,
+          bank_code: bankCode,
+          bank_name: bankName || null,
+        },
+      });
 
       // Call Edge Function to create withdrawal request
       const { data, error } = await supabase.functions.invoke('create-withdrawal-request', {
@@ -294,11 +401,24 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
       if (!data.success) {
         throw new Error(data.error || 'Failed to create withdrawal request');
       }
+      trackRevenueEvent({
+        eventType: 'OFFER_ACCEPTED',
+        userId: user.id,
+        surface: `${source}_withdrawal_created`,
+        metadata: {
+          source,
+          amount_ngn: withdrawAmount,
+          fee_ngn: feeAmount,
+          net_amount_ngn: netAmount,
+        },
+      });
 
       // Show success message
       toast({
         title: "Withdrawal Initiated! 🚀",
-        description: `₦${netAmount.toLocaleString('en-NG', { minimumFractionDigits: 2 })} will be sent to your account shortly.`,
+        description: showBalances
+          ? `${formatPrice(netAmount)} will be sent to your account shortly.`
+          : 'Your withdrawal has been initiated.',
         duration: 5000,
       });
 
@@ -315,6 +435,12 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
 
       // Navigate to the relevant history/summary page after 2 seconds
       setTimeout(() => {
+        trackRevenueEvent({
+          eventType: 'OFFER_ACCEPTED',
+          userId: user.id,
+          surface: `${source}_withdrawal_success_redirect`,
+          metadata: { destination: config.successRoute },
+        });
         navigate(config.successRoute);
       }, 2000);
 
@@ -328,6 +454,18 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
       if (userMessage.includes('non-2xx status code') || userMessage.includes('FunctionsHttpError')) {
         userMessage = "We're experiencing a temporary issue. Please try again in a few minutes.";
       }
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: `${source}_withdrawal_failed`,
+        metadata: {
+          source,
+          amount_ngn: withdrawAmount,
+          fee_ngn: feeAmount,
+          net_amount_ngn: netAmount,
+          reason: userMessage,
+        },
+      });
       
       toast({
         title: "Withdrawal Failed",
@@ -342,7 +480,26 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
   const handleMaxAmount = () => {
     // Set to max withdrawable (balance or 2M limit, whichever is lower)
     const maxWithdrawable = Math.min(cryptoBalance, 2000000);
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: `${source}_withdrawal_max_amount`,
+      metadata: {
+        source,
+        amount_ngn: maxWithdrawable,
+      },
+    });
     setAmount(maxWithdrawable.toFixed(2));
+  };
+
+  const handleNavigate = (route: string, surface: string) => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface,
+      metadata: { source, destination: route },
+    });
+    navigate(route);
   };
 
   return (
@@ -354,14 +511,14 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
       </div>
 
       <div className="container mx-auto flex max-w-2xl items-center justify-between gap-3 px-4 pt-4 sm:px-6">
-        <Button variant="outline" size="sm" onClick={() => navigate(config.backRoute)} className="gap-1 rounded-xl font-bold">
+        <Button variant="outline" size="sm" onClick={() => handleNavigate(config.backRoute, `${source}_withdrawal_back_cta`)} className="gap-1 rounded-xl font-bold">
           ← Back
         </Button>
         <div className="flex min-w-0 items-center gap-2">
           <Wallet className="h-5 w-5 shrink-0 text-primary" />
           <h1 className="truncate text-lg font-black">{config.title}</h1>
         </div>
-        <Button variant="outline" size="sm" onClick={() => navigate(config.historyRoute)} className="gap-1 rounded-xl font-bold">
+        <Button variant="outline" size="sm" onClick={() => handleNavigate(config.historyRoute, `${source}_withdrawal_history_cta`)} className="gap-1 rounded-xl font-bold">
           <History className="h-4 w-4" />
           History
         </Button>
@@ -391,7 +548,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
                 </div>
               ) : (
                 <div className="text-4xl font-bold text-green-900">
-                  {showBalances ? `₦${cryptoBalance.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '***'}
+                  {showBalances ? formatPrice(cryptoBalance) : '***'}
                 </div>
               )}
               {cryptoBalance === 0 && !loadingBalance && (
@@ -402,7 +559,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => navigate(config.emptyBalanceCta.route)}
+                    onClick={() => handleNavigate(config.emptyBalanceCta.route, `${source}_withdrawal_empty_balance_cta`)}
                     className="border-green-600 text-green-700 hover:bg-green-100"
                   >
                     {config.emptyBalanceCta.label}
@@ -433,7 +590,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-medium">
-                    ₦
+                    {currency === 'USD' ? '$' : '₦'}
                   </span>
                   <Input
                     id="amount-input"
@@ -458,7 +615,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Min: ₦1,000 | Max: ₦2,000,000 per transaction
+                Min: {formatPrice(1000)} | Max: {formatPrice(2000000)} per transaction
               </p>
             </div>
 
@@ -501,7 +658,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
               {validatingAccount && (
                 <div className="flex items-center gap-2 text-sm text-blue-600 p-3 bg-blue-50 rounded-lg border border-blue-200">
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Verifying account with SageCloud...</span>
+                  <span>Verifying account details...</span>
                 </div>
               )}
               {accountValidated && accountName && (
@@ -547,17 +704,17 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
                   <div className="space-y-3">
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-muted-foreground">Withdrawal Amount:</span>
-                      <span className="font-semibold">₦{withdrawAmount.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</span>
+                      <span className="font-semibold">{formatPrice(withdrawAmount)}</span>
                     </div>
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-muted-foreground">Processing Fee (2%):</span>
-                      <span className="font-semibold text-red-600">-₦{feeAmount.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</span>
+                      <span className="font-semibold text-red-600">-{formatPrice(feeAmount)}</span>
                     </div>
                     <div className="border-t border-blue-200 pt-3">
                       <div className="flex justify-between items-center">
                         <span className="font-semibold text-base">You'll Receive:</span>
                         <span className="text-3xl font-bold text-green-700">
-                          ₦{netAmount.toLocaleString('en-NG', { minimumFractionDigits: 2 })}
+                          {formatPrice(netAmount)}
                         </span>
                       </div>
                     </div>
@@ -573,7 +730,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
                 <div className="flex-1">
                   <p className="font-semibold text-blue-900 text-sm">Secure Transfer</p>
                   <p className="text-xs text-blue-800 mt-1">
-                    All withdrawals are processed through SageCloud's secure payment gateway. 
+                    All withdrawals are processed through a secure payment gateway.
                     Your balance will be deducted immediately and refunded automatically if the transfer fails.
                   </p>
                 </div>
@@ -605,7 +762,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
               ) : (
                 <>
                   <TrendingDown className="w-5 h-5 mr-2" />
-                  Withdraw ₦{netAmount.toLocaleString('en-NG', { minimumFractionDigits: 0 })}
+                  Withdraw {formatPrice(netAmount)}
                 </>
               )}
             </Button>
@@ -622,7 +779,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
               </p>
               <p className="text-xs text-muted-foreground flex items-center gap-1.5">
                 <Shield className="w-3.5 h-3.5" />
-                Powered by SageCloud secure payment gateway
+                Secure bank-transfer gateway
               </p>
             </div>
           </CardContent>

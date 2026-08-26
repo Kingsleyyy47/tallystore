@@ -17,6 +17,9 @@ export const PERMISSIONS = [
   { key: 'tab_discount_codes',      label: 'Discount Codes tab',     description: 'View, create, and toggle discount codes', group: 'Tabs' },
   { key: 'tab_sms_products',        label: 'SMS Products tab',       description: 'Enable SMS products, set favorites, and manage customer SMS pricing', group: 'Tabs' },
   { key: 'tab_sms_orders',          label: 'SMS Orders tab',         description: 'View all customer SMS order history, cancel pending orders, and issue refunds', group: 'Tabs' },
+  { key: 'tab_transactions',        label: 'Transaction History tab', description: 'View completed customer wallet deposits only', group: 'Tabs' },
+  { key: 'tab_sales',               label: 'Sales History tab',       description: 'View completed customer product, SMS, crypto, bills, gift card, and social sales history', group: 'Tabs' },
+  { key: 'tab_revenue_os',          label: 'Revenue OS tab',          description: 'View CRO health, data-quality findings, opportunities, and change bounded Revenue OS controls', group: 'Tabs' },
   { key: 'tab_categories',          label: 'Categories tab',         description: 'View, create, and edit product categories', group: 'Tabs' },
   { key: 'tab_users',               label: 'Users tab',              description: 'Search and view user accounts', group: 'Tabs' },
   { key: 'tab_email',               label: 'Email / Broadcast tab',  description: 'Send emails and broadcasts to users', group: 'Tabs' },
@@ -62,22 +65,23 @@ export async function submitPendingAction(
   actionType: string,
   actionLabel: string,
   actionData: Record<string, unknown> = {},
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; applied?: boolean; queued?: boolean; accountsCreated?: number }> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: 'Not authenticated' }
 
-  const { error } = await supabase
-    .from('staff_pending_actions')
-    .insert({
-      staff_id: user.id,
-      staff_email: user.email,
+  const { data, error } = await supabase.functions.invoke('manage-staff', {
+    body: {
+      action: 'submit_staff_action',
       permission_key: permissionKey,
       action_type: actionType,
       action_label: actionLabel,
       action_data: actionData,
-    })
+    },
+  })
 
-  return error ? { success: false, error: error.message } : { success: true }
+  if (error) return { success: false, error: error.message }
+  if (data?.success === false) return { success: false, error: data.error || 'Action failed' }
+  return data || { success: true }
 }
 
 /** (Admin only) Fetch all pending actions. Uses service role via edge function

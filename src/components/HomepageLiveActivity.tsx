@@ -12,15 +12,6 @@ type ActivityRow = {
   ts: number
 }
 
-const SIM_ROWS: ActivityRow[] = [
-  { id: 'sim-a', kind: 'order', maskedName: 'A***u', amount: 0, label: 'Instagram accounts', quantity: 2, ts: Date.now() - 2 * 60_000 },
-  { id: 'sim-b', kind: 'deposit', maskedName: 'K***s', amount: 15000, label: '', ts: Date.now() - 4 * 60_000 },
-  { id: 'sim-c', kind: 'order', maskedName: 'T***e', amount: 0, label: 'Facebook account', quantity: 1, ts: Date.now() - 7 * 60_000 },
-  { id: 'sim-d', kind: 'deposit', maskedName: 'M***a', amount: 50000, label: '', ts: Date.now() - 11 * 60_000 },
-  { id: 'sim-e', kind: 'order', maskedName: 'D***l', amount: 0, label: 'TikTok accounts', quantity: 5, ts: Date.now() - 14 * 60_000 },
-  { id: 'sim-f', kind: 'deposit', maskedName: 'F***z', amount: 8500, label: '', ts: Date.now() - 18 * 60_000 },
-]
-
 function fromRealItem(item: GlobalActivityItem, index: number): ActivityRow {
   return {
     id: `real-${index}-${item.createdAt}`,
@@ -69,11 +60,9 @@ export default function HomepageLiveActivity() {
   }, [])
 
   const rows = useMemo(() => {
-    const merged = [...realRows, ...SIM_ROWS]
+    return [...realRows]
       .sort((a, b) => b.ts - a.ts)
       .slice(0, 6)
-
-    return merged.length > 0 ? merged : SIM_ROWS
   }, [realRows])
 
   return (
@@ -87,8 +76,13 @@ export default function HomepageLiveActivity() {
           <p className="hidden text-sm font-semibold text-slate-500 dark:text-slate-500 sm:block">Real transactions, right now</p>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          {rows.map((row, index) => (
+        {rows.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-white/60 px-4 py-5 text-sm font-semibold text-slate-500 dark:border-white/10 dark:bg-white/[0.035] dark:text-slate-400">
+            Verified purchases and deposits will appear here once customers complete them.
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-3">
+            {rows.map((row) => (
             <article
               key={row.id}
               className="flex min-h-[80px] items-center gap-3 rounded-lg border border-slate-200 bg-white/85 px-4 py-3 shadow-sm dark:border-white/10 dark:bg-white/[0.035]"
@@ -102,12 +96,13 @@ export default function HomepageLiveActivity() {
                 <p className="mt-0.5 line-clamp-2 text-sm leading-5 text-slate-600 dark:text-slate-400">
                   {row.kind === 'deposit'
                     ? `Deposited ${formatPrice(row.amount)}`
-                    : `Bought ${row.quantity || Math.max(1, (index % 5) + 1)}x ${row.label}`}
+                    : `Bought ${row.quantity || 1}x ${row.label}`}
                 </p>
               </div>
             </article>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   )

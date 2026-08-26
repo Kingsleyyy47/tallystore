@@ -90,13 +90,17 @@ serve(async (req) => {
     // 1. Return the cached account if we already created one for this user.
     const { data: profile, error: profileError } = await supabaseAdmin
       .from('profiles')
-      .select('full_name, pocketfi_account_number, pocketfi_account_name, pocketfi_bank')
+      .select('full_name, pocketfi_account_number, pocketfi_account_name, pocketfi_bank, is_staff, is_admin')
       .eq('id', user.id)
       .single()
 
     if (profileError) {
       console.error('Failed to load profile:', JSON.stringify(profileError))
       throw new Error(`Failed to load profile: ${profileError.message || profileError.code || 'unknown error'}`)
+    }
+
+    if (profile.is_staff || profile.is_admin) {
+      throw new Error('Bank transfer top-ups are only available to customer accounts.')
     }
 
     if (profile?.pocketfi_account_number) {

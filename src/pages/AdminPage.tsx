@@ -82,6 +82,8 @@ import {
   adminAdjustBalance,
   getAppSetting,
   upsertAppSetting,
+  getFavoriteProductGroupIds,
+  setFavoriteProductGroupIds as saveFavoriteProductGroupIds,
   getProductSuggestions,
   computeAndUpsertTrendSuggestions,
   dismissSuggestion,
@@ -102,65 +104,39 @@ import { format, formatDistanceToNow } from 'date-fns'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
-// import {
-//   analyzePromotionGuardrails,
-//   analyzeRevenueDataQuality,
-//   analyzeRevenueEventDataQuality,
-//   applyCroEvaluationDecisions,
-//   createProductRankingExperimentFromOpportunity,
-//   decayCommercialInsights,
-//   deriveBehavioralProductRelationships,
-//   deriveCroActionPlans,
-//   deriveCroBanditAllocations,
-//   deriveCroDriftChecks,
-//   deriveCroExperimentEvaluations,
-//   deriveCroSimulationRun,
-//   deriveRevenueAnomalyChecks,
-//   deriveRevenueProductAttributes,
-//   deriveRevenueOsRuntimeIntelligence,
-//   deriveCatalogueProductRelationships,
-//   recordCroExperiment,
-//   recordCroEvaluations,
-//   recordCroActionPlans,
-//   recordCatalogueProductRelationships,
-//   recordRevenueProductAttributes,
-//   recordRevenueDataQualityFindings,
-//   recordRevenueOsRuntimeIntelligence,
-//   seedDeterministicRevenueOsModelRegistry,
-//   updateCroActionPlanStatus,
-// } from '@/lib/revenue-os'
-// ── Temporary stubs — revenue-os WIP not yet committed ──────────────────────
-const analyzePromotionGuardrails = (..._: any[]) => ([] as any[])
-const analyzeRevenueDataQuality = (..._: any[]) => ([] as any[])
-const analyzeRevenueEventDataQuality = (..._: any[]) => ([] as any[])
-const applyCroEvaluationDecisions = async (..._: any[]) => ({})
-const createProductRankingExperimentFromOpportunity = (..._: any[]) => ({})
-const decayCommercialInsights = async (..._: any[]) => ({})
-const deriveBehavioralProductRelationships = (..._: any[]) => ([])
-const deriveCroActionPlans = (..._: any[]) => ([])
-const deriveCroBanditAllocations = (..._: any[]) => ({})
-const deriveCroDriftChecks = (..._: any[]) => ([])
-const deriveCroExperimentEvaluations = (..._: any[]) => ({})
-const deriveCroSimulationRun = (..._: any[]) => ({})
-const deriveRevenueAnomalyChecks = (..._: any[]) => ([] as any[])
-const deriveRevenueProductAttributes = (..._: any[]) => ([])
-const deriveRevenueOsRuntimeIntelligence = (..._: any[]) => ({})
-const deriveCatalogueProductRelationships = (..._: any[]) => ([])
-const recordCroExperiment = async (..._: any[]) => {}
-const recordCroEvaluations = async (..._: any[]) => {}
-const recordCroActionPlans = async (..._: any[]) => {}
-const recordCatalogueProductRelationships = async (..._: any[]) => {}
-const recordRevenueProductAttributes = async (..._: any[]) => {}
-const recordRevenueDataQualityFindings = async (..._: any[]) => {}
-const recordRevenueOsRuntimeIntelligence = async (..._: any[]) => {}
-const seedDeterministicRevenueOsModelRegistry = async (..._: any[]) => {}
-const updateCroActionPlanStatus = async (..._: any[]) => {}
-// ─────────────────────────────────────────────────────────────────────────────
+import {
+  analyzePromotionGuardrails,
+  analyzeRevenueDataQuality,
+  analyzeRevenueEventDataQuality,
+  applyCroEvaluationDecisions,
+  createProductRankingExperimentFromOpportunity,
+  decayCommercialInsights,
+  deriveBehavioralProductRelationships,
+  deriveCroActionPlans,
+  deriveCroBanditAllocations,
+  deriveCroDriftChecks,
+  deriveCroExperimentEvaluations,
+  deriveCroSimulationRun,
+  deriveRevenueAnomalyChecks,
+  deriveRevenueProductAttributes,
+  deriveRevenueOsRuntimeIntelligence,
+  deriveCatalogueProductRelationships,
+  recordCroExperiment,
+  recordCroEvaluations,
+  recordCroActionPlans,
+  recordCatalogueProductRelationships,
+  recordRevenueProductAttributes,
+  recordRevenueDataQualityFindings,
+  recordRevenueOsRuntimeIntelligence,
+  seedDeterministicRevenueOsModelRegistry,
+  updateCroActionPlanStatus,
+} from '@/lib/revenue-os'
 
 const ADMIN_TABS = [
   { value: 'templates', label: 'Templates' },
   { value: 'sms-products', label: 'SMS Products' },
   { value: 'sms-orders', label: 'SMS Orders' },
+  { value: 'telegram-stars', label: 'Telegram Stars' },
   { value: 'products', label: 'Products' },
   { value: 'add-product', label: 'Add Product' },
   { value: 'bulk-upload', label: 'Bulk Upload' },
@@ -250,7 +226,7 @@ type AdminSmsCatalogResponse = {
   diagnostics?: AdminSmsDiagnostics | null
   global_margin_ngn?: number
   exchange_rate?: number
-  exchange_rate_source?: 'override' | 'live' | 'fallback' | 'unknown'
+  exchange_rate_source?: 'override' | 'live' | 'unavailable' | 'unknown'
   round_to_nearest_10?: boolean
 }
 
@@ -294,8 +270,7 @@ function isDepositTransaction(tx: { type?: string | null; amount?: number | null
   const type = String(tx.type || '').toLowerCase()
   const amount = Number(tx.amount || 0)
   if (amount <= 0) return false
-  if (/(purchase|order|withdraw|debit|refund|spent)/.test(type)) return false
-  return /(topup|top_up|top-up|deposit|credit|wallet)/.test(type)
+  return ['topup', 'top_up', 'top-up', 'wallet_topup', 'deposit', 'wallet_deposit'].includes(type)
 }
 
 function isCompletedDeposit(status?: string | null) {
@@ -315,14 +290,44 @@ function isPositiveStatus(status?: string | null) {
   return ['completed', 'success', 'successful', 'credited', 'active', 'processing'].includes(String(status || '').toLowerCase())
 }
 
-// Mock admin stats
-const mockStats = {
-  totalUsers: 1247,
-  totalProducts: 89,
-  totalSales: 45,
-  revenue: 285000,
-  pendingOrders: 3,
-  lowStock: 12
+function isCustomerHistoryVisible(row: AdminHistoryRow) {
+  const status = String(row.status || '').toLowerCase()
+  if (['failed', 'pending', 'waiting', 'expired'].includes(status)) return false
+
+  if (row.kind === 'deposits') return isCompletedDeposit(status)
+  if (row.kind === 'products') return ['completed', 'success', 'successful'].includes(status)
+  if (row.kind === 'sms') {
+    return status === 'completed' || (status === 'cancelled' && !!row.raw?.refunded_at)
+  }
+  if (row.kind === 'crypto') {
+    return ['completed', 'success', 'successful', 'credited', 'partially_paid'].includes(status)
+  }
+  if (row.kind === 'bills') return ['completed', 'success', 'successful'].includes(status)
+  if (row.kind === 'giftcards') return ['completed', 'success', 'successful'].includes(status)
+  if (row.kind === 'social') {
+    return ['processing', 'in_progress', 'completed', 'success', 'successful', 'partial'].includes(status)
+  }
+
+  return false
+}
+
+function hasVerifiedCustomerProfile(row: AdminHistoryRow) {
+  if (!row.user_id) return false
+  return row.user_is_staff === false && row.user_is_admin === false
+}
+
+function buildServiceOrdersFromHistory(rows: AdminHistoryRow[]) {
+  return rows
+    .filter((row) => ['bills', 'giftcards', 'social', 'crypto'].includes(row.kind))
+    .map((row) => ({
+      ...(row.raw || {}),
+      id: row.raw?.id || row.id,
+      user_id: row.user_id,
+      amount: row.amount,
+      status: row.status,
+      created_at: row.date,
+      commerce_source: row.kind,
+    }))
 }
 
 function AdminControlSection({
@@ -372,6 +377,7 @@ export default function AdminPage() {
   // Real data state
   const [categories, setCategories] = useState<Category[]>([])
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([])
+  const [favoriteProductGroupIds, setFavoriteProductGroupIds] = useState<string[]>([])
   const [individualAccounts, setIndividualAccounts] = useState<IndividualAccount[]>([])
   const [individualAccountsCount, setIndividualAccountsCount] = useState<number>(0)
   const [userCount, setUserCount] = useState<number>(0)
@@ -428,11 +434,11 @@ export default function AdminPage() {
   const [promotionMonthlyBudgetNgn, setPromotionMonthlyBudgetNgn] = useState('0')
   const [recommendationAutomationEnabled, setRecommendationAutomationEnabled] = useState(true)
   const [recommendationAutomationSaving, setRecommendationAutomationSaving] = useState(false)
-  const [croGlobalEnabled, setCroGlobalEnabled] = useState(true)
-  const [croShadowModeEnabled, setCroShadowModeEnabled] = useState(false)
+  const [croGlobalEnabled, setCroGlobalEnabled] = useState(false)
+  const [croShadowModeEnabled, setCroShadowModeEnabled] = useState(true)
   const [croAutonomyLevel, setCroAutonomyLevel] = useState('2')
   const [croGlobalHoldoutPct, setCroGlobalHoldoutPct] = useState('5')
-  const [croExperimentationEnabled, setCroExperimentationEnabled] = useState(true)
+  const [croExperimentationEnabled, setCroExperimentationEnabled] = useState(false)
   const [croControlSaving, setCroControlSaving] = useState(false)
   const [croActionPlanUpdatingKey, setCroActionPlanUpdatingKey] = useState<string | null>(null)
   const [croMaintenanceEnabled, setCroMaintenanceEnabled] = useState(true)
@@ -540,7 +546,7 @@ export default function AdminPage() {
   const [smmSyncing, setSmmSyncing] = useState(false)
   const [smmExpandedPlatforms, setSmmExpandedPlatforms] = useState<Set<string>>(new Set())
 
-  // DaisySMS product catalog curation
+  // SMS product catalog curation
   const [smsProducts, setSmsProducts] = useState<AdminSmsProduct[]>([])
   const [smsProductsLoading, setSmsProductsLoading] = useState(false)
   const [smsSavingKey, setSmsSavingKey] = useState<string | null>(null)
@@ -551,7 +557,7 @@ export default function AdminPage() {
   const [smsMarginInputs, setSmsMarginInputs] = useState<Record<string, string>>({})
   const [smsDiagnostics, setSmsDiagnostics] = useState<AdminSmsDiagnostics | null>(null)
   const [smsCatalogNotice, setSmsCatalogNotice] = useState('')
-  const [smsExchangeRateSource, setSmsExchangeRateSource] = useState<'override' | 'live' | 'fallback' | 'unknown'>('unknown')
+  const [smsExchangeRateSource, setSmsExchangeRateSource] = useState<'override' | 'live' | 'unavailable' | 'unknown'>('unknown')
   const [smsRoundToNearestTen, setSmsRoundToNearestTen] = useState(false)
 
   // SMS Orders management
@@ -611,6 +617,148 @@ export default function AdminPage() {
     }
   }, [toast, loadSmsOrders])
 
+
+  // ── Telegram Stars admin state ──────────────────────────────────────────────
+  type AdminTelegramOrder = {
+    id: string; reference: string; order_type: string; username: string
+    recipient_name?: string; quantity?: number; months?: number
+    price_ngn: number; istar_amount?: number; wallet_type: string
+    status: string; error_message?: string; refunded_at?: string
+    completed_at?: string; created_at: string
+    profiles?: { email?: string; full_name?: string }
+  }
+  type TelegramProduct = {
+    id: string; product_type: string; label: string
+    quantity?: number; months?: number; price_ngn: number
+    is_active: boolean; sort_order: number
+  }
+
+  const [tgOrders, setTgOrders] = useState<AdminTelegramOrder[]>([])
+  const [tgOrdersLoading, setTgOrdersLoading] = useState(false)
+  const [tgOrdersCancellingId, setTgOrdersCancellingId] = useState<string | null>(null)
+  const [tgOrdersFilter, setTgOrdersFilter] = useState<'all' | 'pending' | 'processing' | 'completed' | 'failed'>('all')
+  const [tgProducts, setTgProducts] = useState<TelegramProduct[]>([])
+  const [tgProductsLoading, setTgProductsLoading] = useState(false)
+  const [tgProductSaving, setTgProductSaving] = useState<string | null>(null)
+  const [tgProductPrices, setTgProductPrices] = useState<Record<string, string>>({})
+  const [tgWalletType, setTgWalletType] = useState<'USDT' | 'TON'>('USDT')
+  const [tgWalletBalance, setTgWalletBalance] = useState<{ balance: number; currency: string } | null>(null)
+  const [tgWalletBalanceLoading, setTgWalletBalanceLoading] = useState(false)
+
+  const loadTgOrders = useCallback(async () => {
+    setTgOrdersLoading(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('telegram-stars', { body: { action: 'admin_get_orders' } })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to load orders')
+      setTgOrders(data.data || [])
+    } catch (err: any) {
+      toast({ title: 'Failed to load Telegram orders', description: err.message, variant: 'destructive' })
+    } finally {
+      setTgOrdersLoading(false)
+    }
+  }, [toast])
+
+  const loadTgProducts = useCallback(async () => {
+    setTgProductsLoading(true)
+    try {
+      const [productsRes, pricingRes] = await Promise.all([
+        supabase.functions.invoke('telegram-stars', { body: { action: 'admin_get_premium_products' } }),
+        supabase.functions.invoke('telegram-stars', { body: { action: 'get_star_pricing' } }),
+      ])
+      if (productsRes.error) throw productsRes.error
+      const products: TelegramProduct[] = productsRes.data?.data || []
+      setTgProducts(products)
+      const prices: Record<string, string> = Object.fromEntries(products.map((p: TelegramProduct) => [p.id, String(p.price_ngn)]))
+      if (pricingRes.data?.data) {
+        const cfg = pricingRes.data.data
+        prices['__cost_per_star__'] = String(cfg.cost_per_star_usdt ?? 0.013)
+        prices['__tiers__'] = JSON.stringify(cfg.markup_tiers ?? [])
+        // Premium: the edge function get_star_pricing doesn't return premium config —
+        // we read it from app_settings via the products response which already has live prices
+        // Store each product's live computed price and load premium markup separately
+      }
+      // Fetch premium config from supabase app_settings directly for admin display
+      const { data: settingsData } = await supabase.from('app_settings').select('key, value')
+        .in('key', ['telegram_premium_cost_usdt_3m', 'telegram_premium_cost_usdt_6m', 'telegram_premium_cost_usdt_12m', 'telegram_premium_markup_ngn'])
+      if (settingsData) {
+        for (const row of settingsData) {
+          prices[`__${row.key}__`] = row.value
+        }
+      }
+      setTgProductPrices(prices)
+    } catch (err: any) {
+      toast({ title: 'Failed to load Telegram config', description: err.message, variant: 'destructive' })
+    } finally {
+      setTgProductsLoading(false)
+    }
+  }, [toast])
+
+  const saveTgProductPrice = useCallback(async (product: TelegramProduct, newPrice: number) => {
+    setTgProductSaving(product.id)
+    try {
+      const { data, error } = await supabase.functions.invoke('telegram-stars', {
+        body: { action: 'admin_upsert_product', id: product.id, ...product, price_ngn: newPrice }
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to save')
+      setTgProducts(prev => prev.map(p => p.id === product.id ? { ...p, price_ngn: newPrice } : p))
+      toast({ title: 'Price saved' })
+    } catch (err: any) {
+      toast({ title: 'Save failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setTgProductSaving(null)
+    }
+  }, [toast])
+
+  const toggleTgProduct = useCallback(async (product: TelegramProduct) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('telegram-stars', {
+        body: { action: 'admin_upsert_product', id: product.id, ...product, is_active: !product.is_active }
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to update')
+      setTgProducts(prev => prev.map(p => p.id === product.id ? { ...p, is_active: !p.is_active } : p))
+    } catch (err: any) {
+      toast({ title: 'Update failed', description: err.message, variant: 'destructive' })
+    }
+  }, [toast])
+
+  const adminCancelTgOrder = useCallback(async (orderId: string) => {
+    setTgOrdersCancellingId(orderId)
+    try {
+      const { data, error } = await supabase.functions.invoke('telegram-stars', { body: { action: 'admin_cancel_order', order_id: orderId } })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to cancel order')
+      toast({ title: 'Order cancelled & refunded' })
+      await loadTgOrders()
+    } catch (err: any) {
+      toast({ title: 'Cancel failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setTgOrdersCancellingId(null)
+    }
+  }, [toast, loadTgOrders])
+
+  const checkTgWalletBalance = useCallback(async () => {
+    setTgWalletBalanceLoading(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('telegram-stars', { body: { action: 'admin_wallet_balance', wallet_type: tgWalletType } })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to fetch balance')
+      setTgWalletBalance(data.data)
+    } catch (err: any) {
+      toast({ title: 'Failed to fetch iStar balance', description: err.message, variant: 'destructive' })
+    } finally {
+      setTgWalletBalanceLoading(false)
+    }
+  }, [toast, tgWalletType])
+
+  const saveTgWalletType = useCallback(async (type: 'USDT' | 'TON') => {
+    setTgWalletType(type)
+    await upsertAppSetting('telegram_wallet_type', type)
+    toast({ title: `Wallet type set to ${type}` })
+  }, [toast])
+  // ─────────────────────────────────────────────────────────────────────────────
 
   // Email / Broadcast state
   const [emailSubject, setEmailSubject] = useState('TallyStore Notification')
@@ -996,47 +1144,72 @@ export default function AdminPage() {
   // ==================== STAFF ROLES MANAGEMENT ====================
 
   const loadStaffUsers = useCallback(async () => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('id, email, is_staff, wallet_balance')
-      .eq('is_staff', true)
-    setStaffUsers(data || [])
+    const { data, error } = await supabase.functions.invoke('manage-staff', {
+      body: { action: 'list_staff' },
+    })
+    if (error || data?.error) {
+      console.error('Failed to load staff users:', error || data?.error)
+      setStaffUsers([])
+      return
+    }
+    setStaffUsers(data?.users || [])
   }, [])
 
   useEffect(() => { loadStaffUsers() }, [loadStaffUsers])
 
   const loadPendingActions = useCallback(async () => {
     setLoadingPendingActions(true)
-    const { data } = await supabase
-      .from('staff_pending_actions')
-      .select('*')
-      .eq('status', 'pending')
-      .order('created_at', { ascending: false })
-    setPendingActions(data || [])
-    setLoadingPendingActions(false)
+    try {
+      const { data, error } = await supabase.functions.invoke('manage-staff', {
+        body: { action: 'list_pending' },
+      })
+      if (error || data?.error) {
+        console.error('Failed to load pending staff actions:', error || data?.error)
+        setPendingActions([])
+        return
+      }
+      setPendingActions(data?.actions || [])
+    } finally {
+      setLoadingPendingActions(false)
+    }
   }, [])
 
   useEffect(() => { loadPendingActions() }, [loadPendingActions])
 
   const loadStaffPermsForUser = useCallback(async (userId: string) => {
-    const { data } = await supabase
-      .from('staff_permissions')
-      .select('permission_key, is_enabled, auto_approve')
-      .eq('user_id', userId)
+    const { data, error } = await supabase.functions.invoke('manage-staff', {
+      body: { action: 'list_permissions', user_id: userId },
+    })
+    if (error || data?.error) {
+      console.error('Failed to load staff permissions:', error || data?.error)
+      return
+    }
     const map: Record<string, { is_enabled: boolean; auto_approve: boolean }> = {}
-    for (const row of data || []) map[row.permission_key] = { is_enabled: row.is_enabled, auto_approve: row.auto_approve }
+    for (const row of data?.permissions || []) map[row.permission_key] = { is_enabled: row.is_enabled, auto_approve: row.auto_approve }
     setStaffPermissionsMap(prev => ({ ...prev, [userId]: map }))
   }, [])
 
   const handleGrantStaff = async (userId: string) => {
-    await supabase.from('profiles').update({ is_staff: true }).eq('id', userId)
+    const { data, error } = await supabase.functions.invoke('manage-staff', {
+      body: { action: 'grant_staff', user_id: userId },
+    })
+    if (error || data?.error) {
+      toast({ title: 'Could not grant staff role', description: data?.error || error?.message || 'Please try again', variant: 'destructive' })
+      return
+    }
     loadStaffUsers()
     setStaffSearchResults(prev => prev.map(u => u.id === userId ? { ...u, is_staff: true } : u))
     toast({ title: 'Staff role granted' })
   }
 
   const handleRevokeStaff = async (userId: string) => {
-    await supabase.from('profiles').update({ is_staff: false }).eq('id', userId)
+    const { data, error } = await supabase.functions.invoke('manage-staff', {
+      body: { action: 'revoke_staff', user_id: userId },
+    })
+    if (error || data?.error) {
+      toast({ title: 'Could not revoke staff role', description: data?.error || error?.message || 'Please try again', variant: 'destructive' })
+      return
+    }
     loadStaffUsers()
     toast({ title: 'Staff role revoked' })
   }
@@ -1050,14 +1223,26 @@ export default function AdminPage() {
     setSavingStaffPerm(`${userId}-${permKey}-${field}`)
     const current = staffPermissionsMap[userId]?.[permKey] || { is_enabled: false, auto_approve: true }
     const updated = { ...current, [field]: value }
-    await supabase
-      .from('staff_permissions')
-      .upsert({ user_id: userId, permission_key: permKey, ...updated }, { onConflict: 'user_id,permission_key' })
-    setStaffPermissionsMap(prev => ({
-      ...prev,
-      [userId]: { ...prev[userId], [permKey]: updated },
-    }))
-    setSavingStaffPerm(null)
+    try {
+      const { data, error } = await supabase.functions.invoke('manage-staff', {
+        body: {
+          action: 'set_permission',
+          user_id: userId,
+          permission_key: permKey,
+          ...updated,
+        },
+      })
+      if (error || data?.error) {
+        toast({ title: 'Could not save staff permission', description: data?.error || error?.message || 'Please try again', variant: 'destructive' })
+        return
+      }
+      setStaffPermissionsMap(prev => ({
+        ...prev,
+        [userId]: { ...prev[userId], [permKey]: updated },
+      }))
+    } finally {
+      setSavingStaffPerm(null)
+    }
   }
 
   const handleSearchForStaff = async () => {
@@ -1071,73 +1256,47 @@ export default function AdminPage() {
   const handleApproveAction = async (action: any) => {
     setApprovingAction(action.id)
     try {
-      if (action.action_type === 'upsert_setting') {
-        const { setting_key, value } = action.action_data
-        await upsertAppSetting(setting_key, value)
-      } else if (action.action_type === 'upsert_settings') {
-        const { settings } = action.action_data
-        const entries = Object.entries(settings || {}) as [string, string][]
-        const results = await Promise.all(entries.map(([key, value]) => upsertAppSetting(key, value)))
-        if (results.some(ok => !ok)) throw new Error('Failed to update one or more settings')
-        if (entries.some(([key]) => key.startsWith('support_'))) {
-          const { invalidateSupportSettingsCache } = await import('@/hooks/useSupportSettings')
-          invalidateSupportSettingsCache()
-        }
-      } else if (action.action_type === 'send_email_list') {
-        const { subject, message, recipients } = action.action_data
-        const html = buildEmailHtml(message || '')
-        for (const to of recipients || []) {
-          const { data, error } = await supabase.functions.invoke('email/send', { body: { to, subject, html } })
-          if (error || !data?.success) throw new Error(data?.error || error?.message || `Failed to send email to ${to}`)
-        }
-      } else if (action.action_type === 'broadcast_email') {
-        const { subject, message } = action.action_data
-        const html = buildEmailHtml(message || '')
-        const { data, error } = await supabase.functions.invoke('email/broadcast', { body: { subject, html } })
-        if (error || !data?.success) throw new Error(data?.error || error?.message || 'Failed to queue broadcast')
-      } else if (action.action_type === 'adjust_balance') {
-        const { user_id, amount, reason } = action.action_data
-        await adminAdjustBalance(user_id, amount, reason || 'Approved staff action', user?.email || 'admin')
-      } else if (action.action_type === 'add_single_account') {
-        const { product_group_id, username, password, email } = action.action_data
-        const account = await createIndividualAccount({
-          product_group_id,
-          username,
-          password,
-          email,
-          status: 'available',
-        })
-        if (!account) throw new Error('Failed to add account')
+      const { data, error } = await supabase.functions.invoke('manage-staff', {
+        body: { action: 'approve_action', action_id: action.id },
+      })
+      if (error || data?.success === false) throw new Error(data?.error || error?.message || 'Failed to approve action')
+
+      if (['add_single_account', 'bulk_upload_accounts', 'update_product_group'].includes(action.action_type)) {
         const updatedProductGroups = await getAllProductGroups()
         setProductGroups(updatedProductGroups)
-      } else if (action.action_type === 'bulk_upload_accounts') {
-        const { product_group_id, parsed_rows } = action.action_data
-        const csvRows = Array.isArray(parsed_rows) ? parsed_rows : []
-        const result = await processBulkAccountUpload(csvRows, product_group_id)
-        if (!result.success) throw new Error(result.error || 'Failed to apply bulk account upload')
-        const updatedProductGroups = await getAllProductGroups()
-        setProductGroups(updatedProductGroups)
-      } else {
-        throw new Error(`Unsupported action type: ${action.action_type}`)
       }
-      await supabase
-        .from('staff_pending_actions')
-        .update({ status: 'approved', reviewed_at: new Date().toISOString(), reviewed_by: user?.id })
-        .eq('id', action.id)
+      if (action.action_type === 'create_category') {
+        const cats = await getCategories()
+        setCategories(cats)
+      }
+      if (['create_discount_code', 'toggle_discount_code'].includes(action.action_type)) {
+        const codes = await getDiscountCodes()
+        setDiscountCodes(codes)
+      }
+      if (
+        action.action_type === 'upsert_setting' && String(action.action_data?.setting_key || '').startsWith('support_') ||
+        action.action_type === 'upsert_settings' && Object.keys(action.action_data?.settings || {}).some((key) => key.startsWith('support_'))
+      ) {
+        const { invalidateSupportSettingsCache } = await import('@/hooks/useSupportSettings')
+        invalidateSupportSettingsCache()
+      }
       toast({ title: 'Action approved and applied' })
       loadPendingActions()
-    } catch {
-      toast({ variant: 'destructive', title: 'Failed to apply action' })
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Failed to apply action', description: err?.message || 'The server rejected this action.' })
     } finally {
       setApprovingAction(null)
     }
   }
 
   const handleRejectAction = async (actionId: string) => {
-    await supabase
-      .from('staff_pending_actions')
-      .update({ status: 'rejected', reviewed_at: new Date().toISOString(), reviewed_by: user?.id })
-      .eq('id', actionId)
+    const { data, error } = await supabase.functions.invoke('manage-staff', {
+      body: { action: 'reject_action', action_id: actionId },
+    })
+    if (error || data?.success === false) {
+      toast({ title: 'Reject failed', description: data?.error || error?.message || 'Could not reject action.', variant: 'destructive' })
+      return
+    }
     toast({ title: 'Action rejected' })
     loadPendingActions()
   }
@@ -1210,7 +1369,7 @@ export default function AdminPage() {
     }
   }
 
-  // ==================== DAISYSMS PRODUCT CATALOG ====================
+  // ==================== SMS PRODUCT CATALOG ====================
 
   const loadSmsProducts = useCallback(async () => {
     setSmsProductsLoading(true)
@@ -1227,13 +1386,13 @@ export default function AdminPage() {
       setSmsExchangeRateSource(data.exchange_rate_source || 'unknown')
       setSmsRoundToNearestTen(data.round_to_nearest_10 === true)
       if (data.configured === false || diagnostics?.configured === false) {
-        setSmsCatalogNotice('DaisySMS API key is not configured on the deployed smsbus function.')
+        setSmsCatalogNotice('SMS provider API key is not configured on the deployed smsbus function.')
       } else if (products.length === 0) {
         const verification = diagnostics?.verification_services ?? 0
         const verificationCountry = diagnostics?.verification_country_services ?? 0
         const prices = diagnostics?.prices_services ?? 0
         const pricesCountry = diagnostics?.prices_country_services ?? 0
-        setSmsCatalogNotice(`Daisy returned 0 USA products. Verification ${verification}/${verificationCountry}; prices ${prices}/${pricesCountry}; source ${diagnostics?.selected_source || 'none'}.`)
+        setSmsCatalogNotice(`SMS provider returned 0 USA products. Verification ${verification}/${verificationCountry}; prices ${prices}/${pricesCountry}; source ${diagnostics?.selected_source || 'none'}.`)
       } else {
         setSmsCatalogNotice('')
       }
@@ -1428,7 +1587,7 @@ export default function AdminPage() {
         </div>
 
         <div>
-          <p className="text-xs font-semibold uppercase text-muted-foreground">DaisySMS cost</p>
+          <p className="text-xs font-semibold uppercase text-muted-foreground">Provider cost</p>
           <p className="font-bold">${Number(product.provider_cost_usd || 0).toFixed(2)}</p>
           <p className="text-xs text-muted-foreground">
             NGN {Number(product.provider_cost_ngn || 0).toLocaleString()} at {Number(product.exchange_rate || 0).toLocaleString()} / USD
@@ -1676,13 +1835,14 @@ export default function AdminPage() {
       setLoading(true)
       setError(null)
 
-      const [categoriesData, productGroupsData, accountsData, accountsCountData, userCountData, salesStatsData] = await Promise.all([
+      const [categoriesData, productGroupsData, accountsData, accountsCountData, userCountData, salesStatsData, favoriteIds] = await Promise.all([
         getCategories(),
         getAllProductGroups(),
         getIndividualAccounts(),
         getIndividualAccountsCount(),
         getUserCount(),
-        getAdminSalesStats()
+        getAdminSalesStats(),
+        getFavoriteProductGroupIds(),
       ])
 
       setCategories(categoriesData)
@@ -1691,15 +1851,7 @@ export default function AdminPage() {
       setIndividualAccountsCount(accountsCountData)
       setUserCount(userCountData)
       setSalesStats(salesStatsData)
-
-      console.log('✅ Admin data loaded:', {
-        categories: categoriesData.length,
-        productGroups: productGroupsData.length,
-        accounts: accountsCountData,
-        users: userCountData,
-        sales: salesStatsData.totalSales,
-        revenue: salesStatsData.totalRevenue
-      })
+      setFavoriteProductGroupIds(favoriteIds)
 
     } catch (err) {
       console.error('❌ Error loading admin data:', err)
@@ -1713,16 +1865,28 @@ export default function AdminPage() {
     setHistoryLoading(true)
     const nextErrors: Record<string, string> = {}
 
-    const readRows = async (label: string, table: string, limit = 1000) => {
+    const readRows = async (label: string, table: string, maxRows = 50000) => {
       try {
-        const { data, error } = await supabase
-          .from(table as any)
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(limit)
+        const pageSize = 1000
+        const rows: any[] = []
 
-        if (error) throw error
-        return (data || []) as any[]
+        for (let from = 0; from < maxRows; from += pageSize) {
+          const { data, error } = await supabase
+            .from(table as any)
+            .select('*')
+            .order('created_at', { ascending: false })
+            .range(from, from + pageSize - 1)
+
+          if (error) throw error
+          rows.push(...(data || []))
+          if (!data || data.length < pageSize) break
+        }
+
+        if (rows.length >= maxRows) {
+          nextErrors[label] = `Loaded the newest ${maxRows.toLocaleString()} rows. Narrow this table if you need older records.`
+        }
+
+        return rows
       } catch (err: any) {
         console.warn(`Failed to load ${label}:`, err)
         nextErrors[label] = err?.message || `Could not load ${label}.`
@@ -1741,14 +1905,14 @@ export default function AdminPage() {
         giftRows,
         socialRows,
       ] = await Promise.all([
-        readRows('Deposits', 'transactions', 5000),
-        readRows('Product orders', 'orders', 5000),
-        readRows('SMS orders', 'sms_orders', 5000),
-        readRows('Crypto deposits', 'crypto_transactions', 5000),
-        readRows('Crypto withdrawals', 'crypto_withdrawals', 5000),
-        readRows('Bills and airtime', 'bills_transactions', 5000),
-        readRows('Gift cards and eSIMs', 'bitrefill_orders', 5000),
-        readRows('Social boost', 'smm_orders', 5000),
+        readRows('Deposits', 'transactions'),
+        readRows('Product orders', 'orders'),
+        readRows('SMS orders', 'sms_orders'),
+        readRows('Crypto deposits', 'crypto_transactions'),
+        readRows('Crypto withdrawals', 'crypto_withdrawals'),
+        readRows('Bills and airtime', 'bills_transactions'),
+        readRows('Gift cards', 'bitrefill_orders'),
+        readRows('Social boost', 'smm_orders'),
       ])
 
       const productGroupById = new Map(productGroups.map((group) => [group.id, group]))
@@ -1851,12 +2015,12 @@ export default function AdminPage() {
           kind: 'giftcards',
           date: gift.created_at,
           user_id: gift.user_id,
-          title: gift.product_name || 'Gift card / eSIM',
+          title: gift.product_name || 'Gift card',
           subtitle: `${gift.quantity || 1} item${Number(gift.quantity || 1) === 1 ? '' : 's'} • ${gift.payment_source || 'wallet'}`,
           amount: Number(gift.amount_ngn || 0),
           status: gift.status,
           reference: gift.reference || gift.bitrefill_order_id || gift.bitrefill_invoice_id,
-          source: 'Gift cards and eSIMs',
+          source: 'Gift cards',
           detail: gift.redemption_code || gift.redemption_link ? 'Redemption delivered' : gift.currency ? `${gift.amount_original || ''} ${gift.currency}`.trim() : null,
           raw: gift,
         })),
@@ -2021,11 +2185,11 @@ export default function AdminPage() {
           nextErrors.Automation = err?.message || 'Could not load automation setting.'
           return null
         }),
-        getAppSetting('cro_global_enabled').catch(() => 'true'),
-        getAppSetting('cro_shadow_mode_enabled').catch(() => 'false'),
+        getAppSetting('cro_global_enabled').catch(() => 'false'),
+        getAppSetting('cro_shadow_mode_enabled').catch(() => 'true'),
         getAppSetting('cro_autonomy_level').catch(() => '2'),
         getAppSetting('cro_global_holdout_pct').catch(() => '5'),
-        getAppSetting('cro_experimentation_enabled').catch(() => 'true'),
+        getAppSetting('cro_experimentation_enabled').catch(() => 'false'),
         getAppSetting('cro_promotion_max_discount_pct').catch(() => '20'),
         getAppSetting('cro_promotion_monthly_budget_ngn').catch(() => '0'),
         getAppSetting('cro_maintenance_enabled').catch(() => 'true'),
@@ -2058,11 +2222,24 @@ export default function AdminPage() {
         }
       }
 
-      setSalesOrders(orders)
-      setSalesSmsOrders(smsOrders)
-      setSalesProfiles(Array.from(profileById.values()))
-      setSalesVisits(visits)
-      setRevenueEvents(events)
+      const customerProfiles = Array.from(profileById.values()).filter((profile) =>
+        profile?.id && profile.is_staff !== true && profile.is_admin !== true
+      )
+      const customerProfileIds = new Set(customerProfiles.map((profile) => String(profile.id)))
+      const isActualCustomerUserId = (userId?: string | null) => !!userId && customerProfileIds.has(String(userId))
+      const isNotInternalUserRow = (row: any) => !row?.user_id || isActualCustomerUserId(row.user_id)
+
+      const customerOrders = orders.filter((order) => isActualCustomerUserId(order.user_id))
+      const customerSmsOrders = smsOrders.filter((order) => isActualCustomerUserId(order.user_id))
+      const customerVisits = visits.filter((visit) => isNotInternalUserRow(visit))
+      const customerRevenueEvents = events.filter((event) => isNotInternalUserRow(event))
+      const customerCommunicationPreferences = communicationPreferences.filter((row) => isActualCustomerUserId(row.user_id))
+
+      setSalesOrders(customerOrders)
+      setSalesSmsOrders(customerSmsOrders)
+      setSalesProfiles(customerProfiles)
+      setSalesVisits(customerVisits)
+      setRevenueEvents(customerRevenueEvents)
       setCroDecisionRows(decisions)
       setCroExperimentRows(experiments)
       setCroInsightRows(insights)
@@ -2078,10 +2255,11 @@ export default function AdminPage() {
       setRevenueIdentityLinks(identityLinks)
       setCroActionPlanRows(actionPlanRows)
       setCroLifecycleActionRows(lifecycleActionRows)
-      setCommunicationPreferenceRows(communicationPreferences)
+      setCommunicationPreferenceRows(customerCommunicationPreferences)
       setSalesTargetInput(target || '0')
       setRecommendationAutomationEnabled(automation !== 'false')
-      setCroGlobalEnabled(croEnabled !== 'false')
+      const activeFreezeReason = String(maintenanceFreezeReason || '').trim()
+      setCroGlobalEnabled(croEnabled !== 'false' && !activeFreezeReason)
       setCroShadowModeEnabled(croShadowMode === 'true')
       setCroAutonomyLevel(croLevel || '2')
       setCroGlobalHoldoutPct(croHoldoutPct || '5')
@@ -2091,7 +2269,7 @@ export default function AdminPage() {
       setCroMaintenanceEnabled(maintenanceEnabled !== 'false')
       setCroMaintenanceLastRunAt(maintenanceLastRunAt || '')
       setCroMaintenanceLastStatus(maintenanceLastStatus || 'never_run')
-      setCroMaintenanceFreezeReason(maintenanceFreezeReason || '')
+      setCroMaintenanceFreezeReason(activeFreezeReason)
       try {
         setCroMaintenanceLastSummary(JSON.parse(maintenanceLastSummary || '{}'))
       } catch {
@@ -2243,6 +2421,29 @@ export default function AdminPage() {
     setEditingTemplate(template)
   }
 
+  const handleToggleFavoriteTemplate = async (templateId: string) => {
+    const isFavorite = favoriteProductGroupIds.includes(templateId)
+    const nextFavorites = isFavorite
+      ? favoriteProductGroupIds.filter((id) => id !== templateId)
+      : [...favoriteProductGroupIds, templateId]
+
+    const saved = await saveFavoriteProductGroupIds(nextFavorites)
+    if (!saved) {
+      toast({
+        title: 'Favorite not saved',
+        description: 'Could not update the customer recommendation favorite list.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setFavoriteProductGroupIds(nextFavorites)
+    toast({
+      title: isFavorite ? 'Removed from favorites' : 'Added to favorites',
+      description: 'Customer recommendations will mix this setting with top buys and personal history.',
+    })
+  }
+
   // Delete template
   const handleDeleteTemplate = async (templateId: string) => {
     if (!confirm('Are you sure you want to delete this product template? This action cannot be undone.')) return
@@ -2251,6 +2452,11 @@ export default function AdminPage() {
       const success = await deleteProductGroup(templateId)
       if (success) {
         setProductGroups(prev => prev.filter(pg => pg.id !== templateId))
+        if (favoriteProductGroupIds.includes(templateId)) {
+          const nextFavorites = favoriteProductGroupIds.filter((id) => id !== templateId)
+          await saveFavoriteProductGroupIds(nextFavorites)
+          setFavoriteProductGroupIds(nextFavorites)
+        }
         alert('Product template deleted successfully!')
       } else {
         alert('Failed to delete product template. This template may have existing orders or accounts associated with it.')
@@ -2360,9 +2566,6 @@ export default function AdminPage() {
         return
       }
 
-      console.log('Processing CSV upload for template:', selectedTemplate)
-      console.log('CSV data sample:', csvData[0])
-
       // Use the new bulk account upload function
       const result = await processBulkAccountUpload(csvData, selectedTemplate)
 
@@ -2426,7 +2629,6 @@ export default function AdminPage() {
     totalProducts: individualAccountsCount,
     totalSales: salesStats.totalSales,
     revenue: salesStats.totalRevenue,
-    pendingOrders: 0, // Add order tracking later
     lowStock: productGroups.filter(pg => pg.stock_count < 5).length
   }
 
@@ -2450,7 +2652,8 @@ export default function AdminPage() {
   const salesFilteredHistoryRows = useMemo(() => {
     const query = historySearchQuery.trim().toLowerCase()
     return historyRows
-      .filter((row) => !row.user_is_staff && !row.user_is_admin)
+      .filter((row) => isCustomerHistoryVisible(row))
+      .filter(hasVerifiedCustomerProfile)
       .filter((row) => historySearchMatches(row, query))
   }, [historyRows, historySearchMatches, historySearchQuery])
 
@@ -2459,11 +2662,39 @@ export default function AdminPage() {
     return historyRows
       .filter((row) => row.kind === 'deposits')
       .filter((row) => isCompletedDeposit(row.status))
-      .filter((row) => !row.user_is_staff && !row.user_is_admin)
+      .filter(hasVerifiedCustomerProfile)
       .filter((row) => historySearchMatches(row, query))
   }, [historyRows, historySearchMatches, historySearchQuery])
 
   const filteredHistoryRows = depositHistoryRows
+
+  const revenueCommerceOrders = useMemo(() => {
+    return historyRows
+      .filter((row) => row.kind !== 'deposits')
+      .filter((row) => isCustomerHistoryVisible(row))
+      .filter(hasVerifiedCustomerProfile)
+      .map((row) => {
+        const raw = row.raw || {}
+        const rawQuantity = Number(raw?.account_details?.quantity || raw?.quantity || 1)
+        const quantity = Number.isFinite(rawQuantity) && rawQuantity > 0 ? rawQuantity : 1
+        return {
+          id: row.id,
+          user_id: row.user_id,
+          product_group_id: row.kind === 'products' ? raw.product_group_id || null : null,
+          amount: Number(row.amount || 0),
+          status: row.status,
+          account_details: {
+            ...(raw.account_details || {}),
+            quantity,
+            product_name: row.title,
+            source: row.source,
+          },
+          created_at: row.date,
+          commerce_source: row.kind,
+          reference: row.reference,
+        }
+      })
+  }, [historyRows])
 
   const historyStats = useMemo(() => {
     return depositHistoryRows.reduce(
@@ -2495,19 +2726,23 @@ export default function AdminPage() {
       description: string
       icon: ReactNode
     }> = [
-      { key: 'deposits', title: 'Deposit History', description: 'Wallet top-ups, credits, and successful deposit records.', icon: <WalletCards className="h-5 w-5" /> },
+      { key: 'deposits', title: 'Deposit History', description: 'Completed wallet top-ups and successful deposit records.', icon: <WalletCards className="h-5 w-5" /> },
       { key: 'products', title: 'Product Order History', description: 'Social account product purchases from the main inventory.', icon: <ShoppingBag className="h-5 w-5" /> },
       { key: 'sms', title: 'SMS History', description: 'US/Canada SMS number purchases, cancellations, and refunds.', icon: <PhoneCall className="h-5 w-5" /> },
       { key: 'crypto', title: 'Crypto History', description: 'Crypto sell deposits and crypto balance withdrawals.', icon: <Bitcoin className="h-5 w-5" /> },
       { key: 'bills', title: 'Bills & Airtime History', description: 'Airtime, data, and Nigerian bill payment records.', icon: <Smartphone className="h-5 w-5" /> },
-      { key: 'giftcards', title: 'Gift Card & eSIM History', description: 'Bitrefill gift card and eSIM purchases.', icon: <Gift className="h-5 w-5" /> },
+      { key: 'giftcards', title: 'Gift Card History', description: 'Gift card purchases and delivery status.', icon: <Gift className="h-5 w-5" /> },
       { key: 'social', title: 'Social Boost History', description: 'SMM/social boost orders and their latest statuses.', icon: <Megaphone className="h-5 w-5" /> },
     ]
 
     return sections.map((section) => ({
       ...section,
       rows: salesFilteredHistoryRows.filter((row) => row.kind === section.key),
-      totalRows: historyRows.filter((row) => row.kind === section.key && !row.user_is_staff && !row.user_is_admin).length,
+      totalRows: historyRows.filter((row) =>
+        row.kind === section.key &&
+        isCustomerHistoryVisible(row) &&
+        hasVerifiedCustomerProfile(row)
+      ).length,
     }))
   }, [historyRows, salesFilteredHistoryRows])
 
@@ -2526,13 +2761,10 @@ export default function AdminPage() {
     const categoryById = new Map(categories.map((category) => [category.id, category]))
     const profileById = new Map(salesProfiles.map((profile) => [profile.id, profile]))
     const isInternalProfile = (profile: any) => !!profile?.is_staff || !!profile?.is_admin
-    const isInternalOrder = (order: any) => {
-      const profile = order.user_id ? profileById.get(order.user_id) : null
-      return isInternalProfile(profile)
-    }
-    const completedOrders = salesOrders
+    const isCustomerProfile = (profile: any) => !!profile && !isInternalProfile(profile)
+    const completedProductOrders = salesOrders
       .filter((order) => String(order.status || '').toLowerCase() === 'completed')
-      .filter((order) => !isInternalOrder(order))
+      .filter((order) => isCustomerProfile(order.user_id ? profileById.get(order.user_id) : null))
 
     const getQuantity = (order: any) => {
       const details = order.account_details || {}
@@ -2540,21 +2772,63 @@ export default function AdminPage() {
       return Number.isFinite(quantity) && quantity > 0 ? quantity : 1
     }
 
+    const completedHistorySales = historyRows
+      .filter((row) => row.kind !== 'deposits')
+      .filter((row) => isCustomerHistoryVisible(row))
+      .filter(hasVerifiedCustomerProfile)
+
+    const completedSales = completedHistorySales.length > 0
+      ? completedHistorySales.map((row) => {
+          const raw = row.raw || {}
+          const rawQuantity = Number(raw?.account_details?.quantity || raw?.quantity || 1)
+          const quantity = Number.isFinite(rawQuantity) && rawQuantity > 0 ? rawQuantity : 1
+          const productId = String(raw?.product_group_id || raw?.product_id || raw?.service_id || row.title || row.id)
+          const group = raw?.product_group_id ? productGroupById.get(raw.product_group_id) : null
+          return {
+            id: row.id,
+            created_at: row.date,
+            user_id: row.user_id,
+            amount: Number(row.amount || 0),
+            quantity,
+            productId,
+            productName: row.title || 'Commerce item',
+            categoryName: row.kind === 'products'
+              ? raw?.account_details?.category || (group?.category_id ? categoryById.get(group.category_id)?.name : null) || 'Products'
+              : row.source || row.kind,
+            stock: Number(group?.stock_count || 0),
+            customerEmail: row.user_email || '',
+            customerName: row.user_name || '',
+          }
+        })
+      : completedProductOrders.map((order) => {
+          const details = order.account_details || {}
+          const group = productGroupById.get(order.product_group_id)
+          const profile = profileById.get(order.user_id)
+          return {
+            id: order.id,
+            created_at: order.created_at,
+            user_id: order.user_id,
+            amount: Number(order.amount || 0),
+            quantity: getQuantity(order),
+            productId: order.product_group_id || details.product_name || order.id,
+            productName: details.product_name || group?.name || 'Unknown product',
+            categoryName: details.category || (group?.category_id ? categoryById.get(group.category_id)?.name : null) || 'Uncategorized',
+            stock: Number(group?.stock_count || 0),
+            customerEmail: profile?.email || '',
+            customerName: profile?.full_name || '',
+          }
+        })
+
     const daily = new Map<string, { date: string; revenue: number; orders: number; units: number }>()
     const products = new Map<string, { id: string; name: string; category: string; revenue: number; orders: number; units: number; stock: number }>()
     const customers = new Map<string, { id: string; email: string; name: string; revenue: number; orders: number; units: number; lastOrder: string }>()
     const categoryTrend = new Map<string, { category: string; recent: number; previous: number; recentUnits: number; previousUnits: number }>()
 
-    for (const order of completedOrders) {
-      const createdAt = new Date(order.created_at)
+    for (const order of completedSales) {
+      const createdAt = new Date(order.created_at || '')
       const day = Number.isNaN(createdAt.getTime()) ? 'Unknown' : format(createdAt, 'yyyy-MM-dd')
       const amount = Number(order.amount || 0)
-      const units = getQuantity(order)
-      const details = order.account_details || {}
-      const group = productGroupById.get(order.product_group_id)
-      const categoryName = details.category || (group?.category_id ? categoryById.get(group.category_id)?.name : null) || 'Uncategorized'
-      const productId = order.product_group_id || details.product_name || order.id
-      const productName = details.product_name || group?.name || 'Unknown product'
+      const units = order.quantity
 
       const dailyEntry = daily.get(day) || { date: day, revenue: 0, orders: 0, units: 0 }
       dailyEntry.revenue += amount
@@ -2562,25 +2836,25 @@ export default function AdminPage() {
       dailyEntry.units += units
       daily.set(day, dailyEntry)
 
-      const productEntry = products.get(productId) || {
-        id: productId,
-        name: productName,
-        category: categoryName,
+      const productEntry = products.get(order.productId) || {
+        id: order.productId,
+        name: order.productName,
+        category: order.categoryName,
         revenue: 0,
         orders: 0,
         units: 0,
-        stock: Number(group?.stock_count || 0),
+        stock: order.stock,
       }
       productEntry.revenue += amount
       productEntry.orders += 1
       productEntry.units += units
-      products.set(productId, productEntry)
+      products.set(order.productId, productEntry)
 
       const profile = profileById.get(order.user_id)
       const customerEntry = customers.get(order.user_id) || {
         id: order.user_id,
-        email: profile?.email || profile?.full_name || `Customer ${String(order.user_id || '').slice(0, 8)}`,
-        name: profile?.full_name || '',
+        email: order.customerEmail || profile?.email || profile?.full_name || `Customer ${String(order.user_id || '').slice(0, 8)}`,
+        name: order.customerName || profile?.full_name || '',
         revenue: 0,
         orders: 0,
         units: 0,
@@ -2594,7 +2868,7 @@ export default function AdminPage() {
       }
       customers.set(order.user_id, customerEntry)
 
-      const trendEntry = categoryTrend.get(categoryName) || { category: categoryName, recent: 0, previous: 0, recentUnits: 0, previousUnits: 0 }
+      const trendEntry = categoryTrend.get(order.categoryName) || { category: order.categoryName, recent: 0, previous: 0, recentUnits: 0, previousUnits: 0 }
       if (createdAt >= weekStart) {
         trendEntry.recent += amount
         trendEntry.recentUnits += units
@@ -2602,7 +2876,7 @@ export default function AdminPage() {
         trendEntry.previous += amount
         trendEntry.previousUnits += units
       }
-      categoryTrend.set(categoryName, trendEntry)
+      categoryTrend.set(order.categoryName, trendEntry)
     }
 
     const dailyRows = Array.from(daily.values()).sort((a, b) => b.revenue - a.revenue)
@@ -2619,7 +2893,12 @@ export default function AdminPage() {
     const countProfilesSince = (date: Date) =>
       salesProfiles.filter((profile) => !isInternalProfile(profile) && profile.created_at && new Date(profile.created_at) >= date).length
 
-    const trustedVisits = salesVisits.filter((visit) => !['bot', 'internal'].includes(String(visit.traffic_quality || 'human').toLowerCase()))
+    const trustedVisits = salesVisits.filter((visit) => {
+      const quality = String(visit.traffic_quality || 'human').toLowerCase()
+      if (['bot', 'internal'].includes(quality)) return false
+      const profile = visit.user_id ? profileById.get(visit.user_id) : null
+      return !isInternalProfile(profile)
+    })
 
     const uniqueVisitorsSince = (date: Date) =>
       new Set(
@@ -2637,15 +2916,15 @@ export default function AdminPage() {
       return acc
     }, {})
 
-    const monthlyRevenue = completedOrders
+    const monthlyRevenue = completedSales
       .filter((order) => order.created_at && new Date(order.created_at) >= calendarMonthStart)
       .reduce((sum, order) => sum + Number(order.amount || 0), 0)
     const monthlyTarget = Number(salesTargetInput || 0)
 
     return {
-      totalRevenue: completedOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0),
-      totalOrders: completedOrders.length,
-      totalUnits: completedOrders.reduce((sum, order) => sum + getQuantity(order), 0),
+      totalRevenue: completedSales.reduce((sum, order) => sum + Number(order.amount || 0), 0),
+      totalOrders: completedSales.length,
+      totalUnits: completedSales.reduce((sum, order) => sum + order.quantity, 0),
       bestDay: dailyRows[0] || null,
       bestProduct: productRows[0] || null,
       highSellingProducts: productRows.slice(0, 8),
@@ -2672,7 +2951,7 @@ export default function AdminPage() {
         remaining: Math.max(0, monthlyTarget - monthlyRevenue),
       },
     }
-  }, [categories, productGroups, salesOrders, salesProfiles, salesTargetInput, salesVisits])
+  }, [categories, historyRows, productGroups, salesOrders, salesProfiles, salesTargetInput, salesVisits])
 
   const userEmailById = useMemo(() => {
     return new Map(salesProfiles.map((profile) => [String(profile.id), profile.email || profile.full_name || '']))
@@ -2881,6 +3160,14 @@ export default function AdminPage() {
 
   // Open balance adjustment modal
   const handleAdjustBalance = (user: any) => {
+    if (user?.is_staff || user?.is_admin) {
+      toast({
+        title: 'Customer account required',
+        description: 'Balance adjustments are only available for customer accounts.',
+        variant: 'destructive',
+      })
+      return
+    }
     setSelectedUser(user)
     setAdjustmentAmount('')
     setAdjustmentReason('')
@@ -2905,6 +3192,15 @@ export default function AdminPage() {
         title: "Invalid amount",
         description: "Please enter a valid amount",
         variant: "destructive"
+      })
+      return
+    }
+
+    if (selectedUser.is_staff || selectedUser.is_admin) {
+      toast({
+        title: 'Customer account required',
+        description: 'Balance adjustments are only available for customer accounts.',
+        variant: 'destructive',
       })
       return
     }
@@ -2967,9 +3263,10 @@ export default function AdminPage() {
   }
 
   const exportHistoryRows = () => {
+    const exportRows = adminTab === 'sales' ? salesFilteredHistoryRows : filteredHistoryRows
     const rows = [
       ['Date', 'History', 'Source', 'User', 'User ID', 'Item', 'Details', 'Amount', 'Status', 'Reference'],
-      ...filteredHistoryRows.map((row) => [
+      ...exportRows.map((row) => [
         row.date ? format(new Date(row.date), 'yyyy-MM-dd HH:mm:ss') : '',
         row.kind,
         row.source,
@@ -2988,7 +3285,7 @@ export default function AdminPage() {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `tallystore-transaction-history-${format(new Date(), 'yyyy-MM-dd')}.csv`
+    anchor.download = `tallystore-${adminTab === 'sales' ? 'sales-histories' : 'transaction-history'}-${format(new Date(), 'yyyy-MM-dd')}.csv`
     anchor.click()
     URL.revokeObjectURL(url)
   }
@@ -3036,6 +3333,16 @@ export default function AdminPage() {
     const holdoutPct = Math.min(50, Math.max(0, Number(croGlobalHoldoutPct || 0)))
     if (!Number.isFinite(holdoutPct)) {
       toast({ title: 'Invalid holdout', description: 'Enter a holdout percentage from 0 to 50.', variant: 'destructive' })
+      return
+    }
+    const activeFreezeReason = croMaintenanceFreezeReason.trim()
+    if (croGlobalEnabled && activeFreezeReason) {
+      setCroGlobalEnabled(false)
+      toast({
+        title: 'Revenue OS is frozen',
+        description: `Clear the freeze reason first: ${activeFreezeReason}`,
+        variant: 'destructive',
+      })
       return
     }
     setCroControlSaving(true)
@@ -3095,20 +3402,22 @@ export default function AdminPage() {
       if (error) throw error
       if (data?.success === false) throw new Error(data?.error || 'Maintenance failed')
       const summary = data?.summary || {}
+      const freezeReason = String(summary.freeze_reason || '').trim()
+      const pausedByMaintenance = summary.simulation_recommendation === 'pause' || !!freezeReason
       setCroMaintenanceLastRunAt(new Date().toISOString())
-      setCroMaintenanceLastStatus(summary.simulation_recommendation === 'pause' ? 'paused_cro' : data?.skipped ? 'skipped_disabled' : 'ok')
+      setCroMaintenanceLastStatus(pausedByMaintenance ? 'paused_cro' : data?.skipped ? 'skipped_disabled' : 'ok')
       setCroMaintenanceLastSummary(summary)
-      setCroMaintenanceFreezeReason(summary.freeze_reason || '')
-      if (summary.simulation_recommendation === 'pause') {
+      setCroMaintenanceFreezeReason(freezeReason)
+      if (pausedByMaintenance) {
         setCroGlobalEnabled(false)
       }
       await loadSalesAnalytics()
       toast({
-        title: summary.simulation_recommendation === 'pause' ? 'Maintenance paused CRO' : data?.skipped ? 'Maintenance skipped' : 'Maintenance complete',
+        title: pausedByMaintenance ? 'Maintenance paused CRO' : data?.skipped ? 'Maintenance skipped' : 'Maintenance complete',
         description: data?.skipped
           ? 'Scheduled Revenue OS maintenance is disabled.'
           : `${Number(summary.findings || 0).toLocaleString()} finding(s), ${Number(summary.opportunities || 0).toLocaleString()} opportunity item(s), ${Number(summary.action_plans || 0).toLocaleString()} action plan(s).`,
-        variant: summary.simulation_recommendation === 'pause' ? 'destructive' : 'default',
+        variant: pausedByMaintenance ? 'destructive' : 'default',
       })
     } catch (err: any) {
       toast({
@@ -3124,14 +3433,17 @@ export default function AdminPage() {
   const handleRunRevenueDataQualityScan = async () => {
     setDataQualityScanning(true)
     try {
+      const serviceOrdersForQuality = buildServiceOrdersFromHistory(historyRows)
       const findings = [
         ...analyzeRevenueDataQuality(productGroups, categories),
         ...analyzeRevenueEventDataQuality({
           revenueEvents,
           orders: salesOrders,
           smsOrders: salesSmsOrders,
+          serviceOrders: serviceOrdersForQuality,
           products: productGroups,
           profiles: salesProfiles,
+          identityLinks: revenueIdentityLinks,
         }),
       ]
       await recordRevenueDataQualityFindings(findings)
@@ -3150,14 +3462,21 @@ export default function AdminPage() {
 
       const criticalFailures = findings.filter((finding) => finding.status === 'failed' && finding.severity === 'critical')
       if (criticalFailures.length > 0) {
+        const freezeReason = `${criticalFailures.length} critical manual data-quality issue(s)`
         await upsertAppSetting('cro_global_enabled', 'false')
+        await upsertAppSetting('cro_maintenance_freeze_reason', freezeReason)
         setCroGlobalEnabled(false)
+        setCroMaintenanceFreezeReason(freezeReason)
         toast({
           title: 'Revenue OS paused',
           description: `${criticalFailures.length} critical data issue(s) found. Customer buying still works with safe default ranking.`,
           variant: 'destructive',
         })
       } else {
+        if (croMaintenanceFreezeReason.startsWith('manual data-quality clear:') || croMaintenanceFreezeReason.includes('critical manual data-quality issue')) {
+          await upsertAppSetting('cro_maintenance_freeze_reason', '')
+          setCroMaintenanceFreezeReason('')
+        }
         toast({
           title: 'Data quality scan complete',
           description: findings.some((finding) => finding.status === 'failed')
@@ -3180,7 +3499,10 @@ export default function AdminPage() {
     setProductGraphBuilding(true)
     try {
       const catalogueRelationships = deriveCatalogueProductRelationships(productGroups, categories)
-      const behavioralRelationships = deriveBehavioralProductRelationships(revenueEvents, productGroups)
+      const behavioralRelationships = deriveBehavioralProductRelationships(revenueEvents, productGroups, {
+        orders: salesOrders,
+        smsOrders: salesSmsOrders,
+      })
       const relationships = [...catalogueRelationships, ...behavioralRelationships]
       const attributes = deriveRevenueProductAttributes(productGroups, categories)
       await recordRevenueProductAttributes(attributes)
@@ -3272,6 +3594,7 @@ export default function AdminPage() {
     try {
       const intelligence = deriveRevenueOsRuntimeIntelligence({
         orders: salesOrders,
+        commerceOrders: revenueCommerceOrders.length > 0 ? revenueCommerceOrders : undefined,
         revenueEvents,
         products: productGroups,
         categories,
@@ -3502,11 +3825,13 @@ export default function AdminPage() {
   const handleRunRevenueEvaluation = async () => {
     setEvaluationRunning(true)
     try {
+      const serviceOrdersForEvaluation = buildServiceOrdersFromHistory(historyRows)
       const evaluations = deriveCroExperimentEvaluations({
         experiments: croExperimentRows,
         revenueEvents,
         orders: salesOrders,
         smsOrders: salesSmsOrders,
+        serviceOrders: serviceOrdersForEvaluation,
       })
       const simulation = deriveCroSimulationRun({
         decisionRows: croDecisionRows,
@@ -3517,6 +3842,7 @@ export default function AdminPage() {
         revenueEvents,
         orders: salesOrders,
         smsOrders: salesSmsOrders,
+        serviceOrders: serviceOrdersForEvaluation,
         minExplorationPct: 0.08,
       })
       const driftChecks = deriveCroDriftChecks(revenueFeatureRows)
@@ -3524,6 +3850,7 @@ export default function AdminPage() {
         featureRows: revenueFeatureRows,
         revenueEvents,
         orders: salesOrders,
+        commerceOrders: revenueCommerceOrders.length > 0 ? revenueCommerceOrders : undefined,
         profiles: salesProfiles,
       })
       const allDriftChecks = [...driftChecks, ...anomalyChecks]
@@ -3581,8 +3908,11 @@ export default function AdminPage() {
             : 'model drift'
 
       if (shouldPauseCro) {
+        const freezeReason = `manual evaluation guardrail: ${pauseReason}`
         await upsertAppSetting('cro_global_enabled', 'false')
+        await upsertAppSetting('cro_maintenance_freeze_reason', freezeReason)
         setCroGlobalEnabled(false)
+        setCroMaintenanceFreezeReason(freezeReason)
       }
 
       await loadSalesAnalytics()
@@ -4566,6 +4896,8 @@ export default function AdminPage() {
                         <div className="mt-1">
                           {selectedUser?.is_admin ? (
                             <Badge>Admin</Badge>
+                          ) : selectedUser?.is_staff ? (
+                            <Badge variant="outline">Staff</Badge>
                           ) : (
                             <Badge variant="secondary">Customer</Badge>
                           )}
@@ -4765,10 +5097,10 @@ export default function AdminPage() {
           </div>
 
           {/* Main Content */}
-          <Tabs value={adminTab} onValueChange={(value) => setAdminTab(value as AdminTabValue)} className="space-y-6">
+          <Tabs value={adminTab} onValueChange={(value) => { setAdminTab(value as AdminTabValue); if (value === 'telegram-stars') checkTgWalletBalance() }} className="space-y-6">
             <div className="rounded-xl border border-border bg-card/70 p-3 shadow-sm md:hidden">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Admin menu</p>
-              <Select value={adminTab} onValueChange={(value) => setAdminTab(value as AdminTabValue)}>
+              <Select value={adminTab} onValueChange={(value) => { setAdminTab(value as AdminTabValue); if (value === 'telegram-stars') checkTgWalletBalance() }}>
                 <SelectTrigger className="h-11">
                   <SelectValue placeholder="Choose admin section" />
                 </SelectTrigger>
@@ -4874,6 +5206,7 @@ export default function AdminPage() {
                         productGroups.map((template) => {
                           const category = categories.find(cat => cat.id === template.category_id)
                           const isArchived = template.is_active === false
+                          const isFavorite = favoriteProductGroupIds.includes(template.id)
                           return (
                             <div
                               key={template.id}
@@ -4888,6 +5221,12 @@ export default function AdminPage() {
                                   {isArchived && (
                                     <Badge variant="secondary">Archived</Badge>
                                   )}
+                                  {isFavorite && (
+                                    <Badge variant="secondary" className="gap-1 bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
+                                      <Star className="h-3 w-3 fill-yellow-500 text-yellow-500" />
+                                      Favorite
+                                    </Badge>
+                                  )}
                                   <Badge variant={template.stock_count > 0 ? 'default' : 'secondary'} className="whitespace-nowrap">
                                     {template.stock_count} in stock
                                   </Badge>
@@ -4897,6 +5236,16 @@ export default function AdminPage() {
                                 </p>
                               </div>
                               <div className="flex items-center gap-2 flex-wrap sm:flex-shrink-0">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleToggleFavoriteTemplate(template.id)}
+                                  title={isFavorite ? 'Remove from customer favorites' : 'Add to customer favorites'}
+                                  className="whitespace-nowrap"
+                                >
+                                  <Star className={`h-4 w-4 sm:mr-1 ${isFavorite ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground'}`} />
+                                  <span className="hidden sm:inline">{isFavorite ? 'Favorited' : 'Favorite'}</span>
+                                </Button>
                                 <Button 
                                   variant="outline" 
                                   size="sm"
@@ -4945,7 +5294,7 @@ export default function AdminPage() {
               </Card>
             </TabsContent>
 
-            {/* DaisySMS Product Curation */}
+            {/* SMS Product Curation */}
             <TabsContent value="sms-products" className="space-y-6">
               <Card>
                 <CardHeader>
@@ -4953,7 +5302,7 @@ export default function AdminPage() {
                     <div>
                       <CardTitle className="flex items-center gap-2">
                         <PhoneCall className="h-5 w-5 text-primary" />
-                        DaisySMS Products
+                        SMS Products
                       </CardTitle>
                       <p className="text-muted-foreground">
                         Enable what customers can buy, set favorites, and override naira pricing per product.
@@ -4961,14 +5310,14 @@ export default function AdminPage() {
                     </div>
                     <Button type="button" variant="outline" onClick={loadSmsProducts} disabled={smsProductsLoading}>
                       {smsProductsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                      Sync DaisySMS
+                      Sync SMS
                     </Button>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="flex flex-wrap items-center gap-3">
                     <Badge variant="outline" className="rounded-md px-3 py-2">
-                      Showing DaisySMS cost in NGN
+                      Showing provider cost in NGN
                     </Badge>
                     <div className="relative min-w-[220px] flex-1">
                       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -5018,7 +5367,7 @@ export default function AdminPage() {
 
                   {(smsCatalogNotice || smsDiagnostics) && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
-                      <p className="font-semibold">{smsCatalogNotice || 'DaisySMS sync diagnostics'}</p>
+                      <p className="font-semibold">{smsCatalogNotice || 'SMS sync diagnostics'}</p>
                       {smsDiagnostics && (
                         <p className="mt-1 text-xs opacity-90">
                           Host: {smsDiagnostics.provider_host || 'unknown'} · Rate source: {smsExchangeRateSource} · Rounding: {smsRoundToNearestTen ? 'up to 10' : 'off'} · Country: {smsDiagnostics.country_id || 'unknown'} · getPricesVerification: {smsDiagnostics.verification_services ?? 0} · getPrices: {smsDiagnostics.prices_services ?? 0}
@@ -5038,7 +5387,7 @@ export default function AdminPage() {
                       {smsProductsLoading && smsProducts.length === 0 ? (
                         <div className="flex items-center justify-center py-10 text-muted-foreground">
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Loading DaisySMS products...
+                          Loading SMS products...
                         </div>
                       ) : favoriteSmsProducts.length === 0 ? (
                         <p className="py-6 text-sm text-muted-foreground">No favorites yet. Star products below to push them up on the customer list.</p>
@@ -5059,7 +5408,7 @@ export default function AdminPage() {
                       {smsProductsLoading && smsProducts.length === 0 ? (
                         <div className="flex items-center justify-center py-12 text-muted-foreground">
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Syncing DaisySMS products...
+                          Syncing SMS products...
                         </div>
                       ) : filteredSmsProducts.length === 0 ? (
                         <p className="py-10 text-center text-sm text-muted-foreground">No SMS products match your search.</p>
@@ -5707,6 +6056,8 @@ export default function AdminPage() {
                             <TableCell>
                               {user.is_admin ? (
                                 <Badge>Admin</Badge>
+                              ) : user.is_staff ? (
+                                <Badge variant="outline">Staff</Badge>
                               ) : (
                                 <Badge variant="secondary">Customer</Badge>
                               )}
@@ -5728,6 +6079,7 @@ export default function AdminPage() {
                                   variant="default"
                                   size="sm"
                                   onClick={() => handleAdjustBalance(user)}
+                                  disabled={user.is_staff || user.is_admin}
                                 >
                                   <DollarSign className="h-4 w-4 md:mr-1" />
                                   <span className="hidden md:inline">Adjust</span>
@@ -5981,8 +6333,17 @@ export default function AdminPage() {
                                 Turn this off for the kill switch. Customer pages use safe default ranking and buying still works.
                               </p>
                             </div>
-                            <Switch checked={croGlobalEnabled} onCheckedChange={setCroGlobalEnabled} />
+                            <Switch
+                              checked={croGlobalEnabled}
+                              onCheckedChange={setCroGlobalEnabled}
+                              disabled={!!croMaintenanceFreezeReason}
+                            />
                           </div>
+                          {croMaintenanceFreezeReason && (
+                            <p className="mt-2 text-xs font-semibold text-destructive">
+                              Frozen by guardrail: {croMaintenanceFreezeReason}
+                            </p>
+                          )}
                           <div className="mt-3 rounded-xl border bg-background/70 p-3">
                             <p className="text-xs font-bold uppercase text-muted-foreground">Immutable guardrails</p>
                             <div className="mt-2 flex flex-wrap gap-1">
@@ -6954,10 +7315,16 @@ export default function AdminPage() {
                           className="pl-10"
                         />
                       </div>
-                      <Button type="button" variant="outline" onClick={loadAdminHistories} disabled={historyLoading}>
-                        {historyLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                        Refresh histories
-                      </Button>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" variant="outline" onClick={loadAdminHistories} disabled={historyLoading}>
+                          {historyLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                          Refresh histories
+                        </Button>
+                        <Button type="button" variant="outline" onClick={exportHistoryRows} disabled={salesFilteredHistoryRows.length === 0}>
+                          <Download className="h-4 w-4" />
+                          Export CSV
+                        </Button>
+                      </div>
                     </div>
 
                     <div className="space-y-3">
@@ -6979,6 +7346,7 @@ export default function AdminPage() {
                                     <TableHead>Date</TableHead>
                                     <TableHead>Customer</TableHead>
                                     <TableHead>Item</TableHead>
+                                    <TableHead>Details</TableHead>
                                     <TableHead>Reference</TableHead>
                                     <TableHead>Status</TableHead>
                                     <TableHead className="text-right">Amount</TableHead>
@@ -6997,6 +7365,9 @@ export default function AdminPage() {
                                       <TableCell className="min-w-[260px]">
                                         <p className="font-semibold">{row.title}</p>
                                         {row.subtitle && <p className="max-w-[360px] truncate text-xs text-muted-foreground" title={row.subtitle}>{row.subtitle}</p>}
+                                      </TableCell>
+                                      <TableCell className="max-w-[260px] truncate text-xs text-muted-foreground" title={row.detail || undefined}>
+                                        {row.detail || '-'}
                                       </TableCell>
                                       <TableCell className="font-mono text-xs">{row.reference || '-'}</TableCell>
                                       <TableCell>
@@ -7173,7 +7544,7 @@ export default function AdminPage() {
                     <Mail className="h-5 w-5" />
                     Compose Email
                   </CardTitle>
-                  <p className="text-muted-foreground">Send targeted emails or broadcast to all users</p>
+                  <p className="text-muted-foreground">Send targeted emails or broadcast only to customers who opted into promotional email</p>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {/* Subject */}
@@ -7245,7 +7616,7 @@ export default function AdminPage() {
                         className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
                       >
                         {isBroadcasting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Mail className="h-4 w-4 mr-2" />}
-                        {isDryRun ? 'Dry Run (Preview)' : 'Broadcast to All Users'}
+                        {isDryRun ? 'Dry Run (Preview)' : 'Broadcast to Opted-In Customers'}
                       </Button>
                       <label className="flex items-center gap-1.5 text-xs whitespace-nowrap cursor-pointer">
                         <input type="checkbox" checked={isDryRun} onChange={e => { setIsDryRun(e.target.checked); setDryRunResult(null) }} className="rounded" />
@@ -7258,7 +7629,7 @@ export default function AdminPage() {
                   {dryRunResult && (
                     <div className="p-4 bg-blue-50 dark:bg-blue-950 rounded-lg border border-blue-200 dark:border-blue-800">
                       <p className="font-medium text-blue-800 dark:text-blue-200 mb-1">Dry Run Result</p>
-                      <p className="text-sm text-blue-700 dark:text-blue-300">Total recipients: <strong>{dryRunResult.totalRecipients?.toLocaleString()}</strong></p>
+                      <p className="text-sm text-blue-700 dark:text-blue-300">Opted-in recipients: <strong>{dryRunResult.totalRecipients?.toLocaleString()}</strong></p>
                       {dryRunResult.sampleRecipients?.length > 0 && (
                         <details className="mt-2">
                           <summary className="text-xs text-blue-600 dark:text-blue-400 cursor-pointer">Sample recipients ({dryRunResult.sampleRecipients.length})</summary>
@@ -7674,6 +8045,346 @@ export default function AdminPage() {
                         </table>
                         {filtered.length === 0 && (
                           <p className="py-6 text-center text-sm text-muted-foreground">No {smsOrdersFilter} orders.</p>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* ── Telegram Stars & Premium ──────────────────────────────── */}
+            <TabsContent value="telegram-stars" className="space-y-6">
+              {/* iStar wallet */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    iStar Wallet
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-sm font-medium">Pay iStar with:</span>
+                    {(['USDT', 'TON'] as const).map(type => (
+                      <Button
+                        key={type}
+                        size="sm"
+                        variant={tgWalletType === type ? 'default' : 'outline'}
+                        onClick={() => saveTgWalletType(type)}
+                      >
+                        {type}
+                      </Button>
+                    ))}
+                    <Button size="sm" variant="outline" onClick={checkTgWalletBalance} disabled={tgWalletBalanceLoading}>
+                      {tgWalletBalanceLoading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                      Check Balance
+                    </Button>
+                    {tgWalletBalance && (
+                      <span className="text-sm font-semibold">
+                        {tgWalletBalance.balance} {tgWalletBalance.currency}
+                      </span>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* ── Star pricing ───────────────────────────────────────── */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-base">⭐ Star Pricing Config</CardTitle>
+                      <p className="text-xs text-muted-foreground mt-0.5">Set what iStar charges per star and your markup tiers. Customer price = (iStar cost × qty × NGN rate) + tier markup.</p>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={loadTgProducts} disabled={tgProductsLoading}>
+                      {tgProductsLoading ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-2 h-3 w-3" />}
+                      {tgProducts.length === 0 ? 'Load' : 'Refresh'}
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {/* iStar cost per star */}
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="flex-1 min-w-48">
+                      <label className="text-xs font-medium mb-1 block">iStar cost per star (USDT)</label>
+                      <Input
+                        type="number"
+                        step="0.0001"
+                        className="h-8 text-sm"
+                        value={tgProductPrices['__cost_per_star__'] ?? '0.013'}
+                        onChange={e => setTgProductPrices(prev => ({ ...prev, '__cost_per_star__': e.target.value }))}
+                        placeholder="e.g. 0.013"
+                      />
+                      <p className="text-[11px] text-muted-foreground mt-1">Check your iStar dashboard / order history to find the actual per-star USDT rate.</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      disabled={tgProductSaving === '__cost__'}
+                      onClick={async () => {
+                        setTgProductSaving('__cost__')
+                        try {
+                          const { data, error } = await supabase.functions.invoke('telegram-stars', {
+                            body: { action: 'admin_save_star_config', cost_per_star_usdt: Number(tgProductPrices['__cost_per_star__'] || 0.013) }
+                          })
+                          if (error) throw error
+                          toast({ title: 'Star cost saved' })
+                        } catch (err: any) {
+                          toast({ title: 'Save failed', description: err.message, variant: 'destructive' })
+                        } finally { setTgProductSaving(null) }
+                      }}
+                    >
+                      {tgProductSaving === '__cost__' ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Save Cost'}
+                    </Button>
+                  </div>
+
+                  {/* Markup tiers */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs font-medium">Markup Tiers (₦ added on top of iStar cost)</label>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => {
+                          const current: any[] = (() => { try { return JSON.parse(tgProductPrices['__tiers__'] || '[]') } catch { return [] } })()
+                          const updated = [...current, { min_qty: 0, max_qty: null, markup_ngn: 0 }]
+                          setTgProductPrices(prev => ({ ...prev, '__tiers__': JSON.stringify(updated) }))
+                        }}
+                      >
+                        + Add Tier
+                      </Button>
+                    </div>
+                    {(() => {
+                      let tiers: any[] = []
+                      try { tiers = JSON.parse(tgProductPrices['__tiers__'] || '[]') } catch { tiers = [] }
+                      if (tiers.length === 0) return <p className="text-xs text-muted-foreground py-2">No tiers yet. Add a tier to set markup by quantity range.</p>
+                      return (
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 text-xs text-muted-foreground px-1">
+                            <span>Min qty</span><span>Max qty</span><span>Markup (₦)</span><span/>
+                          </div>
+                          {tiers.map((tier: any, idx: number) => (
+                            <div key={idx} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 items-center">
+                              <Input
+                                type="number" className="h-8 text-sm" placeholder="e.g. 50"
+                                value={tier.min_qty ?? ''}
+                                onChange={e => {
+                                  const updated = [...tiers]; updated[idx] = { ...tier, min_qty: Number(e.target.value) }
+                                  setTgProductPrices(prev => ({ ...prev, '__tiers__': JSON.stringify(updated) }))
+                                }}
+                              />
+                              <Input
+                                type="number" className="h-8 text-sm" placeholder="blank = no max"
+                                value={tier.max_qty ?? ''}
+                                onChange={e => {
+                                  const updated = [...tiers]; updated[idx] = { ...tier, max_qty: e.target.value === '' ? null : Number(e.target.value) }
+                                  setTgProductPrices(prev => ({ ...prev, '__tiers__': JSON.stringify(updated) }))
+                                }}
+                              />
+                              <Input
+                                type="number" className="h-8 text-sm" placeholder="e.g. 500"
+                                value={tier.markup_ngn ?? ''}
+                                onChange={e => {
+                                  const updated = [...tiers]; updated[idx] = { ...tier, markup_ngn: Number(e.target.value) }
+                                  setTgProductPrices(prev => ({ ...prev, '__tiers__': JSON.stringify(updated) }))
+                                }}
+                              />
+                              <Button
+                                size="sm" variant="ghost" className="h-8 w-8 p-0 text-red-500 hover:text-red-700"
+                                onClick={() => {
+                                  const updated = tiers.filter((_: any, i: number) => i !== idx)
+                                  setTgProductPrices(prev => ({ ...prev, '__tiers__': JSON.stringify(updated) }))
+                                }}
+                              ><XCircle className="h-4 w-4" /></Button>
+                            </div>
+                          ))}
+                          <Button
+                            size="sm" variant="outline" className="w-full mt-2"
+                            disabled={tgProductSaving === '__tiers__'}
+                            onClick={async () => {
+                              setTgProductSaving('__tiers__')
+                              try {
+                                const { data, error } = await supabase.functions.invoke('telegram-stars', {
+                                  body: { action: 'admin_save_star_config', markup_tiers: tiers }
+                                })
+                                if (error) throw error
+                                toast({ title: 'Markup tiers saved' })
+                              } catch (err: any) {
+                                toast({ title: 'Save failed', description: err.message, variant: 'destructive' })
+                              } finally { setTgProductSaving(null) }
+                            }}
+                          >
+                            {tgProductSaving === '__tiers__' ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
+                            Save Tiers
+                          </Button>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* ── Premium pricing ────────────────────────────────────── */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">👑 Premium Pricing</CardTitle>
+                    <Button variant="outline" size="sm" onClick={loadTgProducts} disabled={tgProductsLoading}>
+                      {tgProductsLoading ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-2 h-3 w-3" />}
+                      {tgProducts.length === 0 ? 'Load' : 'Refresh'}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Prices are auto-calculated: <strong>iStar USDT cost × live NGN rate + your markup</strong>. The USDT cost is learned automatically after each real order.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {tgProductsLoading && <div className="flex justify-center py-4"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>}
+                  {!tgProductsLoading && (
+                    <>
+                      {/* Markup field */}
+                      <div className="flex items-center gap-3 rounded-md border border-border p-3">
+                        <div className="flex-1">
+                          <p className="text-sm font-medium">Your markup (NGN)</p>
+                          <p className="text-xs text-muted-foreground">Added on top of the iStar cost × NGN rate for all premium tiers</p>
+                        </div>
+                        <Input
+                          type="number" className="w-32 h-8 text-sm"
+                          value={tgProductPrices['__telegram_premium_markup_ngn__'] ?? '0'}
+                          onChange={e => setTgProductPrices(prev => ({ ...prev, '__telegram_premium_markup_ngn__': e.target.value }))}
+                        />
+                        <Button size="sm" variant="outline" className="h-8" onClick={async () => {
+                          const markup = Number(tgProductPrices['__telegram_premium_markup_ngn__'] || 0)
+                          const { error } = await supabase.functions.invoke('telegram-stars', {
+                            body: { action: 'admin_save_star_config', premium_markup_ngn: markup }
+                          })
+                          if (error) { toast({ title: 'Save failed', description: error.message, variant: 'destructive' }); return }
+                          toast({ title: 'Premium markup saved' })
+                        }}>Save</Button>
+                      </div>
+
+                      {/* Per-tier breakdown */}
+                      {tgProducts.filter(p => p.product_type === 'premium').length === 0 && (
+                        <p className="text-center text-sm text-muted-foreground py-2">Click "Load" to view premium tiers.</p>
+                      )}
+                      {tgProducts.filter(p => p.product_type === 'premium').map(product => {
+                        const costKey = `__telegram_premium_cost_usdt_${product.months}m__`
+                        const istarCost = Number(tgProductPrices[costKey] || 0)
+                        return (
+                          <div key={product.id} className="flex items-center gap-3 rounded-md bg-muted/30 px-3 py-2">
+                            <Switch checked={product.is_active} onCheckedChange={() => toggleTgProduct(product)} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium">{product.label}</p>
+                              {istarCost > 0
+                                ? <p className="text-xs text-muted-foreground">iStar cost: ${istarCost.toFixed(4)} USDT</p>
+                                : <p className="text-xs text-amber-500">No order yet — iStar cost will be learned after first purchase</p>
+                              }
+                            </div>
+                            <div className="text-right">
+                              <p className="text-sm font-semibold">₦{product.price_ngn.toLocaleString()}</p>
+                              <p className="text-xs text-muted-foreground">live price</p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Order history */}
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-base">Telegram Orders</CardTitle>
+                      <p className="mt-1 text-sm text-muted-foreground">All stars and premium gift orders.</p>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={loadTgOrders} disabled={tgOrdersLoading}>
+                      {tgOrdersLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                      {tgOrders.length === 0 ? 'Load Orders' : 'Refresh'}
+                    </Button>
+                  </div>
+                  {tgOrders.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mt-3">
+                      {(['all', 'pending', 'processing', 'completed', 'failed'] as const).map(f => (
+                        <button
+                          key={f}
+                          onClick={() => setTgOrdersFilter(f)}
+                          className={`rounded-full px-3 py-1 text-xs font-medium border transition-colors ${tgOrdersFilter === f ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:border-primary/50'}`}
+                        >
+                          {f.charAt(0).toUpperCase() + f.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </CardHeader>
+                <CardContent>
+                  {tgOrders.length === 0 && !tgOrdersLoading && (
+                    <p className="py-6 text-center text-sm text-muted-foreground">No orders yet. Click "Load Orders" to fetch.</p>
+                  )}
+                  {tgOrdersLoading && <div className="flex justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>}
+                  {!tgOrdersLoading && tgOrders.length > 0 && (() => {
+                    const filtered = tgOrdersFilter === 'all' ? tgOrders : tgOrders.filter(o => o.status === tgOrdersFilter)
+                    return (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b text-xs text-muted-foreground">
+                              <th className="pb-2 pr-4 text-left font-medium">User</th>
+                              <th className="pb-2 pr-4 text-left font-medium">Type</th>
+                              <th className="pb-2 pr-4 text-left font-medium">Recipient</th>
+                              <th className="pb-2 pr-4 text-left font-medium">Amount</th>
+                              <th className="pb-2 pr-4 text-left font-medium">Status</th>
+                              <th className="pb-2 pr-4 text-left font-medium">Date</th>
+                              <th className="pb-2 text-left font-medium">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y">
+                            {filtered.map(order => {
+                              const terminal = ['completed', 'failed'].includes(order.status)
+                              return (
+                                <tr key={order.id} className="hover:bg-muted/30">
+                                  <td className="py-2 pr-4 text-xs">
+                                    <div>{order.profiles?.full_name || '—'}</div>
+                                    <div className="text-muted-foreground">{order.profiles?.email || ''}</div>
+                                  </td>
+                                  <td className="py-2 pr-4 text-xs">
+                                    {order.order_type === 'stars' ? `⭐ ${order.quantity?.toLocaleString()} Stars` : `👑 ${order.months}mo Premium`}
+                                  </td>
+                                  <td className="py-2 pr-4 text-xs">@{order.username}</td>
+                                  <td className="py-2 pr-4 text-xs font-medium">₦{Number(order.price_ngn).toLocaleString()}</td>
+                                  <td className="py-2 pr-4 text-xs">
+                                    <span className={`font-medium ${order.status === 'completed' ? 'text-green-600' : order.status === 'failed' ? 'text-red-600' : order.status === 'processing' ? 'text-blue-600' : 'text-amber-600'}`}>
+                                      {order.status}
+                                    </span>
+                                    {order.refunded_at && <span className="ml-1 text-emerald-600">✓ refunded</span>}
+                                  </td>
+                                  <td className="py-2 pr-4 text-xs text-muted-foreground">
+                                    {new Date(order.created_at).toLocaleDateString()}
+                                  </td>
+                                  <td className="py-2">
+                                    {!terminal && (
+                                      <Button
+                                        size="sm"
+                                        variant="destructive"
+                                        className="h-7 px-2 text-xs"
+                                        disabled={tgOrdersCancellingId === order.id}
+                                        onClick={() => adminCancelTgOrder(order.id)}
+                                      >
+                                        {tgOrdersCancellingId === order.id ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Cancel & Refund'}
+                                      </Button>
+                                    )}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                        {filtered.length === 0 && (
+                          <p className="py-6 text-center text-sm text-muted-foreground">No {tgOrdersFilter} orders.</p>
                         )}
                       </div>
                     )

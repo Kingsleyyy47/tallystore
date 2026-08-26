@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { useEffect } from 'react'
 import { ArrowRight, Clock, KeyRound, PackageCheck, ShieldCheck, Sparkles, WalletCards } from 'lucide-react'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
@@ -10,6 +11,7 @@ import {
   RevampSectionTitle,
   RevampVisual,
 } from '@/components/RevampLayout'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 const values = [
   {
@@ -40,6 +42,21 @@ const process = [
 ]
 
 export default function AboutPage() {
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      surface: 'about',
+    })
+  }, [])
+
+  const trackAboutCta = (destination: string, surface: string) => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface,
+      metadata: { destination },
+    })
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <NavbarAuth />
@@ -85,6 +102,7 @@ export default function AboutPage() {
             </p>
             <Link
               to="/how-it-works"
+              onClick={() => trackAboutCta('/how-it-works', 'about_how_it_works_cta')}
               className="mt-5 inline-flex items-center gap-2 text-sm font-black text-purple-700 dark:text-purple-300"
             >
               See how it works
@@ -121,6 +139,7 @@ export default function AboutPage() {
             </div>
             <Link
               to="/wallet"
+              onClick={() => trackAboutCta('/wallet', 'about_wallet_cta')}
               className="inline-flex h-11 shrink-0 items-center justify-center rounded-xl bg-white px-5 text-sm font-black text-purple-700 transition hover:bg-purple-50"
             >
               Open Wallet

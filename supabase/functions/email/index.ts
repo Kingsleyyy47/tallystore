@@ -1,6 +1,116 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
-import { sendEmail, sendEmailBulk } from "../_shared/smtp-client.ts";
+
+// ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
+
+// ── smtp-client.ts ──
+/**
+ * SMTP Client for TallyStore Email Service
+ * Uses denomailer for Deno-native SMTP via Namecheap Private Email
+ */
+
+import { SMTPClient } from "https://deno.land/x/denomailer@1.6.0/mod.ts";
+
+const SMTP_HOST = "mail.privateemail.com";
+const SMTP_PORT = 465;
+
+function getCredentials() {
+  const email = Deno.env.get("SMTP_EMAIL");
+  const password = Deno.env.get("SMTP_PASSWORD");
+  if (!email || !password) {
+    throw new Error("SMTP_EMAIL and SMTP_PASSWORD must be set in Edge Function secrets");
+  }
+  return { email, password };
+}
+
+export async function sendEmail(options: {
+  to: string;
+  subject: string;
+  html: string;
+}): Promise<{ success: boolean; error?: string }> {
+  const { email: fromEmail, password } = getCredentials();
+
+  try {
+    const client = new SMTPClient({
+      connection: {
+        hostname: SMTP_HOST,
+        port: SMTP_PORT,
+        tls: true,
+        auth: { username: fromEmail, password },
+      },
+    });
+
+    await client.send({
+      from: `TallyStore <${fromEmail}>`,
+      to: options.to,
+      subject: options.subject,
+      content: "auto",
+      html: options.html,
+    });
+
+    // Close connection, ignoring errors
+    try { await client.close() } catch { /* ignore */ }
+
+    return { success: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`SMTP send failed for ${options.to}: ${msg}`);
+    return { success: false, error: msg };
+  }
+}
+
+export async function sendEmailBulk(options: {
+  recipients: string[];
+  subject: string;
+  html: string;
+}): Promise<{ success: boolean; sent: number; failed: number; failedEmails: string[] }> {
+  const { recipients, subject, html } = options;
+  let sent = 0;
+  let failed = 0;
+  const failedEmails: string[] = [];
+
+  // Process in chunks of 10 concurrent connections
+  const CONCURRENCY = 10;
+  for (let i = 0; i < recipients.length; i += CONCURRENCY) {
+    const chunk = recipients.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(
+      chunk.map((to) => sendEmail({ to, subject, html }))
+    );
+
+    for (let j = 0; j < results.length; j++) {
+      const result = results[j];
+      if (result.status === "fulfilled" && result.value.success) {
+        sent++;
+      } else {
+        failed++;
+        failedEmails.push(chunk[j]);
+      }
+    }
+  }
+
+  return { success: true, sent, failed, failedEmails };
+}
+
+export function buildBroadcastHtml(message: string): string {
+  return `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px">
+    <div style="background:linear-gradient(135deg,#7c3aed,#3b82f6);padding:24px;border-radius:12px;color:white;text-align:center;margin-bottom:24px">
+      <h1 style="margin:0;font-size:24px">TallyStore</h1>
+    </div>
+    <div style="padding:16px;line-height:1.6;color:#333">
+      ${message.replace(/\n/g, "<br/>")}
+    </div>
+    <div style="text-align:center;margin-top:24px">
+      <a href="https://tallystore.org/dashboard"
+         style="background:linear-gradient(135deg,#7c3aed,#3b82f6);color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">
+        Go to Dashboard
+      </a>
+    </div>
+    <div style="text-align:center;margin-top:32px;color:#999;font-size:12px">
+      <p>TallyStore — Your trusted digital marketplace</p>
+    </div>
+  </div>`;
+}
+
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -20,6 +130,66 @@ function getAdmin() {
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
   );
+}
+
+function isValidEmail(value: unknown): value is string {
+  return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+async function listPromotionConsentedEmails(
+  admin: ReturnType<typeof createClient>,
+  options: { offset?: number; limit?: number; sampleLimit?: number } = {},
+) {
+  const offset = Math.max(0, Math.round(Number(options.offset || 0)));
+  const limit = Math.max(0, Math.round(Number(options.limit || 0)));
+  const sampleLimit = Math.max(0, Math.round(Number(options.sampleLimit || 0)));
+  const batchSize = 1000;
+  let profileOffset = 0;
+  let eligibleSeen = 0;
+  let totalRecipients = 0;
+  const recipients: string[] = [];
+  const sampleRecipients: string[] = [];
+
+  while (true) {
+    const { data: profiles, error: profilesError } = await admin
+      .from("profiles")
+      .select("id,email,is_admin,is_staff,created_at")
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(profileOffset, profileOffset + batchSize - 1);
+
+    if (profilesError) throw new Error(profilesError.message);
+    if (!profiles || profiles.length === 0) break;
+
+    const profileIds = profiles.map((profile: any) => profile.id).filter(Boolean);
+    const { data: prefs, error: prefsError } = await admin
+      .from("customer_communication_preferences")
+      .select("user_id,email_promotions_opt_in")
+      .in("user_id", profileIds);
+
+    if (prefsError) throw new Error(prefsError.message);
+    const optedIn = new Set((prefs || [])
+      .filter((pref: any) => pref.email_promotions_opt_in === true)
+      .map((pref: any) => String(pref.user_id)));
+
+    for (const profile of profiles as any[]) {
+      if (profile.is_admin || profile.is_staff) continue;
+      if (!optedIn.has(String(profile.id))) continue;
+      if (!isValidEmail(profile.email)) continue;
+
+      totalRecipients += 1;
+      if (sampleRecipients.length < sampleLimit) sampleRecipients.push(profile.email);
+      if (limit > 0 && eligibleSeen >= offset && recipients.length < limit) {
+        recipients.push(profile.email);
+      }
+      eligibleSeen += 1;
+    }
+
+    if (profiles.length < batchSize) break;
+    profileOffset += batchSize;
+  }
+
+  return { recipients, sampleRecipients, totalRecipients };
 }
 
 /** Verify the caller is an admin. Returns user id or throws. */
@@ -106,36 +276,41 @@ async function handleSend(req: Request) {
   if (!result.success) {
     return json({ success: false, error: result.error }, 500);
   }
-  console.log(`✉️ Admin ${userId} sent email to ${to}`);
+  console.log('Admin/staff email sent.');
   return json({ success: true, message: "Email sent" });
 }
 
 // ─── Route: POST /email/broadcast ───────────────────────────────────
 async function handleBroadcast(req: Request) {
   const { subject, html, dryRun } = await req.json();
-  const userId = await requireAdminOrStaffPermission(req, "tab_email", !Boolean(dryRun));
+  const userId = await requireAdminOrStaffPermission(
+    req,
+    "tab_email",
+    dryRun !== true
+  );
 
   if (!subject || !html) {
     return json({ success: false, error: "subject and html are required" }, 400);
   }
 
   const admin = getAdmin();
-
-  // Count total users
-  const { count: totalRecipients } = await admin
-    .from("profiles")
-    .select("id", { count: "exact", head: true });
+  const consented = await listPromotionConsentedEmails(admin, { sampleLimit: dryRun ? 200 : 0 });
 
   if (dryRun) {
-    // Return sample of 200 emails without creating a job
-    const { data: { users } } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
-    const emails = users.map((u: any) => u.email).filter(Boolean);
     return json({
       success: true,
       dryRun: true,
-      totalRecipients: totalRecipients || 0,
-      sampleRecipients: emails,
+      totalRecipients: consented.totalRecipients,
+      sampleRecipients: consented.sampleRecipients,
+      audience: "promotion_opted_in_customers",
     });
+  }
+
+  if (consented.totalRecipients <= 0) {
+    return json({
+      success: false,
+      error: "No customers have opted in to promotional email broadcasts.",
+    }, 400);
   }
 
   // Create broadcast job
@@ -145,7 +320,7 @@ async function handleBroadcast(req: Request) {
       subject,
       html_body: html,
       status: "queued",
-      total_recipients: totalRecipients || 0,
+      total_recipients: consented.totalRecipients,
       created_by: userId,
     })
     .select()
@@ -156,12 +331,13 @@ async function handleBroadcast(req: Request) {
     return json({ success: false, error: error.message }, 500);
   }
 
-  console.log(`📢 Broadcast job created: ${job.id} by admin ${userId}, ${totalRecipients} recipients`);
+  console.log(`Broadcast job created for ${consented.totalRecipients} opted-in recipient(s).`);
   return json({
     success: true,
     jobId: job.id,
-    totalRecipients: totalRecipients || 0,
-    message: `Broadcast queued. ${totalRecipients} recipients will be emailed automatically.`,
+    totalRecipients: consented.totalRecipients,
+    audience: "promotion_opted_in_customers",
+    message: `Broadcast queued. ${consented.totalRecipients} opted-in customer(s) will be emailed automatically.`,
   });
 }
 
@@ -198,9 +374,10 @@ async function handleProcessBroadcast() {
 
   const startTime = Date.now();
   const MAX_RUNTIME_MS = 45_000; // 45 seconds
-  let offset = job.current_offset;
-  let totalSent = job.sent_count;
-  let totalFailed = job.failed_count;
+  let offset = Math.max(0, Math.round(Number(job.current_offset || 0)));
+  let totalSent = Math.max(0, Math.round(Number(job.sent_count || 0)));
+  let totalFailed = Math.max(0, Math.round(Number(job.failed_count || 0)));
+  const batchSize = Math.max(1, Math.min(1000, Math.round(Number(job.batch_size || 100))));
   let batchCount = 0;
 
   try {
@@ -218,14 +395,21 @@ async function handleProcessBroadcast() {
         }
       }
 
-      // Fetch batch of users
-      const page = Math.floor(offset / job.batch_size) + 1;
-      const { data: { users }, error: listErr } = await admin.auth.admin.listUsers({
-        page,
-        perPage: job.batch_size,
+      // Fetch the next batch of customers who explicitly opted into promotional email.
+      const consented = await listPromotionConsentedEmails(admin, {
+        offset,
+        limit: batchSize,
       });
+      const emails = consented.recipients;
 
-      if (listErr || !users || users.length === 0) {
+      if (consented.totalRecipients !== job.total_recipients) {
+        await admin
+          .from("broadcast_jobs")
+          .update({ total_recipients: consented.totalRecipients })
+          .eq("id", job.id);
+      }
+
+      if (emails.length === 0) {
         // All done
         await admin
           .from("broadcast_jobs")
@@ -250,14 +434,6 @@ async function handleProcessBroadcast() {
           isComplete: true,
         });
       }
-
-      const emails = users
-        .map((u: any) => u.email)
-        .filter((e: string | undefined): e is string => {
-          if (!e) return false;
-          // Basic email validation — skip obviously bad addresses
-          return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-        });
 
       if (emails.length > 0) {
         const result = await sendEmailBulk({
@@ -290,7 +466,7 @@ async function handleProcessBroadcast() {
         }
       }
 
-      offset += users.length;
+      offset += emails.length;
       batchCount++;
 
       // Update progress
@@ -305,8 +481,8 @@ async function handleProcessBroadcast() {
         })
         .eq("id", job.id);
 
-      // If we got fewer users than batch_size, we're at the end
-      if (users.length < job.batch_size) {
+      // If we got fewer recipients than batch_size, we're at the end
+      if (emails.length < batchSize) {
         await admin
           .from("broadcast_jobs")
           .update({

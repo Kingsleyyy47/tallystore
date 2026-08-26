@@ -34,6 +34,9 @@ import NavbarAuth from '@/components/NavbarAuth'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { trackRevenueEvent } from '@/lib/revenue-os'
+import { RecommendationStrip } from '@/components/RecommendationCard'
+import { useRecommendations } from '@/hooks/useRecommendations'
 
 const INSTALL_PROMPT_STORAGE_KEY = 'pwa-install-prompt-dismissed'
 
@@ -115,7 +118,7 @@ const actionItems = [
   },
   {
     title: 'Gift Cards',
-    description: 'Gift cards and eSIMs',
+    description: 'Digital gift cards',
     href: '/gift-cards',
     icon: Gift,
     accent: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
@@ -138,6 +141,7 @@ const actionItems = [
 
 export default function Dashboard() {
   const { user, walletBalance, walletLoading, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
+  const { recommendations: recs } = useRecommendations({ limit: 3 })
   const { currency, formatPrice } = useCurrency()
   const [transactions, setTransactions] = useState<DashboardTransaction[]>([])
   const [orders, setOrders] = useState<DashboardOrder[]>([])
@@ -149,6 +153,15 @@ export default function Dashboard() {
 
   const userName = user?.email?.split('@')[0] || 'User'
   const currencySymbol = currency === 'USD' ? '$' : '\u20a6'
+
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'dashboard',
+      metadata: { authenticated: Boolean(user?.id), currency },
+    })
+  }, [currency, user?.id])
 
   const loadDashboardStats = useCallback(async () => {
     if (!user?.id) {
@@ -188,6 +201,15 @@ export default function Dashboard() {
 
       setCompletedOrders(completedCount)
       setTotalSpent(spentTotal)
+      trackRevenueEvent({
+        eventType: 'PAGE_VIEWED',
+        userId: user.id,
+        surface: 'dashboard_stats_loaded',
+        metadata: {
+          completed_orders: completedCount,
+          total_spent_ngn: spentTotal,
+        },
+      })
     } catch (error) {
       console.error('Failed to load dashboard stats:', error)
       setCompletedOrders(0)
@@ -225,6 +247,15 @@ export default function Dashboard() {
 
       setTransactions((transactionResult.data || []) as DashboardTransaction[])
       setOrders((recentOrderResult.data || []) as DashboardOrder[])
+      trackRevenueEvent({
+        eventType: 'PAGE_VIEWED',
+        userId: user.id,
+        surface: 'dashboard_activity_loaded',
+        metadata: {
+          transaction_count: transactionResult.data?.length || 0,
+          order_count: recentOrderResult.data?.length || 0,
+        },
+      })
     } catch (error) {
       console.error('Failed to load dashboard activity:', error)
       setTransactions([])
@@ -266,6 +297,34 @@ export default function Dashboard() {
     window.addEventListener('transactionAdded', handleTransactionUpdate)
     return () => window.removeEventListener('transactionAdded', handleTransactionUpdate)
   }, [loadDashboardActivity, loadDashboardStats, refreshWalletBalance])
+
+  const handleDashboardNavigate = (href: string, surface: string) => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface,
+      metadata: { destination: href },
+    })
+  }
+
+  const handleRefresh = () => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'dashboard_refresh_balance',
+    })
+    refreshWalletBalance()
+  }
+
+  const handleBalanceToggle = () => {
+    trackRevenueEvent({
+      eventType: showBalances ? 'OFFER_DISMISSED' : 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'dashboard_balance_visibility',
+      metadata: { next_state: showBalances ? 'hidden' : 'visible' },
+    })
+    toggleBalanceVisibility()
+  }
 
   const recentActivity = useMemo<ActivityItem[]>(() => {
     const transactionActivity = transactions.map((transaction) => {
@@ -322,7 +381,7 @@ export default function Dashboard() {
                     Your balance, orders, recovery tools, and services in one place.
                   </p>
                 </div>
-                <Button variant="outline" onClick={refreshWalletBalance} className="w-full justify-center rounded-xl sm:w-auto">
+                <Button variant="outline" onClick={handleRefresh} className="w-full justify-center rounded-xl sm:w-auto">
                   <RefreshCw className="h-4 w-4" />
                   Refresh
                 </Button>
@@ -351,7 +410,7 @@ export default function Dashboard() {
                     Your Balance
                     <button
                       type="button"
-                      onClick={toggleBalanceVisibility}
+                      onClick={handleBalanceToggle}
                       className="grid h-7 w-7 place-items-center rounded-full text-purple-100 transition hover:bg-white/10 hover:text-white"
                       aria-label={showBalances ? 'Hide balances' : 'Show balances'}
                     >
@@ -368,7 +427,7 @@ export default function Dashboard() {
                   <p className="mt-2 text-xs font-bold text-purple-100/85 sm:text-sm">Available Balance</p>
                   <div className="mt-4 flex max-w-64 flex-wrap gap-2 sm:mt-5">
                     <Button asChild className="h-10 flex-1 rounded-lg bg-purple-500 px-4 text-sm font-black text-white hover:bg-purple-400">
-                      <Link to="/wallet">
+                      <Link to="/wallet" onClick={() => handleDashboardNavigate('/wallet', 'dashboard_add_funds_cta')}>
                         Add Funds
                         <Plus className="h-4 w-4" />
                       </Link>
@@ -428,7 +487,7 @@ export default function Dashboard() {
                     Buy US numbers for SMS verification directly from your TallyStore wallet.
                   </p>
                   <Button asChild className="mt-6 h-11 rounded-2xl bg-white px-5 text-slate-950 hover:bg-cyan-50">
-                    <Link to="/us-canada">
+                    <Link to="/us-canada" onClick={() => handleDashboardNavigate('/us-canada', 'dashboard_us_canada_cta')}>
                       <MessageSquareText className="h-4 w-4" />
                       Buy Numbers
                     </Link>
@@ -477,6 +536,7 @@ export default function Dashboard() {
                       <Link
                         key={item.title}
                         to={item.href}
+                        onClick={() => handleDashboardNavigate(item.href, 'dashboard_quick_action')}
                         className="group flex min-h-[104px] w-full max-w-full flex-row items-center gap-4 overflow-hidden rounded-[1.35rem] bg-white p-4 shadow-card transition duration-300 hover:-translate-y-1 hover:shadow-[0_18px_40px_rgba(88,64,179,0.16)] dark:bg-card sm:min-h-[118px] sm:p-5"
                       >
                         <span className={cn('grid h-11 w-11 shrink-0 place-items-center rounded-2xl', item.accent)}>
@@ -513,7 +573,9 @@ export default function Dashboard() {
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
                         <Button asChild variant="ghost" size="sm" className="rounded-xl text-cyan-600 hover:text-cyan-700" onClick={(event) => event.stopPropagation()}>
-                          <Link to="/wallet">View all</Link>
+                          <Link to="/wallet" onClick={() => handleDashboardNavigate('/wallet', 'dashboard_activity_view_all')}>
+                            View all
+                          </Link>
                         </Button>
                         <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
                       </span>
@@ -601,6 +663,7 @@ export default function Dashboard() {
 
                   <Link
                     to="/us-canada"
+                    onClick={() => handleDashboardNavigate('/us-canada', 'dashboard_us_canada_card')}
                     className="block rounded-3xl border border-dashed border-cyan-300 bg-cyan-50/70 p-4 transition hover:-translate-y-0.5 hover:bg-cyan-50 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:hover:bg-cyan-500/15"
                   >
                     <div className="flex items-start gap-3">
@@ -620,6 +683,12 @@ export default function Dashboard() {
             </aside>
           </section>
         </div>
+
+        {recs.length > 0 && (
+          <div className="mx-auto mt-8 max-w-5xl px-4 pb-10">
+            <RecommendationStrip products={recs} surface="dashboard" actionType="SHOW_ALTERNATIVE" userId={user?.id} title="Products you might like" />
+          </div>
+        )}
       </main>
 
     </div>

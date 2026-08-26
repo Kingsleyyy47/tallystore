@@ -1,28 +1,15 @@
--- Enable pg_cron extension if not already enabled
-CREATE EXTENSION IF NOT EXISTS pg_cron;
+-- Pending payment recovery should run every 10 minutes.
+-- Do not store service-role keys or custom app.* GUC values in Supabase SQL.
+-- Deploy check-pending-payments as a scheduled Edge Function or external cron,
+-- with verify_jwt=false and x-cron-secret set to PAYMENT_RECOVERY_CRON_SECRET
+-- or REVENUE_OS_CRON_SECRET.
 
--- Create cron job to check pending payments every 10 minutes
--- This will automatically credit stuck payments without user intervention
-SELECT cron.schedule(
-  'check-pending-payments-job',           -- Job name
-  '*/10 * * * *',                         -- Every 10 minutes
-  $$ 
-    SELECT
-      net.http_post(
-        url:=current_setting('app.supabase_url') || '/functions/v1/check-pending-payments',
-        headers:=jsonb_build_object(
-          'Content-Type', 'application/json',
-          'Authorization', 'Bearer ' || current_setting('app.supabase_service_role_key')
-        ),
-        body:='{}'::jsonb
-      );
-  $$
-);
-
--- Note: You need to set these configuration parameters in Supabase Dashboard:
--- 1. Go to Project Settings > Database > Configuration
--- 2. Add: app.supabase_url = https://your-project.supabase.co
--- 3. Add: app.supabase_service_role_key = your_service_role_key
+DO $$
+BEGIN
+  PERFORM cron.unschedule('check-pending-payments-job');
+EXCEPTION WHEN others THEN
+  NULL;
+END $$;
 
 -- To view all cron jobs:
 -- SELECT * FROM cron.job;

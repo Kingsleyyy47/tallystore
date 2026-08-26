@@ -102,7 +102,7 @@ serve(async (req) => {
         .single();
 
       if (existingTx) {
-        console.log(`⚠️ Duplicate adjustment prevented: ${idempotency_key}`);
+        console.log('Duplicate balance adjustment prevented.');
         return new Response(
           JSON.stringify({
             success: false,
@@ -118,12 +118,16 @@ serve(async (req) => {
     
     const { data: targetProfile, error: profileError } = await supabaseAdmin
       .from('profiles')
-      .select(`id, email, ${balanceColumn}`)
+      .select(`id, email, is_staff, is_admin, ${balanceColumn}`)
       .eq('id', target_user_id)
       .single();
 
     if (profileError || !targetProfile) {
       throw new Error('Target user not found');
+    }
+
+    if (targetProfile.is_staff || targetProfile.is_admin) {
+      throw new Error('Balance adjustments are only allowed for customer accounts');
     }
 
     const currentBalance = targetProfile[balanceColumn] || 0;

@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/SimpleAuth'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { useCurrency } from '@/contexts/CurrencyContext'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 export default function PaymentCallbackPage() {
   const [searchParams] = useSearchParams()
@@ -18,6 +19,22 @@ export default function PaymentCallbackPage() {
   const [paymentData, setPaymentData] = useState<any>(null)
 
   useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'payment_callback',
+      metadata: {
+        has_reference: Boolean(
+          searchParams.get('transactionReference') ||
+          searchParams.get('transaction_reference') ||
+          searchParams.get('reference') ||
+          searchParams.get('trxref')
+        ),
+      },
+    })
+  }, [searchParams, user?.id])
+
+  useEffect(() => {
     const transactionReference = searchParams.get('transactionReference') || 
                                  searchParams.get('transaction_reference') ||
                                  searchParams.get('reference') || 
@@ -25,6 +42,11 @@ export default function PaymentCallbackPage() {
     
     if (!transactionReference) {
       setStatus('error')
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: 'payment_callback_missing_reference',
+      })
       return
     }
 
@@ -38,6 +60,15 @@ export default function PaymentCallbackPage() {
       
       if (result.success) {
         setStatus('success')
+        trackRevenueEvent({
+          eventType: 'OFFER_ACCEPTED',
+          userId: user?.id || null,
+          surface: 'payment_callback_verified',
+          metadata: {
+            already_processed: Boolean(result.already_processed),
+            amount_ngn: result.amount || 0,
+          },
+        })
         setPaymentData({
           amount: result.amount,
           reference: transactionReference,
@@ -61,15 +92,32 @@ export default function PaymentCallbackPage() {
         // Notify other components
         window.dispatchEvent(new CustomEvent('transactionAdded'))
       } else if (result.error?.includes('pending') || result.error?.includes('PENDING')) {
+        trackRevenueEvent({
+          eventType: 'OFFER_ACCEPTED',
+          userId: user?.id || null,
+          surface: 'payment_callback_pending_retry',
+        })
         // Payment still pending at Ercas - retry after delay
         setTimeout(() => verifyAndCredit(transactionReference), 5000)
       } else {
         setStatus('failed')
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          userId: user?.id || null,
+          surface: 'payment_callback_failed',
+          metadata: { reason: result.error || 'verification_failed' },
+        })
         setPaymentData({ reference: transactionReference, error: result.error })
       }
     } catch (error) {
       console.error('Payment verification failed:', error)
       setStatus('error')
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        userId: user?.id || null,
+        surface: 'payment_callback_error',
+        metadata: { reason: error instanceof Error ? error.message : 'unexpected_error' },
+      })
     }
   }
 
@@ -156,7 +204,10 @@ export default function PaymentCallbackPage() {
               <div className="flex flex-col gap-3">
                 {status === 'success' && (
                   <Button 
-                    onClick={() => navigate('/wallet')}
+                    onClick={() => {
+                      trackRevenueEvent({ eventType: 'OFFER_ACCEPTED', userId: user?.id || null, surface: 'payment_callback_wallet_cta' })
+                      navigate('/wallet')
+                    }}
                     className="w-full"
                   >
                     View Wallet
@@ -165,7 +216,10 @@ export default function PaymentCallbackPage() {
                 
                 {status === 'failed' && (
                   <Button 
-                    onClick={() => navigate('/wallet')}
+                    onClick={() => {
+                      trackRevenueEvent({ eventType: 'OFFER_ACCEPTED', userId: user?.id || null, surface: 'payment_callback_retry_cta' })
+                      navigate('/wallet')
+                    }}
                     className="w-full"
                   >
                     Try Again
@@ -174,7 +228,10 @@ export default function PaymentCallbackPage() {
                 
                 {status === 'error' && (
                   <Button 
-                    onClick={() => navigate('/support')}
+                    onClick={() => {
+                      trackRevenueEvent({ eventType: 'SUPPORT_HANDOFF', userId: user?.id || null, surface: 'payment_callback_error_cta' })
+                      navigate('/support')
+                    }}
                     variant="outline"
                     className="w-full"
                   >
@@ -184,7 +241,10 @@ export default function PaymentCallbackPage() {
 
                 <Button 
                   variant="outline" 
-                  onClick={() => navigate('/dashboard')}
+                  onClick={() => {
+                    trackRevenueEvent({ eventType: 'OFFER_ACCEPTED', userId: user?.id || null, surface: 'payment_callback_return_cta' })
+                    navigate('/dashboard')
+                  }}
                   className="w-full"
                 >
                   Return to Wallet

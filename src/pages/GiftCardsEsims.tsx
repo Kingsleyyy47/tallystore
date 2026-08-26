@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,6 @@ import {
   Bitcoin,
   Search,
   Copy,
-  Sparkles,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase, getAppSetting } from "@/lib/supabase";
@@ -27,12 +26,10 @@ import { useExchangeRate } from "@/hooks/useExchangeRate";
 import NavbarAuth from "@/components/NavbarAuth";
 import PageBreadcrumb from "@/components/PageBreadcrumb";
 import { blockStaffPurchase } from "@/lib/staffPurchaseGuard";
-
-// Flip this to false once Bitrefill is fully wired up (migration run, secrets
-// set, functions deployed) and you're ready for customers to use this page.
-// While true, regular users see a "Coming Soon" blur — admins still see and
-// can use the real page so you can test the flow before going live.
-const COMING_SOON = true;
+import { getRevenueRequestContext, getRevenueVisitorId, trackRevenueEvent } from "@/lib/revenue-os";
+import { RecommendationStrip } from "@/components/RecommendationCard";
+import { useRecommendations } from "@/hooks/useRecommendations";
+import { useCurrency } from "@/contexts/CurrencyContext";
 
 interface BitrefillPackage {
   package_id: string;
@@ -52,6 +49,8 @@ interface BitrefillProduct {
   recipient_type?: string;
   packages?: BitrefillPackage[];
   range?: BitrefillRange;
+  _score?: number;
+  _personal_buy_count?: number;
 }
 
 interface BitrefillOrder {
@@ -69,8 +68,9 @@ interface BitrefillOrder {
 }
 
 export default function GiftCardsEsims() {
-  const { isAdmin, isStaff, showBalances } = useAuth();
-  const showComingSoon = COMING_SOON && !isAdmin;
+  const { user, isAdmin, isStaff, showBalances } = useAuth();
+  const { recommendations: recs } = useRecommendations({ limit: 3 });
+  const { formatPrice } = useCurrency();
 
   const [walletBalance, setWalletBalance] = useState<number>(0);
   const [cryptoBalance, setCryptoBalance] = useState<number>(0);
@@ -99,6 +99,30 @@ export default function GiftCardsEsims() {
   const { toast } = useToast();
   const navigate = useNavigate();
 
+  const recentGiftSearchTerms = useMemo(() => {
+    const seen = new Set<string>();
+    return orders
+      .filter((order) => ['successful', 'completed', 'success'].includes(String(order.status || '').toLowerCase()))
+      .map((order) => String(order.product_name || '').trim())
+      .filter((name) => {
+        const key = name.toLowerCase();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 6);
+  }, [orders]);
+
+  const personalGiftProductCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const order of orders) {
+      if (!['successful', 'completed', 'success'].includes(String(order.status || '').toLowerCase())) continue;
+      const key = String(order.product_name || '').trim().toLowerCase();
+      if (key) counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }, [orders]);
+
   useEffect(() => {
     fetchBalance();
     fetchOrderHistory();
@@ -107,6 +131,42 @@ export default function GiftCardsEsims() {
       if (!isNaN(parsed) && parsed >= 0) setMarkupPct(parsed);
     });
   }, []);
+
+  useEffect(() => {
+    const day = new Date().toISOString().slice(0, 10);
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'giftcards_esims',
+      eventId: `PAGE_VIEWED:${day}:giftcards_esims:${user?.id || 'anon'}`,
+      metadata: { exchange_rate_loaded: !!exchangeRate },
+    });
+  }, [exchangeRate, user?.id]);
+
+  useEffect(() => {
+    if (products.length === 0) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous';
+    products.slice(0, 24).forEach((product, index) => {
+      trackRevenueEvent({
+        eventType: 'PRODUCT_IMPRESSION',
+        userId: user?.id || null,
+        surface: 'giftcards_esims_search',
+        eventId: `PRODUCT_IMPRESSION:${day}:${actorKey}:bitrefill:${searchQuery.trim().toLowerCase() || 'browse'}:${product.product_id}`,
+        metadata: {
+          bitrefill_product_id: product.product_id,
+          product_name: product.name,
+          product_currency: product.currency || null,
+          query: searchQuery.trim(),
+          position: index + 1,
+          package_count: product.packages?.length || 0,
+          has_range: !!product.range,
+          recommended_score: product._score || 0,
+          personal_buy_count: product._personal_buy_count || 0,
+        },
+      });
+    });
+  }, [products, searchQuery, user?.id]);
 
   // Converts a Bitrefill USD (or other listed currency) price to the NGN
   // amount the customer will actually be charged: live rate + admin markup,
@@ -147,7 +207,7 @@ export default function GiftCardsEsims() {
 
   const selectedBalance = paymentSource === 'wallet' ? walletBalance : cryptoBalance;
   const formatBalance = (value: number) =>
-    showBalances ? `₦${value.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '***';
+    showBalances ? formatPrice(value) : '***';
 
   const fetchOrderHistory = async () => {
     try {
@@ -157,7 +217,10 @@ export default function GiftCardsEsims() {
 
       const { data, error } = await supabase
         .from('bitrefill_orders')
-        .select('*')
+        .select(`
+          id, reference, product_name, quantity, amount_ngn, payment_source,
+          status, redemption_code, redemption_link, redemption_pin, created_at
+        `)
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(10);
@@ -171,19 +234,32 @@ export default function GiftCardsEsims() {
     }
   };
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) {
+  const handleSearch = async (overrideQuery?: string) => {
+    const queryText = String(overrideQuery ?? searchQuery).trim();
+    if (!queryText) {
       toast({ title: "Enter a search term", description: "Try a brand name like \"Amazon\" or \"Steam\"", variant: "destructive" });
       return;
     }
 
+    if (overrideQuery != null) setSearchQuery(queryText);
     setLoadingProducts(true);
     setSelectedProduct(null);
+    trackRevenueEvent({
+      eventType: 'SEARCHED',
+      userId: user?.id || null,
+      surface: 'giftcards_esims',
+      eventId: `SEARCHED:bitrefill:${Date.now()}:${queryText.toLowerCase()}`,
+      metadata: {
+        query: queryText,
+        category: 'gift card',
+        source: overrideQuery != null ? 'customer_recent_purchase_chip' : 'manual_search',
+      },
+    });
     try {
       const response = await supabase.functions.invoke('bitrefill-catalog', {
         body: {
           action: 'search',
-          query: searchQuery,
+          query: queryText,
           category: 'gift card',
           limit: 24,
         },
@@ -194,7 +270,22 @@ export default function GiftCardsEsims() {
 
       if (!data.success) throw new Error(data.error || 'Search failed');
 
-      setProducts(data.data?.data || []);
+      const queryTerms = queryText.toLowerCase().split(/\s+/).filter(Boolean);
+      const rankedProducts = [...(data.data?.data || [])].map((product: BitrefillProduct) => {
+        const productName = String(product.name || '').trim();
+        const normalizedName = productName.toLowerCase();
+        const personalBuyCount = personalGiftProductCounts.get(normalizedName) || 0;
+        const queryScore = queryTerms.filter((term) => normalizedName.includes(term)).length;
+        const packageFit = product.packages?.length ? 20 : 0;
+        const rangeFit = product.range ? 15 : 0;
+        const _score = personalBuyCount * 1400 + queryScore * 300 + packageFit + rangeFit;
+        return { ...product, _score, _personal_buy_count: personalBuyCount };
+      }).sort((left, right) =>
+        Number(right._score || 0) - Number(left._score || 0) ||
+        String(left.name || '').localeCompare(String(right.name || ''))
+      );
+
+      setProducts(rankedProducts);
     } catch (error: any) {
       console.error('Error searching products:', error);
       setProducts([]);
@@ -208,15 +299,63 @@ export default function GiftCardsEsims() {
     setSelectedProduct(product);
     setSelectedPackageId('');
     setCustomValue('');
+    trackRevenueEvent({
+      eventType: 'PRODUCT_CLICKED',
+      userId: user?.id || null,
+      surface: 'giftcards_esims',
+      eventId: `PRODUCT_CLICKED:bitrefill:${crypto.randomUUID()}:${product.product_id}`,
+      metadata: {
+        bitrefill_product_id: product.product_id,
+        product_name: product.name,
+        product_currency: product.currency || null,
+        package_count: product.packages?.length || 0,
+        has_range: !!product.range,
+        recommended_score: product._score || 0,
+        personal_buy_count: product._personal_buy_count || 0,
+      },
+    });
   };
 
-  const getUnitPrice = (): number => {
+  const selectedUnitPrice = useMemo(() => {
     if (selectedProduct?.packages && selectedPackageId) {
       const pkg = selectedProduct.packages.find(p => p.package_id === selectedPackageId);
       return pkg?.value || 0;
     }
     return parseFloat(customValue) || 0;
-  };
+  }, [customValue, selectedPackageId, selectedProduct]);
+
+  const selectedQuantity = useMemo(() => parseInt(quantity, 10) || 1, [quantity]);
+  const selectedExpectedAmountNgn = useMemo(() => {
+    if (!selectedUnitPrice || !exchangeRate) return 0;
+    return Math.ceil(selectedUnitPrice * selectedQuantity * exchangeRate * (1 + markupPct / 100));
+  }, [exchangeRate, markupPct, selectedQuantity, selectedUnitPrice]);
+
+  const getUnitPrice = (): number => selectedUnitPrice;
+
+  useEffect(() => {
+    if (!selectedProduct) return;
+    if (!selectedUnitPrice || selectedUnitPrice <= 0) return;
+    if (!selectedExpectedAmountNgn || selectedExpectedAmountNgn <= 0) return;
+
+    const day = new Date().toISOString().slice(0, 10);
+    trackRevenueEvent({
+      eventType: 'PAYMENT_PROVIDER_LOADED',
+      userId: user?.id || null,
+      surface: 'giftcards_esims',
+      eventId: `PAYMENT_PROVIDER_LOADED:${day}:bitrefill:${user?.id || 'anon'}:${selectedProduct.product_id}:${selectedPackageId || 'custom'}:${selectedUnitPrice}:${selectedQuantity}:${paymentSource}`,
+      metadata: {
+        provider: paymentSource,
+        bitrefill_product_id: selectedProduct.product_id,
+        product_name: selectedProduct.name,
+        package_id: selectedPackageId || null,
+        unit_value: selectedUnitPrice,
+        quantity: selectedQuantity,
+        expected_amount_ngn: selectedExpectedAmountNgn,
+        recommended_score: selectedProduct._score || 0,
+        personal_buy_count: selectedProduct._personal_buy_count || 0,
+      },
+    });
+  }, [paymentSource, selectedExpectedAmountNgn, selectedPackageId, selectedProduct, selectedQuantity, selectedUnitPrice, user?.id]);
 
   const handlePurchase = async () => {
     if (blockStaffPurchase(isStaff, isAdmin, toast)) return;
@@ -232,8 +371,32 @@ export default function GiftCardsEsims() {
       return;
     }
 
+    const qty = parseInt(quantity, 10) || 1;
+    const expectedAmountNgn = toNgn(unitPrice * qty, selectedProduct.currency);
+    if (!expectedAmountNgn || expectedAmountNgn <= 0) {
+      toast({ title: "Price unavailable", description: "Please wait for the exchange rate to load, then try again.", variant: "destructive" });
+      return;
+    }
+
     setPurchasing(true);
     const idempotencyKey = `${Date.now()}-${crypto.randomUUID()}`;
+    trackRevenueEvent({
+      eventType: 'BUY_CLICKED',
+      userId: user?.id || null,
+      surface: 'giftcards_esims',
+      eventId: `BUY_CLICKED:bitrefill:${idempotencyKey}`,
+      metadata: {
+        bitrefill_product_id: selectedProduct.product_id,
+        product_name: selectedProduct.name,
+        package_id: selectedPackageId || null,
+        unit_value: unitPrice,
+        quantity: qty,
+        expected_amount_ngn: expectedAmountNgn,
+        payment_source: paymentSource,
+        recommended_score: selectedProduct._score || 0,
+        personal_buy_count: selectedProduct._personal_buy_count || 0,
+      },
+    });
 
     try {
       const requestBody = {
@@ -241,9 +404,11 @@ export default function GiftCardsEsims() {
         product_name: selectedProduct.name,
         package_id: selectedPackageId || undefined,
         value: selectedPackageId ? undefined : unitPrice,
-        quantity: parseInt(quantity, 10) || 1,
+        quantity: qty,
         payment_source: paymentSource,
         idempotency_key: idempotencyKey,
+        expected_amount_ngn: expectedAmountNgn,
+        revenue_context: getRevenueRequestContext(),
       };
 
       const response = await supabase.functions.invoke('purchase-bitrefill', {
@@ -307,7 +472,7 @@ export default function GiftCardsEsims() {
       <NavbarAuth />
 
       <div className="container mx-auto max-w-6xl px-4 pt-4 sm:px-6">
-        <PageBreadcrumb items={[{ label: 'Wallet', href: '/wallet' }, { label: 'Gift Cards & eSIMs' }]} />
+        <PageBreadcrumb items={[{ label: 'Wallet', href: '/wallet' }, { label: 'Gift Cards' }]} />
       </div>
 
       <div className="container mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 pt-4 sm:px-6">
@@ -321,45 +486,16 @@ export default function GiftCardsEsims() {
         <div className="w-[72px]" />
       </div>
 
-      {COMING_SOON && isAdmin && (
-        <div className="bg-amber-100 dark:bg-amber-900/30 border-b border-amber-300 dark:border-amber-800 text-center py-2 px-4">
-          <p className="text-xs sm:text-sm font-medium text-amber-800 dark:text-amber-300">
-            Admin preview — this page is hidden behind "Coming Soon" for regular users until you flip COMING_SOON off.
-          </p>
-        </div>
-      )}
-
       <div className="relative">
-        {showComingSoon && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center p-4">
-            <Card className="max-w-md w-full shadow-2xl border-2 border-primary/30">
-              <CardContent className="pt-8 pb-8 text-center space-y-4">
-                <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
-                  <Sparkles className="w-8 h-8 text-primary" />
-                </div>
-                <h2 className="text-2xl font-bold text-foreground">Coming Soon</h2>
-                <p className="text-sm text-muted-foreground">
-                  Gift Cards are almost ready. We're putting the finishing touches on this feature —
-                  check back shortly!
-                </p>
-                <Button onClick={() => navigate('/dashboard')} className="mt-2">
-                  Back to Wallet
-                </Button>
-              </CardContent>
-            </Card>
-          </div>
-        )}
-
         <div
-          className={showComingSoon ? "container mx-auto p-4 sm:p-6 max-w-6xl pointer-events-none select-none blur-sm" : "container mx-auto p-4 sm:p-6 max-w-6xl"}
-          aria-hidden={showComingSoon || undefined}
+          className="container mx-auto p-4 sm:p-6 max-w-6xl"
         >
         <div className="text-center mb-6 sm:mb-8 pt-2 sm:pt-4">
           <h2 className="text-xl sm:text-2xl md:text-3xl font-bold text-foreground mb-2">
             Gift Cards
           </h2>
           <p className="text-sm sm:text-base text-muted-foreground px-4">
-            Powered by Bitrefill • Thousands of brands worldwide • Priced in Naira
+            Thousands of brands worldwide • Priced in Naira
           </p>
         </div>
 
@@ -491,6 +627,15 @@ export default function GiftCardsEsims() {
                   <div className="p-6 bg-muted/50 rounded-lg border-2 border-dashed text-center">
                     <AlertCircle className="w-10 h-10 mx-auto mb-3 text-muted-foreground" />
                     <p className="text-muted-foreground">Search for a brand or country to get started</p>
+                    {recentGiftSearchTerms.length > 0 && (
+                      <div className="mt-4 flex flex-wrap justify-center gap-2">
+                        {recentGiftSearchTerms.map((term) => (
+                          <Button key={term} type="button" variant="outline" size="sm" onClick={() => handleSearch(term)}>
+                            {term}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[300px] overflow-y-auto p-1">
@@ -529,7 +674,7 @@ export default function GiftCardsEsims() {
                               onClick={() => setSelectedPackageId(pkg.package_id)}
                               className="h-auto py-2 flex-col gap-0.5"
                             >
-                              <span className="font-semibold">₦{toNgn(pkg.value, selectedProduct.currency).toLocaleString('en-NG')}</span>
+                              <span className="font-semibold">{formatPrice(toNgn(pkg.value, selectedProduct.currency))}</span>
                               <span className="text-xs opacity-70">{pkg.value} {selectedProduct.currency || 'USD'}</span>
                             </Button>
                           ))}
@@ -554,7 +699,7 @@ export default function GiftCardsEsims() {
                         <p className="text-xs text-muted-foreground">
                           Min: {selectedProduct.range.min} | Max: {selectedProduct.range.max}
                           {customValue && parseFloat(customValue) > 0 && (
-                            <> • ≈ ₦{toNgn(parseFloat(customValue), selectedProduct.currency).toLocaleString('en-NG')}</>
+                            <> • ≈ {formatPrice(toNgn(parseFloat(customValue), selectedProduct.currency))}</>
                           )}
                         </p>
                       </div>
@@ -577,7 +722,7 @@ export default function GiftCardsEsims() {
                       <div className="p-3 bg-primary/5 rounded-lg border border-primary/20">
                         <p className="text-sm text-muted-foreground">Total</p>
                         <p className="text-2xl font-bold text-foreground">
-                          ₦{toNgn(totalPrice, selectedProduct.currency).toLocaleString('en-NG')}
+                          {formatPrice(toNgn(totalPrice, selectedProduct.currency))}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {totalPrice.toFixed(2)} {selectedProduct.currency || 'USD'} at today's rate
@@ -641,7 +786,7 @@ export default function GiftCardsEsims() {
                           </div>
                           <div className="space-y-1 text-xs text-muted-foreground">
                             <p className="font-semibold text-foreground">
-                              ₦{order.amount_ngn.toLocaleString()} x{order.quantity}
+                              {formatPrice(order.amount_ngn)} x{order.quantity}
                             </p>
                             {order.redemption_code && (
                               <div className="flex items-center gap-1.5 mt-1">
@@ -671,6 +816,11 @@ export default function GiftCardsEsims() {
         </div>
         </div>
       </div>
+      {recs.length > 0 && (
+        <div className="px-4 pb-10 max-w-7xl mx-auto">
+          <RecommendationStrip products={recs} surface="gift_cards_esims_page" actionType="SHOW_ALTERNATIVE" userId={user?.id} title="Explore more products" />
+        </div>
+      )}
     </div>
   );
 }

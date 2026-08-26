@@ -12,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import NavbarAuth from '@/components/NavbarAuth';
 import PageBreadcrumb from '@/components/PageBreadcrumb';
+import CategoryLogo from '@/components/CategoryLogo';
 import ReactCountryFlag from 'react-country-flag';
 import {
   Search,
@@ -37,6 +38,10 @@ import {
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { blockStaffPurchase } from '@/lib/staffPurchaseGuard';
+import { getRevenueRequestContext, getRevenueVisitorId, trackRevenueEvent } from '@/lib/revenue-os';
+import { RecommendationStrip } from '@/components/RecommendationCard';
+import { useRecommendations } from '@/hooks/useRecommendations';
+import { useCurrency } from '@/contexts/CurrencyContext';
 
 // Platform configurations with example URLs
 const PLATFORMS = [
@@ -49,6 +54,17 @@ const PLATFORMS = [
   { id: 'telegram', name: 'Telegram', shortName: 'TG', icon: Share2, color: 'text-blue-400', placeholder: 'https://t.me/channel/123', example: 'Channel or Post URL' },
   { id: 'spotify', name: 'Spotify', shortName: 'SP', icon: Star, color: 'text-green-500', placeholder: 'https://open.spotify.com/track/...', example: 'Track, Album, or Artist URL' },
 ];
+
+const SMM_TYPES_WITH_QUANTITY = [
+  'Default', 'Mentions', 'Mentions with Hashtags', 'Mentions Hashtag',
+  'Mentions User Followers', 'Mentions Media Likers', 'Comment Likes',
+  'Invites from Groups', 'Subscriptions', 'Web Traffic'
+];
+
+const PlatformLogo = ({ name, className }: { name: string; className?: string }) => {
+  if (!name || name === 'all') return <Zap className={className || 'h-4 w-4'} />;
+  return <CategoryLogo name={name} className={className || 'h-4 w-4'} iconClassName={className || 'h-4 w-4'} />;
+};
 
 // Country codes that appear in service names
 const COUNTRY_CODES = [
@@ -252,13 +268,15 @@ interface SmmService {
   category: string;
   platform: string;
   service_type: string;
-  rate_usd: number;
   price_ngn: number;
   min_quantity: number;
   max_quantity: number;
   has_refill: boolean;
   has_cancel: boolean;
   is_active: boolean;
+  _score?: number;
+  _personal_service_count?: number;
+  _personal_platform_count?: number;
 }
 
 interface SmmOrder {
@@ -289,9 +307,21 @@ function useDebounce<T>(value: T, delay: number): T {
   return debouncedValue;
 }
 
+const REVENUE_RELEVANT_SMM_STATUSES = new Set([
+  'completed',
+  'complete',
+  'partial',
+]);
+
+function isRevenueRelevantSmmOrder(order: Pick<SmmOrder, 'status'>) {
+  return REVENUE_RELEVANT_SMM_STATUSES.has(String(order.status || '').toLowerCase());
+}
+
 export default function SocialBoostPage() {
   const navigate = useNavigate();
   const { user, walletBalance, refreshWalletBalance, showBalances, isStaff, isAdmin } = useAuth();
+  const { recommendations: recs } = useRecommendations({ limit: 3 });
+  const { formatPrice } = useCurrency();
   const { toast } = useToast();
 
   const [services, setServices] = useState<SmmService[]>([]);
@@ -320,17 +350,38 @@ export default function SocialBoostPage() {
   const [answerNumber, setAnswerNumber] = useState('');
   const [groups, setGroups] = useState('');
 
-  const searchServices = useCallback(async (query: string, platform: string) => {
-    if (!query.trim() && platform === 'all') {
-      setServices([]);
-      return;
+  const personalServiceCounts = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const order of orders) {
+      if (!isRevenueRelevantSmmOrder(order)) continue;
+      const serviceId = Number(order.service_id);
+      if (Number.isFinite(serviceId)) counts.set(serviceId, (counts.get(serviceId) || 0) + 1);
     }
+    return counts;
+  }, [orders]);
+
+  const personalPlatformCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const order of orders) {
+      if (!isRevenueRelevantSmmOrder(order)) continue;
+      const platform = String(order.smm_services?.platform || '').toLowerCase();
+      if (platform) counts.set(platform, (counts.get(platform) || 0) + 1);
+    }
+    return counts;
+  }, [orders]);
+
+  const searchServices = useCallback(async (query: string, platform: string) => {
     setLoadingServices(true);
     try {
       let dbQuery = supabase
         .from('smm_services')
-        .select('*')
+        .select(`
+          id, external_id, name, category, platform, service_type,
+          price_ngn, min_quantity, max_quantity,
+          has_refill, has_cancel, is_active
+        `)
         .eq('is_active', true)
+        .gt('price_ngn', 0)
         .order('name')
         .limit(50);
 
@@ -350,27 +401,44 @@ export default function SocialBoostPage() {
 
       const { data, error } = await dbQuery;
       if (error) throw error;
-      
-      // Client-side scoring: prioritize results matching more words
-      if (query.trim() && data) {
-        const words = query.toLowerCase().trim().split(/\s+/).filter(w => w.length > 1);
-        const scored = data.map(service => {
-          const searchText = `${service.name} ${service.category} ${service.platform}`.toLowerCase();
-          const score = words.filter(word => searchText.includes(word)).length;
-          return { ...service, _score: score };
-        });
-        scored.sort((a, b) => b._score - a._score);
-        setServices(scored);
-      } else {
-        setServices(data || []);
-      }
+
+      const words = query.toLowerCase().trim().split(/\s+/).filter(w => w.length > 1);
+      const eligibleServices = (data || []).filter(service => {
+        const price = Number(service.price_ngn);
+        const minQuantity = Number(service.min_quantity);
+        const maxQuantity = Number(service.max_quantity);
+        return Number.isFinite(price) && price > 0 && Number.isFinite(minQuantity) && Number.isFinite(maxQuantity) && maxQuantity >= minQuantity;
+      });
+      const scored = eligibleServices.map(service => {
+        const searchText = `${service.name} ${service.category} ${service.platform}`.toLowerCase();
+        const searchScore = words.filter(word => searchText.includes(word)).length;
+        const serviceCount = personalServiceCounts.get(Number(service.id)) || 0;
+        const platformCount = personalPlatformCounts.get(String(service.platform || '').toLowerCase()) || 0;
+        const qualityScore = Number(service.has_refill === true) * 40 + Number(service.has_cancel === true) * 20;
+        const pricePenalty = Math.min(Math.floor(Number(service.price_ngn || 0) / 1000), 80);
+        const defaultBrowseScore = !query.trim() && platform === 'all' ? 250 : 0;
+        const _score = searchScore * 700 + serviceCount * 1200 + platformCount * 260 + qualityScore + defaultBrowseScore - pricePenalty;
+        return {
+          ...service,
+          _score,
+          _personal_service_count: serviceCount,
+          _personal_platform_count: platformCount,
+        };
+      });
+      scored.sort((a, b) =>
+        b._score - a._score ||
+        Number(b.has_refill === true) - Number(a.has_refill === true) ||
+        Number(a.price_ngn || 0) - Number(b.price_ngn || 0) ||
+        String(a.name || '').localeCompare(String(b.name || ''))
+      );
+      setServices(scored);
     } catch (err) {
       console.error('Error searching services:', err);
       toast({ variant: 'destructive', title: 'Search Error', description: 'Failed to search services.' });
     } finally {
       setLoadingServices(false);
     }
-  }, [toast]);
+  }, [personalPlatformCounts, personalServiceCounts, toast]);
 
   const fetchOrders = useCallback(async () => {
     if (!user) return;
@@ -405,6 +473,62 @@ export default function SocialBoostPage() {
   useEffect(() => {
     searchServices(debouncedSearch, selectedPlatform);
   }, [debouncedSearch, selectedPlatform, searchServices]);
+
+  useEffect(() => {
+    const day = new Date().toISOString().slice(0, 10);
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'social_boost',
+      eventId: `PAGE_VIEWED:${day}:social_boost:${user?.id || 'anon'}`,
+      metadata: { selected_platform: selectedPlatform },
+    });
+  }, [selectedPlatform, user?.id]);
+
+  useEffect(() => {
+    if (!debouncedSearch.trim() && selectedPlatform === 'all') return;
+    trackRevenueEvent({
+      eventType: 'SEARCHED',
+      userId: user?.id || null,
+      surface: 'social_boost',
+      eventId: `SEARCHED:social_boost:${Date.now()}:${selectedPlatform}:${debouncedSearch.trim().toLowerCase() || 'platform'}`,
+      metadata: {
+        query: debouncedSearch.trim(),
+        platform: selectedPlatform,
+      },
+    });
+  }, [debouncedSearch, selectedPlatform, user?.id]);
+
+  useEffect(() => {
+    if (services.length === 0) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous';
+    services.slice(0, 24).forEach((service, index) => {
+      trackRevenueEvent({
+        eventType: 'PRODUCT_IMPRESSION',
+        userId: user?.id || null,
+        surface: 'social_boost_services',
+        eventId: `PRODUCT_IMPRESSION:${day}:${actorKey}:social_boost:${selectedPlatform}:${debouncedSearch.trim().toLowerCase() || 'browse'}:${service.id}`,
+        metadata: {
+          service_id: service.id,
+          external_id: service.external_id,
+          service_name: service.name,
+          platform: service.platform,
+          category: service.category,
+          service_type: service.service_type,
+          price_ngn: service.price_ngn,
+          min_quantity: service.min_quantity,
+          max_quantity: service.max_quantity,
+          has_refill: service.has_refill,
+          has_cancel: service.has_cancel,
+          recommended_score: service._score || 0,
+          personal_service_count: service._personal_service_count || 0,
+          personal_platform_count: service._personal_platform_count || 0,
+          position: index + 1,
+        },
+      });
+    });
+  }, [debouncedSearch, selectedPlatform, services, user?.id]);
 
   useEffect(() => {
     fetchOrders();
@@ -448,21 +572,35 @@ export default function SocialBoostPage() {
     setLink(''); setLinkError(''); setComments(''); setUsernames('');
     setUsername(''); setHashtags(''); setHashtag(''); setKeywords('');
     setAnswerNumber(''); setGroups('');
+    trackRevenueEvent({
+      eventType: 'PRODUCT_CLICKED',
+      userId: user?.id || null,
+      surface: 'social_boost_services',
+      eventId: `PRODUCT_CLICKED:${crypto.randomUUID()}:social_boost:${service.id}`,
+      metadata: {
+        service_id: service.id,
+        external_id: service.external_id,
+        service_name: service.name,
+        platform: service.platform,
+        category: service.category,
+        service_type: service.service_type,
+        price_ngn: service.price_ngn,
+        min_quantity: service.min_quantity,
+        max_quantity: service.max_quantity,
+        recommended_score: service._score || 0,
+        personal_service_count: service._personal_service_count || 0,
+        personal_platform_count: service._personal_platform_count || 0,
+      },
+    });
   };
 
   // Service types that use quantity for pricing
-  const typesWithQuantity = [
-    'Default', 'Mentions', 'Mentions with Hashtags', 'Mentions Hashtag',
-    'Mentions User Followers', 'Mentions Media Likers', 'Comment Likes',
-    'Invites from Groups', 'Subscriptions', 'Web Traffic'
-  ];
-
   const calculateTotal = (): number => {
     if (!selectedService) return 0;
     
     // Types with fixed pricing (no quantity multiplier)
     // Package, Custom Comments, Custom Comments Package, Comment Replies, Poll, SEO, Mentions Custom List
-    if (!typesWithQuantity.includes(selectedService.service_type)) {
+    if (!SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type)) {
       return selectedService.price_ngn;
     }
     
@@ -470,6 +608,39 @@ export default function SocialBoostPage() {
     const qty = parseInt(quantity) || 0;
     return Math.ceil((selectedService.price_ngn / 1000) * qty);
   };
+
+  useEffect(() => {
+    if (!selectedService) return;
+    const expectedPriceNgn = SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type)
+      ? Math.ceil((selectedService.price_ngn / 1000) * (parseInt(quantity) || 0))
+      : selectedService.price_ngn;
+    if (!expectedPriceNgn || expectedPriceNgn <= 0) return;
+
+    const qty = SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type)
+      ? parseInt(quantity) || selectedService.min_quantity
+      : null;
+    const day = new Date().toISOString().slice(0, 10);
+    trackRevenueEvent({
+      eventType: 'PAYMENT_PROVIDER_LOADED',
+      userId: user?.id || null,
+      surface: 'social_boost',
+      eventId: `PAYMENT_PROVIDER_LOADED:${day}:social_boost:${user?.id || 'anon'}:${selectedService.id}:${qty || 'fixed'}:${expectedPriceNgn}`,
+      metadata: {
+        provider: 'wallet',
+        service_id: selectedService.id,
+        external_id: selectedService.external_id,
+        service_name: selectedService.name,
+        platform: selectedService.platform,
+        category: selectedService.category,
+        service_type: selectedService.service_type,
+        quantity: qty,
+        expected_price_ngn: expectedPriceNgn,
+        recommended_score: selectedService._score || 0,
+        personal_service_count: selectedService._personal_service_count || 0,
+        personal_platform_count: selectedService._personal_platform_count || 0,
+      },
+    });
+  }, [quantity, selectedService, user?.id]);
 
   const isFormValid = (): boolean => {
     if (!selectedService) return false;
@@ -481,7 +652,7 @@ export default function SocialBoostPage() {
     }
     
     // Validate quantity for types that need it
-    if (typesWithQuantity.includes(selectedService.service_type)) {
+    if (SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type)) {
       const qty = parseInt(quantity) || 0;
       if (qty < selectedService.min_quantity || qty > selectedService.max_quantity) return false;
     }
@@ -502,26 +673,24 @@ export default function SocialBoostPage() {
   const handleSubmitOrder = async () => {
     if (!selectedService || !isFormValid()) return;
     if (blockStaffPurchase(isStaff, isAdmin, toast)) return;
+    const idempotencyKey = `smm-${selectedService.id}-${Date.now()}-${crypto.randomUUID()}`;
     
     // Build payload - use service_id (internal DB ID) not external_id
-    const payload: Record<string, string | number> = { 
-      service_id: selectedService.id // Internal DB ID
+    const payload: Record<string, unknown> = {
+      service_id: selectedService.id, // Internal DB ID
+      expected_price_ngn: calculateTotal(),
+      idempotency_key: idempotencyKey,
+      revenue_context: getRevenueRequestContext(),
     };
     
     // Service types that require quantity parameter
-    const typesWithQuantity = [
-      'Default', 'Mentions', 'Mentions with Hashtags', 'Mentions Hashtag',
-      'Mentions User Followers', 'Mentions Media Likers', 'Comment Likes',
-      'Invites from Groups', 'Subscriptions', 'Web Traffic'
-    ];
-    
     // Add link for types that need it (all except Subscriptions)
     if (requiredFields.includes('link') && selectedService.service_type !== 'Subscriptions') {
       payload.link = link;
     }
     
     // Add quantity only for types that need it
-    if (typesWithQuantity.includes(selectedService.service_type)) {
+    if (SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type)) {
       payload.quantity = parseInt(quantity) || selectedService.min_quantity;
     }
     
@@ -536,6 +705,24 @@ export default function SocialBoostPage() {
     if (requiredFields.includes('groups')) payload.groups = groups;
 
     setSubmitting(true);
+    trackRevenueEvent({
+      eventType: 'BUY_CLICKED',
+      userId: user?.id || null,
+      surface: 'social_boost',
+      eventId: `BUY_CLICKED:social_boost:${idempotencyKey}`,
+      metadata: {
+        service_id: selectedService.id,
+        service_name: selectedService.name,
+        platform: selectedService.platform,
+        service_type: selectedService.service_type,
+        quantity: payload.quantity || null,
+        expected_price_ngn: payload.expected_price_ngn,
+        recommended_score: selectedService._score || 0,
+        personal_service_count: selectedService._personal_service_count || 0,
+        personal_platform_count: selectedService._personal_platform_count || 0,
+        payment_source: 'wallet',
+      },
+    });
     try {
       const { data, error } = await supabase.functions.invoke('smm-create-order', { body: payload });
       
@@ -654,7 +841,7 @@ export default function SocialBoostPage() {
                     <div className="h-7 sm:h-8 w-24 sm:w-32 bg-muted animate-pulse rounded" />
                   ) : (
                     <p className="text-lg sm:text-xl md:text-2xl font-bold text-green-700 dark:text-green-400 shrink-0">
-                      {showBalances ? `₦${walletBalance.toLocaleString('en-NG', { minimumFractionDigits: 0 })}` : '***'}
+                      {showBalances ? formatPrice(walletBalance) : '***'}
                     </p>
                   )}
                 </div>
@@ -679,7 +866,6 @@ export default function SocialBoostPage() {
                     <div className="-mx-3 sm:mx-0 px-3 sm:px-0 overflow-x-auto scrollbar-hide">
                       <div className="flex gap-1.5 sm:gap-2 min-w-max sm:min-w-0 sm:flex-wrap pb-2 sm:pb-0">
                         {PLATFORMS.map((platform) => {
-                          const Icon = platform.icon;
                           const isActive = selectedPlatform === platform.id;
                           return (
                             <Button 
@@ -689,7 +875,7 @@ export default function SocialBoostPage() {
                               onClick={() => { setSelectedPlatform(platform.id); setSelectedService(null); }} 
                               className={`gap-1 sm:gap-1.5 h-8 sm:h-9 px-2 sm:px-3 text-xs sm:text-sm shrink-0 ${isActive ? '' : 'border-muted-foreground/30'}`}
                             >
-                              <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${!isActive ? platform.color : ''}`} />
+                              <PlatformLogo name={platform.name} className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                               <span>{platform.shortName}</span>
                             </Button>
                           );
@@ -715,24 +901,17 @@ export default function SocialBoostPage() {
                       ) : null}
                     </div>
 
-                    {!searchQuery.trim() && selectedPlatform === 'all' ? (
-                      <div className="p-4 sm:p-6 md:p-8 bg-muted/50 rounded-lg border-2 border-dashed text-center">
-                        <Search className="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 mx-auto mb-2 sm:mb-3 text-muted-foreground" />
-                        <p className="text-muted-foreground font-medium text-sm sm:text-base">Search for a service</p>
-                        <p className="text-xs sm:text-sm text-muted-foreground mt-1">Try "tiktok followers" or select a platform above</p>
-                      </div>
-                    ) : loadingServices ? (
+                    {loadingServices ? (
                       <div className="flex items-center justify-center py-8 sm:py-12"><Loader2 className="w-6 h-6 sm:w-8 sm:h-8 animate-spin text-muted-foreground" /></div>
                     ) : services.length === 0 ? (
                       <div className="p-4 sm:p-6 md:p-8 bg-muted/50 rounded-lg border-2 border-dashed text-center">
                         <AlertCircle className="w-8 h-8 sm:w-10 sm:h-10 mx-auto mb-2 text-muted-foreground" />
                         <p className="text-muted-foreground text-sm">No services found</p>
-                        <p className="text-xs text-muted-foreground mt-1">Try different keywords</p>
+                        <p className="text-xs text-muted-foreground mt-1">Try a platform, service type, or keywords like followers or views</p>
                       </div>
                     ) : (
                       <div className="space-y-2 max-h-[280px] sm:max-h-[320px] md:max-h-[350px] overflow-y-auto -mx-1 px-1">
                         {services.map((service) => {
-                          const ServiceIcon = getServiceIcon(service.name);
                           const isSelected = selectedService?.id === service.id;
                           return (
                             <Card 
@@ -743,8 +922,8 @@ export default function SocialBoostPage() {
                               <CardContent className="p-2.5 sm:p-3 md:p-4">
                                 <div className="flex items-center justify-between gap-2 sm:gap-3">
                                   <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
-                                    <div className={`p-1.5 sm:p-2 rounded-lg shrink-0 ${isSelected ? 'bg-primary text-white' : 'bg-muted'}`}>
-                                      <ServiceIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                                    <div className={`shrink-0 ${isSelected ? 'rounded-lg bg-primary/10 p-1.5 sm:p-2' : 'p-1.5 sm:p-2'}`}>
+                                      <PlatformLogo name={service.platform || service.name} className="w-5 h-5 sm:w-6 sm:h-6" />
                                     </div>
                                     <div className="flex-1 min-w-0">
                                       <p className="font-medium text-xs sm:text-sm line-clamp-2 leading-tight"><ServiceNameWithFlag name={service.name} /></p>
@@ -757,7 +936,7 @@ export default function SocialBoostPage() {
                                     </div>
                                   </div>
                                   <div className="text-right shrink-0">
-                                    <p className="text-sm sm:text-base md:text-lg font-bold text-green-600">₦{service.price_ngn.toLocaleString()}</p>
+                                    <p className="text-sm sm:text-base md:text-lg font-bold text-green-600">{formatPrice(service.price_ngn)}</p>
                                     <p className="text-[10px] sm:text-xs text-muted-foreground">{service.service_type === 'Package' ? 'fixed' : '/1K'}</p>
                                   </div>
                                   {isSelected && <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-primary shrink-0" />}
@@ -807,7 +986,7 @@ export default function SocialBoostPage() {
                             );
                           })()}
 
-                          {typesWithQuantity.includes(selectedService.service_type) && (() => {
+                          {SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type) && (() => {
                             const qty = parseInt(quantity) || 0;
                             const isBelowMin = qty > 0 && qty < selectedService.min_quantity;
                             const isAboveMax = qty > selectedService.max_quantity;
@@ -913,11 +1092,11 @@ export default function SocialBoostPage() {
                           <div className="p-3 sm:p-4 bg-background rounded-lg border">
                             <div className="flex justify-between items-center text-xs sm:text-sm">
                               <span className="text-muted-foreground">
-                                {typesWithQuantity.includes(selectedService.service_type) ? 'Price per 1000:' : 'Fixed Price:'}
+                                {SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type) ? 'Price per 1000:' : 'Fixed Price:'}
                               </span>
-                              <span className="font-medium">₦{selectedService.price_ngn.toLocaleString()}</span>
+                              <span className="font-medium">{formatPrice(selectedService.price_ngn)}</span>
                             </div>
-                            {typesWithQuantity.includes(selectedService.service_type) && (
+                            {SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type) && (
                               <div className="flex justify-between items-center mt-1.5 sm:mt-2 text-xs sm:text-sm">
                                 <span className="text-muted-foreground">Quantity:</span>
                                 <span className="font-medium">{parseInt(quantity || '0').toLocaleString()}</span>
@@ -925,13 +1104,13 @@ export default function SocialBoostPage() {
                             )}
                             <div className="border-t mt-2 sm:mt-3 pt-2 sm:pt-3 flex justify-between items-center">
                               <span className="font-semibold text-sm sm:text-base">Total:</span>
-                              <span className="text-xl sm:text-2xl font-bold text-green-600">₦{calculateTotal().toLocaleString()}</span>
+                              <span className="text-xl sm:text-2xl font-bold text-green-600">{formatPrice(calculateTotal())}</span>
                             </div>
                           </div>
 
                           {(() => {
                             const qty = parseInt(quantity) || 0;
-                            const isQuantityInvalid = typesWithQuantity.includes(selectedService.service_type) && 
+                            const isQuantityInvalid = SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type) &&
                               (qty < selectedService.min_quantity || qty > selectedService.max_quantity);
                             const isBalanceInsufficient = calculateTotal() > walletBalance;
                             const isLinkInvalid = requiredFields.includes('link') && selectedService.service_type !== 'Subscriptions' && (!link || linkError);
@@ -952,7 +1131,7 @@ export default function SocialBoostPage() {
                                 ) : isBalanceInsufficient ? (
                                   <><AlertCircle className="w-4 h-4 sm:w-5 sm:h-5 mr-1.5" />Insufficient Balance</>
                                 ) : (
-                                  <><PackageCheck className="w-4 h-4 sm:w-5 sm:h-5 mr-1.5" />Place Order • ₦{calculateTotal().toLocaleString()}</>
+                                  <><PackageCheck className="w-4 h-4 sm:w-5 sm:h-5 mr-1.5" />Place Order • {formatPrice(calculateTotal())}</>
                                 )}
                               </Button>
                             );
@@ -993,7 +1172,7 @@ export default function SocialBoostPage() {
                               </div>
                               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] sm:text-xs text-muted-foreground">
                                 <div><span className="block">Quantity</span><span className="font-medium text-foreground">{(order.quantity ?? 0).toLocaleString()}</span></div>
-                                <div><span className="block">Amount</span><span className="font-medium text-foreground">₦{(order.amount_ngn ?? 0).toLocaleString()}</span></div>
+                                <div><span className="block">Amount</span><span className="font-medium text-foreground">{formatPrice(order.amount_ngn ?? 0)}</span></div>
                                 {order.start_count != null && <div className="hidden sm:block"><span className="block">Start</span><span className="font-medium text-foreground">{order.start_count.toLocaleString()}</span></div>}
                                 {order.remains != null && <div className="hidden sm:block"><span className="block">Remains</span><span className="font-medium text-foreground">{order.remains.toLocaleString()}</span></div>}
                               </div>
@@ -1053,6 +1232,11 @@ export default function SocialBoostPage() {
           </div>
         </div>
       </div>
+      {recs.length > 0 && (
+        <div className="px-4 pb-10 max-w-7xl mx-auto">
+          <RecommendationStrip products={recs} surface="social_boost_page" actionType="SHOW_ALTERNATIVE" userId={user?.id} title="Explore more products" />
+        </div>
+      )}
     </div>
   );
 }

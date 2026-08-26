@@ -1,12 +1,21 @@
 import { Link } from 'react-router-dom'
+import { useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { BackToHome } from '@/components/ui/back-button'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 const PrivacyPage = () => {
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      surface: 'privacy',
+    })
+  }, [])
+
   return (
     <div className="min-h-screen bg-background">
       <NavbarAuth />

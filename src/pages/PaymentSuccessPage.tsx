@@ -10,22 +10,44 @@ import { verifyAndCreditWalletSecure } from '@/lib/supabase';
 import { useSupportSettings } from '@/hooks/useSupportSettings';
 import NavbarAuth from '@/components/NavbarAuth';
 import Footer from '@/components/Footer';
+import { trackRevenueEvent } from '@/lib/revenue-os';
+import { useCurrency } from '@/contexts/CurrencyContext';
+import { RecommendationStrip } from '@/components/RecommendationCard';
+import { useRecommendations } from '@/hooks/useRecommendations';
 
 export default function PaymentSuccessPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { user, refreshWalletBalance } = useAuth();
+  const { user, refreshWalletBalance, showBalances } = useAuth();
+  const { formatPrice } = useCurrency();
   const { toast } = useToast();
   const support = useSupportSettings();
   const supportUrl = support.whatsappUrl || support.telegramUrl || '';
 
   const [isVerifying, setIsVerifying] = useState(true);
+  const paymentVerified = verificationResult?.success === true;
+  const { recommendations } = useRecommendations({ enabled: paymentVerified, limit: 3 });
   const [verificationResult, setVerificationResult] = useState<{
     success: boolean;
     status: string;
     amount: number;
     message: string;
   } | null>(null);
+
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'payment_success',
+      metadata: {
+        has_reference: Boolean(
+          searchParams.get('transactionReference') ||
+          searchParams.get('tx_ref') ||
+          searchParams.get('reference')
+        ),
+      },
+    });
+  }, [searchParams, user?.id]);
 
   useEffect(() => {
     const verifyPaymentStatus = async () => {
@@ -49,6 +71,11 @@ export default function PaymentSuccessPage() {
       const transactionReference = transactionRef || storedTransaction?.transactionReference;
 
       if (!transactionReference) {
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          userId: user?.id || null,
+          surface: 'payment_success_missing_reference',
+        });
         setVerificationResult({
           success: false,
           status: 'error',
@@ -60,22 +87,29 @@ export default function PaymentSuccessPage() {
       }
 
       try {
-        console.log('🔍 Verifying and crediting wallet securely:', transactionReference);
-        
         // SECURE: Use Edge Function to verify payment AND credit wallet server-side
         const result = await verifyAndCreditWalletSecure(transactionReference);
-        
-        console.log('📥 Secure verification result:', result);
 
         if (result.success) {
           await refreshWalletBalance();
+          trackRevenueEvent({
+            eventType: 'OFFER_ACCEPTED',
+            userId: user?.id || null,
+            surface: 'payment_success_verified',
+            metadata: {
+              already_processed: Boolean(result.already_processed),
+              amount_ngn: result.amount || 0,
+            },
+          });
 
           // Clear pending transaction
           localStorage.removeItem('pending_topup');
 
           const message = result.already_processed 
             ? `Payment already processed. Your wallet balance is up to date.`
-            : `Payment successful! ₦${result.amount?.toLocaleString()} has been added to your wallet.`;
+            : showBalances
+              ? `Payment successful! ${formatPrice(result.amount || 0)} has been added to your wallet.`
+              : `Payment successful! Your wallet has been updated.`;
 
           setVerificationResult({
             success: true,
@@ -90,6 +124,15 @@ export default function PaymentSuccessPage() {
           });
         } else {
           // Payment failed or pending
+          trackRevenueEvent({
+            eventType: 'OFFER_DISMISSED',
+            userId: user?.id || null,
+            surface: 'payment_success_failed',
+            metadata: {
+              reason: result.error || 'verification_failed',
+              stored_amount_ngn: storedTransaction?.amount || 0,
+            },
+          });
           setVerificationResult({
             success: false,
             status: 'failed',
@@ -100,6 +143,15 @@ export default function PaymentSuccessPage() {
 
       } catch (error: any) {
         console.error('❌ Payment verification error:', error);
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          userId: user?.id || null,
+          surface: 'payment_success_error',
+          metadata: {
+            reason: error?.message || 'unexpected_error',
+            stored_amount_ngn: storedTransaction?.amount || 0,
+          },
+        });
         setVerificationResult({
           success: false,
           status: 'error',
@@ -112,13 +164,24 @@ export default function PaymentSuccessPage() {
     };
 
     verifyPaymentStatus();
-  }, [searchParams, refreshWalletBalance, toast]);
+  }, [formatPrice, searchParams, refreshWalletBalance, showBalances, toast, user?.id]);
 
   const handleBackToWallet = () => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'payment_success_wallet_cta',
+      metadata: { success: Boolean(verificationResult?.success) },
+    });
     navigate('/wallet');
   };
 
   const handleRetryPayment = () => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'payment_success_retry_cta',
+    });
     navigate('/wallet');
   };
 
@@ -171,7 +234,7 @@ export default function PaymentSuccessPage() {
             
             {verificationResult?.amount > 0 && (
               <div className="text-3xl font-bold mb-2">
-                ₦{verificationResult.amount.toLocaleString()}
+                {showBalances ? formatPrice(verificationResult.amount) : '***'}
               </div>
             )}
             
@@ -206,17 +269,35 @@ export default function PaymentSuccessPage() {
           <div className="text-center text-xs text-muted-foreground">
             Need help?{' '}
             {supportUrl ? (
-              <a href={supportUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-primary underline-offset-4 hover:underline">
+              <a
+                href={supportUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => trackRevenueEvent({ eventType: 'SUPPORT_HANDOFF', userId: user?.id || null, surface: 'payment_success_support_link' })}
+                className="font-medium text-primary underline-offset-4 hover:underline"
+              >
                 Message support
               </a>
             ) : (
-              <a href="/support" className="font-medium text-primary underline-offset-4 hover:underline">
+              <a href="/support" onClick={() => trackRevenueEvent({ eventType: 'SUPPORT_HANDOFF', userId: user?.id || null, surface: 'payment_success_support_link' })} className="font-medium text-primary underline-offset-4 hover:underline">
                 Visit support center
               </a>
             )}
           </div>
         </CardContent>
       </Card>
+      {/* Post-purchase recommendations */}
+      {paymentVerified && recommendations.length > 0 && (
+        <div className="mx-auto max-w-md px-4 pb-10">
+          <RecommendationStrip
+            products={recommendations}
+            surface="post_purchase"
+            actionType="POST_PURCHASE_RECOMMENDATION"
+            userId={user?.id}
+            title="Ready to spend your balance?"
+          />
+        </div>
+      )}
       </main>
       <Footer />
     </div>

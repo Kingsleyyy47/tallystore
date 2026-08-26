@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { User } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { linkRevenueIdentity } from '@/lib/revenue-os'
 
 interface AuthContextType {
   user: User | null
@@ -22,6 +23,12 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 const ADMIN_EMAIL = 'wisdomthedev@gmail.com'
+const INTERNAL_REVENUE_USER_KEY = 'tallystore_internal_revenue_user'
+
+function writeInternalRevenueUserFlag(isInternal: boolean) {
+  if (typeof window === 'undefined') return
+  localStorage.setItem(INTERNAL_REVENUE_USER_KEY, isInternal ? 'true' : 'false')
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
@@ -40,6 +47,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('show_balances', showBalances ? 'true' : 'false')
   }, [showBalances])
 
+  useEffect(() => {
+    writeInternalRevenueUserFlag(isAdmin || isStaff)
+  }, [isAdmin, isStaff])
+
   const checkAdminStatus = useCallback(async (userId: string, userEmail?: string) => {
     setWalletLoading(true)
     const isWisdomAdmin = userEmail?.toLowerCase() === ADMIN_EMAIL
@@ -54,25 +65,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (error) {
         setIsAdmin(isWisdomAdmin)
         setIsStaff(false)
+        writeInternalRevenueUserFlag(isWisdomAdmin)
         setWalletBalance(0)
-        return
+        return { isAdmin: isWisdomAdmin, isStaff: false }
       }
 
+      const nextIsStaff = !isWisdomAdmin && !!data?.is_staff
       setIsAdmin(isWisdomAdmin)
-      setIsStaff(!isWisdomAdmin && !!data?.is_staff)
+      setIsStaff(nextIsStaff)
+      writeInternalRevenueUserFlag(isWisdomAdmin || nextIsStaff)
       setWalletBalance(data?.wallet_balance || 0)
+      return { isAdmin: isWisdomAdmin, isStaff: nextIsStaff }
     } catch (error) {
       console.error('Error checking admin status:', error)
       setIsAdmin(isWisdomAdmin)
       setIsStaff(false)
+      writeInternalRevenueUserFlag(isWisdomAdmin)
       setWalletBalance(0)
+      return { isAdmin: isWisdomAdmin, isStaff: false }
     } finally {
       setWalletLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    const syncSession = (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
+    const syncSession = async (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
       const sessionUser = session?.user ?? null
       setUser(sessionUser)
 
@@ -80,7 +97,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const profileLoadKey = `${sessionUser.id}:${sessionUser.email ?? ''}`
         if (lastProfileLoadKey.current !== profileLoadKey) {
           lastProfileLoadKey.current = profileLoadKey
-          checkAdminStatus(sessionUser.id, sessionUser.email)
+          const roleStatus = await checkAdminStatus(sessionUser.id, sessionUser.email)
+          linkRevenueIdentity(sessionUser.id, {
+            auth_provider: sessionUser.app_metadata?.provider || 'email',
+            email_domain: sessionUser.email?.split('@')[1] || null,
+            internal_user: roleStatus.isAdmin || roleStatus.isStaff,
+            role: roleStatus.isAdmin ? 'admin' : roleStatus.isStaff ? 'staff' : 'customer',
+          })
         }
       } else {
         lastProfileLoadKey.current = null
@@ -88,6 +111,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsStaff(false)
         setWalletBalance(0)
         setWalletLoading(false)
+        writeInternalRevenueUserFlag(false)
       }
 
       setLoading(false)
@@ -95,13 +119,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
-      syncSession(session)
+      void syncSession(session)
     })
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (_event, session) => {
-        syncSession(session)
+        await syncSession(session)
       }
     )
 
@@ -142,6 +166,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         options: {
           data: {
             full_name: email.split('@')[0], // Use email prefix as name
+            referral_code_input: referralCode?.trim() || null,
           },
           emailRedirectTo: `${window.location.origin}/email-confirmation`
         }
@@ -158,15 +183,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { success: false, error: error.message }
       }
 
-      // Generate this user's own referral code and link them to a referrer
-      // if they entered one. Done via the apply-referral edge function
-      // (service role) instead of a direct client-side table write, because
-      // when email confirmation is required there's no active session yet
-      // right after signUp() - RLS would silently block the profiles UPDATE.
-      // Non-blocking - shouldn't fail signup.
-      if (data.user) {
+      // If Supabase returns a session immediately, apply the referral now.
+      // Otherwise EmailConfirmation applies it after the email verification
+      // creates an authenticated session.
+      if (data.session) {
         supabase.functions.invoke('apply-referral', {
-          body: { userId: data.user.id, referralCode },
+          body: { referralCode },
         }).catch((err) => console.error('apply-referral invoke failed:', err))
       }
 

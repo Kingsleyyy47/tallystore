@@ -6,6 +6,7 @@ import { CheckCircle2, Loader2, Search } from 'lucide-react'
 import { verifyAndCreditWalletSecure } from '@/lib/supabase'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
+import { useCurrency } from '@/contexts/CurrencyContext'
 
 interface VerificationResult {
   success: boolean
@@ -19,8 +20,9 @@ interface VerificationResult {
 export function PaymentVerificationCard() {
   const [reference, setReference] = useState('')
   const [isVerifying, setIsVerifying] = useState(false)
-  const { refreshWalletBalance } = useAuth()
+  const { refreshWalletBalance, showBalances } = useAuth()
   const { toast } = useToast()
+  const { formatPrice } = useCurrency()
 
   const handleVerify = async () => {
     if (!reference.trim()) {
@@ -43,7 +45,9 @@ export function PaymentVerificationCard() {
           title: result.already_processed ? "Already Credited ✅" : "Payment Verified! 🎉",
           description: result.already_processed
             ? "This payment was already credited to your wallet."
-            : `₦${result.amount?.toLocaleString()} has been added to your wallet.`,
+            : showBalances
+              ? `${formatPrice(Number(result.amount || 0))} has been added to your wallet.`
+              : "Your wallet has been updated.",
         })
         
         setReference('')
@@ -87,7 +91,7 @@ export function PaymentVerificationCard() {
       <CardContent className="space-y-4">
         <div className="flex gap-2">
           <Input
-            placeholder="Enter Ercas reference (e.g., ER|A0F9859768024)"
+            placeholder="Enter your payment reference"
             value={reference}
             onChange={(e) => setReference(e.target.value)}
             disabled={isVerifying}
@@ -113,7 +117,7 @@ export function PaymentVerificationCard() {
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          💡 <strong>Where to find your reference:</strong> Check your payment confirmation page, email receipt, or bank transaction details. It usually starts with "ER|" or "TALLY-".
+          <strong>Where to find your reference:</strong> Check your payment confirmation page, email receipt, or bank transaction details.
         </p>
       </CardContent>
     </Card>

@@ -31,6 +31,9 @@ import { cn } from '@/lib/utils'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { blockStaffPurchase } from '@/lib/staffPurchaseGuard'
+import { getRevenueRequestContext, getRevenueVisitorId, trackRevenueEvent } from '@/lib/revenue-os'
+import { RecommendationStrip } from '@/components/RecommendationCard'
+import { useRecommendations } from '@/hooks/useRecommendations'
 
 function WhatsAppIcon({ className }: { className?: string }) {
   return (
@@ -89,18 +92,14 @@ type SmsService = {
   service_code?: string | null
   country_id: number
   country_code?: string | null
-  provider_cost_usd: number
-  margin_usd: number
-  total_cost_usd: number
-  exchange_rate: number
+  exchange_rate?: number
   price_ngn: number
   available_count: number
   customer_buy_count?: number
+  personal_buy_count?: number
   recommended_score?: number
   is_enabled?: boolean
   is_favorite?: boolean
-  provider_cost_ngn?: number
-  margin_ngn?: number
   price_override_ngn?: number | null
   pricing_mode?: 'auto_markup' | 'manual_margin' | 'override'
 }
@@ -111,10 +110,7 @@ type SmsRentalArea = {
   unit_price: number
   min_month: number
   total: number
-  provider_monthly_usd: number
-  margin_monthly_usd: number
-  total_monthly_usd: number
-  exchange_rate: number
+  exchange_rate?: number
   price_ngn_monthly: number
 }
 
@@ -129,9 +125,10 @@ type SmsOrder = {
   id: string
   reference: string
   order_type: 'otp' | 'rental'
+  service_id?: string | null
+  service_code?: string | null
   service_name: string
   phone_number?: string | null
-  raw_phone_number?: string | null
   area_code?: string | null
   price_ngn: number
   status: string
@@ -141,7 +138,6 @@ type SmsOrder = {
   rent_months?: number | null
   refunded_at?: string | null
   refund_amount_ngn?: number | null
-  refund_reference?: string | null
   created_at: string
 }
 
@@ -153,8 +149,6 @@ const SERVICE_SORT_LABELS: Record<ServiceSort, string> = {
   price_low: 'Lowest price',
   stock: 'Most available',
 }
-
-const QUICK_SERVICE_TERMS = ['WhatsApp', 'Google', 'Telegram', 'Instagram', 'Facebook', 'Amazon']
 
 const RENTAL_AREA_META: Record<string, { countryCode: string; name: string; dialCode?: string }> = {
   US: { countryCode: 'US', name: 'United States', dialCode: '+1' },
@@ -179,6 +173,28 @@ function formatDate(value?: string | null) {
 
 function normalize(value?: string | number | null) {
   return String(value || '').toLowerCase().trim()
+}
+
+function serviceQuickTerm(service: SmsService) {
+  const raw = String(service.service_name || service.service_code || '').trim()
+  const withoutFlag = raw.replace(/^[\u{1F1E6}-\u{1F1FF}]{2}\s*/u, '')
+  const cleaned = withoutFlag
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/[_|/\\:;,+-]+/g, ' ')
+    .replace(/\b(?:otp|sms|verify|verification|number|numbers|code|codes|service|usa|united states|canada)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const firstWords = cleaned.split(' ').filter(Boolean).slice(0, 3).join(' ')
+  return firstWords || raw.slice(0, 24)
+}
+
+function smsServiceIdentity(service: Pick<SmsService, 'service_id' | 'service_code' | 'service_name'>) {
+  return [
+    service.service_id,
+    service.service_code,
+    normalize(service.service_name),
+  ].filter(Boolean) as string[]
 }
 
 function getAreaMeta(area?: Pick<SmsRentalArea, 'area_code' | 'area_title'> | null) {
@@ -268,7 +284,7 @@ function statusClass(status: string) {
 
 function safeSmsError(error: unknown, fallback = 'SMS request failed') {
   const message = error instanceof Error ? error.message : fallback
-  if (/smsbus|provider|daisy|daisysms|api key|token|secret|backend/i.test(message)) {
+  if (/smsbus|daisy|daisysms|provider|api key|token|secret|backend|ngn_usd_rate|app settings/i.test(message)) {
     return 'SMS numbers are temporarily unavailable. Please try again later.'
   }
   return message || fallback
@@ -319,7 +335,17 @@ const OTP_TIMEOUT_SECONDS = 180 // 3 minutes
 function useOtpCountdown(order: SmsOrder, onExpire: (order: SmsOrder) => void) {
   const [secsLeft, setSecsLeft] = useState<number | null>(null)
   const expiredRef = useRef(false)
+  const onExpireRef = useRef(onExpire)
+  const orderRef = useRef(order)
   const messagesLen = (order.messages ?? []).length
+
+  useEffect(() => {
+    onExpireRef.current = onExpire
+  }, [onExpire])
+
+  useEffect(() => {
+    orderRef.current = order
+  }, [order])
 
   useEffect(() => {
     if (order.order_type !== 'otp' || isTerminalStatus(order.status)) return
@@ -338,7 +364,7 @@ function useOtpCountdown(order: SmsOrder, onExpire: (order: SmsOrder) => void) {
       setSecsLeft(remaining)
       if (remaining === 0 && !expiredRef.current) {
         expiredRef.current = true
-        onExpire(order)
+        onExpireRef.current(orderRef.current)
       }
     }
 
@@ -610,10 +636,9 @@ function SmsMessageSupportCard() {
 }
 
 function SmsNumbersSurface() {
-  const { isStaff, isAdmin } = useAuth()
+  const { user, isStaff, isAdmin } = useAuth()
   const [activeTab, setActiveTab] = useState<SmsTab>('otp')
   const [health, setHealth] = useState<SmsApiResponse<never> | null>(null)
-  const [smsDiagnostics, setSmsDiagnostics] = useState<SmsDiagnostics | null>(null)
   const [services, setServices] = useState<SmsService[]>([])
   const [areas, setAreas] = useState<SmsRentalArea[]>([])
   const [orders, setOrders] = useState<SmsOrder[]>([])
@@ -631,10 +656,30 @@ function SmsNumbersSurface() {
   const numbersReady = configured && health?.valid !== false
   const selectedService = services.find((service) => service.service_id === selectedServiceId)
   const selectedArea = areas.find((area) => area.area_code === selectedAreaCode)
+  const rentalsAvailable = areas.length > 0
   const activeOrders = useMemo(
     () => orders.filter((order) => !isTerminalStatus(order.status)),
     [orders],
   )
+  const localSmsServiceCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    orders.forEach((order) => {
+      if (order.order_type !== 'otp') return
+      if (order.refunded_at) return
+      if (String(order.status || '').toLowerCase() !== 'completed') return
+      const keys = [
+        order.service_id,
+        order.service_code,
+        normalize(order.service_name),
+      ].filter(Boolean) as string[]
+      keys.forEach((key) => counts.set(key, (counts.get(key) || 0) + 1))
+    })
+    return counts
+  }, [orders])
+  const getCustomerSmsServiceCount = useCallback((service: SmsService) => {
+    const localCount = Math.max(0, ...smsServiceIdentity(service).map((key) => localSmsServiceCounts.get(key) || 0))
+    return Math.max(Number(service.personal_buy_count || 0), localCount)
+  }, [localSmsServiceCounts])
 
   const serviceStats = useMemo(() => {
     const priced = services.filter((service) => Number(service.price_ngn) > 0)
@@ -642,6 +687,32 @@ function SmsNumbersSurface() {
     const stock = services.reduce((total, service) => total + Number(service.available_count || 0), 0)
     return { lowest, stock }
   }, [services])
+
+  const quickServiceTerms = useMemo(() => {
+    const seen = new Set<string>()
+    return [...services]
+      .filter((service) => Number(service.price_ngn) > 0 && Number(service.available_count || 0) > 0)
+      .sort((a, b) =>
+        Number(b.is_favorite === true) - Number(a.is_favorite === true) ||
+        getCustomerSmsServiceCount(b) - getCustomerSmsServiceCount(a) ||
+        Number(b.customer_buy_count || 0) - Number(a.customer_buy_count || 0) ||
+        Number(b.recommended_score || 0) - Number(a.recommended_score || 0) ||
+        Number(b.available_count || 0) - Number(a.available_count || 0) ||
+        Number(a.price_ngn || 0) - Number(b.price_ngn || 0),
+      )
+      .map(serviceQuickTerm)
+      .filter((term) => {
+        const key = normalize(term)
+        if (!key || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .slice(0, 6)
+  }, [getCustomerSmsServiceCount, services])
+
+  const serviceSearchPlaceholder = quickServiceTerms.length > 0
+    ? `Search ${quickServiceTerms.slice(0, 3).join(', ')}...`
+    : 'Search live SMS services...'
 
   const filteredServices = useMemo(() => {
     const query = normalize(serviceQuery)
@@ -658,26 +729,24 @@ function SmsNumbersSurface() {
 
     return [...matches].sort((a, b) => {
       if (serviceSort === 'recommended') {
+        const favoriteRank = Number(b.is_favorite === true) - Number(a.is_favorite === true)
+        if (favoriteRank !== 0) return favoriteRank
+        const personalRank = getCustomerSmsServiceCount(b) - getCustomerSmsServiceCount(a)
+        if (personalRank !== 0) return personalRank
+        const customerRank = Number(b.customer_buy_count || 0) - Number(a.customer_buy_count || 0)
+        if (customerRank !== 0) return customerRank
         const scoreRank = Number(b.recommended_score || 0) - Number(a.recommended_score || 0)
         if (scoreRank !== 0) return scoreRank
-        return Number(b.customer_buy_count || 0) - Number(a.customer_buy_count || 0) || b.available_count - a.available_count || a.price_ngn - b.price_ngn
+        return b.available_count - a.available_count || a.price_ngn - b.price_ngn
       }
       const favoriteRank = Number(b.is_favorite === true) - Number(a.is_favorite === true)
       if (favoriteRank !== 0) return favoriteRank
       if (serviceSort === 'price_low') return a.price_ngn - b.price_ngn
       return b.available_count - a.available_count
     })
-  }, [services, serviceQuery, serviceSort])
+  }, [getCustomerSmsServiceCount, services, serviceQuery, serviceSort])
 
   const visibleServices = filteredServices.slice(0, visibleServiceCount)
-  const smsDiagnosticText = useMemo(() => {
-    if (!smsDiagnostics) return ''
-    const country = smsDiagnostics.country_id ? `Country: ${smsDiagnostics.country_id}` : ''
-    const verification = `getPricesVerification: ${smsDiagnostics.verification_services ?? 0}`
-    const prices = `getPrices: ${smsDiagnostics.prices_services ?? 0}`
-    return [country, verification, prices].filter(Boolean).join(' · ')
-  }, [smsDiagnostics])
-
   const filteredAreas = useMemo(() => {
     const query = normalize(rentalQuery)
     return areas
@@ -706,13 +775,59 @@ function SmsNumbersSurface() {
   }, [areas, selectedAreaCode])
 
   useEffect(() => {
+    if (!rentalsAvailable && activeTab === 'rental') {
+      setActiveTab('otp')
+    }
+  }, [activeTab, rentalsAvailable])
+
+  useEffect(() => {
     if (!selectedArea) return
     setRentalMonths((current) => Math.min(12, Math.max(selectedArea.min_month || 1, current || 1)))
   }, [selectedArea])
 
+  const selectOtpService = (service: SmsService) => {
+    setSelectedServiceId(service.service_id)
+    trackRevenueEvent({
+      eventType: 'PRODUCT_CLICKED',
+      userId: user?.id || null,
+      surface: 'sms_otp_services',
+      eventId: `PRODUCT_CLICKED:${crypto.randomUUID()}:sms_otp:${service.country_id}:${service.service_id}`,
+      metadata: {
+        service_id: service.service_id,
+        service_name: service.service_name,
+        service_code: service.service_code || null,
+        country_id: service.country_id,
+        country_code: service.country_code || null,
+        price_ngn: service.price_ngn,
+        available_count: service.available_count,
+        customer_targeted_count: getCustomerSmsServiceCount(service),
+        customer_buy_count: service.customer_buy_count || 0,
+        personal_buy_count: service.personal_buy_count || 0,
+        recommended_score: service.recommended_score || 0,
+        pricing_mode: service.pricing_mode || null,
+      },
+    })
+  }
+
+  const selectRentalArea = (area: SmsRentalArea) => {
+    setSelectedAreaCode(area.area_code)
+    trackRevenueEvent({
+      eventType: 'PRODUCT_CLICKED',
+      userId: user?.id || null,
+      surface: 'sms_rental_areas',
+      eventId: `PRODUCT_CLICKED:${crypto.randomUUID()}:sms_rental:${area.area_code}`,
+      metadata: {
+        area_code: area.area_code,
+        area_title: area.area_title,
+        price_ngn_monthly: area.price_ngn_monthly,
+        min_month: area.min_month,
+      },
+    })
+  }
+
   const loadSmsNumbers = useCallback(async () => {
     setLoading(true)
-    // Fire sync silently — clears orders cancelled on DaisySMS but still active in DB
+    // Fire sync silently so externally cancelled orders are reflected locally.
     invokeSms('sync_cancelled').catch(() => {})
     try {
       const [healthResult, orderResult] = await Promise.all([
@@ -730,7 +845,6 @@ function SmsNumbersSurface() {
           invokeSms<SmsRentalArea[]>('rental_areas'),
         ])
 
-        setSmsDiagnostics(serviceResult.diagnostics || null)
         setServices(serviceResult.data || [])
         setAreas(areaResult.data || [])
 
@@ -738,7 +852,6 @@ function SmsNumbersSurface() {
           setSelectedServiceId((current) => current || serviceResult.data?.[0]?.service_id || '')
         }
       } else {
-        setSmsDiagnostics(null)
         setServices([])
         setAreas([])
       }
@@ -752,6 +865,184 @@ function SmsNumbersSurface() {
   useEffect(() => {
     loadSmsNumbers()
   }, [loadSmsNumbers])
+
+  useEffect(() => {
+    const day = new Date().toISOString().slice(0, 10)
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      userId: user?.id || null,
+      surface: 'sms_numbers',
+      eventId: `PAGE_VIEWED:${day}:sms_numbers:${user?.id || 'anon'}`,
+      metadata: { active_tab: activeTab },
+    })
+  }, [activeTab, user?.id])
+
+  useEffect(() => {
+    const day = new Date().toISOString().slice(0, 10)
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
+    trackRevenueEvent({
+      eventType: 'FILTER_USED',
+      userId: user?.id || null,
+      surface: 'sms_numbers',
+      eventId: `FILTER_USED:${day}:${actorKey}:sms_tab:${activeTab}`,
+      metadata: { filter: 'sms_tab', value: activeTab },
+    })
+  }, [activeTab, user?.id])
+
+  useEffect(() => {
+    if (activeTab !== 'otp') return
+    const day = new Date().toISOString().slice(0, 10)
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
+    trackRevenueEvent({
+      eventType: 'SORT_USED',
+      userId: user?.id || null,
+      surface: 'sms_otp_services',
+      eventId: `SORT_USED:${day}:${actorKey}:sms_otp:${serviceSort}`,
+      metadata: { sort: serviceSort },
+    })
+  }, [activeTab, serviceSort, user?.id])
+
+  useEffect(() => {
+    const query = serviceQuery.trim()
+    if (activeTab !== 'otp' || query.length < 2) return
+    const day = new Date().toISOString().slice(0, 10)
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
+    const queryKey = normalize(query).replace(/[^a-z0-9]+/g, '_').slice(0, 60) || 'query'
+    trackRevenueEvent({
+      eventType: 'SEARCHED',
+      userId: user?.id || null,
+      surface: 'sms_otp_services',
+      eventId: `SEARCHED:${day}:${actorKey}:sms_otp:${queryKey}`,
+      metadata: {
+        query,
+        result_count: filteredServices.length,
+        total_services: services.length,
+        sort: serviceSort,
+      },
+    })
+  }, [activeTab, filteredServices.length, serviceQuery, serviceSort, services.length, user?.id])
+
+  useEffect(() => {
+    if (activeTab !== 'otp' || !selectedService) return
+    const day = new Date().toISOString().slice(0, 10)
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
+    trackRevenueEvent({
+      eventType: 'PRODUCT_VIEWED',
+      userId: user?.id || null,
+      surface: 'sms_otp',
+      eventId: `PRODUCT_VIEWED:${day}:${actorKey}:sms_otp:${selectedService.country_id}:${selectedService.service_id}:${selectedService.price_ngn}`,
+      metadata: {
+        service_id: selectedService.service_id,
+        service_name: selectedService.service_name,
+        service_code: selectedService.service_code || null,
+        country_id: selectedService.country_id,
+        country_code: selectedService.country_code || null,
+        price_ngn: selectedService.price_ngn,
+        available_count: selectedService.available_count,
+        is_favorite: selectedService.is_favorite === true,
+        customer_buy_count: selectedService.customer_buy_count || 0,
+        personal_buy_count: selectedService.personal_buy_count || 0,
+        customer_targeted_count: getCustomerSmsServiceCount(selectedService),
+        recommended_score: selectedService.recommended_score || 0,
+        pricing_mode: selectedService.pricing_mode || null,
+      },
+    })
+  }, [activeTab, getCustomerSmsServiceCount, selectedService, user?.id])
+
+  useEffect(() => {
+    if (visibleServices.length === 0) return
+    const day = new Date().toISOString().slice(0, 10)
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
+    visibleServices.slice(0, 30).forEach((service, index) => {
+      trackRevenueEvent({
+        eventType: 'PRODUCT_IMPRESSION',
+        userId: user?.id || null,
+        surface: 'sms_otp_services',
+        eventId: `PRODUCT_IMPRESSION:${day}:${actorKey}:sms_otp:${serviceQuery || 'browse'}:${serviceSort}:${service.country_id}:${service.service_id}`,
+        metadata: {
+          service_id: service.service_id,
+          service_name: service.service_name,
+          service_code: service.service_code || null,
+          country_id: service.country_id,
+          country_code: service.country_code || null,
+          price_ngn: service.price_ngn,
+          available_count: service.available_count,
+          is_favorite: service.is_favorite === true,
+          is_enabled: service.is_enabled !== false,
+          customer_buy_count: service.customer_buy_count || 0,
+          personal_buy_count: service.personal_buy_count || 0,
+          customer_targeted_count: getCustomerSmsServiceCount(service),
+          recommended_score: service.recommended_score || 0,
+          pricing_mode: service.pricing_mode || null,
+          position: index + 1,
+        },
+      })
+    })
+  }, [getCustomerSmsServiceCount, serviceQuery, serviceSort, user?.id, visibleServices])
+
+  useEffect(() => {
+    if (areas.length === 0) return
+    const day = new Date().toISOString().slice(0, 10)
+    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
+    areas.slice(0, 30).forEach((area, index) => {
+      trackRevenueEvent({
+        eventType: 'PRODUCT_IMPRESSION',
+        userId: user?.id || null,
+        surface: 'sms_rental_areas',
+        eventId: `PRODUCT_IMPRESSION:${day}:${actorKey}:sms_rental:${area.area_code}`,
+        metadata: {
+          area_code: area.area_code,
+          area_title: area.area_title,
+          price_ngn_monthly: area.price_ngn_monthly,
+          min_month: area.min_month,
+          position: index + 1,
+        },
+      })
+    })
+  }, [areas, user?.id])
+
+  useEffect(() => {
+    const day = new Date().toISOString().slice(0, 10)
+    if (activeTab === 'otp' && selectedService) {
+      trackRevenueEvent({
+        eventType: 'PAYMENT_PROVIDER_LOADED',
+        userId: user?.id || null,
+        surface: 'sms_otp',
+        eventId: `PAYMENT_PROVIDER_LOADED:${day}:sms_otp:${user?.id || 'anon'}:${selectedService.country_id}:${selectedService.service_id}:${selectedService.price_ngn}`,
+        metadata: {
+          provider: 'wallet',
+          service_id: selectedService.service_id,
+          service_name: selectedService.service_name,
+          service_code: selectedService.service_code || null,
+          country_id: selectedService.country_id,
+          country_code: selectedService.country_code || null,
+          expected_price_ngn: selectedService.price_ngn,
+          customer_targeted_count: getCustomerSmsServiceCount(selectedService),
+          personal_buy_count: selectedService.personal_buy_count || 0,
+          recommended_score: selectedService.recommended_score || 0,
+          pricing_mode: selectedService.pricing_mode || null,
+        },
+      })
+    }
+
+    if (activeTab === 'rental' && selectedArea) {
+      const expectedPriceNgn = Number(selectedArea.price_ngn_monthly || 0) * rentalMonths
+      trackRevenueEvent({
+        eventType: 'PAYMENT_PROVIDER_LOADED',
+        userId: user?.id || null,
+        surface: 'sms_rental',
+        eventId: `PAYMENT_PROVIDER_LOADED:${day}:sms_rental:${user?.id || 'anon'}:${selectedArea.area_code}:${rentalMonths}:${expectedPriceNgn}`,
+        metadata: {
+          provider: 'wallet',
+          area_code: selectedArea.area_code,
+          area_title: selectedArea.area_title,
+          months: rentalMonths,
+          expected_price_ngn: expectedPriceNgn,
+          min_month: selectedArea.min_month,
+        },
+      })
+    }
+  }, [activeTab, getCustomerSmsServiceCount, rentalMonths, selectedArea, selectedService, user?.id])
 
   const runAction = async (label: string, action: () => Promise<void>) => {
     setBusyAction(label)
@@ -783,12 +1074,34 @@ function SmsNumbersSurface() {
   const buyOtp = () => runAction('buy-otp', async () => {
     if (blockStaffPurchase(isStaff, isAdmin, ({ title, description }) => toast.error(String(title || 'Purchase blocked'), { description: description ? String(description) : undefined }))) return
     if (!selectedService) throw new Error('Select an OTP service first')
+    const idempotencyKey = `sms-otp-${selectedService.service_id}-${Date.now()}-${crypto.randomUUID()}`
+
+    trackRevenueEvent({
+      eventType: 'BUY_CLICKED',
+      userId: user?.id || null,
+      surface: 'sms_otp',
+      eventId: `BUY_CLICKED:sms_otp:${idempotencyKey}`,
+      metadata: {
+        service_id: selectedService.service_id,
+        service_name: selectedService.service_name,
+        service_code: selectedService.service_code || null,
+        country_id: selectedService.country_id,
+        country_code: selectedService.country_code || null,
+        expected_price_ngn: selectedService.price_ngn,
+        customer_targeted_count: getCustomerSmsServiceCount(selectedService),
+        customer_buy_count: selectedService.customer_buy_count || 0,
+        personal_buy_count: selectedService.personal_buy_count || 0,
+        recommended_score: selectedService.recommended_score || 0,
+        pricing_mode: selectedService.pricing_mode || null,
+      },
+    })
 
     const result = await invokeSms<SmsOrder>('create_otp', {
       country_id: selectedService.country_id,
       service_id: selectedService.service_id,
       expected_price_ngn: selectedService.price_ngn,
-      idempotency_key: `sms-otp-${selectedService.service_id}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      idempotency_key: idempotencyKey,
+      revenue_context: getRevenueRequestContext(),
     })
 
     toast.success('OTP number purchased')
@@ -802,11 +1115,27 @@ function SmsNumbersSurface() {
   const rentNumber = () => runAction('rent-number', async () => {
     if (blockStaffPurchase(isStaff, isAdmin, ({ title, description }) => toast.error(String(title || 'Purchase blocked'), { description: description ? String(description) : undefined }))) return
     if (!selectedArea) throw new Error('Select a rental country first')
+    const idempotencyKey = `sms-rental-${selectedArea.area_code}-${Date.now()}-${crypto.randomUUID()}`
+    const expectedPriceNgn = Number(selectedArea.price_ngn_monthly || 0) * rentalMonths
+
+    trackRevenueEvent({
+      eventType: 'BUY_CLICKED',
+      userId: user?.id || null,
+      surface: 'sms_rental',
+      eventId: `BUY_CLICKED:sms_rental:${idempotencyKey}`,
+      metadata: {
+        area_code: selectedArea.area_code,
+        area_title: selectedArea.area_title,
+        months: rentalMonths,
+        expected_price_ngn: expectedPriceNgn,
+      },
+    })
 
     const result = await invokeSms<SmsOrder>('rent_number', {
       area_code: selectedArea.area_code,
       months: rentalMonths,
-      idempotency_key: `sms-rental-${selectedArea.area_code}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      idempotency_key: idempotencyKey,
+      revenue_context: getRevenueRequestContext(),
     })
 
     toast.success('Rental number purchased')
@@ -859,6 +1188,11 @@ function SmsNumbersSurface() {
   const unavailable = !loading && (!configured || health?.valid === false)
   const selectedAreaMeta = getAreaMeta(selectedArea)
   const rentalTotal = selectedArea ? selectedArea.price_ngn_monthly * rentalMonths : 0
+  const smsTabs = [
+    { id: 'otp' as const, label: 'OTP numbers', icon: PhoneCall },
+    rentalsAvailable ? { id: 'rental' as const, label: 'Rentals', icon: CalendarDays } : null,
+    { id: 'orders' as const, label: 'My numbers', icon: Inbox },
+  ].filter((tab): tab is { id: SmsTab; label: string; icon: typeof PhoneCall } => tab !== null)
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-4 sm:space-y-6">
@@ -879,7 +1213,9 @@ function SmsNumbersSurface() {
                 </div>
               </div>
               <p className="max-w-2xl text-sm leading-6 text-slate-200">
-                Pick an OTP service, rent a number, or return to active numbers without digging through a long page.
+                {rentalsAvailable
+                  ? 'Pick an OTP service, rent a number, or return to active numbers without digging through a long page.'
+                  : 'Pick an OTP service or return to active numbers without digging through a long page.'}
               </p>
             </div>
 
@@ -933,12 +1269,11 @@ function SmsNumbersSurface() {
         </Card>
       )}
 
-      <div className="grid grid-cols-3 gap-1 rounded-2xl bg-white p-1.5 shadow-card dark:bg-card sm:inline-grid sm:gap-2 sm:rounded-3xl sm:p-2">
-        {[
-          { id: 'otp' as const, label: 'OTP numbers', icon: PhoneCall },
-          { id: 'rental' as const, label: 'Rentals', icon: CalendarDays },
-          { id: 'orders' as const, label: 'My numbers', icon: Inbox },
-        ].map((tab) => {
+      <div className={cn(
+        'grid gap-1 rounded-2xl bg-white p-1.5 shadow-card dark:bg-card sm:inline-grid sm:gap-2 sm:rounded-3xl sm:p-2',
+        rentalsAvailable ? 'grid-cols-3' : 'grid-cols-2',
+      )}>
+        {smsTabs.map((tab) => {
           const Icon = tab.icon
           return (
             <Button
@@ -977,7 +1312,7 @@ function SmsNumbersSurface() {
               </div>
 
               <div className="mt-6 flex min-w-0 flex-col gap-3 lg:flex-row">
-                <SearchField value={serviceQuery} onChange={setServiceQuery} placeholder="Search WhatsApp, Google, Telegram..." />
+                <SearchField value={serviceQuery} onChange={setServiceQuery} placeholder={serviceSearchPlaceholder} />
                 <div className="relative lg:w-56">
                   <SlidersHorizontal className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <select
@@ -992,8 +1327,9 @@ function SmsNumbersSurface() {
                 </div>
               </div>
 
+              {quickServiceTerms.length > 0 && (
               <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-                {QUICK_SERVICE_TERMS.map((term) => (
+                {quickServiceTerms.map((term) => (
                   <Button
                     key={term}
                     type="button"
@@ -1005,6 +1341,7 @@ function SmsNumbersSurface() {
                   </Button>
                 ))}
               </div>
+              )}
 
               <div className="mt-5 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {loading && services.length === 0 ? (
@@ -1015,13 +1352,8 @@ function SmsNumbersSurface() {
                   <div className="md:col-span-2 xl:col-span-3">
                     <EmptyState
                       title={services.length === 0 ? 'No OTP services available' : 'No service found'}
-                      body={services.length === 0 ? 'The SMS provider did not return live stock for this country.' : 'Try another app name or clear the search.'}
+                      body={services.length === 0 ? 'No live SMS stock is available for this country right now. Please try again shortly.' : 'Try another app name or clear the search.'}
                     />
-                    {services.length === 0 && smsDiagnosticText && (
-                      <p className="mt-3 text-center text-xs text-slate-500 dark:text-muted-foreground">
-                        {smsDiagnosticText}
-                      </p>
-                    )}
                   </div>
                 ) : visibleServices.map((service) => {
                   const selected = selectedServiceId === service.service_id
@@ -1030,7 +1362,7 @@ function SmsNumbersSurface() {
                       key={service.service_id}
                       type="button"
                       aria-pressed={selected}
-                      onClick={() => setSelectedServiceId(service.service_id)}
+                      onClick={() => selectOtpService(service)}
                       className={cn(
                         'min-w-0 rounded-3xl border p-4 text-left transition hover:-translate-y-0.5 hover:shadow-card',
                         selected
@@ -1169,7 +1501,7 @@ function SmsNumbersSurface() {
                       key={area.area_code}
                       type="button"
                       aria-pressed={selected}
-                      onClick={() => setSelectedAreaCode(area.area_code)}
+                      onClick={() => selectRentalArea(area)}
                       className={cn(
                         'min-w-0 rounded-3xl border p-4 text-left transition hover:-translate-y-0.5 hover:shadow-card',
                         selected
@@ -1322,6 +1654,7 @@ function SmsNumbersSurface() {
 }
 
 export default function SmsNumbersPage() {
+  const { recommendations: recs } = useRecommendations({ limit: 3 })
   return (
     <div className="min-h-screen max-w-full overflow-x-hidden bg-[#f6f7fb] text-slate-950 dark:bg-background dark:text-foreground">
       <NavbarAuth />
@@ -1330,6 +1663,12 @@ export default function SmsNumbersPage() {
         <PageBreadcrumb items={[{ label: 'US & Canada Numbers' }]} className="mx-auto mb-6 w-full max-w-7xl" />
 
         <SmsNumbersSurface />
+
+        {recs.length > 0 && (
+          <div className="mx-auto mt-10 max-w-7xl">
+            <RecommendationStrip products={recs} surface="sms_numbers_page" actionType="SHOW_ALTERNATIVE" title="Explore more products" />
+          </div>
+        )}
       </main>
     </div>
   )

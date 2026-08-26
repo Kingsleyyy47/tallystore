@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { useLocation, useNavigate, Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -14,6 +14,7 @@ import { useAuth } from '@/contexts/SimpleAuth'
 import {
   processPurchaseSecure,
   getIndividualAccountById,
+  getProductGroupById,
   computeDiscountedTotal,
   previewDiscountCode,
   DISCOUNTS_ENABLED,
@@ -25,20 +26,29 @@ import { useToast } from '@/hooks/use-toast'
 import { Input } from '@/components/ui/input'
 import { Tag, X } from 'lucide-react'
 import { blockStaffPurchase } from '@/lib/staffPurchaseGuard'
+import { getRevenueRequestContext, trackRevenueEvent } from '@/lib/revenue-os'
+import { isCustomerSellableProduct } from '@/lib/productAvailability'
+import CategoryLogo from '@/components/CategoryLogo'
+import { useCurrency } from '@/contexts/CurrencyContext'
 
 export default function CheckoutPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const { user, walletBalance, refreshWalletBalance, showBalances, isStaff, isAdmin } = useAuth()
+  const { formatPrice } = useCurrency()
   const { toast } = useToast()
   
   // Get data from navigation state - supports both single and bulk purchases
-  const { accountId, productGroup, category, quantity = 1, isBulkPurchase = false } = location.state || {}
+  const { accountId, productGroup: navigationProductGroup, category, quantity = 1, isBulkPurchase = false, croAssignment = null } = location.state || {}
   
   const [account, setAccount] = useState<IndividualAccount | null>(null)
+  const [checkoutProductGroup, setCheckoutProductGroup] = useState<ProductGroup | null>(null)
   const [loading, setLoading] = useState(true)
   const [purchasing, setPurchasing] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState('wallet')
+  const paymentAttemptedRef = useRef(false)
+  const purchaseCompletedRef = useRef(false)
+  const checkoutAttemptRef = useRef(`checkout_${Date.now()}_${crypto.randomUUID()}`)
 
   // Discount code state - applied on top of any quantity discount tier.
   // The percentOff here is preview-only; the edge function re-validates and
@@ -47,6 +57,7 @@ export default function CheckoutPage() {
   const [checkingCode, setCheckingCode] = useState(false)
   const [codeError, setCodeError] = useState('')
   const [appliedCode, setAppliedCode] = useState<{ code: string; percentOff: number } | null>(null)
+  const productGroup = checkoutProductGroup || navigationProductGroup
 
   // Calculate total based on quantity, applying any quantity discount tier
   const { total: tierTotal, discountPct, originalTotal } = productGroup
@@ -95,11 +106,22 @@ export default function CheckoutPage() {
   useEffect(() => {
     const loadData = async () => {
       // For bulk purchases, we only need productGroup. For individual purchases, we need accountId
-      if (!productGroup) {
-        console.log('❌ CheckoutPage: No productGroup provided, redirecting to products');
+      if (!navigationProductGroup?.id) {
         navigate('/products')
         return
       }
+
+      const latestProductGroup = await getProductGroupById(navigationProductGroup.id)
+      if (!latestProductGroup || !isCustomerSellableProduct(latestProductGroup)) {
+        toast({
+          variant: "destructive",
+          title: "Product unavailable",
+          description: "This product is no longer available for purchase.",
+        })
+        navigate('/products')
+        return
+      }
+      setCheckoutProductGroup(latestProductGroup)
       
       // If we have an accountId, load individual account data
       if (accountId) {
@@ -134,7 +156,6 @@ export default function CheckoutPage() {
         }
       } else {
         // For bulk purchases without specific accountId, just refresh wallet and continue
-        console.log('✅ CheckoutPage: Bulk purchase mode, no accountId needed');
         try {
           await refreshWalletBalance()
           setLoading(false)
@@ -146,21 +167,89 @@ export default function CheckoutPage() {
     }
 
     loadData()
-  }, [accountId, productGroup, navigate, refreshWalletBalance, toast])
+  }, [accountId, navigationProductGroup?.id, navigate, refreshWalletBalance, toast])
+
+  useEffect(() => {
+    if (!productGroup || !user) return
+    trackRevenueEvent({
+      eventType: 'PRODUCT_VIEWED',
+      userId: user.id,
+      productGroupId: productGroup.id,
+      categoryId: productGroup.category_id,
+      surface: 'checkout',
+      experimentId: croAssignment?.experimentId || null,
+      variantId: croAssignment?.variantId || null,
+      metadata: { quantity, price: productGroup.price, assignmentMode: croAssignment?.mode || 'unknown' },
+      eventId: `PRODUCT_VIEWED:${user.id}:checkout:${croAssignment?.variantId || croAssignment?.mode || 'default'}:${productGroup.id}:${quantity}`,
+    })
+    trackRevenueEvent({
+      eventType: 'PAYMENT_PROVIDER_LOADED',
+      userId: user.id,
+      productGroupId: productGroup.id,
+      categoryId: productGroup.category_id,
+      surface: 'checkout',
+      experimentId: croAssignment?.experimentId || null,
+      variantId: croAssignment?.variantId || null,
+      metadata: { provider: paymentMethod, quantity, amount: totalAmount, assignmentMode: croAssignment?.mode || 'unknown' },
+      eventId: `PAYMENT_PROVIDER_LOADED:${user.id}:checkout:${paymentMethod}:${croAssignment?.variantId || croAssignment?.mode || 'default'}:${productGroup.id}:${quantity}`,
+    })
+  }, [croAssignment?.experimentId, croAssignment?.mode, croAssignment?.variantId, paymentMethod, productGroup, quantity, totalAmount, user])
+
+  useEffect(() => {
+    const checkoutAttemptKey = checkoutAttemptRef.current
+    return () => {
+      if (!productGroup || !user || purchaseCompletedRef.current || paymentAttemptedRef.current) return
+      trackRevenueEvent({
+        eventType: 'CHECKOUT_ABANDONED',
+        userId: user.id,
+        productGroupId: productGroup.id,
+        categoryId: productGroup.category_id,
+        surface: 'checkout',
+        experimentId: croAssignment?.experimentId || null,
+        variantId: croAssignment?.variantId || null,
+        metadata: { provider: paymentMethod, quantity, amount: totalAmount, assignmentMode: croAssignment?.mode || 'unknown' },
+        eventId: `CHECKOUT_ABANDONED:${checkoutAttemptKey}:${productGroup.id}:${quantity}`,
+      })
+    }
+  }, [croAssignment?.experimentId, croAssignment?.mode, croAssignment?.variantId, paymentMethod, productGroup, quantity, totalAmount, user])
 
   const handlePurchase = async () => {
     if (!productGroup || !user) return
     if (blockStaffPurchase(isStaff, isAdmin, toast)) return
 
     setPurchasing(true)
+    paymentAttemptedRef.current = true
+    const idempotencyKey = `purchase_${user.id.substring(0, 8)}_${productGroup.id.substring(0, 8)}_${quantity}_${Date.now()}_${crypto.randomUUID()}`
     
     try {
       // SECURE: Use Edge Function for purchase (server-side processing)
-      console.log('🔄 Processing secure purchase for', quantity, 'accounts from product group:', productGroup.id)
+      trackRevenueEvent({
+        eventType: 'BUY_CLICKED',
+        userId: user.id,
+        productGroupId: productGroup.id,
+        categoryId: productGroup.category_id,
+        surface: 'checkout',
+        experimentId: croAssignment?.experimentId || null,
+        variantId: croAssignment?.variantId || null,
+        eventId: `BUY_CLICKED:checkout:${idempotencyKey}`,
+        metadata: {
+          quantity,
+          amount: totalAmount,
+          payment_method: paymentMethod,
+          discount_code: appliedCode?.code || null,
+          assignmentMode: croAssignment?.mode || 'unknown',
+        },
+      })
       
-      const result = await processPurchaseSecure(productGroup.id, quantity, appliedCode?.code)
+      const result = await processPurchaseSecure(productGroup.id, quantity, appliedCode?.code, {
+        experimentId: croAssignment?.experimentId || null,
+        variantId: croAssignment?.variantId || null,
+        assignmentMode: croAssignment?.mode || 'unknown',
+        revenueContext: getRevenueRequestContext(),
+      }, quantity === 1 ? account?.id || accountId || null : null, totalAmount, idempotencyKey)
       
       if (result.success) {
+        purchaseCompletedRef.current = true
         const purchaseType = quantity > 1 ? 'Bulk Purchase' : 'Purchase'
         const accountText = quantity > 1 ? `${quantity} accounts` : '1 account'
 
@@ -177,7 +266,7 @@ export default function CheckoutPage() {
           setTimeout(() => {
             toast({
               title: '🎁 You earned a reward code!',
-              description: `You spent ₦100,000+! Use code ${result.reward_code} for 20% off your next purchase under ₦12,000. Valid for one use.`,
+              description: `You spent ${formatPrice(100000)}+! Use code ${result.reward_code} for 20% off your next purchase under ${formatPrice(12000)}. Valid for one use.`,
               duration: 12000,
             })
           }, 1500)
@@ -194,6 +283,17 @@ export default function CheckoutPage() {
           }
         })
       } else {
+        trackRevenueEvent({
+          eventType: 'PAYMENT_FAILED',
+          userId: user.id,
+          productGroupId: productGroup.id,
+          categoryId: productGroup.category_id,
+          surface: 'checkout',
+          experimentId: croAssignment?.experimentId || null,
+          variantId: croAssignment?.variantId || null,
+          metadata: { quantity, amount: totalAmount, error: result.error || 'Failed to complete purchase', assignmentMode: croAssignment?.mode || 'unknown' },
+          eventId: `PAYMENT_FAILED:checkout:${idempotencyKey}`,
+        })
         // Parse error message for better user experience
         let errorTitle = "Purchase Failed";
         let errorDescription = result.error || "Failed to complete purchase";
@@ -218,6 +318,17 @@ export default function CheckoutPage() {
       
     } catch (error) {
       console.error('❌ Purchase error:', error)
+      trackRevenueEvent({
+        eventType: 'PAYMENT_FAILED',
+        userId: user.id,
+        productGroupId: productGroup.id,
+        categoryId: productGroup.category_id,
+        surface: 'checkout',
+        experimentId: croAssignment?.experimentId || null,
+        variantId: croAssignment?.variantId || null,
+        metadata: { quantity, amount: totalAmount, error: error instanceof Error ? error.message : 'Unexpected purchase error', assignmentMode: croAssignment?.mode || 'unknown' },
+        eventId: `PAYMENT_FAILED:checkout:${idempotencyKey}`,
+      })
       
       // Parse error for better messaging
       let errorTitle = "Purchase Failed";
@@ -313,13 +424,7 @@ export default function CheckoutPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="text-center p-6 bg-gradient-to-br from-primary/10 to-secondary/10 rounded-lg">
-                <div className="text-4xl mb-2">
-                  {category?.name === 'Instagram' && '📷'}
-                  {category?.name === 'TikTok' && '🎵'}
-                  {category?.name === 'Twitter' && '🐦'}
-                  {category?.name === 'Facebook' && '👥'}
-                  {!['Instagram', 'TikTok', 'Twitter', 'Facebook'].includes(category?.name || '') && '📱'}
-                </div>
+                <CategoryLogo name={category?.name || productGroup.name} className="mx-auto mb-3 h-14 w-14" iconClassName="h-12 w-12" />
                 {isBulk ? (
                   <>
                     <h3 className="text-xl font-semibold">{productGroup.name}</h3>
@@ -388,7 +493,7 @@ export default function CheckoutPage() {
               <div className="space-y-3">
                 <div className="flex justify-between">
                   <span>Price per Account:</span>
-                  <span>₦{productGroup.price.toLocaleString()}</span>
+                  <span>{formatPrice(productGroup.price)}</span>
                 </div>
                 {quantity > 1 && (
                   <div className="flex justify-between">
@@ -399,23 +504,23 @@ export default function CheckoutPage() {
                 {discountPct > 0 && (
                   <div className="flex justify-between text-green-600">
                     <span>Bulk discount ({discountPct}% off):</span>
-                    <span>-₦{(originalTotal - tierTotal).toLocaleString()}</span>
+                    <span>-{formatPrice(originalTotal - tierTotal)}</span>
                   </div>
                 )}
                 {appliedCode && (
                   <div className="flex justify-between text-green-600">
                     <span>Code "{appliedCode.code}" ({appliedCode.percentOff}% off):</span>
-                    <span>-₦{codeDiscountAmount.toLocaleString()}</span>
+                    <span>-{formatPrice(codeDiscountAmount)}</span>
                   </div>
                 )}
                 <div className="flex justify-between">
                   <span>Processing Fee:</span>
-                  <span>₦0</span>
+                  <span>{formatPrice(0)}</span>
                 </div>
                 <Separator />
                 <div className="flex justify-between text-lg font-semibold">
                   <span>Total:</span>
-                  <span className="text-primary">₦{totalAmount.toLocaleString()}</span>
+                  <span className="text-primary">{formatPrice(totalAmount)}</span>
                 </div>
               </div>
 
@@ -473,13 +578,13 @@ export default function CheckoutPage() {
                     Your Wallet Balance
                   </span>
                   <span className={`font-medium ${canAfford ? 'text-green-600' : 'text-red-600'}`}>
-                    {showBalances ? `₦${walletBalance.toLocaleString()}` : '***'}
+                    {showBalances ? formatPrice(walletBalance) : '***'}
                   </span>
                 </div>
                 {insufficientFunds && (
                   <p className="text-sm text-red-600">
                     {showBalances
-                      ? `Insufficient funds. You need ₦${(totalAmount - walletBalance).toLocaleString()} more.`
+                      ? `Insufficient funds. You need ${formatPrice(totalAmount - walletBalance)} more.`
                       : 'Insufficient funds. Top up your wallet to continue.'}
                   </p>
                 )}

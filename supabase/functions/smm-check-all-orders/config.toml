@@ -1,0 +1,4 @@
+# Scheduled SMM status sync calls use x-cron-secret or service-role Authorization.
+# Gateway JWT verification is disabled so scheduled calls can reach the
+# function's own authorization check.
+verify_jwt = false

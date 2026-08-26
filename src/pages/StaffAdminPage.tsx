@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Loader2, Clock, CheckCircle2, XCircle, Settings, Upload, Plus, Tag, Users, BarChart2, Mail, Send, RefreshCw, X, PhoneCall, Star } from 'lucide-react'
+import { Loader2, Clock, CheckCircle2, XCircle, Settings, Upload, Plus, Tag, Users, BarChart2, Mail, Send, RefreshCw, X, PhoneCall, Star, AlertTriangle, Activity, ShieldCheck } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
@@ -21,19 +21,11 @@ import {
 import {
   supabase,
   getAppSetting,
-  upsertAppSetting,
   getAllProductGroups,
   getCategories,
   searchUsers,
-  adminAdjustBalance,
   getDiscountCodes,
-  createDiscountCode,
-  setDiscountCodeActive,
-  createCategory,
-  createIndividualAccount,
-  updateProductGroup,
   parseCSV,
-  processBulkAccountUpload,
   getUserCount,
   getAdminSalesStats,
   type ProductGroup,
@@ -67,15 +59,49 @@ type StaffSmsCatalogResponse = {
   configured?: boolean
   global_margin_ngn?: number
   exchange_rate?: number
-  exchange_rate_source?: 'override' | 'live' | 'fallback' | 'unknown'
+  exchange_rate_source?: 'override' | 'live' | 'unavailable' | 'unknown'
   round_to_nearest_10?: boolean
+}
+
+type StaffHistoryRow = {
+  id: string
+  source: string
+  date: string
+  customer: string
+  customer_email?: string
+  title: string
+  subtitle?: string
+  amount: number
+  status: string
+  reference?: string
+}
+
+type StaffHistoryResponse = {
+  success: boolean
+  data?: StaffHistoryRow[]
+  error?: string
+  warning?: string
+}
+
+type StaffRevenueOsSnapshot = {
+  success: boolean
+  data?: {
+    settings: Record<string, string>
+    quality: any[]
+    opportunities: any[]
+    action_plans: any[]
+    experiments: any[]
+    decisions: any[]
+    warning?: string
+  }
+  error?: string
 }
 
 function can(perms: PermissionMap, key: PermissionKey) {
   return perms[key]?.is_enabled === true
 }
 function autoApproves(perms: PermissionMap, key: PermissionKey) {
-  return perms[key]?.auto_approve !== false
+  return perms[key]?.is_enabled === true && perms[key]?.auto_approve !== false
 }
 function hasSettingsPermission(perms: PermissionMap) {
   return can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas') || can(perms, 'setting_support_links')
@@ -136,7 +162,7 @@ export default function StaffAdminPage() {
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [bulkPgId, setBulkPgId] = useState('')
   const [bulkUploading, setBulkUploading] = useState(false)
-  const [bulkResult, setBulkResult] = useState<{ success: boolean; accountsCreated: number; error?: string } | null>(null)
+  const [bulkResult, setBulkResult] = useState<{ success: boolean; accountsCreated: number; error?: string; pending?: boolean } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Categories
@@ -194,6 +220,13 @@ export default function StaffAdminPage() {
   const staffCancelSmsOrder = useCallback(async (orderId: string) => {
     setSmsOrdersCancellingId(orderId)
     try {
+      if (!autoApproves(perms, 'tab_sms_orders')) {
+        const res = await submitPendingAction('tab_sms_orders', 'sms_cancel_order', `Cancel SMS order ${String(orderId).slice(0, 8)}`, { order_id: orderId })
+        if (!res.success) throw new Error(res.error || 'Failed to submit cancellation')
+        toast({ title: 'Cancellation submitted for approval' })
+        return
+      }
+
       const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_cancel_sms_order', order_id: orderId } })
       if (error) throw error
       if (!data?.success) throw new Error(data?.error || 'Failed to cancel order')
@@ -204,11 +237,18 @@ export default function StaffAdminPage() {
     } finally {
       setSmsOrdersCancellingId(null)
     }
-  }, [toast, loadSmsOrders])
+  }, [perms, toast, loadSmsOrders])
 
   const staffAutoCancelStale = useCallback(async () => {
     setSmsOrdersAutoCancelling(true)
     try {
+      if (!autoApproves(perms, 'tab_sms_orders')) {
+        const res = await submitPendingAction('tab_sms_orders', 'sms_auto_cancel_stale', 'Auto-cancel stale SMS orders', {})
+        if (!res.success) throw new Error(res.error || 'Failed to submit auto-cancel')
+        toast({ title: 'Auto-cancel submitted for approval' })
+        return
+      }
+
       const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_auto_cancel_stale' } })
       if (error) throw error
       if (!data?.success) throw new Error(data?.error || 'Failed to auto-cancel')
@@ -219,7 +259,7 @@ export default function StaffAdminPage() {
     } finally {
       setSmsOrdersAutoCancelling(false)
     }
-  }, [toast, loadSmsOrders])
+  }, [perms, toast, loadSmsOrders])
 
   // Users
   const [userQuery, setUserQuery] = useState('')
@@ -243,6 +283,25 @@ export default function StaffAdminPage() {
   // My pending history
   const [myPending, setMyPending] = useState<any[]>([])
   const [loadingPending, setLoadingPending] = useState(false)
+
+  // Histories
+  const [depositHistory, setDepositHistory] = useState<StaffHistoryRow[]>([])
+  const [salesHistory, setSalesHistory] = useState<StaffHistoryRow[]>([])
+  const [loadingDepositHistory, setLoadingDepositHistory] = useState(false)
+  const [loadingSalesHistory, setLoadingSalesHistory] = useState(false)
+  const [depositHistoryWarning, setDepositHistoryWarning] = useState('')
+  const [salesHistoryWarning, setSalesHistoryWarning] = useState('')
+  const [revenueOsSnapshot, setRevenueOsSnapshot] = useState<StaffRevenueOsSnapshot['data'] | null>(null)
+  const [loadingRevenueOs, setLoadingRevenueOs] = useState(false)
+  const [savingRevenueOs, setSavingRevenueOs] = useState(false)
+  const [croEnabledDraft, setCroEnabledDraft] = useState(true)
+  const [croMaintenanceDraft, setCroMaintenanceDraft] = useState(true)
+  const [croShadowDraft, setCroShadowDraft] = useState(true)
+  const [croExperimentDraft, setCroExperimentDraft] = useState(false)
+  const [croAutonomyDraft, setCroAutonomyDraft] = useState('1')
+  const [croHoldoutDraft, setCroHoldoutDraft] = useState('5')
+  const [croPromotionMaxDiscountDraft, setCroPromotionMaxDiscountDraft] = useState('20')
+  const [croPromotionMonthlyBudgetDraft, setCroPromotionMonthlyBudgetDraft] = useState('0')
 
   // ── Load permissions ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -279,6 +338,72 @@ export default function StaffAdminPage() {
       toast({ title: 'Failed to load SMS products', description: err.message, variant: 'destructive' })
     } finally {
       setSmsProductsLoading(false)
+    }
+  }, [perms, toast])
+
+  const loadDepositHistory = useCallback(async () => {
+    if (!can(perms, 'tab_transactions')) return
+    setLoadingDepositHistory(true)
+    try {
+      const { data, error } = await supabase.functions.invoke<StaffHistoryResponse>('manage-staff', {
+        body: { action: 'staff_deposit_history' },
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to load deposit history')
+      setDepositHistory(data.data || [])
+      setDepositHistoryWarning(data.warning || '')
+    } catch (err: any) {
+      setDepositHistoryWarning('')
+      toast({ title: 'Failed to load deposit history', description: err.message, variant: 'destructive' })
+    } finally {
+      setLoadingDepositHistory(false)
+    }
+  }, [perms, toast])
+
+  const loadSalesHistory = useCallback(async () => {
+    if (!can(perms, 'tab_sales')) return
+    setLoadingSalesHistory(true)
+    try {
+      const { data, error } = await supabase.functions.invoke<StaffHistoryResponse>('manage-staff', {
+        body: { action: 'staff_sales_history' },
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to load sales history')
+      setSalesHistory(data.data || [])
+      setSalesHistoryWarning(data.warning || '')
+    } catch (err: any) {
+      setSalesHistoryWarning('')
+      toast({ title: 'Failed to load sales history', description: err.message, variant: 'destructive' })
+    } finally {
+      setLoadingSalesHistory(false)
+    }
+  }, [perms, toast])
+
+  const loadRevenueOsSnapshot = useCallback(async () => {
+    if (!can(perms, 'tab_revenue_os')) return
+    setLoadingRevenueOs(true)
+    try {
+      const { data, error } = await supabase.functions.invoke<StaffRevenueOsSnapshot>('manage-staff', {
+        body: { action: 'staff_revenue_os_snapshot' },
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Failed to load Revenue OS')
+      const snapshot = data.data || null
+      const settings = snapshot?.settings || {}
+      const freezeReason = String(settings.cro_maintenance_freeze_reason || '').trim()
+      setRevenueOsSnapshot(snapshot)
+      setCroEnabledDraft(settings.cro_global_enabled !== 'false' && !freezeReason)
+      setCroMaintenanceDraft(settings.cro_maintenance_enabled !== 'false')
+      setCroShadowDraft(settings.cro_shadow_mode_enabled === 'true')
+      setCroExperimentDraft(settings.cro_experimentation_enabled === 'true')
+      setCroAutonomyDraft(settings.cro_autonomy_level || '1')
+      setCroHoldoutDraft(settings.cro_global_holdout_pct || settings.cro_holdout_percentage || '5')
+      setCroPromotionMaxDiscountDraft(settings.cro_promotion_max_discount_pct || '20')
+      setCroPromotionMonthlyBudgetDraft(settings.cro_promotion_monthly_budget_ngn || '0')
+    } catch (err: any) {
+      toast({ title: 'Failed to load Revenue OS', description: err.message, variant: 'destructive' })
+    } finally {
+      setLoadingRevenueOs(false)
     }
   }, [perms, toast])
 
@@ -326,7 +451,50 @@ export default function StaffAdminPage() {
     if (can(perms, 'tab_sms_products')) {
       loadSmsProducts()
     }
-  }, [perms, loadingPerms, loadSmsProducts])
+    if (can(perms, 'tab_transactions')) {
+      loadDepositHistory()
+    }
+    if (can(perms, 'tab_sales')) {
+      loadSalesHistory()
+    }
+    if (can(perms, 'tab_revenue_os')) {
+      loadRevenueOsSnapshot()
+    }
+  }, [perms, loadingPerms, loadSmsProducts, loadDepositHistory, loadSalesHistory, loadRevenueOsSnapshot])
+
+  const saveRevenueOsControls = async () => {
+    if (!can(perms, 'tab_revenue_os')) return
+    setSavingRevenueOs(true)
+    try {
+      const res = await submitPendingAction(
+        'tab_revenue_os',
+        'cro_update_controls',
+        'Update Revenue OS controls',
+        {
+          settings: {
+            cro_global_enabled: croEnabledDraft ? 'true' : 'false',
+            cro_maintenance_enabled: croMaintenanceDraft ? 'true' : 'false',
+            cro_shadow_mode_enabled: croShadowDraft ? 'true' : 'false',
+            cro_experimentation_enabled: croExperimentDraft ? 'true' : 'false',
+            cro_autonomy_level: croAutonomyDraft,
+            cro_global_holdout_pct: croHoldoutDraft,
+            cro_promotion_max_discount_pct: croPromotionMaxDiscountDraft,
+            cro_promotion_monthly_budget_ngn: croPromotionMonthlyBudgetDraft,
+          },
+        },
+      )
+      if (!res.success) throw new Error(res.error || 'Failed to save Revenue OS controls')
+      toast({
+        title: res.applied ? 'Revenue OS controls saved' : 'Submitted for approval',
+        description: res.applied ? 'Staff Revenue OS control changes are now live.' : 'Admin approval is required before these controls change.',
+      })
+      if (res.applied) await loadRevenueOsSnapshot()
+    } catch (err: any) {
+      toast({ title: 'Could not save Revenue OS controls', description: err.message, variant: 'destructive' })
+    } finally {
+      setSavingRevenueOs(false)
+    }
+  }
 
   const loadBroadcastJobs = useCallback(async () => {
     if (!can(perms, 'tab_email')) return
@@ -385,18 +553,17 @@ export default function StaffAdminPage() {
     label: string,
     onSuccess?: () => void,
   ) {
-    if (autoApproves(perms, permKey)) {
-      const ok = await upsertAppSetting(settingKey, value)
-      if (!ok) {
-        toast({ variant: 'destructive', title: `Failed to update ${label}` })
-        return
-      }
+    const res = await submitPendingAction(permKey, 'upsert_setting', `Set ${label} to ${value}`, { setting_key: settingKey, value })
+    if (res.success) {
+      if (res.applied) {
       toast({ title: `${label} updated` })
       onSuccess?.()
+      } else {
+        toast({ title: 'Submitted for approval' })
+        loadMyPending()
+      }
     } else {
-      const res = await submitPendingAction(permKey, 'upsert_setting', `Set ${label} to ${value}`, { setting_key: settingKey, value })
-      if (res.success) { toast({ title: 'Submitted for approval' }); loadMyPending() }
-      else toast({ variant: 'destructive', title: res.error })
+      toast({ variant: 'destructive', title: res.error })
     }
   }
 
@@ -404,40 +571,30 @@ export default function StaffAdminPage() {
   async function submitSmsAction(actionType: string, label: string, actionData: Record<string, unknown>) {
     const res = await submitPendingAction('tab_sms_products', actionType, label, actionData)
     if (res.success) {
-      toast({ title: 'Submitted for approval' })
-      loadMyPending()
+      if (!res.applied) {
+        toast({ title: 'Submitted for approval' })
+        loadMyPending()
+      }
     } else {
       toast({ variant: 'destructive', title: res.error })
     }
-  }
-
-  async function invokeSmsProductAction(body: Record<string, unknown>) {
-    const { data, error } = await supabase.functions.invoke<{ success: boolean; error?: string; count?: number }>('smsbus', { body })
-    if (error) throw error
-    if (!data?.success) throw new Error(data?.error || 'SMS product update failed')
-    return data
+    return res
   }
 
   async function updateSmsProduct(serviceCode: string, updates: Record<string, unknown>, reload = false) {
     const product = smsProducts.find(item => item.service_code === serviceCode)
     setSmsSavingKey(`${serviceCode}-${Object.keys(updates).join('-')}`)
     try {
-      if (autoApproves(perms, 'tab_sms_products')) {
-        await invokeSmsProductAction({
-          action: 'admin_update_sms_product',
-          service_code: serviceCode,
-          service_name: product?.service_name,
-          ...updates,
-        })
+      const res = await submitSmsAction(
+        'sms_update_product',
+        `Update SMS product ${product?.service_name || serviceCode}`,
+        { service_code: serviceCode, service_name: product?.service_name, ...updates },
+      )
+      if (!res.success) return
+      if (res.applied) {
         setSmsProducts(prev => prev.map(item => item.service_code === serviceCode ? { ...item, ...updates } as StaffSmsProduct : item))
         if (reload) await loadSmsProducts()
         toast({ title: 'SMS product updated' })
-      } else {
-        await submitSmsAction(
-          'sms_update_product',
-          `Update SMS product ${product?.service_name || serviceCode}`,
-          { service_code: serviceCode, service_name: product?.service_name, ...updates },
-        )
       }
     } catch (err: any) {
       toast({ title: 'SMS product update failed', description: err.message, variant: 'destructive' })
@@ -473,19 +630,13 @@ export default function StaffAdminPage() {
     }
     setSmsSavingKey('global-markup')
     try {
-      if (autoApproves(perms, 'tab_sms_products')) {
-        const data = await invokeSmsProductAction({
-          action: 'admin_apply_sms_markup',
-          margin_ngn: Math.round(margin),
-          keep_auto_applying: smsKeepAutoApply,
-        })
+      const data = await submitSmsAction('sms_apply_markup', `Apply SMS markup NGN ${Math.round(margin).toLocaleString()}`, {
+        margin_ngn: Math.round(margin),
+        keep_auto_applying: smsKeepAutoApply,
+      })
+      if (data.success && data.applied) {
         await loadSmsProducts()
-        toast({ title: 'SMS markup applied', description: `${data.count || 0} product(s) updated.` })
-      } else {
-        await submitSmsAction('sms_apply_markup', `Apply SMS markup NGN ${Math.round(margin).toLocaleString()}`, {
-          margin_ngn: Math.round(margin),
-          keep_auto_applying: smsKeepAutoApply,
-        })
+        toast({ title: 'SMS markup applied' })
       }
     } catch (err: any) {
       toast({ title: 'Markup failed', description: err.message, variant: 'destructive' })
@@ -498,15 +649,13 @@ export default function StaffAdminPage() {
     const next = !smsRoundToNearestTen
     setSmsSavingKey('round-to-10')
     try {
-      if (autoApproves(perms, 'tab_sms_products')) {
-        await invokeSmsProductAction({ action: 'admin_set_sms_rounding', round_to_nearest_10: next })
+      const res = await submitSmsAction('sms_set_rounding', `${next ? 'Enable' : 'Disable'} SMS rounding`, {
+        round_to_nearest_10: next,
+      })
+      if (res.success && res.applied) {
         setSmsRoundToNearestTen(next)
         await loadSmsProducts()
         toast({ title: next ? 'SMS rounding enabled' : 'SMS rounding disabled' })
-      } else {
-        await submitSmsAction('sms_set_rounding', `${next ? 'Enable' : 'Disable'} SMS rounding`, {
-          round_to_nearest_10: next,
-        })
       }
     } catch (err: any) {
       toast({ title: 'Rounding update failed', description: err.message, variant: 'destructive' })
@@ -518,12 +667,10 @@ export default function StaffAdminPage() {
   async function bulkToggleSmsProducts(isEnabled: boolean) {
     setSmsSavingKey(isEnabled ? 'enable-all' : 'disable-all')
     try {
-      if (autoApproves(perms, 'tab_sms_products')) {
-        const data = await invokeSmsProductAction({ action: 'admin_bulk_sms_products', is_enabled: isEnabled })
+      const data = await submitSmsAction('sms_bulk_products', `${isEnabled ? 'Enable' : 'Disable'} all SMS products`, { is_enabled: isEnabled })
+      if (data.success && data.applied) {
         await loadSmsProducts()
-        toast({ title: isEnabled ? 'SMS products enabled' : 'SMS products disabled', description: `${data.count || 0} product(s) updated.` })
-      } else {
-        await submitSmsAction('sms_bulk_products', `${isEnabled ? 'Enable' : 'Disable'} all SMS products`, { is_enabled: isEnabled })
+        toast({ title: isEnabled ? 'SMS products enabled' : 'SMS products disabled' })
       }
     } catch (err: any) {
       toast({ title: 'Bulk update failed', description: err.message, variant: 'destructive' })
@@ -542,23 +689,18 @@ export default function StaffAdminPage() {
         support_popup_message: supportPopupMessage.trim(),
       }
 
-      if (autoApproves(perms, 'setting_support_links')) {
-        const results = await Promise.all(Object.entries(settings).map(([key, value]) => upsertAppSetting(key, value)))
-        if (results.some(ok => !ok)) {
-          toast({ variant: 'destructive', title: 'Failed to save support links' })
-          return
-        }
+      const res = await submitPendingAction('setting_support_links', 'upsert_settings', 'Update support links', { settings })
+      if (res.success) {
+        if (res.applied) {
         const { invalidateSupportSettingsCache } = await import('@/hooks/useSupportSettings')
         invalidateSupportSettingsCache()
         toast({ title: 'Support links saved' })
       } else {
-        const res = await submitPendingAction('setting_support_links', 'upsert_settings', 'Update support links', { settings })
-        if (res.success) {
           toast({ title: 'Submitted for approval' })
           loadMyPending()
-        } else {
-          toast({ variant: 'destructive', title: res.error })
         }
+      } else {
+        toast({ variant: 'destructive', title: res.error })
       }
     } finally { setSavingSupportLinks(false) }
   }
@@ -641,7 +783,7 @@ export default function StaffAdminPage() {
     }
 
     if (!autoApproves(perms, 'tab_email')) {
-      const res = await submitPendingAction('tab_email', 'broadcast_email', 'Broadcast email to all users', {
+      const res = await submitPendingAction('tab_email', 'broadcast_email', 'Broadcast email to opted-in customers', {
         subject: emailSubject,
         message: emailMessage,
       })
@@ -710,27 +852,24 @@ export default function StaffAdminPage() {
         password: addPassword,
         email: addEmail || undefined,
       }
-      if (autoApproves(perms, 'tab_add_product')) {
-        const account = await createIndividualAccount({ ...payload, status: 'available' })
-        if (!account) throw new Error('Account was not added')
+      const res = await submitPendingAction(
+        'tab_add_product',
+        'add_single_account',
+        `Add account for ${productGroups.find(pg => pg.id === addPgId)?.name || addPgId}`,
+        payload,
+      )
+      if (!res.success) throw new Error(res.error || 'Failed to submit action')
+      if (res.applied) {
         const updatedProductGroups = await getAllProductGroups()
         setProductGroups(updatedProductGroups)
         toast({ title: 'Account added' })
-        setAddUsername(''); setAddPassword(''); setAddEmail('')
       } else {
-        const res = await submitPendingAction(
-          'tab_add_product',
-          'add_single_account',
-          `Add account for ${productGroups.find(pg => pg.id === addPgId)?.name || addPgId}`,
-          payload,
-        )
-        if (!res.success) throw new Error(res.error || 'Failed to submit for approval')
         toast({ title: 'Submitted for approval' })
-        setAddUsername('')
-        setAddPassword('')
-        setAddEmail('')
         loadMyPending()
       }
+      setAddUsername('')
+      setAddPassword('')
+      setAddEmail('')
     } catch (error) {
       toast({
         variant: 'destructive',
@@ -757,10 +896,20 @@ export default function StaffAdminPage() {
         return
       }
 
-      if (autoApproves(perms, 'tab_bulk_upload')) {
-        const result = await processBulkAccountUpload(parsed, bulkPgId)
-        setBulkResult(result)
-        if (result.success) {
+      const res = await submitPendingAction(
+        'tab_bulk_upload',
+        'bulk_upload_accounts',
+        `Upload accounts to ${productGroups.find(pg => pg.id === bulkPgId)?.name || bulkPgId}`,
+        {
+          product_group_id: bulkPgId,
+          parsed_rows: parsed,
+          csv_rows: parsed.length,
+        }
+      )
+      if (!res.success) throw new Error(res.error || 'Failed to submit action')
+      if (res.applied) {
+          const result = { success: true, accountsCreated: res.accountsCreated || parsed.length }
+          setBulkResult(result)
           const updatedProductGroups = await getAllProductGroups()
           setProductGroups(updatedProductGroups)
           const updatedProduct = updatedProductGroups.find(pg => pg.id === bulkPgId)
@@ -771,22 +920,13 @@ export default function StaffAdminPage() {
           })
           setCsvFile(null)
           if (fileInputRef.current) fileInputRef.current.value = ''
-        } else {
-          toast({ variant: 'destructive', title: 'Upload failed', description: result.error })
-        }
       } else {
-        const res = await submitPendingAction(
-          'tab_bulk_upload',
-          'bulk_upload_accounts',
-          `Upload accounts to ${productGroups.find(pg => pg.id === bulkPgId)?.name || bulkPgId}`,
-          {
-            product_group_id: bulkPgId,
-            parsed_rows: parsed,
-            csv_rows: parsed.length,
-          }
-        )
-        if (!res.success) throw new Error(res.error || 'Failed to submit for approval')
-        const result = { success: true, accountsCreated: parsed.length }
+        const result = {
+          success: false,
+          accountsCreated: 0,
+          pending: true,
+          error: 'Submitted for approval. No accounts have been added yet.',
+        }
         setBulkResult(result)
         toast({ title: 'Submitted for approval', description: 'Bulk upload will apply after admin approval.' })
         setCsvFile(null)
@@ -804,12 +944,20 @@ export default function StaffAdminPage() {
     if (!newCatName.trim()) return
     setAddingCat(true)
     try {
-      const category = await createCategory(newCatName, newCatName, newCatDesc || undefined)
-      if (!category) throw new Error('Category was not created')
-      toast({ title: 'Category created' })
+      const res = await submitPendingAction('tab_categories', 'create_category', `Create category ${newCatName}`, {
+        name: newCatName,
+        description: newCatDesc || undefined,
+      })
+      if (!res.success) throw new Error(res.error || 'Failed to submit action')
+      if (res.applied) {
+        toast({ title: 'Category created' })
+        const cats = await getCategories()
+        setCategories(cats)
+      } else {
+        toast({ title: 'Submitted for approval' })
+        loadMyPending()
+      }
       setNewCatName(''); setNewCatDesc('')
-      const cats = await getCategories()
-      setCategories(cats)
     } catch (error) {
       toast({
         variant: 'destructive',
@@ -825,16 +973,22 @@ export default function StaffAdminPage() {
     if (!newCode.trim() || !newCodePct) return
     setCreatingCode(true)
     try {
-      const result = await createDiscountCode({
+      const codePayload = {
         code: newCode.toUpperCase(),
         percent_off: parseInt(newCodePct),
         max_uses: newCodeMaxUses ? parseInt(newCodeMaxUses) : undefined,
-      })
-      if (!result.success) throw new Error(result.error || 'Failed to create code')
-      toast({ title: 'Code created' })
+      }
+      const res = await submitPendingAction('tab_discount_codes', 'create_discount_code', `Create discount code ${codePayload.code}`, codePayload)
+      if (!res.success) throw new Error(res.error || 'Failed to submit action')
+      if (res.applied) {
+        toast({ title: 'Code created' })
+        const codes = await getDiscountCodes()
+        setDiscountCodes(codes)
+      } else {
+        toast({ title: 'Submitted for approval' })
+        loadMyPending()
+      }
       setNewCode(''); setNewCodePct('10'); setNewCodeMaxUses('')
-      const codes = await getDiscountCodes()
-      setDiscountCodes(codes)
     } catch (error) {
       toast({
         variant: 'destructive',
@@ -859,18 +1013,28 @@ export default function StaffAdminPage() {
     if (!editingPg) return
     setSavingPg(true)
     try {
-      const updated = await updateProductGroup(editingPg.id, {
+      const updates = {
         price: parseFloat(editPrice) || editingPg.price,
         muabanvia_product_id: editMua || null,
         shopclone_product_id: editShopclone || null,
         shopviaclone_product_id: editShopviaclone || null,
         auto_fulfill_enabled: editAutoFulfill,
+      }
+      const res = await submitPendingAction('tab_templates', 'update_product_group', `Update product ${editingPg.name}`, {
+        id: editingPg.id,
+        updates,
       })
-      if (!updated) throw new Error('Product was not updated')
-      toast({ title: 'Product updated' })
-      const pg = await getAllProductGroups()
-      setProductGroups(pg)
-      setEditingPg(null)
+      if (!res.success) throw new Error(res.error || 'Failed to submit action')
+      if (res.applied) {
+        toast({ title: 'Product updated' })
+        const pg = await getAllProductGroups()
+        setProductGroups(pg)
+        setEditingPg(null)
+      } else {
+        toast({ title: 'Submitted for approval' })
+        loadMyPending()
+        setEditingPg(null)
+      }
     } catch (error) {
       toast({
         variant: 'destructive',
@@ -904,23 +1068,28 @@ export default function StaffAdminPage() {
     if (!adjustUserId || !adjustAmount) return
     const amount = parseFloat(adjustAmount)
     if (isNaN(amount)) return
+    const targetUser = users.find(u => u.id === adjustUserId)
+    if (targetUser?.is_staff || targetUser?.is_admin) {
+      toast({
+        variant: 'destructive',
+        title: 'Customer account required',
+        description: 'Balance adjustments are only available for customer accounts.',
+      })
+      return
+    }
     setAdjusting(true)
     try {
       const key: PermissionKey = 'action_adjust_balance'
-      const su = users.find(u => u.id === adjustUserId)
-      const label = `${adjustType === 'add' ? 'Add' : 'Subtract'} ₦${amount.toLocaleString()} ${adjustType === 'add' ? 'to' : 'from'} ${su?.email || adjustUserId}`
-      if (autoApproves(perms, key)) {
-        const result = await adminAdjustBalance(adjustUserId, adjustType === 'add' ? amount : -amount, adjustReason || 'Staff adjustment', user?.email || 'staff')
-        if (result.success) {
-          toast({ title: 'Balance adjusted' })
-          setAdjustUserId(''); setAdjustAmount(''); setAdjustReason('')
-        } else toast({ variant: 'destructive', title: 'Balance adjustment failed' })
+      const label = `${adjustType === 'add' ? 'Add' : 'Subtract'} ₦${amount.toLocaleString()} ${adjustType === 'add' ? 'to' : 'from'} ${targetUser?.email || adjustUserId}`
+      const res = await submitPendingAction(key, 'adjust_balance', label, {
+        user_id: adjustUserId, amount: adjustType === 'add' ? amount : -amount, reason: adjustReason,
+      })
+      if (res.success) {
+        toast({ title: res.applied ? 'Balance adjusted' : 'Submitted for approval' })
+        if (!res.applied) loadMyPending()
+        setAdjustUserId(''); setAdjustAmount(''); setAdjustReason('')
       } else {
-        const res = await submitPendingAction(key, 'adjust_balance', label, {
-          user_id: adjustUserId, amount: adjustType === 'add' ? amount : -amount, reason: adjustReason,
-        })
-        if (res.success) { toast({ title: 'Submitted for approval' }); loadMyPending(); setAdjustUserId(''); setAdjustAmount(''); setAdjustReason('') }
-        else toast({ variant: 'destructive', title: res.error })
+        toast({ variant: 'destructive', title: res.error })
       }
     } catch (error) {
       toast({
@@ -952,7 +1121,8 @@ export default function StaffAdminPage() {
   const hasAnyTab =
     can(perms, 'view_stats') || can(perms, 'tab_templates') || can(perms, 'tab_products') ||
     can(perms, 'tab_add_product') || can(perms, 'tab_bulk_upload') || can(perms, 'tab_discount_codes') ||
-    can(perms, 'tab_sms_products') || can(perms, 'tab_categories') || can(perms, 'tab_users') || can(perms, 'tab_email') ||
+    can(perms, 'tab_sms_products') || can(perms, 'tab_sms_orders') || can(perms, 'tab_transactions') || can(perms, 'tab_sales') ||
+    can(perms, 'tab_revenue_os') || can(perms, 'tab_categories') || can(perms, 'tab_users') || can(perms, 'tab_email') ||
     hasSettingsPermission(perms)
 
   if (!hasAnyTab) {
@@ -978,6 +1148,9 @@ export default function StaffAdminPage() {
     can(perms, 'tab_bulk_upload')      && { key: 'bulk',      label: 'Bulk Upload' },
     can(perms, 'tab_sms_products')     && { key: 'sms-products', label: 'SMS Products' },
     can(perms, 'tab_sms_orders')       && { key: 'sms-orders',   label: 'SMS Orders' },
+    can(perms, 'tab_transactions')     && { key: 'transactions', label: 'Deposits' },
+    can(perms, 'tab_sales')            && { key: 'sales',        label: 'Sales' },
+    can(perms, 'tab_revenue_os')       && { key: 'revenue-os',   label: 'Revenue OS' },
     can(perms, 'tab_categories')       && { key: 'categories',label: 'Categories' },
     can(perms, 'tab_discount_codes')   && { key: 'discounts', label: 'Discount Codes' },
     can(perms, 'tab_users')            && { key: 'users',     label: 'Users' },
@@ -985,6 +1158,69 @@ export default function StaffAdminPage() {
     hasSettingsPermission(perms)        && { key: 'settings', label: 'Settings' },
     { key: 'my-actions', label: 'My Requests' },
   ].filter(Boolean) as { key: string; label: string }[]
+
+  const formatStaffMoney = (amount: number) => `₦${Number(amount || 0).toLocaleString('en-NG')}`
+  const formatStaffDate = (value: string) => {
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? 'Unknown date' : format(date, 'MMM d, yyyy HH:mm')
+  }
+  const renderHistoryRows = (
+    rows: StaffHistoryRow[],
+    loading: boolean,
+    emptyLabel: string,
+    onRefresh: () => void,
+    warning?: string,
+  ) => (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <CardTitle className="text-base">{emptyLabel}</CardTitle>
+        <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {warning && (
+          <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{warning}</span>
+          </div>
+        )}
+        {loading ? (
+          <div className="grid min-h-32 place-items-center text-sm text-muted-foreground">
+            <Loader2 className="mb-2 h-5 w-5 animate-spin" />
+            Loading history...
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+            No completed customer records found.
+          </div>
+        ) : (
+          <div className="grid gap-3 lg:grid-cols-2">
+            {rows.map((row) => (
+              <div key={row.id} className="min-w-0 rounded-xl border bg-card p-3 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary">{row.source}</Badge>
+                      <Badge variant="outline">{row.status || 'completed'}</Badge>
+                    </div>
+                    <p className="mt-2 truncate font-semibold">{row.title}</p>
+                    <p className="truncate text-xs text-muted-foreground">{row.subtitle || row.reference || 'No reference'}</p>
+                  </div>
+                  <p className="shrink-0 text-sm font-bold">{formatStaffMoney(row.amount)}</p>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                  <span className="truncate">{row.customer_email || row.customer}</span>
+                  <span className="text-right">{formatStaffDate(row.date)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
 
   return (
     <div className="min-h-screen bg-background">
@@ -1010,6 +1246,170 @@ export default function StaffAdminPage() {
                 <Card><CardContent className="pt-6 text-center"><p className="text-3xl font-bold">{salesStats.totalSales.toLocaleString()}</p><p className="text-muted-foreground text-sm mt-1">Total Orders</p></CardContent></Card>
                 <Card><CardContent className="pt-6 text-center"><p className="text-3xl font-bold">₦{(salesStats.totalRevenue / 1000).toFixed(0)}k</p><p className="text-muted-foreground text-sm mt-1">Revenue</p></CardContent></Card>
               </div>
+            </TabsContent>
+          )}
+
+          {can(perms, 'tab_transactions') && (
+            <TabsContent value="transactions" className="space-y-4">
+              {renderHistoryRows(depositHistory, loadingDepositHistory, 'Completed Deposit History', loadDepositHistory, depositHistoryWarning)}
+            </TabsContent>
+          )}
+
+          {can(perms, 'tab_sales') && (
+            <TabsContent value="sales" className="space-y-4">
+              {renderHistoryRows(salesHistory, loadingSalesHistory, 'Completed Sales History', loadSalesHistory, salesHistoryWarning)}
+            </TabsContent>
+          )}
+
+          {can(perms, 'tab_revenue_os') && (
+            <TabsContent value="revenue-os" className="space-y-4">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between gap-3">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Activity className="h-5 w-5" />
+                      Revenue OS
+                    </CardTitle>
+                    <p className="text-sm text-muted-foreground">Bounded CRO controls, data-quality health, and current commercial opportunities.</p>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" onClick={loadRevenueOsSnapshot} disabled={loadingRevenueOs}>
+                    {loadingRevenueOs ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    Refresh
+                  </Button>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {revenueOsSnapshot?.warning && (
+                    <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>{revenueOsSnapshot.warning}</span>
+                    </div>
+                  )}
+
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div className="rounded-xl border bg-card p-3">
+                      <p className="text-xs text-muted-foreground">CRO status</p>
+                      <p className="mt-1 font-semibold">
+                        {String(revenueOsSnapshot?.settings?.cro_maintenance_freeze_reason || '').trim()
+                          ? 'Frozen'
+                          : revenueOsSnapshot?.settings?.cro_global_enabled === 'false'
+                            ? 'Paused'
+                            : 'Active'}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border bg-card p-3">
+                      <p className="text-xs text-muted-foreground">Autonomy</p>
+                      <p className="mt-1 font-semibold">Level {revenueOsSnapshot?.settings?.cro_autonomy_level || '1'}</p>
+                    </div>
+                    <div className="rounded-xl border bg-card p-3">
+                      <p className="text-xs text-muted-foreground">Quality checks</p>
+                      <p className="mt-1 font-semibold">{(revenueOsSnapshot?.quality || []).length}</p>
+                    </div>
+                    <div className="rounded-xl border bg-card p-3">
+                      <p className="text-xs text-muted-foreground">Opportunities</p>
+                      <p className="mt-1 font-semibold">{(revenueOsSnapshot?.opportunities || []).length}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 lg:grid-cols-[0.9fr_1.1fr]">
+                    <div className="rounded-xl border p-4 space-y-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold">CRO active</p>
+                          <p className="text-xs text-muted-foreground">Pause all personalized Revenue OS actions.</p>
+                        </div>
+                        <Switch
+                          checked={croEnabledDraft}
+                          onCheckedChange={setCroEnabledDraft}
+                          disabled={!!String(revenueOsSnapshot?.settings?.cro_maintenance_freeze_reason || '').trim()}
+                        />
+                      </div>
+                      {String(revenueOsSnapshot?.settings?.cro_maintenance_freeze_reason || '').trim() && (
+                        <p className="rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-xs font-semibold text-destructive">
+                          Frozen by guardrail: {String(revenueOsSnapshot?.settings?.cro_maintenance_freeze_reason || '').trim()}
+                        </p>
+                      )}
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold">Scheduled checks</p>
+                          <p className="text-xs text-muted-foreground">Allow maintenance to refresh intelligence and freeze on critical failures.</p>
+                        </div>
+                        <Switch checked={croMaintenanceDraft} onCheckedChange={setCroMaintenanceDraft} />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold">Shadow mode</p>
+                          <p className="text-xs text-muted-foreground">Record decisions without showing risky interventions.</p>
+                        </div>
+                        <Switch checked={croShadowDraft} onCheckedChange={setCroShadowDraft} />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold">Experiments</p>
+                          <p className="text-xs text-muted-foreground">Allow running CRO experiments to assign visitors to approved variants.</p>
+                        </div>
+                        <Switch checked={croExperimentDraft} onCheckedChange={setCroExperimentDraft} />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground">Autonomy 0-8</label>
+                          <Input value={croAutonomyDraft} onChange={(event) => setCroAutonomyDraft(event.target.value)} inputMode="numeric" />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground">Holdout %</label>
+                          <Input value={croHoldoutDraft} onChange={(event) => setCroHoldoutDraft(event.target.value)} inputMode="decimal" />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground">Max promo %</label>
+                          <Input value={croPromotionMaxDiscountDraft} onChange={(event) => setCroPromotionMaxDiscountDraft(event.target.value)} inputMode="decimal" />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground">Promo budget ₦</label>
+                          <Input value={croPromotionMonthlyBudgetDraft} onChange={(event) => setCroPromotionMonthlyBudgetDraft(event.target.value)} inputMode="numeric" />
+                        </div>
+                      </div>
+                      <Button type="button" onClick={saveRevenueOsControls} disabled={savingRevenueOs} className="w-full">
+                        {savingRevenueOs ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                        {autoApproves(perms, 'tab_revenue_os') ? 'Save controls' : 'Submit controls'}
+                      </Button>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="rounded-xl border p-4">
+                        <p className="mb-3 font-semibold">Latest Quality</p>
+                        <div className="space-y-2">
+                          {(revenueOsSnapshot?.quality || []).slice(0, 4).map((row) => (
+                            <div key={row.id || row.check_key} className="rounded-lg bg-muted/40 p-2 text-xs">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate font-medium">{row.check_key || 'quality_check'}</span>
+                                <Badge variant={row.severity === 'critical' ? 'destructive' : 'outline'}>{row.severity || row.status || 'info'}</Badge>
+                              </div>
+                              <p className="mt-1 line-clamp-2 text-muted-foreground">{row.message || 'No message'}</p>
+                            </div>
+                          ))}
+                          {(!revenueOsSnapshot?.quality || revenueOsSnapshot.quality.length === 0) && <p className="text-sm text-muted-foreground">No checks loaded.</p>}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border p-4">
+                        <p className="mb-3 font-semibold">Top Opportunities</p>
+                        <div className="space-y-2">
+                          {(revenueOsSnapshot?.opportunities || []).slice(0, 4).map((row) => (
+                            <div key={row.id || row.opportunity_key} className="rounded-lg bg-muted/40 p-2 text-xs">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate font-medium">{row.type || row.opportunity_key || 'opportunity'}</span>
+                                <Badge variant="outline">{Number(row.priority || 0).toFixed(2)}</Badge>
+                              </div>
+                              <p className="mt-1 line-clamp-2 text-muted-foreground">{row.scope || row.status || 'Revenue opportunity'}</p>
+                            </div>
+                          ))}
+                          {(!revenueOsSnapshot?.opportunities || revenueOsSnapshot.opportunities.length === 0) && <p className="text-sm text-muted-foreground">No opportunities loaded.</p>}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
             </TabsContent>
           )}
 
@@ -1186,11 +1586,15 @@ export default function StaffAdminPage() {
                       </div>
                       {bulkResult && (
                         <div className={`p-3 rounded-lg text-sm ${
-                          bulkResult.success
+                          bulkResult.pending
+                            ? 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300'
+                            : bulkResult.success
                             ? 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300'
                             : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300'
                         }`}>
-                          {bulkResult.success
+                          {bulkResult.pending
+                            ? bulkResult.error
+                            : bulkResult.success
                             ? `Added ${bulkResult.accountsCreated} accounts.`
                             : `Upload failed: ${bulkResult.error || 'No accounts were added.'}`}
                         </div>
@@ -1378,12 +1782,20 @@ export default function StaffAdminPage() {
                             size="sm"
                             variant={dc.is_active ? 'outline' : 'default'}
                             onClick={async () => {
-                              const ok = await setDiscountCodeActive(dc.id, !dc.is_active)
-                              if (ok) {
+                              const res = await submitPendingAction(
+                                'tab_discount_codes',
+                                'toggle_discount_code',
+                                `${dc.is_active ? 'Disable' : 'Enable'} discount code ${dc.code}`,
+                                { id: dc.id, is_active: !dc.is_active },
+                              )
+                              if (res.success && res.applied) {
                                 const codes = await getDiscountCodes()
                                 setDiscountCodes(codes)
+                              } else if (res.success) {
+                                toast({ title: 'Submitted for approval' })
+                                loadMyPending()
                               } else {
-                                toast({ variant: 'destructive', title: 'Failed to update code' })
+                                toast({ variant: 'destructive', title: res.error || 'Failed to update code' })
                               }
                             }}
                           >
@@ -1424,7 +1836,7 @@ export default function StaffAdminPage() {
                             <p className="text-muted-foreground text-xs">Balance: ₦{(u.wallet_balance || 0).toLocaleString()}</p>
                           </div>
                           {can(perms, 'action_adjust_balance') && (
-                            <Button size="sm" variant="outline" onClick={() => setAdjustUserId(u.id)}>
+                            <Button size="sm" variant="outline" onClick={() => setAdjustUserId(u.id)} disabled={u.is_staff || u.is_admin}>
                               Adjust Balance
                             </Button>
                           )}
@@ -1518,7 +1930,7 @@ export default function StaffAdminPage() {
                     <div className="flex items-center gap-2 flex-1">
                       <Button onClick={handleBroadcast} disabled={isBroadcasting || !emailMessage.trim()} className="flex-1">
                         {isBroadcasting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Mail className="h-4 w-4 mr-2" />}
-                        {autoApproves(perms, 'tab_email') ? (isDryRun ? 'Dry Run' : 'Broadcast to All Users') : 'Submit Broadcast'}
+                        {autoApproves(perms, 'tab_email') ? (isDryRun ? 'Dry Run' : 'Broadcast to Opted-In Customers') : 'Submit Broadcast'}
                       </Button>
                       {autoApproves(perms, 'tab_email') && (
                         <label className="flex items-center gap-1.5 text-xs whitespace-nowrap cursor-pointer">
@@ -1530,7 +1942,7 @@ export default function StaffAdminPage() {
                   </div>
                   {dryRunResult && (
                     <div className="p-3 bg-blue-50 dark:bg-blue-950 rounded-lg text-sm text-blue-700 dark:text-blue-300">
-                      Total recipients: <strong>{dryRunResult.totalRecipients?.toLocaleString()}</strong>
+                      Opted-in recipients: <strong>{dryRunResult.totalRecipients?.toLocaleString()}</strong>
                     </div>
                   )}
                 </CardContent>

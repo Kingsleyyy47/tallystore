@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -8,6 +8,7 @@ import { Loader2, Mail, Lock, Gift } from 'lucide-react'
 import NavbarAuth from '@/components/NavbarAuth'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
+import { trackRevenueEvent } from '@/lib/revenue-os'
 
 export default function RegisterPage() {
   const [searchParams] = useSearchParams()
@@ -20,10 +21,25 @@ export default function RegisterPage() {
   const { toast } = useToast()
   const navigate = useNavigate()
 
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      surface: 'register',
+      metadata: {
+        has_referral_param: Boolean(searchParams.get('ref')),
+      },
+    })
+  }, [searchParams])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
     if (!email || !password || !confirmPassword) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: 'register_form',
+        metadata: { reason: 'missing_fields', has_referral_code: Boolean(referralCode.trim()) },
+      })
       toast({
         title: "Missing fields",
         description: "Please fill in all fields",
@@ -33,6 +49,11 @@ export default function RegisterPage() {
     }
 
     if (password !== confirmPassword) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: 'register_form',
+        metadata: { reason: 'password_mismatch', has_referral_code: Boolean(referralCode.trim()) },
+      })
       toast({
         title: "Password mismatch",
         description: "Passwords do not match",
@@ -42,6 +63,11 @@ export default function RegisterPage() {
     }
 
     if (password.length < 6) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: 'register_form',
+        metadata: { reason: 'password_too_short', has_referral_code: Boolean(referralCode.trim()) },
+      })
       toast({
         title: "Password too short",
         description: "Password must be at least 6 characters",
@@ -51,17 +77,40 @@ export default function RegisterPage() {
     }
 
     setIsLoading(true)
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface: 'register_attempt',
+      metadata: {
+        email_domain: email.includes('@') ? email.split('@').pop()?.toLowerCase() || null : null,
+        has_referral_code: Boolean(referralCode.trim()),
+      },
+    })
 
     try {
       const result = await signUp(email, password, referralCode)
       
       if (result.success) {
+        trackRevenueEvent({
+          eventType: 'OFFER_ACCEPTED',
+          surface: 'register_success',
+          metadata: {
+            has_referral_code: Boolean(referralCode.trim()),
+          },
+        })
         toast({
           title: "Account created!",
           description: "You can now sign in to your account"
         })
         navigate('/login')
       } else {
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          surface: 'register_failed',
+          metadata: {
+            reason: result.error || 'registration_failed',
+            has_referral_code: Boolean(referralCode.trim()),
+          },
+        })
         toast({
           title: "Registration failed",
           description: result.error || "Failed to create account",
@@ -69,6 +118,14 @@ export default function RegisterPage() {
         })
       }
     } catch (error) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: 'register_error',
+        metadata: {
+          reason: error instanceof Error ? error.message : 'unexpected_error',
+          has_referral_code: Boolean(referralCode.trim()),
+        },
+      })
       toast({
         title: "Registration error",
         description: "An unexpected error occurred",

@@ -12,11 +12,8 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 // Test database connection and setup
 export async function testAuthConnection(): Promise<{ success: boolean; message: string }> {
   try {
-    console.log('🔍 Testing Supabase auth connection...')
-    
     // Test basic connection
     const { data: { session } } = await supabase.auth.getSession()
-    console.log('✅ Supabase auth connection successful')
     
     // Test if profiles table exists
     const { data, error } = await supabase
@@ -34,7 +31,6 @@ export async function testAuthConnection(): Promise<{ success: boolean; message:
       throw error
     }
     
-    console.log('✅ Profiles table exists and accessible')
     return { success: true, message: 'Authentication tables are ready!' }
     
   } catch (error) {
@@ -130,6 +126,8 @@ export interface ProductGroup {
   price: number
   features?: any[]
   stock_count: number
+  availability_status?: 'AVAILABLE' | 'LOW_STOCK' | 'PREORDER' | 'BACKORDER' | 'UNLIMITED' | 'UNAVAILABLE' | 'PAUSED' | 'UNKNOWN' | string | null
+  is_sellable?: boolean | null
   is_active: boolean
   created_at: string
   categories?: { name: string }
@@ -154,11 +152,10 @@ export interface QuantityDiscountTier {
 // flag in supabase/functions/process-purchase/index.ts - keep both in sync.
 export const DISCOUNTS_ENABLED = true
 
-// Picks the best applicable tier for a given quantity (highest min_qty the
-// quantity meets or exceeds) and returns the discounted total. Mirrors the
-// exact same logic used server-side in process-purchase/index.ts - if you
-// change this, change that too, or displayed totals will stop matching what
-// actually gets charged.
+// Picks the best applicable bulk tier for a given quantity (highest min_qty the
+// quantity meets or exceeds) and returns the discounted total. Tiers start at 2
+// units so a single account cannot accidentally be repriced by a "bulk" rule.
+// Mirrors the exact same logic used server-side in process-purchase/index.ts.
 export function computeDiscountedTotal(
   unitPrice: number,
   quantity: number,
@@ -169,7 +166,7 @@ export function computeDiscountedTotal(
     return { total: originalTotal, discountPct: 0, originalTotal }
   }
   const applicable = tiers
-    .filter((t) => quantity >= t.min_qty)
+    .filter((t) => Number(t.min_qty) >= 2 && quantity >= Number(t.min_qty))
     .sort((a, b) => b.discount_pct - a.discount_pct)[0]
   if (!applicable) {
     return { total: originalTotal, discountPct: 0, originalTotal }
@@ -229,7 +226,6 @@ export async function getCategories(): Promise<Category[]> {
       throw error
     }
 
-    console.log('✅ Categories fetched from Supabase:', data)
     return data || []
   } catch (error) {
     console.error('❌ Error fetching categories:', error)
@@ -250,7 +246,6 @@ export async function getAllProductGroups(): Promise<ProductGroup[]> {
       throw error
     }
 
-    console.log('✅ Product groups fetched from Supabase:', data)
     return data || []
   } catch (error) {
     console.error('❌ Error fetching product groups:', error)
@@ -263,9 +258,6 @@ export async function testConnection() {
     // Test basic Supabase connection without hitting RLS policies
     // Just test if we can reach Supabase at all
     const { data: { session } } = await supabase.auth.getSession()
-    
-    console.log('🔗 Supabase connection successful!')
-    console.log('📊 Current session:', session ? 'Authenticated' : 'Anonymous')
     
     return true
   } catch (error) {
@@ -296,7 +288,6 @@ export async function createCategory(name: string, displayName: string, descript
       throw error
     }
 
-    console.log('✅ Category created:', data)
     return data
   } catch (error) {
     console.error('❌ Failed to create category:', error)
@@ -318,7 +309,6 @@ export async function updateCategory(id: string, updates: Partial<Category>): Pr
       throw error
     }
 
-    console.log('✅ Category updated:', data)
     return data
   } catch (error) {
     console.error('❌ Failed to update category:', error)
@@ -338,7 +328,6 @@ export async function deleteCategory(id: string): Promise<boolean> {
       throw error
     }
 
-    console.log('✅ Category deleted:', id)
     return true
   } catch (error) {
     console.error('❌ Failed to delete category:', error)
@@ -360,7 +349,6 @@ export async function createProductGroup(productGroup: Omit<ProductGroup, 'id' |
       throw error
     }
 
-    console.log('✅ Product group created:', data)
     return data
   } catch (error) {
     console.error('❌ Failed to create product group:', error)
@@ -382,7 +370,6 @@ export async function updateProductGroup(id: string, updates: Partial<ProductGro
       throw error
     }
 
-    console.log('✅ Product group updated:', data)
     return data
   } catch (error) {
     console.error('❌ Failed to update product group:', error)
@@ -435,7 +422,6 @@ export async function deleteProductGroup(id: string): Promise<boolean> {
       throw error
     }
 
-    console.log('✅ Product group deleted:', id)
     return true
   } catch (error) {
     console.error('❌ Failed to delete product group:', error)
@@ -456,7 +442,6 @@ export async function archiveProductGroup(id: string): Promise<boolean> {
       throw error
     }
 
-    console.log('✅ Product group archived:', id)
     return true
   } catch (error) {
     console.error('❌ Failed to archive product group:', error)
@@ -477,7 +462,6 @@ export async function restoreProductGroup(id: string): Promise<boolean> {
       throw error
     }
 
-    console.log('✅ Product group restored:', id)
     return true
   } catch (error) {
     console.error('❌ Failed to restore product group:', error)
@@ -518,7 +502,6 @@ export async function createIndividualAccount(account: Omit<IndividualAccount, '
     // Update stock count in product group
     await updateProductGroupStock(account.product_group_id)
 
-    console.log('✅ Individual account created:', data)
     return data
   } catch (error) {
     console.error('❌ Failed to create individual account:', error)
@@ -542,7 +525,6 @@ export async function bulkCreateIndividualAccounts(accounts: Omit<IndividualAcco
     const productGroupIds = [...new Set(accounts.map(acc => acc.product_group_id))]
     await Promise.all(productGroupIds.map(id => updateProductGroupStock(id)))
 
-    console.log('✅ Bulk accounts created:', data.length)
     return data
   } catch (error) {
     console.error('❌ Failed to bulk create accounts:', error)
@@ -663,37 +645,23 @@ export async function getAvailableAccountIdsByProductGroup(): Promise<Record<str
   }
 }
 
-// Real "most bought" ranking for the Popular Products section, computed from
-// completed orders rather than a stock-count proxy. Sums the quantity stored
-// in each order's account_details JSON (falls back to 1 per order if missing)
-// per product_group_id, and returns the top N ids, highest units-sold first.
+// Real "most bought" ranking for the Popular Products section, computed by a
+// security-definer RPC so staff/admin orders never contaminate customer-facing
+// popularity while profile rows stay hidden from customer browsers.
 export async function getTopSellingProductGroupIds(limit: number = 8): Promise<string[]> {
   try {
-    const { data, error } = await supabase
-      .from('orders')
-      .select('product_group_id, account_details')
-      .eq('status', 'completed')
-      .limit(5000)
+    const { data, error } = await supabase.rpc('get_customer_top_product_groups', {
+      p_limit: limit,
+    })
 
     if (error) {
-      console.error('❌ Error fetching orders for top sellers:', error)
+      console.error('❌ Error fetching customer top sellers:', error)
       throw error
     }
 
-    const totals: Record<string, number> = {}
-    for (const row of data || []) {
-      if (!row.product_group_id) continue
-      const details = row.account_details as { quantity?: number } | null
-      const qty = details && typeof details.quantity === 'number' && details.quantity > 0
-        ? details.quantity
-        : 1
-      totals[row.product_group_id] = (totals[row.product_group_id] || 0) + qty
-    }
-
-    return Object.entries(totals)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, limit)
-      .map(([id]) => id)
+    return (data || [])
+      .map((row: { product_group_id?: string | null }) => row.product_group_id)
+      .filter((id): id is string => Boolean(id))
   } catch (error) {
     console.error('❌ Failed to fetch top selling product groups:', error)
     return []
@@ -708,16 +676,20 @@ export async function getTopSellingProductGroupIds(limit: number = 8): Promise<s
 export async function getUserPurchaseHistory(userId: string): Promise<{
   productGroupCounts: Record<string, number>
   categoryCounts: Record<string, number>
+  lastPurchasedAtByProductGroup: Record<string, string>
+  lastPurchasedAtByCategory: Record<string, string>
+  lastProductGroupId: string | null
 }> {
-  const empty = { productGroupCounts: {}, categoryCounts: {} }
+  const empty = { productGroupCounts: {}, categoryCounts: {}, lastPurchasedAtByProductGroup: {}, lastPurchasedAtByCategory: {}, lastProductGroupId: null }
   if (!userId) return empty
 
   try {
     const { data, error } = await supabase
       .from('orders')
-      .select('product_group_id, account_details, product_groups(category_id)')
+      .select('product_group_id, account_details, created_at, product_groups(category_id)')
       .eq('user_id', userId)
       .eq('status', 'completed')
+      .order('created_at', { ascending: false })
       .limit(2000)
 
     if (error) {
@@ -727,22 +699,32 @@ export async function getUserPurchaseHistory(userId: string): Promise<{
 
     const productGroupCounts: Record<string, number> = {}
     const categoryCounts: Record<string, number> = {}
+    const lastPurchasedAtByProductGroup: Record<string, string> = {}
+    const lastPurchasedAtByCategory: Record<string, string> = {}
+    let lastProductGroupId: string | null = null
 
     for (const row of (data || []) as any[]) {
       if (!row.product_group_id) continue
+      if (!lastProductGroupId) lastProductGroupId = row.product_group_id
       const details = row.account_details as { quantity?: number } | null
       const qty = details && typeof details.quantity === 'number' && details.quantity > 0
         ? details.quantity
         : 1
       productGroupCounts[row.product_group_id] = (productGroupCounts[row.product_group_id] || 0) + qty
+      if (!lastPurchasedAtByProductGroup[row.product_group_id] || new Date(row.created_at).getTime() > new Date(lastPurchasedAtByProductGroup[row.product_group_id]).getTime()) {
+        lastPurchasedAtByProductGroup[row.product_group_id] = row.created_at
+      }
 
       const categoryId = row.product_groups?.category_id
       if (categoryId) {
         categoryCounts[categoryId] = (categoryCounts[categoryId] || 0) + qty
+        if (!lastPurchasedAtByCategory[categoryId] || new Date(row.created_at).getTime() > new Date(lastPurchasedAtByCategory[categoryId]).getTime()) {
+          lastPurchasedAtByCategory[categoryId] = row.created_at
+        }
       }
     }
 
-    return { productGroupCounts, categoryCounts }
+    return { productGroupCounts, categoryCounts, lastPurchasedAtByProductGroup, lastPurchasedAtByCategory, lastProductGroupId }
   } catch (error) {
     console.error('❌ Failed to fetch user purchase history:', error)
     return empty
@@ -794,12 +776,30 @@ export async function computeAndUpsertTrendSuggestions(options?: {
 
     const { data: orders, error } = await supabase
       .from('orders')
-      .select('product_group_id, account_details, created_at, status')
+      .select('product_group_id, user_id, account_details, created_at, status')
       .eq('status', 'completed')
       .gte('created_at', fourteenDaysAgo)
       .limit(5000)
 
     if (error) throw error
+
+    const userIds = [...new Set((orders || []).map((order) => order.user_id).filter(Boolean))]
+    const customerUserIds = new Set<string>()
+
+    if (userIds.length > 0) {
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('id, is_staff, is_admin')
+        .in('id', userIds)
+
+      if (profilesError) throw profilesError
+
+      for (const profile of profiles || []) {
+        if (!profile.is_staff && !profile.is_admin) {
+          customerUserIds.add(profile.id)
+        }
+      }
+    }
 
     const productGroups = await getAllProductGroups()
     const pgById: Record<string, ProductGroup> = {}
@@ -810,6 +810,7 @@ export async function computeAndUpsertTrendSuggestions(options?: {
     const recentByProduct: Record<string, number> = {}
 
     for (const row of orders || []) {
+      if (!customerUserIds.has(row.user_id)) continue
       const pg = pgById[row.product_group_id]
       if (!pg) continue
       const details = row.account_details as { quantity?: number } | null
@@ -993,7 +994,6 @@ export async function deleteIndividualAccount(id: string): Promise<boolean> {
       await updateProductGroupStock(account.product_group_id)
     }
 
-    console.log('✅ Individual account deleted:', id)
     return true
   } catch (error) {
     console.error('❌ Failed to delete individual account:', error)
@@ -1015,7 +1015,6 @@ export async function updateIndividualAccount(id: string, updates: Partial<Omit<
       throw error
     }
 
-    console.log('✅ Individual account updated:', data)
     return data
   } catch (error) {
     console.error('❌ Failed to update individual account:', error)
@@ -1049,7 +1048,6 @@ export async function updateProductGroupStock(productGroupId: string): Promise<b
       return false
     }
 
-    console.log('✅ Stock updated for product group:', productGroupId, 'New count:', count)
     return true
   } catch (error) {
     console.error('❌ Failed to update stock:', error)
@@ -1102,15 +1100,82 @@ export async function getIndividualAccountsByProductGroup(productGroupId: string
 }
 
 // === CSV PARSING UTILITY ===
+function parseCsvLine(line: string): string[] {
+  const values: string[] = []
+  let current = ''
+  let inQuotes = false
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]
+    const next = line[index + 1]
+
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"'
+      index += 1
+      continue
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes
+      continue
+    }
+
+    if (char === ',' && !inQuotes) {
+      values.push(current.trim())
+      current = ''
+      continue
+    }
+
+    current += char
+  }
+
+  values.push(current.trim())
+  return values
+}
+
 export function parseCSV(csvText: string): any[] {
-  const lines = csvText.trim().split('\n')
+  const lines = csvText
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+
   if (lines.length < 2) return []
 
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase())
+  const normalizeHeader = (header: string) => {
+    const key = header.trim().toLowerCase().replace(/^\uFEFF/, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+    const aliases: Record<string, string> = {
+      user: 'username',
+      user_name: 'username',
+      login: 'username',
+      account: 'username',
+      account_username: 'username',
+      mail: 'email',
+      email_address: 'email',
+      account_email: 'email',
+      pass: 'password',
+      account_password: 'password',
+      email_pass: 'email_password',
+      mail_password: 'email_password',
+      emailpassword: 'email_password',
+      twofa: 'two_fa_code',
+      two_factor: 'two_fa_code',
+      two_factor_code: 'two_fa_code',
+      authenticator: 'two_fa_code',
+      authenticator_code: 'two_fa_code',
+      recovery_mail: 'recovery_email',
+      recovery_email_address: 'recovery_email',
+      recovery_pass: 'recovery_email_password',
+      recovery_mail_password: 'recovery_email_password',
+    }
+    return aliases[key] || key
+  }
+
+  const headers = parseCsvLine(lines[0]).map(normalizeHeader)
   const rows = lines.slice(1)
 
   return rows.map(row => {
-    const values = row.split(',').map(v => v.trim())
+    const values = parseCsvLine(row)
     const obj: any = {}
     
     headers.forEach((header, index) => {
@@ -1156,8 +1221,6 @@ export async function processBulkAccountUpload(
   productGroupId: string
 ): Promise<{ success: boolean; accountsCreated: number; error?: string }> {
   try {
-    console.log('📤 Processing bulk account upload for product group:', productGroupId)
-
     if (!csvData || csvData.length === 0) {
       return { success: false, accountsCreated: 0, error: 'No account data provided' }
     }
@@ -1185,7 +1248,7 @@ export async function processBulkAccountUpload(
     for (const row of csvData) {
       // Skip rows without required data
       if (!row.password || (!row.email && !row.username)) {
-        console.warn('Skipping row with missing required data:', row)
+        console.warn('Skipping CSV row with missing required account data.')
         continue
       }
 
@@ -1227,8 +1290,6 @@ export async function processBulkAccountUpload(
       }
     }
 
-    console.log(`✅ Successfully created ${createdAccounts.length} accounts`)
-    
     return { 
       success: true, 
       accountsCreated: createdAccounts.length,
@@ -1278,120 +1339,21 @@ export async function getUserWalletBalance(userId: string): Promise<number> {
  * This function will be removed in a future update.
  */
 export async function updateUserWalletBalance(
-  userId: string,
-  amountToAdd: number,
-  reference?: string,
-  ercasReference?: string
+  _userId: string,
+  _amountToAdd: number,
+  _reference?: string,
+  _ercasReference?: string
 ): Promise<boolean> {
-  try {
-    // If a reference is provided, ensure we haven't processed it already
-    if (reference) {
-      const { data: existingTx, error: existingErr } = await supabase
-        .from('transactions')
-        .select('id')
-        .or(`reference.eq.${reference},ercas_reference.eq.${ercasReference || ''}`)
-        .limit(1)
-
-      if (existingErr) {
-        console.error('❌ Error checking existing transaction for idempotency:', existingErr)
-      }
-
-      if (existingTx && (existingTx as any[]).length > 0) {
-        console.log('⏭️ Transaction already processed, skipping wallet update:', reference)
-        return true
-      }
-    }
-
-    // Retry loop to avoid race conditions: update only when balance matches the read value
-    const maxAttempts = 5
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      // CRITICAL: If this is a retry (attempt > 0) and we have a reference, 
-      // check if the transaction was recorded by another concurrent process while we were failing.
-      if (reference && attempt > 0) {
-        const { data: retryCheckTx } = await supabase
-          .from('transactions')
-          .select('id')
-          .or(`reference.eq.${reference},ercas_reference.eq.${ercasReference || ''}`)
-          .limit(1)
-        
-        if (retryCheckTx && (retryCheckTx as any[]).length > 0) {
-          console.log('⏭️ Transaction found during retry check, skipping wallet update:', reference)
-          return true
-        }
-      }
-
-      const currentBalance = await getUserWalletBalance(userId)
-      const newBalance = currentBalance + amountToAdd
-
-      const { data, error } = await supabase
-        .from('profiles')
-        .update({ wallet_balance: newBalance, updated_at: new Date().toISOString() })
-        .match({ id: userId, wallet_balance: currentBalance })
-        .select()
-        .single()
-
-      if (error) {
-        // If it's the last attempt, throw; otherwise retry
-        if (attempt === maxAttempts - 1) {
-          console.error('❌ Error updating wallet balance after retries:', error)
-          throw error
-        }
-        console.warn('⚠️ Transient error updating wallet balance, retrying...', { attempt, error })
-        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)))
-        continue
-      }
-
-      if (!data) {
-        // No rows updated (likely due to concurrent modification) — retry
-        console.log('🔁 Wallet update conflict detected, retrying...', { attempt })
-        await new Promise((r) => setTimeout(r, 150 * (attempt + 1)))
-        continue
-      }
-
-      // Successfully updated balance — record transaction if reference provided
-      if (reference) {
-        try {
-          const { error: txError } = await supabase
-            .from('transactions')
-            .insert([{
-              user_id: userId,
-              type: 'topup',
-              amount: amountToAdd,
-              status: 'completed',
-              balance_after: newBalance,
-              description: `Wallet top-up via Ercas Pay`,
-              reference,
-              ercas_reference: ercasReference
-            }])
-
-          if (txError) {
-            console.error('❌ Failed to record top-up transaction after wallet update:', txError)
-          } else {
-            console.log('✅ Top-up transaction recorded during wallet update:', reference)
-          }
-        } catch (txErr) {
-          console.error('❌ Exception while recording top-up transaction:', txErr)
-        }
-      }
-
-      console.log(`✅ Wallet updated: ${userId} +₦${amountToAdd} (New balance: ₦${newBalance})`)
-      return true
-    }
-
-    console.error('❌ Failed to update wallet after max retries')
-    return false
-  } catch (error) {
-    console.error('❌ Failed to update wallet balance:', error)
-    return false
-  }
+  console.warn('Legacy client-side wallet credit is disabled. Use verifyAndCreditWalletSecure().')
+  return false
 }
 
 // Get available account for purchase
 export async function getAvailableAccount(productGroupId: string): Promise<IndividualAccount | null> {
   try {
     const { data, error } = await supabase
-      .from('individual_accounts')
-      .select('*')
+      .from('individual_accounts_public')
+      .select('id, product_group_id, username, status, created_at')
       .eq('product_group_id', productGroupId)
       .eq('status', 'available')
       .limit(1)
@@ -1421,6 +1383,15 @@ export async function processPurchaseSecure(
   productGroupId: string,
   quantity: number,
   discountCode?: string,
+  croContext?: {
+    experimentId?: string | null
+    variantId?: string | null
+    assignmentMode?: string | null
+    revenueContext?: Record<string, unknown> | null
+  },
+  preferredAccountId?: string | null,
+  expectedAmountNgn?: number,
+  clientIdempotencyKey?: string,
 ): Promise<{ success: boolean; error?: string; order_id?: string; amount?: number; new_balance?: number; reward_code?: string }> {
   try {
     // Get current session for user ID
@@ -1429,9 +1400,7 @@ export async function processPurchaseSecure(
       return { success: false, error: 'Not authenticated' };
     }
 
-    const idempotencyKey = generateIdempotencyKey(session.user.id, productGroupId, quantity);
-
-    console.log('🛒 Calling secure purchase Edge Function:', { productGroupId, quantity });
+    const idempotencyKey = clientIdempotencyKey || generateIdempotencyKey(session.user.id, productGroupId, quantity);
 
     const { data, error } = await supabase.functions.invoke('process-purchase', {
       body: {
@@ -1439,6 +1408,10 @@ export async function processPurchaseSecure(
         quantity: quantity,
         idempotency_key: idempotencyKey,
         discount_code: discountCode || undefined,
+        cro_context: croContext || undefined,
+        revenue_context: croContext?.revenueContext || undefined,
+        preferred_account_id: preferredAccountId || undefined,
+        expected_amount_ngn: expectedAmountNgn,
       },
     });
 
@@ -1465,7 +1438,6 @@ export async function processPurchaseSecure(
       return { success: false, error: data?.error || 'Purchase failed' };
     }
 
-    console.log('✅ Secure purchase completed:', data);
     return {
       success: true,
       order_id: data.order_id,
@@ -1514,8 +1486,6 @@ export async function verifyAndCreditWalletSecure(
   ercasReference?: string
 ): Promise<{ success: boolean; error?: string; amount?: number; new_balance?: number; already_processed?: boolean }> {
   try {
-    console.log('🔍 Calling secure verify-and-credit Edge Function:', transactionReference);
-
     const { data, error } = await supabase.functions.invoke('verify-and-credit-wallet', {
       body: {
         transaction_reference: transactionReference,
@@ -1532,7 +1502,6 @@ export async function verifyAndCreditWalletSecure(
       return { success: false, error: data?.error || 'Verification failed' };
     }
 
-    console.log('✅ Wallet credited:', data);
     return {
       success: true,
       amount: data.amount,
@@ -1550,8 +1519,8 @@ export async function verifyAndCreditWalletSecure(
 export async function getAvailableAccounts(productGroupId: string, quantity: number): Promise<IndividualAccount[]> {
   try {
     const { data, error } = await supabase
-      .from('individual_accounts')
-      .select('*')
+      .from('individual_accounts_public')
+      .select('id, product_group_id, username, status, created_at')
       .eq('product_group_id', productGroupId)
       .eq('status', 'available')
       .limit(quantity)
@@ -1575,334 +1544,24 @@ export async function getAvailableAccounts(productGroupId: string, quantity: num
  * This function will be removed in a future update.
  */
 export async function processBulkPurchase(
-  userId: string, 
-  productGroupId: string,
-  quantity: number
+  _userId: string,
+  _productGroupId: string,
+  _quantity: number
 ): Promise<{ success: boolean; error?: string; orderData?: any; accounts?: IndividualAccount[] }> {
-  try {
-    console.log('🛒 Starting bulk purchase process for user:', userId, 'productGroup:', productGroupId, 'quantity:', quantity)
-
-    // 1. Get product group details for pricing
-    const { data: productGroup, error: productError } = await supabase
-      .from('product_groups')
-      .select('*, categories(name)')
-      .eq('id', productGroupId)
-      .single()
-
-    if (productError || !productGroup) {
-      console.error('Product group not found:', productError)
-      return { success: false, error: 'Product not found' }
-    }
-
-    // 2. Check if enough accounts are available
-    const availableAccounts = await getAvailableAccounts(productGroupId, quantity)
-    if (availableAccounts.length < quantity) {
-      return { 
-        success: false, 
-        error: `Only ${availableAccounts.length} accounts available, but ${quantity} requested` 
-      }
-    }
-
-    // 3. Check user wallet balance
-    const totalPrice = productGroup.price * quantity
-    const walletBalance = await getUserWalletBalance(userId)
-    if (walletBalance < totalPrice) {
-      return { success: false, error: 'Insufficient wallet balance' }
-    }
-
-    // 4. Reserve all selected accounts
-    const accountIds = availableAccounts.map(acc => acc.id)
-    const { error: reserveError } = await supabase
-      .from('individual_accounts')
-      .update({ status: 'reserved' })
-      .in('id', accountIds)
-      .eq('status', 'available')
-
-    if (reserveError) {
-      console.error('Failed to reserve accounts:', reserveError)
-      return { success: false, error: 'Failed to reserve accounts - some may have been sold to others' }
-    }
-
-    // 5. Deduct wallet balance
-    const { error: balanceError } = await supabase
-      .from('profiles')
-      .update({ 
-        wallet_balance: walletBalance - totalPrice,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', userId)
-
-    if (balanceError) {
-      // Rollback: unreserve the accounts
-      await supabase
-        .from('individual_accounts')
-        .update({ status: 'available' })
-        .in('id', accountIds)
-      
-      return { success: false, error: 'Failed to process payment' }
-    }
-
-    // 6. Create order record - using actual database schema
-    const orderData = {
-      user_id: userId,
-      product_group_id: productGroupId, // Changed back to product_group_id for foreign key
-      amount: totalPrice,
-      status: 'completed',
-      account_details: {
-        accounts: availableAccounts.map(acc => ({
-          username: acc.username,
-          password: acc.password,
-          email: acc.email,
-          email_password: acc.email_password,
-          two_fa_code: acc.two_fa_code,
-          recovery_email: acc.recovery_email,
-          recovery_email_password: acc.recovery_email_password,
-          additional_info: acc.additional_info
-        })),
-        product_name: productGroup.name,
-        category: productGroup.categories?.name,
-        quantity: quantity,
-        price_per_unit: productGroup.price
-      }
-    }
-
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .insert([orderData])
-      .select()
-      .single()
-
-    if (orderError) {
-      console.error('❌ Order creation failed:', orderError)
-      console.error('❌ Order data that failed:', orderData)
-      
-      // Rollback: restore wallet balance and unreserve accounts
-      await supabase
-        .from('profiles')
-        .update({ wallet_balance: walletBalance })
-        .eq('id', userId)
-      
-      await supabase
-        .from('individual_accounts')
-        .update({ status: 'available' })
-        .in('id', accountIds)
-      
-      return { success: false, error: `Failed to create order: ${orderError.message}` }
-    }
-
-    // 7. Mark accounts as sold
-    const { error: soldError } = await supabase
-      .from('individual_accounts')
-      .update({ 
-        status: 'sold',
-        sold_at: new Date().toISOString()
-      })
-      .in('id', accountIds)
-
-    if (soldError) {
-      console.error('Warning: Accounts not marked as sold, but purchase completed')
-    }
-
-    // 8. Update product group stock count
-    await updateProductGroupStock(productGroupId)
-
-    // 9. Record transaction
-    const newBalance = walletBalance - totalPrice
-    await supabase
-      .from('transactions')
-      .insert([{
-        user_id: userId,
-        type: 'purchase',
-        amount: -totalPrice,
-        balance_after: newBalance,
-        description: `Bulk Purchase: ${quantity}x ${productGroup.name}`,
-        reference: `ORD-${order.id.substring(0, 8).toUpperCase()}`
-      }])
-
-    // Reward the referrer (if any) for this purchase - non-blocking
-    rewardReferrerForPurchase(userId, totalPrice)
-
-    console.log('✅ Bulk purchase completed successfully!')
-    
-    // Update product group stock count
-    await updateProductGroupStock(productGroupId)
-    return { 
-      success: true, 
-      orderData: {
-        ...order,
-        product_name: productGroup.name,
-        category: productGroup.categories?.name
-      },
-      accounts: availableAccounts
-    }
-
-  } catch (error) {
-    console.error('❌ Bulk purchase processing error:', error)
-    return { success: false, error: 'Purchase failed. Please try again.' }
+  return {
+    success: false,
+    error: 'Legacy client-side purchase is disabled. Use secure checkout so stock, pricing, staff restrictions, and idempotency are enforced server-side.',
   }
 }
 
 // Process complete purchase transaction
 export async function processPurchase(
-  userId: string, 
-  accountId: string
+  _userId: string,
+  _accountId: string
 ): Promise<{ success: boolean; error?: string; orderData?: any }> {
-  try {
-    console.log('🛒 Starting purchase process for user:', userId, 'account:', accountId)
-
-    // 1. Get the specific account details
-    const { data: account, error: accountError } = await supabase
-      .from('individual_accounts')
-      .select('*')
-      .eq('id', accountId)
-      .eq('status', 'available')
-      .single()
-
-    if (accountError || !account) {
-      console.error('Account not found or not available:', accountError)
-      return { success: false, error: 'Account not found or no longer available' }
-    }
-
-    // 2. Get product group details for pricing
-    const { data: productGroup, error: productError } = await supabase
-      .from('product_groups')
-      .select('*, categories(name)')
-      .eq('id', account.product_group_id)
-      .single()
-
-    if (productError || !productGroup) {
-      console.error('Product group not found:', productError)
-      return { success: false, error: 'Product details not found' }
-    }
-
-    // 3. Check user wallet balance
-    const walletBalance = await getUserWalletBalance(userId)
-    if (walletBalance < productGroup.price) {
-      return { success: false, error: 'Insufficient wallet balance' }
-    }
-
-    // 4. Reserve the account first (prevent double-selling)
-    const { error: reserveError } = await supabase
-      .from('individual_accounts')
-      .update({ status: 'reserved' })
-      .eq('id', accountId)
-      .eq('status', 'available') // Double-check it's still available
-
-    if (reserveError) {
-      console.error('Failed to reserve account:', reserveError)
-      return { success: false, error: 'Failed to reserve account - may have been purchased by someone else' }
-    }
-
-    // 5. Deduct wallet balance
-    const { error: balanceError } = await supabase
-      .from('profiles')
-      .update({ 
-        wallet_balance: walletBalance - productGroup.price,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', userId)
-
-    if (balanceError) {
-      // Rollback: unreserve the account
-      await supabase
-        .from('individual_accounts')
-        .update({ status: 'available' })
-        .eq('id', accountId)
-      
-      return { success: false, error: 'Failed to process payment' }
-    }
-
-    // 6. Create order record
-    const orderData = {
-      user_id: userId,
-      product_group_id: account.product_group_id, // Changed back to product_group_id
-      amount: productGroup.price,
-      status: 'completed',
-      account_details: {
-        username: account.username,
-        password: account.password,
-        email: account.email,
-        email_password: account.email_password,
-        two_fa_code: account.two_fa_code,
-        recovery_email: account.recovery_email,
-        recovery_email_password: account.recovery_email_password,
-        additional_info: account.additional_info,
-        product_name: productGroup.name,
-        category: productGroup.categories?.name,
-        quantity: 1,
-        price_per_unit: productGroup.price
-      }
-    }
-
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .insert([orderData])
-      .select()
-      .single()
-
-    if (orderError) {
-      console.error('❌ Single account order creation failed:', orderError)
-      console.error('❌ Order data that failed:', orderData)
-      
-      // Rollback: restore wallet balance and unreserve account
-      await supabase
-        .from('profiles')
-        .update({ wallet_balance: walletBalance })
-        .eq('id', userId)
-      
-      await supabase
-        .from('individual_accounts')
-        .update({ status: 'available' })
-        .eq('id', accountId)
-      
-      return { success: false, error: `Failed to create order: ${orderError.message}` }
-    }
-
-    // 7. Mark account as sold
-    const { error: soldError } = await supabase
-      .from('individual_accounts')
-      .update({ 
-        status: 'sold',
-        sold_at: new Date().toISOString()
-      })
-      .eq('id', accountId)
-
-    if (soldError) {
-      console.error('Warning: Account not marked as sold, but purchase completed')
-    }
-
-    // 8. Update product group stock count
-    await updateProductGroupStock(account.product_group_id)
-
-    // 9. Record transaction
-    const newBalance = walletBalance - productGroup.price
-    await supabase
-      .from('transactions')
-      .insert([{
-        user_id: userId,
-        type: 'purchase',
-        amount: -productGroup.price,
-        balance_after: newBalance,
-        description: `Purchase: ${productGroup.name}`,
-        reference: `ORD-${order.id.substring(0, 8).toUpperCase()}`
-      }])
-
-    console.log('✅ Purchase completed successfully!')
-    
-    // Update product group stock count
-    await updateProductGroupStock(account.product_group_id)
-    return { 
-      success: true, 
-      orderData: {
-        ...order,
-        product_name: productGroup.name,
-        category: productGroup.categories?.name
-      }
-    }
-
-  } catch (error) {
-    console.error('❌ Purchase processing error:', error)
-    return { success: false, error: 'Purchase failed. Please try again.' }
+  return {
+    success: false,
+    error: 'Legacy client-side purchase is disabled. Use secure checkout so stock, pricing, staff restrictions, and idempotency are enforced server-side.',
   }
 }
 
@@ -1953,52 +1612,13 @@ export async function getUserTransactions(userId: string): Promise<any[]> {
 
 // Record a wallet top-up transaction
 export async function recordTopUpTransaction(
-  userId: string, 
-  amount: number, 
-  reference: string, 
-  ercasReference?: string
+  _userId: string,
+  _amount: number,
+  _reference: string,
+  _ercasReference?: string
 ): Promise<boolean> {
-  try {
-    // Get current balance to calculate balance_after
-    const currentBalance = await getUserWalletBalance(userId);
-    
-    const transactionData = {
-      user_id: userId,
-      type: 'topup' as const,
-      amount: amount,
-      status: 'completed', // Add status field to match purchase transactions
-      balance_after: currentBalance + amount, // balance after top-up
-      description: `Wallet top-up via Ercas Pay`, // Add description
-      reference: reference,
-      ercas_reference: ercasReference
-    };
-
-    console.log('📝 Attempting to record transaction:', transactionData);
-
-    const { data, error } = await supabase
-      .from('transactions')
-      .insert([transactionData]) // Use array format like purchase transactions
-      .select() // Get the inserted record back
-
-    if (error) {
-      console.error('❌ Detailed transaction error:', {
-        error,
-        code: error.code,
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
-        data: transactionData
-      });
-      throw error
-    }
-
-    console.log(`✅ Top-up transaction recorded successfully:`, data)
-    console.log(`✅ Summary: User ${userId} +₦${amount} (${reference})`)
-    return true
-  } catch (error) {
-    console.error('❌ Failed to record top-up transaction:', error)
-    return false
-  }
+  console.warn('Legacy client-side top-up transaction insertion is disabled. Use verifyAndCreditWalletSecure() or provider webhooks.')
+  return false
 }
 
 // Get individual account by ID. Reads from individual_accounts_public (a
@@ -2095,18 +1715,16 @@ export async function getAllUsers(): Promise<Profile[]> {
 // Get user count for admin dashboard
 export async function getUserCount(): Promise<number> {
   try {
-    const { count, error } = await supabase
-      .from('profiles')
-      .select('*', { count: 'exact', head: true })
+    const { data, error } = await supabase.rpc('get_customer_count')
 
     if (error) {
-      console.error('Error counting users:', error)
+      console.error('Error counting customers:', error)
       return 0
     }
 
-    return count || 0
+    return Number(data || 0)
   } catch (error) {
-    console.error('Error getting user count:', error)
+    console.error('Error getting customer count:', error)
     return 0
   }
 }
@@ -2114,49 +1732,15 @@ export async function getUserCount(): Promise<number> {
 // Get admin sales statistics from orders table
 export async function getAdminSalesStats(): Promise<{ totalSales: number; totalRevenue: number }> {
   try {
-    // Get total count of completed orders using exact count (bypasses 1000 row limit)
-    const { count: totalSales, error: countError } = await supabase
-      .from('orders')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'completed')
-
-    if (countError) {
-      console.error('Error fetching sales count:', countError)
-      return { totalSales: 0, totalRevenue: 0 }
-    }
-
-    // For revenue, we need to fetch amounts in batches to handle >1000 orders
-    // Supabase doesn't support SUM aggregation directly, so we paginate
-    let totalRevenue = 0
-    const batchSize = 1000
-    let offset = 0
-    let hasMore = true
-
-    while (hasMore) {
-      const { data: orders, error: revenueError } = await supabase
-        .from('orders')
-        .select('amount')
-        .eq('status', 'completed')
-        .range(offset, offset + batchSize - 1)
-
-      if (revenueError) {
-        console.error('Error fetching revenue batch:', revenueError)
-        break
-      }
-
-      if (!orders || orders.length === 0) {
-        hasMore = false
-      } else {
-        totalRevenue += orders.reduce((sum, order) => sum + (order.amount || 0), 0)
-        offset += batchSize
-        // If we got fewer than batchSize, we've reached the end
-        if (orders.length < batchSize) {
-          hasMore = false
-        }
+    const { data: rpcData, error: rpcError } = await supabase.rpc('get_customer_sales_stats')
+    if (!rpcError && Array.isArray(rpcData) && rpcData[0]) {
+      return {
+        totalSales: Number(rpcData[0].total_sales || 0),
+        totalRevenue: Number(rpcData[0].total_revenue || 0),
       }
     }
-
-    return { totalSales: totalSales || 0, totalRevenue }
+    if (rpcError) console.warn('Customer sales stats RPC unavailable:', rpcError.message)
+    return { totalSales: 0, totalRevenue: 0 }
   } catch (error) {
     console.error('Error getting admin sales stats:', error)
     return { totalSales: 0, totalRevenue: 0 }
@@ -2243,15 +1827,6 @@ export async function adminAdjustBalance(
       throw new Error(data.error || 'Balance adjustment failed');
     }
 
-    console.log('✅ Balance adjusted via Edge Function:', {
-      user: data.target_email,
-      previousBalance: data.previous_balance,
-      adjustment: data.adjustment,
-      newBalance: data.new_balance,
-      reason: data.reason,
-      admin: data.adjusted_by
-    });
-
     return { 
       success: true, 
       newBalance: data.new_balance,
@@ -2294,38 +1869,17 @@ export async function getUserOrdersAdmin(userId: string) {
   }
 }
 
-// Create pending payment record for automatic recovery
+// Legacy browser-side pending payment creation is disabled. Pending payments
+// must be created by create-wallet-topup so transaction references are bound
+// to the authenticated user before verification can credit a wallet.
 export async function createPendingPayment(params: {
   userId: string;
   transactionReference: string;
   ercasReference?: string;
   amount: number;
 }) {
-  try {
-    const { data, error } = await supabase
-      .from('pending_payments')
-      .insert({
-        user_id: params.userId,
-        transaction_reference: params.transactionReference,
-        ercas_reference: params.ercasReference || null,
-        amount: params.amount,
-        status: 'pending'
-      })
-      .select()
-      .single()
-
-    if (error) {
-      console.error('Error creating pending payment:', error)
-      throw error
-    }
-
-    console.log('✅ Pending payment record created:', data)
-    return data
-  } catch (error) {
-    console.error('Error in createPendingPayment:', error)
-    // Don't throw - this is optional tracking, shouldn't block payment
-    return null
-  }
+  console.warn('Legacy client-side pending payment creation is disabled.')
+  return null
 }
 
 // ============================================================
@@ -2365,6 +1919,27 @@ export async function upsertAppSetting(key: string, value: string): Promise<bool
   }
 }
 
+export async function getFavoriteProductGroupIds(): Promise<string[]> {
+  const raw = await getAppSetting('sales_favorite_product_group_ids')
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.map((id) => String(id)).filter(Boolean)
+      : []
+  } catch {
+    return raw
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+  }
+}
+
+export async function setFavoriteProductGroupIds(productGroupIds: string[]): Promise<boolean> {
+  const uniqueIds = [...new Set(productGroupIds.map((id) => String(id).trim()).filter(Boolean))]
+  return upsertAppSetting('sales_favorite_product_group_ids', JSON.stringify(uniqueIds))
+}
+
 // ============================================================
 // Referral system
 // ============================================================
@@ -2374,107 +1949,22 @@ export function generateReferralCode(userId: string): string {
   return userId.replace(/-/g, '').substring(0, 8).toUpperCase()
 }
 
-// Called right after a successful signup. Generates this user's own
-// referral_code, and if they signed up with someone else's code,
-// records who referred them.
+// Legacy client-side referral attribution is disabled. Use the apply-referral
+// edge function after authentication so callers cannot choose arbitrary user ids.
 export async function applyReferralOnSignup(
-  userId: string,
-  referralCodeInput?: string
+  _userId: string,
+  _referralCodeInput?: string
 ): Promise<void> {
-  try {
-    const ownCode = generateReferralCode(userId)
-    const update: Record<string, any> = { referral_code: ownCode }
-
-    if (referralCodeInput && referralCodeInput.trim()) {
-      const cleanCode = referralCodeInput.trim().toUpperCase()
-
-      // Don't let someone refer themselves
-      if (cleanCode !== ownCode) {
-        // Look up the referrer's id via the referral_lookup view, not the
-        // profiles table directly - profiles RLS only allows a user to read
-        // their own row, so a direct cross-user select here silently
-        // returns nothing (no error) and referred_by never gets set. Run
-        // supabase/migrations/20260625000000_add_referral_lookup_view.sql
-        // in Supabase for this view to exist.
-        const { data: referrer } = await supabase
-          .from('referral_lookup')
-          .select('id')
-          .eq('referral_code', cleanCode)
-          .maybeSingle()
-
-        if (referrer) {
-          update.referred_by = referrer.id
-        }
-      }
-    }
-
-    const { error } = await supabase
-      .from('profiles')
-      .update(update)
-      .eq('id', userId)
-
-    if (error) {
-      console.error('Error applying referral on signup:', error)
-    }
-  } catch (error) {
-    console.error('Error in applyReferralOnSignup:', error)
-  }
+  console.warn('Legacy client-side referral signup attribution is disabled.')
 }
 
-// Called after a purchase completes. If the buyer was referred by
-// someone, credits that referrer's referral_balance and logs the
-// reward to referral_earnings for audit purposes.
+// Legacy client-side purchase referral rewards are disabled. Referral rewards
+// must be credited by server-side payment/deposit functions only.
 export async function rewardReferrerForPurchase(
-  userId: string,
-  orderAmount: number
+  _userId: string,
+  _orderAmount: number
 ): Promise<void> {
-  try {
-    const { data: buyerProfile, error: buyerError } = await supabase
-      .from('profiles')
-      .select('referred_by')
-      .eq('id', userId)
-      .single()
-
-    if (buyerError || !buyerProfile?.referred_by) return
-
-    const referrerId = buyerProfile.referred_by
-
-    const pctSetting = await getAppSetting('referral_commission_pct')
-    const commissionPct = pctSetting ? parseFloat(pctSetting) : 5
-    const commissionAmount = (orderAmount * commissionPct) / 100
-
-    if (commissionAmount <= 0) return
-
-    const { data: referrerProfile, error: referrerError } = await supabase
-      .from('profiles')
-      .select('referral_balance')
-      .eq('id', referrerId)
-      .single()
-
-    if (referrerError || !referrerProfile) return
-
-    const newBalance = (referrerProfile.referral_balance || 0) + commissionAmount
-
-    await supabase
-      .from('profiles')
-      .update({ referral_balance: newBalance })
-      .eq('id', referrerId)
-
-    await supabase
-      .from('referral_earnings')
-      .insert([{
-        referrer_id: referrerId,
-        referred_user_id: userId,
-        order_amount: orderAmount,
-        commission_pct: commissionPct,
-        commission_amount: commissionAmount
-      }])
-
-    console.log(`✅ Referral reward: ₦${commissionAmount} credited to referrer ${referrerId}`)
-  } catch (error) {
-    console.error('Error rewarding referrer for purchase:', error)
-    // Don't throw - referral rewards shouldn't block a purchase
-  }
+  console.warn('Legacy client-side referral purchase reward is disabled. Referral rewards must be credited by server-side payment functions.')
 }
 
 // Get a user's referral stats: their code, balance, and earnings history

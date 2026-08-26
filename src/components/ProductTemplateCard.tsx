@@ -7,17 +7,20 @@ import { Plus, Minus, Package, Flame, ArrowRight } from 'lucide-react'
 import { type ProductGroup, type Category, computeDiscountedTotal } from '@/lib/supabase'
 import { useCurrency } from '@/contexts/CurrencyContext'
 import CategoryLogo from '@/components/CategoryLogo'
+import { canAutoFulfillProduct } from '@/lib/productAvailability'
 
 interface ProductTemplateCardProps {
   productGroup: ProductGroup
   category: Category
   onPurchase: (productGroupId: string, quantity: number) => void
+  onView?: (productGroup: ProductGroup) => void
 }
 
 export default function ProductTemplateCard({ 
   productGroup, 
   category, 
-  onPurchase
+  onPurchase,
+  onView,
 }: ProductTemplateCardProps) {
   const [quantity, setQuantity] = useState(1)
   const { formatPrice } = useCurrency()
@@ -28,11 +31,7 @@ export default function ProductTemplateCard({
   // product is still buyable — process-purchase handles the live fulfillment
   // server-side. Gating purely on stock_count was blocking the buy button for
   // these products.
-  const canAutoFulfill = !!(
-    (productGroup.auto_fulfill_enabled && productGroup.muabanvia_product_id) ||
-    productGroup.shopclone_product_id ||
-    productGroup.shopviaclone_product_id
-  )
+  const canAutoFulfill = canAutoFulfillProduct(productGroup)
   const isOutOfStock = productGroup.stock_count === 0 && !canAutoFulfill
   const isLowStock = productGroup.stock_count > 0 && productGroup.stock_count < 5
   // Quantity controls need an upper bound; use the pre-stocked count if any,
@@ -66,8 +65,27 @@ export default function ProductTemplateCard({
     onPurchase(productGroup.id, quantity)
   }
 
+  const handleView = () => {
+    onView?.(productGroup)
+  }
+
+  const stopInteractiveClick = (event: { stopPropagation: () => void }) => {
+    event.stopPropagation()
+  }
+
   return (
-    <Card className="group min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200 bg-white/90 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-purple-300 hover:shadow-lg dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35">
+    <Card
+      className="group min-w-0 max-w-full cursor-pointer overflow-hidden rounded-xl border border-slate-200 bg-white/90 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-purple-300 hover:shadow-lg dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/35"
+      onClick={handleView}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) => {
+        if ((event.key === 'Enter' || event.key === ' ') && onView) {
+          event.preventDefault()
+          onView(productGroup)
+        }
+      }}
+    >
       <CardHeader className="min-w-0 px-2 pb-2 pt-2 sm:px-3.5 sm:pb-2.5 sm:pt-3.5">
         <div className="mb-2 flex items-start justify-between gap-2 sm:mb-3 sm:gap-3">
           <CategoryLogo name={category.name} className="h-7 w-7 sm:h-10 sm:w-10" iconClassName="h-7 w-7 sm:h-9 sm:w-9" />
@@ -130,7 +148,10 @@ export default function ProductTemplateCard({
                 variant="outline"
                 size="sm"
                 className="h-6 w-6 shrink-0 p-0"
-                onClick={() => handleQuantityChange(quantity - 1)}
+                onClick={(event) => {
+                  stopInteractiveClick(event)
+                  handleQuantityChange(quantity - 1)
+                }}
                 disabled={quantity <= 1}
               >
                 <Minus className="h-3 w-3" />
@@ -141,15 +162,22 @@ export default function ProductTemplateCard({
                 min="1"
                 max={maxQuantity}
                 value={quantity}
-                onChange={(e) => handleQuantityChange(parseInt(e.target.value) || 1)}
+                onChange={(event) => {
+                  stopInteractiveClick(event)
+                  handleQuantityChange(parseInt(event.target.value) || 1)
+                }}
                 className="h-6 w-8 shrink-0 px-1 text-center text-xs sm:w-10"
+                onFocus={stopInteractiveClick}
               />
 
               <Button
                 variant="outline"
                 size="sm"
                 className="h-6 w-6 shrink-0 p-0"
-                onClick={() => handleQuantityChange(quantity + 1)}
+                onClick={(event) => {
+                  stopInteractiveClick(event)
+                  handleQuantityChange(quantity + 1)
+                }}
                 disabled={quantity >= maxQuantity}
               >
                 <Plus className="h-3 w-3" />

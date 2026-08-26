@@ -1,5 +1,6 @@
 -- Global "Recent Activity" social-proof feed
--- Run this once in the Supabase SQL editor.
+-- Kept as a reference copy. The deployable version is tracked in
+-- supabase/migrations/20260820016000_create_global_activity_feed_rpc.sql.
 --
 -- Exposes a SECURITY DEFINER function that returns a small, pre-masked slice of
 -- recent site-wide activity (wallet top-ups + completed orders) for display on

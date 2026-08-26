@@ -4,9 +4,11 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Loader2 } from 'lucide-react'
 import { getCategories, getAllProductGroups, type Category, type ProductGroup } from '@/lib/supabase'
 import CategoryLogo from '@/components/CategoryLogo'
+import { useCurrency } from '@/contexts/CurrencyContext'
 
 export default function TopCategoriesGrid() {
   const navigate = useNavigate()
+  const { formatPrice } = useCurrency()
   const [categories, setCategories] = useState<Category[]>([])
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([])
   const [loading, setLoading] = useState(true)
@@ -67,7 +69,7 @@ export default function TopCategoriesGrid() {
               <h3 className="font-semibold text-sm mb-1">{category.name}</h3>
               <p className="text-xs text-muted-foreground">
                 {productCount} product{productCount === 1 ? '' : 's'}
-                {lowestPrice !== null && ` · from ₦${lowestPrice.toLocaleString()}`}
+                {lowestPrice !== null && ` · from ${formatPrice(lowestPrice)}`}
               </p>
             </CardContent>
           </Card>

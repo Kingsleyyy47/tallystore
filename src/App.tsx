@@ -15,6 +15,7 @@ import GlobalPaymentChecker from '@/components/GlobalPaymentChecker'
 import LoginWelcomeDialog from '@/components/LoginWelcomeDialog'
 import ChatWidget from '@/components/ChatWidget'
 import MobileBottomNav from '@/components/MobileBottomNav'
+import GlobalActivityFeed from '@/components/GlobalActivityFeed'
 import VisitorTracker from '@/components/VisitorTracker'
 
 // ⚠️ MAINTENANCE MODE - Set to false to restore normal site
@@ -22,32 +23,26 @@ const MAINTENANCE_MODE = false;
 // Local dev bypass: maintenance only shows in production
 const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
-// Version tracking for cache busting
-const MAINTENANCE_VERSION = "3.2-dashboard-route-audit";
+// Version tracking for cache busting. Vite injects a new build version for
+// each production build, so returning users are forced onto the deployed bundle
+// instead of staying on stale cached assets.
+const APP_BUILD_VERSION = __APP_BUILD_VERSION__;
 
-// Force cache clear on version change
+// Track the loaded build version. The service worker owns cache updates; this
+// only forces one settling reload after a returning browser receives a new
+// bundle, without unregistering the worker that keeps updates flowing.
 if (typeof window !== 'undefined' && !isLocalDev) {
   const lastVersion = localStorage.getItem('app_version');
-  if (lastVersion !== MAINTENANCE_VERSION) {
-    console.log(`🔄 Version changed from ${lastVersion} to ${MAINTENANCE_VERSION}, clearing caches...`);
-    
-    // Clear service workers
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(registrations => {
-        registrations.forEach(registration => registration.unregister());
-      });
+  if (lastVersion !== APP_BUILD_VERSION) {
+    localStorage.setItem('app_version', APP_BUILD_VERSION);
+
+    if (lastVersion) {
+      const reloadKey = `app_version_reload:${APP_BUILD_VERSION}`;
+      if (sessionStorage.getItem(reloadKey) !== 'done') {
+        sessionStorage.setItem(reloadKey, 'done');
+        setTimeout(() => window.location.reload(), 100);
+      }
     }
-    
-    // Clear all caches
-    if ('caches' in window) {
-      caches.keys().then(names => {
-        names.forEach(name => caches.delete(name));
-      });
-    }
-    
-    // Update version and reload
-    localStorage.setItem('app_version', MAINTENANCE_VERSION);
-    setTimeout(() => window.location.reload(), 100);
   }
 }
 
@@ -85,6 +80,7 @@ import GiftCardsEsims from "./pages/GiftCardsEsims";
 import SocialBoostPage from "./pages/SocialBoostPage";
 import GetIP from "./pages/GetIP";
 import SmsNumbersPage from "./pages/SmsNumbersPage";
+import TelegramStarsPage from "./pages/TelegramStarsPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -110,11 +106,11 @@ const App = () => {
           <LoginWelcomeDialog />
           <InstallPromptBanner />
           <UpdatePromptBanner />
-          <ChatWidget />
           <AuthProvider>
           <CurrencyProvider>
             <VisitorTracker />
             <GlobalPaymentChecker />
+            <ChatWidget />
             <Routes>
               {/* Public Routes */}
               <Route path="/" element={<Index />} />
@@ -288,6 +284,14 @@ const App = () => {
                 }
               />
               <Route
+                path="/telegram-stars"
+                element={
+                  <ProtectedRoute requireRole="user">
+                    <TelegramStarsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
                 path="/us-canada"
                 element={
                   <ProtectedRoute requireRole="user">
@@ -315,6 +319,7 @@ const App = () => {
               {/* Catch all route */}
               <Route path="*" element={<NotFound />} />
             </Routes>
+            <GlobalActivityFeed />
             <MobileBottomNav />
           </CurrencyProvider>
           </AuthProvider>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
@@ -7,6 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useSupportSettings } from '@/hooks/useSupportSettings';
 import NavbarAuth from '@/components/NavbarAuth';
 import Footer from '@/components/Footer';
+import { trackRevenueEvent } from "@/lib/revenue-os";
 
 export default function GetIP() {
   const [loading, setLoading] = useState(false);
@@ -16,9 +17,22 @@ export default function GetIP() {
   const support = useSupportSettings();
   const supportUrl = support.whatsappUrl || support.telegramUrl || '';
 
+  useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      surface: 'get_ip',
+      metadata: { has_support_url: Boolean(supportUrl) },
+    });
+  }, [supportUrl]);
+
   const getIPs = async () => {
     setLoading(true);
     const detectedIPs = new Set<string>();
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface: 'get_ip_detect_attempt',
+      metadata: { request_count: 50 },
+    });
     
     try {
       // Call many more times to get all possible IPs
@@ -44,8 +58,21 @@ export default function GetIP() {
         title: "IPs Detected!",
         description: `Found ${ipArray.length} unique IP(s) from 50 requests`,
       });
+      trackRevenueEvent({
+        eventType: 'OFFER_ACCEPTED',
+        surface: 'get_ip_detect_success',
+        metadata: {
+          unique_ip_count: ipArray.length,
+          request_count: 50,
+        },
+      });
     } catch (error: any) {
       console.error('Error:', error);
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: 'get_ip_detect_failed',
+        metadata: { reason: error?.message || 'ip_detect_failed' },
+      });
       toast({
         title: "Error",
         description: error.message || "Failed to get IPs",
@@ -60,6 +87,11 @@ export default function GetIP() {
     const ipList = ips.join(', ');
     navigator.clipboard.writeText(ipList);
     setCopied(true);
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface: 'get_ip_copy',
+      metadata: { unique_ip_count: ips.length },
+    });
     toast({
       title: "Copied!",
       description: "IP addresses copied to clipboard",
@@ -139,14 +171,20 @@ export default function GetIP() {
                 <li>
                   {supportUrl ? (
                     <>Message support at{' '}
-                    <a href={supportUrl} target="_blank" rel="noopener noreferrer" className="font-medium underline">
+                    <a
+                      href={supportUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => trackRevenueEvent({ eventType: 'SUPPORT_HANDOFF', surface: 'get_ip_support_link' })}
+                      className="font-medium underline"
+                    >
                       this link
                     </a></>
                   ) : (
                     'Message support via the Support Center'
-                  )}
-                </li>
-                <li>Request help adding these IPs to your SageCloud whitelist</li>
+                )}
+              </li>
+                <li>Request help adding these IPs to your service whitelist</li>
                 <li>Format: {ips.join(', ')}</li>
                 <li>Once whitelisted, data plans and purchases will work!</li>
               </ol>

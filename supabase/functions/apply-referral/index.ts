@@ -1,21 +1,10 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 
-// Applies a referral at signup time, server-side with the service role key.
+// Applies referral attribution server-side after Supabase has an authenticated
+// user. The function intentionally ignores any caller-provided user id.
 //
-// Why this exists: the client-side version of this logic (applyReferralOnSignup
-// in src/lib/supabase.ts) ran immediately after supabase.auth.signUp(), but
-// when email confirmation is required, signUp() returns a user object with
-// NO active session - auth.uid() is null until the confirmation link is
-// clicked. The referrer lookup (a SELECT) happened to still work because it
-// was granted to the anon role, but the UPDATE on profiles to actually set
-// referral_code / referred_by requires RLS's `auth.uid() = id` check, which
-// fails with no session - so the write silently touched zero rows. Running
-// this with the service role bypasses RLS entirely and isn't affected by
-// whether the new user has confirmed their email yet.
-//
-// Verify JWT should be OFF for this function in the Supabase dashboard,
-// since it's invoked right after signup before any session may exist.
+// Verify JWT should be ON for this function in the Supabase dashboard.
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -43,13 +32,24 @@ serve(async (req) => {
       return json({ success: false, error: 'Method not allowed' }, 405)
     }
 
-    const body = await req.json().catch(() => ({})) as Record<string, any>
-    const userId = String(body.userId || '')
-    const referralCodeInput = body.referralCode ? String(body.referralCode).trim() : ''
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) return json({ success: false, error: 'Unauthorized' }, 401)
 
-    if (!userId) {
-      return json({ success: false, error: 'Missing userId' }, 400)
-    }
+    const supabaseUser = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } }, auth: { persistSession: false } },
+    )
+    const { data: { user }, error: userError } = await supabaseUser.auth.getUser(authHeader.replace('Bearer ', ''))
+    if (userError || !user) return json({ success: false, error: 'Unauthorized' }, 401)
+
+    const body = await req.json().catch(() => ({})) as Record<string, any>
+    const userId = user.id
+    const referralCodeInput = body.referralCode
+      ? String(body.referralCode).trim()
+      : typeof user.user_metadata?.referral_code_input === 'string'
+        ? String(user.user_metadata.referral_code_input).trim()
+        : ''
 
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',

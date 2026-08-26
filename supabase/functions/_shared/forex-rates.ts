@@ -5,7 +5,7 @@
 
 /**
  * Get current USD to NGN exchange rate
- * Uses multiple fallback sources for reliability
+ * Uses a live source and fails closed if no trusted rate is available.
  */
 export async function getUsdToNgnRate(): Promise<number> {
   try {
@@ -28,12 +28,7 @@ export async function getUsdToNgnRate(): Promise<number> {
 
   } catch (error) {
     console.error('⚠️ Failed to fetch live forex rate:', error);
-    
-    // Fallback to conservative estimate if API fails
-    // Using 1650 as fallback (update this periodically)
-    const fallbackRate = 1650;
-    console.log(`⚠️ Using fallback rate: 1 USD = ₦${fallbackRate}`);
-    return fallbackRate;
+    throw new Error('USD/NGN exchange rate is temporarily unavailable.');
   }
 }
 

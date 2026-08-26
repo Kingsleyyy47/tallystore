@@ -108,7 +108,7 @@ export async function getNumber(apiKey: string, serviceCode: string, maxPriceUsd
 
   if (text === 'NO_NUMBERS') throw new DaisySmsError('NO_NUMBERS', 'No numbers available for this service right now.')
   if (text === 'MAX_PRICE_EXCEEDED') throw new DaisySmsError('MAX_PRICE_EXCEEDED', 'Service price has changed. Please try again.')
-  if (text === 'NO_MONEY') throw new DaisySmsError('NO_MONEY', 'DaisySMS provider balance is too low.')
+  if (text === 'NO_MONEY') throw new DaisySmsError('NO_MONEY', 'SMS purchases are temporarily unavailable.')
   if (text === 'TOO_MANY_ACTIVE_RENTALS') throw new DaisySmsError('TOO_MANY_ACTIVE_RENTALS', 'Too many active SMS rentals. Please cancel one first.')
   if (text === 'BAD_KEY') throw new DaisySmsError('BAD_KEY', 'SMS service is temporarily unavailable.')
 

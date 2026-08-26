@@ -1,0 +1,4 @@
+# This function supports admin JWTs, service-role calls, or x-cron-secret.
+# Scheduled/external cron calls use x-cron-secret, so gateway JWT verification
+# must be off while the function performs its own authorization.
+verify_jwt = false

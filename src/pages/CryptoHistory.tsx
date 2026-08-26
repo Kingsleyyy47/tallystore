@@ -41,6 +41,8 @@ import { formatDistanceToNow } from "date-fns";
 import QRCode from "react-qr-code";
 import NavbarAuth from "@/components/NavbarAuth";
 import PageBreadcrumb from "@/components/PageBreadcrumb";
+import { trackRevenueEvent } from "@/lib/revenue-os";
+import { useCurrency } from "@/contexts/CurrencyContext";
 
 interface CryptoTransaction {
   id: string;
@@ -106,8 +108,13 @@ export default function CryptoHistory() {
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { formatPrice } = useCurrency();
 
   useEffect(() => {
+    trackRevenueEvent({
+      eventType: 'PAGE_VIEWED',
+      surface: 'crypto_history',
+    });
     fetchHistory();
     
     // Auto-refresh every 30 seconds for pending transactions
@@ -128,6 +135,10 @@ export default function CryptoHistory() {
 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
+        trackRevenueEvent({
+          eventType: 'OFFER_DISMISSED',
+          surface: 'crypto_history_auth_required',
+        });
         navigate('/login');
         return;
       }
@@ -135,7 +146,18 @@ export default function CryptoHistory() {
       // Fetch crypto transactions
       const { data: txData, error: txError } = await supabase
         .from('crypto_transactions')
-        .select('*')
+        .select(`
+          id, crypto_type, crypto_amount, naira_amount, rate, status,
+          transaction_type, payment_provider,
+          nowpayments_payment_id, nowpayments_purchase_id,
+          nowpayments_pay_address, nowpayments_payin_extra_id,
+          nowpayments_network, nowpayments_smart_contract,
+          nowpayments_amount_received, actually_paid, outcome_amount,
+          outcome_currency, payment_type, burning_percent,
+          expiration_date, fixed_rate_valid_until, payout_hash,
+          payment_extra_ids, parent_payment_id, origin_type,
+          payment_reference, created_at, updated_at
+        `)
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
@@ -145,15 +167,35 @@ export default function CryptoHistory() {
       // Fetch withdrawals
       const { data: wdData, error: wdError } = await supabase
         .from('crypto_withdrawals')
-        .select('*')
+        .select(`
+          id, amount, fee, net_amount, bank_name, account_number,
+          account_name, status, payment_reference, created_at, processed_at
+        `)
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
       if (wdError) throw wdError;
       setWithdrawals(wdData || []);
+      trackRevenueEvent({
+        eventType: 'PAGE_VIEWED',
+        userId: user.id,
+        surface: silent ? 'crypto_history_refreshed' : 'crypto_history_loaded',
+        metadata: {
+          silent,
+          crypto_count: txData?.length || 0,
+          withdrawal_count: wdData?.length || 0,
+          crypto_status_counts: countByStatus(txData || []),
+          withdrawal_status_counts: countByStatus(wdData || []),
+        },
+      });
 
     } catch (error: any) {
       console.error('Error fetching history:', error);
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: silent ? 'crypto_history_refresh_failed' : 'crypto_history_load_failed',
+        metadata: { reason: error?.message || 'history_load_failed' },
+      });
       if (!silent) {
         toast({
           title: "Error",
@@ -233,11 +275,26 @@ export default function CryptoHistory() {
   const copyToClipboard = async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      trackRevenueEvent({
+        eventType: 'OFFER_ACCEPTED',
+        surface: 'crypto_history_copy',
+        metadata: {
+          label,
+          transaction_status: selectedTransaction?.status || null,
+          crypto_type: selectedTransaction?.crypto_type || null,
+          network: selectedTransaction?.nowpayments_network || null,
+        },
+      });
       toast({
         title: "Copied! ✅",
         description: `${label} copied to clipboard`,
       });
     } catch (error) {
+      trackRevenueEvent({
+        eventType: 'OFFER_DISMISSED',
+        surface: 'crypto_history_copy_failed',
+        metadata: { label },
+      });
       toast({
         title: "Copy Failed",
         description: "Please copy manually",
@@ -305,8 +362,65 @@ export default function CryptoHistory() {
   };
 
   const viewTransactionDetails = (tx: CryptoTransaction) => {
+    trackRevenueEvent({
+      eventType: 'PRODUCT_VIEWED',
+      surface: 'crypto_history_detail_opened',
+      metadata: {
+        transaction_id: tx.id,
+        status: tx.status,
+        crypto_type: tx.crypto_type,
+        network: tx.nowpayments_network || null,
+        naira_amount: tx.naira_amount || 0,
+      },
+    });
     setSelectedTransaction(tx);
     setShowDetailsModal(true);
+  };
+
+  const countByStatus = (items: Array<{ status: string }>) =>
+    items.reduce<Record<string, number>>((acc, item) => {
+      const key = item.status || 'unknown';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+
+  const handleNavigate = (route: string, surface: string) => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface,
+      metadata: { destination: route },
+    });
+    navigate(route);
+  };
+
+  const handleRefresh = () => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface: 'crypto_history_refresh_cta',
+    });
+    fetchHistory();
+  };
+
+  const handleTabChange = (value: string) => {
+    trackRevenueEvent({
+      eventType: 'FILTER_USED',
+      surface: 'crypto_history_tab',
+      metadata: { tab: value },
+    });
+  };
+
+  const openExplorer = (tx: CryptoTransaction) => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      surface: 'crypto_history_explorer_opened',
+      metadata: {
+        transaction_id: tx.id,
+        status: tx.status,
+        crypto_type: tx.crypto_type,
+        network: tx.nowpayments_network || null,
+      },
+    });
+    window.open(getExplorerUrl(tx.nowpayments_network || '', tx.payout_hash!), '_blank');
   };
 
   const hasChildPayments = (tx: CryptoTransaction): boolean => {
@@ -340,7 +454,7 @@ export default function CryptoHistory() {
       </div>
 
       <div className="container mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 pt-4 sm:px-6">
-        <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="gap-1 rounded-xl font-bold">
+        <Button variant="outline" size="sm" onClick={() => handleNavigate('/dashboard', 'crypto_history_wallet_cta')} className="gap-1 rounded-xl font-bold">
           ← Wallet
         </Button>
         <div className="flex min-w-0 items-center gap-2">
@@ -350,7 +464,7 @@ export default function CryptoHistory() {
         <Button
           variant="outline"
           size="icon"
-          onClick={() => fetchHistory()}
+          onClick={handleRefresh}
           disabled={refreshing}
           className="rounded-xl"
         >
@@ -363,7 +477,7 @@ export default function CryptoHistory() {
         {/* Quick Actions */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <Button
-            onClick={() => navigate('/crypto-exchange')}
+            onClick={() => handleNavigate('/crypto-exchange', 'crypto_history_sell_cta')}
             className="h-16 text-lg gap-3"
             size="lg"
           >
@@ -371,7 +485,7 @@ export default function CryptoHistory() {
             Sell More Crypto
           </Button>
           <Button
-            onClick={() => navigate('/crypto-withdrawal')}
+            onClick={() => handleNavigate('/crypto-withdrawal', 'crypto_history_withdraw_cta')}
             variant="outline"
             className="h-16 text-lg gap-3"
             size="lg"
@@ -381,7 +495,7 @@ export default function CryptoHistory() {
           </Button>
         </div>
 
-        <Tabs defaultValue="transactions" className="space-y-6">
+        <Tabs defaultValue="transactions" onValueChange={handleTabChange} className="space-y-6">
           <TabsList className="grid w-full grid-cols-2 h-12">
             <TabsTrigger value="transactions" className="text-base gap-2">
               <ArrowDownCircle className="w-4 h-4" />
@@ -403,7 +517,7 @@ export default function CryptoHistory() {
                   <p className="text-muted-foreground mb-6">
                     Start selling your crypto to get Naira instantly
                   </p>
-                  <Button onClick={() => navigate('/crypto-exchange')} size="lg">
+                  <Button onClick={() => handleNavigate('/crypto-exchange', 'crypto_history_empty_sell_cta')} size="lg">
                     <Zap className="w-4 h-4 mr-2" />
                     Sell Crypto Now
                   </Button>
@@ -417,7 +531,7 @@ export default function CryptoHistory() {
                     Crypto Sale Transactions
                   </CardTitle>
                   <CardDescription>
-                    Powered by NowPayments • Track your crypto-to-Naira conversions
+                    Track your crypto-to-Naira conversions
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -466,7 +580,7 @@ export default function CryptoHistory() {
                               )}
                             </TableCell>
                             <TableCell className="font-semibold text-green-600">
-                              ₦{tx.naira_amount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {formatPrice(tx.naira_amount)}
                             </TableCell>
                             <TableCell>
                               <span className="text-xs text-muted-foreground">
@@ -519,7 +633,7 @@ export default function CryptoHistory() {
                   <p className="text-muted-foreground mb-6">
                     Withdraw your crypto balance to your bank account
                   </p>
-                  <Button onClick={() => navigate('/crypto-withdrawal')} size="lg">
+                  <Button onClick={() => handleNavigate('/crypto-withdrawal', 'crypto_history_empty_withdraw_cta')} size="lg">
                     Withdraw Now
                   </Button>
                 </CardContent>
@@ -529,7 +643,7 @@ export default function CryptoHistory() {
                 <CardHeader>
                   <CardTitle>Bank Withdrawals</CardTitle>
                   <CardDescription>
-                    Powered by SageCloud • Track your bank withdrawal requests
+                    Track your bank withdrawal requests
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -569,13 +683,13 @@ export default function CryptoHistory() {
                               </div>
                             </TableCell>
                             <TableCell className="font-mono">
-                              ₦{wd.amount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {formatPrice(wd.amount)}
                             </TableCell>
                             <TableCell className="text-red-600 font-mono">
-                              -₦{wd.fee.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              -{formatPrice(wd.fee)}
                             </TableCell>
                             <TableCell className="font-semibold text-green-600">
-                              ₦{wd.net_amount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {formatPrice(wd.net_amount)}
                             </TableCell>
                             <TableCell>{getStatusBadge(wd.status)}</TableCell>
                           </TableRow>
@@ -693,13 +807,13 @@ export default function CryptoHistory() {
                 <div className="flex justify-between py-2 border-b">
                   <span className="text-muted-foreground">Naira Value:</span>
                   <span className="font-semibold text-green-600">
-                    ₦{selectedTransaction.naira_amount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    {formatPrice(selectedTransaction.naira_amount)}
                   </span>
                 </div>
 
                 <div className="flex justify-between py-2 border-b">
                   <span className="text-muted-foreground">Exchange Rate:</span>
-                  <span className="font-mono">₦{selectedTransaction.rate.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  <span className="font-mono">{formatPrice(selectedTransaction.rate)}</span>
                 </div>
 
                 {selectedTransaction.nowpayments_network && (
@@ -767,10 +881,7 @@ export default function CryptoHistory() {
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() => window.open(
-                          getExplorerUrl(selectedTransaction.nowpayments_network || '', selectedTransaction.payout_hash!), 
-                          '_blank'
-                        )}
+                        onClick={() => openExplorer(selectedTransaction)}
                       >
                         <ExternalLink className="w-4 h-4" />
                       </Button>
@@ -831,7 +942,17 @@ export default function CryptoHistory() {
                   </Button>
                 )}
                 <Button
-                  onClick={() => setShowDetailsModal(false)}
+                  onClick={() => {
+                    trackRevenueEvent({
+                      eventType: 'OFFER_DISMISSED',
+                      surface: 'crypto_history_detail_closed',
+                      metadata: {
+                        transaction_id: selectedTransaction.id,
+                        status: selectedTransaction.status,
+                      },
+                    });
+                    setShowDetailsModal(false);
+                  }}
                   className="w-full"
                 >
                   Close

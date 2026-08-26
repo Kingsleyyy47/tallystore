@@ -173,7 +173,7 @@ Before delivering any solution:
 - **pg_net**: Must be enabled for cron HTTP calls. Creates `net` schema.
 - **pg_cron**: Runs in `cron` schema. Jobs visible in `cron.job`, logs in `cron.job_run_details`.
 - **`current_setting('app.*')`**: Does NOT work on Supabase Cloud — permission denied to set custom GUC params. Use hardcoded URLs.
-- **Edge Functions**: All use `verify_jwt: false`. Auth handled in function code.
+- **Edge Functions**: Provider/cron callbacks use `verify_jwt: false` and authorize inside function code. User-authenticated functions may keep `verify_jwt: true` when the function must never run anonymously.
 - **Service Role calls**: Pass `user_id` in body, verify auth header contains service role key.
 - **Allowed `pending_payments.status` values**: `'pending'`, `'credited'`, `'failed'`, `'expired'` — enforced by CHECK constraint.
 

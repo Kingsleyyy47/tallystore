@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { useMemo, useState, useEffect } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -33,8 +33,32 @@ import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
 import { getUserOrders } from '@/lib/supabase'
+import {
+  getAllProductGroups,
+  getCategories,
+  getAppSetting,
+  getFavoriteProductGroupIds,
+  getTopSellingProductGroupIds,
+  getUserPurchaseHistory,
+  type Category,
+  type ProductGroup,
+} from '@/lib/supabase'
 import { useToast } from '@/hooks/use-toast'
 import { RevampCard, RevampPage } from '@/components/RevampLayout'
+import ProductTemplateCard from '@/components/ProductTemplateCard'
+import { isCustomerSellableProduct } from '@/lib/productAvailability'
+import {
+  getCustomerPressureState,
+  getRevenueVisitorId,
+  loadCustomerRelationshipBoosts,
+  loadRevenueOsSettings,
+  loadRunningCroActionPlans,
+  loadRunningCroExperiments,
+  rankProductsForRevenueOs,
+  resolveCroAssignment,
+  trackRevenueEvent,
+  type RevenueOsSettings,
+} from '@/lib/revenue-os'
 
 const statusColors = {
   completed: 'default',
@@ -152,6 +176,7 @@ function OrderDetailsView({
   onCopyAll,
   onDownload,
   onCopyText,
+  onOpenLogin,
 }: {
   order: any
   formatPrice: (amount: number) => string
@@ -159,6 +184,7 @@ function OrderDetailsView({
   onCopyAll: (order: any) => void
   onDownload: (order: any) => void
   onCopyText: (text: string, label?: string) => void
+  onOpenLogin: (order: any, loginUrl: string) => void
 }) {
   const accounts = getOrderAccounts(order)
   const productName = getOrderProductName(order)
@@ -185,7 +211,7 @@ function OrderDetailsView({
           asChild
           className="h-10 min-w-0 justify-center rounded-xl bg-amber-500 px-2 text-xs font-black text-white shadow-[0_12px_32px_rgba(245,158,11,0.24)] hover:bg-amber-400 sm:text-sm"
         >
-          <a href={loginUrl} target="_blank" rel="noopener noreferrer">
+          <a href={loginUrl} target="_blank" rel="noopener noreferrer" onClick={() => onOpenLogin(order, loginUrl)}>
             <ExternalLink className="h-4 w-4 shrink-0" />
             <span className="truncate">Login</span>
           </a>
@@ -308,6 +334,7 @@ function OrderDetailsView({
 
 export default function OrderHistoryPage() {
   const location = useLocation()
+  const navigate = useNavigate()
   const { user, showBalances } = useAuth()
   const { formatPrice } = useCurrency()
   const { toast } = useToast()
@@ -319,9 +346,24 @@ export default function OrderHistoryPage() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null)
+  const [recommendationProducts, setRecommendationProducts] = useState<ProductGroup[]>([])
+  const [recommendationCategories, setRecommendationCategories] = useState<Category[]>([])
+  const [recommendationSettings, setRecommendationSettings] = useState<RevenueOsSettings | null>(null)
+  const [recommendationExperiments, setRecommendationExperiments] = useState<any[]>([])
 
   // Check for purchase success message
   useEffect(() => {
+    if (user?.id) {
+      trackRevenueEvent({
+        eventType: 'PAGE_VIEWED',
+        userId: user.id,
+        surface: 'order_history',
+        metadata: {
+          purchase_success: Boolean(location.state?.purchaseSuccess),
+        },
+      })
+    }
+
     if (location.state?.purchaseSuccess) {
       const accountCount = location.state?.accountCount || 1
       const productName = location.state?.productGroupName || 'account'
@@ -333,7 +375,7 @@ export default function OrderHistoryPage() {
         duration: 10000, // Show for 10 seconds instead of default 5
       })
     }
-  }, [location.state, toast])
+  }, [location.state, toast, user?.id])
 
   // Load real orders from Supabase
   useEffect(() => {
@@ -342,16 +384,95 @@ export default function OrderHistoryPage() {
       
       try {
         setLoading(true)
-        console.log('🔄 Loading orders for user:', user.id)
-        
-        const ordersData = await getUserOrders(user.id)
-        console.log('✅ Orders loaded:', ordersData)
+        const [
+          ordersData,
+          productGroupsData,
+          categoriesData,
+          automationSetting,
+          revenueSettings,
+          experiments,
+          actionPlans,
+          favoriteIds,
+          topSellingIds,
+          purchaseHistory,
+        ] = await Promise.all([
+          getUserOrders(user.id),
+          getAllProductGroups(),
+          getCategories(),
+          getAppSetting('sales_recommendation_automation_enabled'),
+          loadRevenueOsSettings(),
+          loadRunningCroExperiments(),
+          loadRunningCroActionPlans(),
+          getFavoriteProductGroupIds(),
+          getTopSellingProductGroupIds(16),
+          getUserPurchaseHistory(user.id),
+        ])
         
         setOrders(ordersData)
         setFilteredOrders(ordersData)
+        setRecommendationCategories(categoriesData)
+        setRecommendationSettings(revenueSettings)
+        setRecommendationExperiments(experiments)
+
+        const completedProductIds = new Set(
+          ordersData
+            .filter((order: any) => order.status === 'completed' && order.product_group_id)
+            .map((order: any) => String(order.product_group_id)),
+        )
+        const relationshipBoosts = await loadCustomerRelationshipBoosts(
+          purchaseHistory.productGroupCounts,
+          purchaseHistory.lastPurchasedAtByProductGroup,
+        )
+        const sellableCandidates = productGroupsData
+          .filter(isCustomerSellableProduct)
+          .filter((product) => !completedProductIds.has(product.id) || relationshipBoosts[product.id] || favoriteIds.includes(product.id) || topSellingIds.includes(product.id))
+
+        const assignment = resolveCroAssignment({
+          surface: 'order_history_post_purchase',
+          settings: revenueSettings,
+          experiments,
+          visitorId: getRevenueVisitorId(),
+          userId: user.id,
+        })
+        const automationEnabled = automationSetting !== 'false' && revenueSettings.enabled && assignment.rankingEnabled
+        const ranked = automationEnabled
+          ? rankProductsForRevenueOs(sellableCandidates, categoriesData, {
+              surface: 'order_history_post_purchase',
+              topSellingIds,
+              favoriteProductIds: favoriteIds,
+              relationshipBoosts,
+              actionPlans,
+              customer: {
+                productGroupCounts: purchaseHistory.productGroupCounts,
+                categoryCounts: purchaseHistory.categoryCounts,
+                lastPurchasedAtByProductGroup: purchaseHistory.lastPurchasedAtByProductGroup,
+                lastPurchasedAtByCategory: purchaseHistory.lastPurchasedAtByCategory,
+                lastProductGroupId: purchaseHistory.lastProductGroupId,
+              },
+              pressure: getCustomerPressureState(),
+              settings: revenueSettings,
+              assignment,
+            }).slice(0, 4).map((rankedProduct) => rankedProduct.product)
+          : []
+        setRecommendationProducts(ranked)
+        trackRevenueEvent({
+          eventType: 'PAGE_VIEWED',
+          userId: user.id,
+          surface: 'order_history_loaded',
+          metadata: {
+            order_count: ordersData.length,
+            completed_count: ordersData.filter((order: any) => order.status === 'completed').length,
+            processing_count: ordersData.filter((order: any) => order.status === 'processing').length,
+            failed_count: ordersData.filter((order: any) => order.status === 'failed').length,
+          },
+        })
         setLoading(false)
       } catch (error) {
         console.error('Error loading orders:', error)
+        setRecommendationProducts([])
+        setRecommendationCategories([])
+        setRecommendationSettings(null)
+        setRecommendationExperiments([])
         toast({
           variant: "destructive",
           title: "Error",
@@ -392,11 +513,30 @@ export default function OrderHistoryPage() {
     }
 
     if (categoryFilter !== 'all') {
-      filtered = filtered.filter(order => order.account_details?.category === categoryFilter)
+      filtered = filtered.filter(order => getOrderPlatform(order) === categoryFilter)
     }
 
     setFilteredOrders(filtered)
   }, [orders, searchTerm, statusFilter, categoryFilter])
+
+  useEffect(() => {
+    if (!user?.id) return
+    const timeout = window.setTimeout(() => {
+      if (!searchTerm.trim() && statusFilter === 'all' && categoryFilter === 'all') return
+      trackRevenueEvent({
+        eventType: searchTerm.trim() ? 'SEARCHED' : 'FILTER_USED',
+        userId: user.id,
+        surface: 'order_history_filters',
+        metadata: {
+          search_length: searchTerm.trim().length,
+          status_filter: statusFilter,
+          category_filter: categoryFilter,
+          result_count: filteredOrders.length,
+        },
+      })
+    }, 500)
+    return () => window.clearTimeout(timeout)
+  }, [categoryFilter, filteredOrders.length, searchTerm, statusFilter, user?.id])
 
   const copyText = async (text: string, label = 'Copied') => {
     try {
@@ -422,6 +562,17 @@ export default function OrderHistoryPage() {
       return
     }
 
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'order_credentials_copy_all',
+      metadata: {
+        order_id: order.id,
+        product_group_id: order.product_group_id || null,
+        account_count: accountsData.length,
+        status: order.status,
+      },
+    })
     copyText(buildCredentialText(order), 'Credentials copied')
   }
 
@@ -436,6 +587,17 @@ export default function OrderHistoryPage() {
       return
     }
 
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'order_credentials_download',
+      metadata: {
+        order_id: order.id,
+        product_group_id: order.product_group_id || null,
+        account_count: accountsData.length,
+        status: order.status,
+      },
+    })
     const blob = new Blob([buildCredentialText(order)], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -445,6 +607,26 @@ export default function OrderHistoryPage() {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  }
+
+  const handleOpenLogin = (order: any, loginUrl: string) => {
+    trackRevenueEvent({
+      eventType: 'OFFER_ACCEPTED',
+      userId: user?.id || null,
+      surface: 'order_platform_login_opened',
+      metadata: {
+        order_id: order.id,
+        product_group_id: order.product_group_id || null,
+        platform: getOrderPlatform(order),
+        login_host: (() => {
+          try {
+            return new URL(loginUrl).host
+          } catch {
+            return null
+          }
+        })(),
+      },
+    })
   }
 
   const formatDate = (dateString: string) => {
@@ -465,6 +647,100 @@ export default function OrderHistoryPage() {
   }
 
   const stats = getStats()
+  const availableOrderCategories = useMemo(() => {
+    return Array.from(new Set(orders.map(getOrderPlatform).filter(Boolean))).sort((a, b) => a.localeCompare(b))
+  }, [orders])
+
+  const recommendationCategoryById = useMemo(() => {
+    return new Map(recommendationCategories.map((category) => [category.id, category]))
+  }, [recommendationCategories])
+
+  const postPurchaseAssignment = useMemo(() => resolveCroAssignment({
+    surface: 'order_history_post_purchase',
+    settings: recommendationSettings,
+    experiments: recommendationExperiments,
+    visitorId: getRevenueVisitorId(),
+    userId: user?.id || null,
+  }), [recommendationExperiments, recommendationSettings, user?.id])
+
+  useEffect(() => {
+    if (categoryFilter !== 'all' && !availableOrderCategories.includes(categoryFilter)) {
+      setCategoryFilter('all')
+    }
+  }, [availableOrderCategories, categoryFilter])
+
+  useEffect(() => {
+    if (!user?.id || recommendationProducts.length === 0) return
+    const today = new Date().toISOString().slice(0, 10)
+    const actorKey = user.id || getRevenueVisitorId() || 'anonymous'
+    recommendationProducts.forEach((product, index) => {
+      trackRevenueEvent({
+        eventType: 'RECOMMENDATION_SHOWN',
+        userId: user.id,
+        productGroupId: product.id,
+        categoryId: product.category_id,
+        surface: 'order_history_post_purchase',
+        experimentId: postPurchaseAssignment.experimentId,
+        variantId: postPurchaseAssignment.variantId,
+        metadata: {
+          position: index + 1,
+          action: 'POST_PURCHASE_RECOMMENDATION',
+          assignmentMode: postPurchaseAssignment.mode,
+          completedOrderCount: orders.filter((order) => order.status === 'completed').length,
+        },
+        eventId: `RECOMMENDATION_SHOWN:${today}:${actorKey}:order_history_post_purchase:${postPurchaseAssignment.variantId || postPurchaseAssignment.mode}:${product.id}`,
+      })
+    })
+  }, [orders, postPurchaseAssignment.experimentId, postPurchaseAssignment.mode, postPurchaseAssignment.variantId, recommendationProducts, user?.id])
+
+  const handleRecommendedView = (product: ProductGroup) => {
+    trackRevenueEvent({
+      eventType: 'RECOMMENDATION_CLICKED',
+      userId: user?.id || null,
+      productGroupId: product.id,
+      categoryId: product.category_id,
+      surface: 'order_history_post_purchase',
+      experimentId: postPurchaseAssignment.experimentId,
+      variantId: postPurchaseAssignment.variantId,
+      metadata: {
+        action: 'POST_PURCHASE_RECOMMENDATION',
+        assignmentMode: postPurchaseAssignment.mode,
+      },
+    })
+    navigate(`/products?category=${encodeURIComponent(product.category_id || '')}`)
+  }
+
+  const handleRecommendedPurchase = (productGroupId: string, quantity: number) => {
+    const product = recommendationProducts.find((entry) => entry.id === productGroupId)
+    if (!product || !isCustomerSellableProduct(product)) return
+    const category = recommendationCategoryById.get(product.category_id)
+
+    trackRevenueEvent({
+      eventType: 'BUY_CLICKED',
+      userId: user?.id || null,
+      productGroupId: product.id,
+      categoryId: product.category_id,
+      surface: 'order_history_post_purchase',
+      experimentId: postPurchaseAssignment.experimentId,
+      variantId: postPurchaseAssignment.variantId,
+      metadata: {
+        action: 'POST_PURCHASE_RECOMMENDATION',
+        quantity,
+        price: product.price,
+        assignmentMode: postPurchaseAssignment.mode,
+      },
+    })
+
+    navigate('/checkout', {
+      state: {
+        productGroup: product,
+        category: category || null,
+        quantity,
+        isBulkPurchase: quantity > 1,
+        croAssignment: postPurchaseAssignment,
+      },
+    })
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -540,6 +816,7 @@ export default function OrderHistoryPage() {
               onCopyAll={handleCopyAll}
               onDownload={handleDownload}
               onCopyText={copyText}
+              onOpenLogin={handleOpenLogin}
             />
           </section>
         ) : (
@@ -595,6 +872,40 @@ export default function OrderHistoryPage() {
           </RevampCard>
         </div>
 
+        {recommendationProducts.length > 0 && (
+          <section className="mt-4 rounded-2xl border border-slate-200 bg-white/85 p-3 shadow-sm dark:border-white/10 dark:bg-white/[0.035] sm:p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-[11px] font-black uppercase text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200">
+                  <ShoppingBag className="h-3.5 w-3.5" />
+                  Recommended next
+                </div>
+                <h2 className="mt-2 text-lg font-black tracking-normal text-slate-950 dark:text-white sm:text-xl">
+                  Pick another product that fits your buying pattern
+                </h2>
+              </div>
+              <Button asChild variant="outline" className="hidden shrink-0 rounded-xl font-black sm:inline-flex">
+                <Link to="/products">View all</Link>
+              </Button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {recommendationProducts.map((product) => {
+                const category = recommendationCategoryById.get(product.category_id)
+                if (!category) return null
+                return (
+                  <ProductTemplateCard
+                    key={product.id}
+                    productGroup={product}
+                    category={category}
+                    onPurchase={handleRecommendedPurchase}
+                    onView={handleRecommendedView}
+                  />
+                )
+              })}
+            </div>
+          </section>
+        )}
+
         {/* Filters */}
         <Card className="my-4 rounded-2xl border-slate-200 bg-white/85 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
           <CardContent className="p-3 sm:p-4">
@@ -632,10 +943,9 @@ export default function OrderHistoryPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Categories</SelectItem>
-                  <SelectItem value="Instagram">Instagram</SelectItem>
-                  <SelectItem value="TikTok">TikTok</SelectItem>
-                  <SelectItem value="Twitter">Twitter</SelectItem>
-                  <SelectItem value="Facebook">Facebook</SelectItem>
+                  {availableOrderCategories.map((category) => (
+                    <SelectItem key={category} value={category}>{category}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -732,7 +1042,21 @@ export default function OrderHistoryPage() {
                         <Button
                           variant="default"
                           size="sm"
-                          onClick={() => setSelectedOrder(order)}
+                          onClick={() => {
+                            trackRevenueEvent({
+                              eventType: 'PRODUCT_VIEWED',
+                              userId: user?.id || null,
+                              productGroupId: order.product_group_id || null,
+                              categoryId: order.product_groups?.category_id || null,
+                              surface: 'order_history_detail_opened',
+                              metadata: {
+                                order_id: order.id,
+                                status: order.status,
+                                has_credentials: getOrderAccounts(order).length > 0,
+                              },
+                            })
+                            setSelectedOrder(order)
+                          }}
                           className="mt-3 h-10 w-full rounded-xl font-black"
                         >
                           <ReceiptText className="mr-2 h-4 w-4" />
