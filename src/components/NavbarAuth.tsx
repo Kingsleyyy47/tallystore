@@ -517,7 +517,14 @@ export default function Navbar() {
                         Social Boost
                       </Button>
                     </Link>
-                    
+
+                    <Link to="/telegram-stars" onClick={() => setIsMobileMenuOpen(false)}>
+                      <Button variant="ghost" className={`${mobileMenuButtonClass} text-sky-600 dark:text-sky-400`}>
+                        <Star className="h-4 w-4 shrink-0" />
+                        Telegram Stars & Premium
+                      </Button>
+                    </Link>
+
                     {/* Install app button - Only show if not installed */}
                     {!isInstalled && (canInstall || true) && (
                       <Button 

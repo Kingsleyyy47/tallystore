@@ -136,6 +136,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe()
   }, [checkAdminStatus])
 
+  // ── Real-time wallet balance subscription ────────────────────────────────────
+  // Listens for UPDATE events on the logged-in user's profiles row so the
+  // balance refreshes automatically after top-ups, orders, refunds, etc.
+  useEffect(() => {
+    if (!user) return
+
+    const channel = supabase
+      .channel(`profile-balance-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'profiles',
+          filter: `id=eq.${user.id}`,
+        },
+        (payload) => {
+          const newBalance = (payload.new as { wallet_balance?: number }).wallet_balance
+          if (typeof newBalance === 'number') {
+            setWalletBalance(newBalance)
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [user])
+
   const refreshWalletBalance = useCallback(async () => {
     if (!user) {
       setWalletBalance(0)
