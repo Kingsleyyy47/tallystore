@@ -133,6 +133,7 @@ export default function LoginPage() {
         })
         setIsGoogleLoading(false)
       }
+      // On success, auth redirect unmounts the page — no need to clear loading
     } catch (error) {
       trackRevenueEvent({
         eventType: 'OFFER_DISMISSED',

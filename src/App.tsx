@@ -81,6 +81,7 @@ import SocialBoostPage from "./pages/SocialBoostPage";
 import GetIP from "./pages/GetIP";
 import SmsNumbersPage from "./pages/SmsNumbersPage";
 import TelegramStarsPage from "./pages/TelegramStarsPage";
+import TravelVisaPage from "./pages/TravelVisaPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -124,6 +125,7 @@ const App = () => {
               <Route path="/about" element={<AboutPage />} />
               <Route path="/contact" element={<ContactPage />} />
               <Route path="/web-services" element={<WebServicesPage />} />
+              <Route path="/travel-visa" element={<TravelVisaPage />} />
               <Route path="/email-confirmation" element={<EmailConfirmation />} />
 
               {/* Auth Routes - redirect to dashboard if already logged in */}

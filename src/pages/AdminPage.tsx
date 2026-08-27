@@ -1223,6 +1223,8 @@ export default function AdminPage() {
     setSavingStaffPerm(`${userId}-${permKey}-${field}`)
     const current = staffPermissionsMap[userId]?.[permKey] || { is_enabled: false, auto_approve: true }
     const updated = { ...current, [field]: value }
+    // Enabling a permission always sets auto_approve = true so staff can act immediately
+    if (field === 'is_enabled' && value === true) updated.auto_approve = true
     try {
       const { data, error } = await supabase.functions.invoke('manage-staff', {
         body: {
@@ -7882,7 +7884,7 @@ export default function AdminPage() {
                                             <button
                                               className="flex items-center gap-1 text-xs"
                                               onClick={() => handleToggleStaffPerm(su.id, p.key, 'is_enabled', !perm.is_enabled)}
-                                              disabled={savingStaffPerm === `${savingKey}-is_enabled`}
+                                              disabled={!!savingStaffPerm?.startsWith(savingKey)}
                                             >
                                               {perm.is_enabled
                                                 ? <ToggleRight className="h-5 w-5 text-green-600" />
@@ -7891,17 +7893,23 @@ export default function AdminPage() {
                                                 {perm.is_enabled ? 'On' : 'Off'}
                                               </span>
                                             </button>
-                                            {/* Auto-approve (only when enabled) */}
+                                            {/* Auto / Needs Approval — only shown when permission is enabled */}
                                             {perm.is_enabled && (
                                               <button
-                                                className="flex items-center gap-1 text-xs border rounded px-2 py-0.5"
+                                                className={`flex items-center gap-1 text-xs border rounded px-2 py-0.5 transition-colors ${
+                                                  perm.auto_approve
+                                                    ? 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-400'
+                                                    : 'border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-900/20 dark:text-orange-400'
+                                                }`}
                                                 onClick={() => handleToggleStaffPerm(su.id, p.key, 'auto_approve', !perm.auto_approve)}
-                                                disabled={savingStaffPerm === `${savingKey}-auto_approve`}
-                                                title={perm.auto_approve ? 'Click to require approval' : 'Click to auto-approve'}
+                                                disabled={!!savingStaffPerm?.startsWith(savingKey)}
+                                                title={perm.auto_approve
+                                                  ? 'Auto: actions apply immediately. Click to require your approval first.'
+                                                  : 'Needs Approval: actions go to your queue before going live. Click to allow immediately.'}
                                               >
                                                 {perm.auto_approve
-                                                  ? <><CheckCircle2 className="h-3 w-3 text-blue-500" /> Auto</>
-                                                  : <><Clock className="h-3 w-3 text-orange-500" /> Approve</>}
+                                                  ? <><CheckCircle2 className="h-3 w-3" /> Auto</>
+                                                  : <><Clock className="h-3 w-3" /> Needs Approval</>}
                                               </button>
                                             )}
                                           </div>

@@ -27,7 +27,7 @@ interface ChatMessage {
 const WELCOME_MESSAGE: ChatMessage = {
   role: 'assistant',
   content:
-    "Hi! I'm the TallyStore assistant. Ask me how buying, depositing, or referrals work, or tell me what kind of account you're looking for and I'll help you find it.",
+    "Hey! Welcome to TallyStore. Are you looking for something specific today, or would you like me to help you explore what we have?",
 }
 
 export default function ChatWidget() {
@@ -114,11 +114,18 @@ export default function ChatWidget() {
     })
 
     try {
+      const userName =
+        user?.user_metadata?.full_name ||
+        user?.user_metadata?.name ||
+        user?.email?.split('@')[0] ||
+        null
+
       const { data, error } = await supabase.functions.invoke('chatbot', {
         body: {
           messages: nextMessages,
           pagePath: `${window.location.pathname}${window.location.search}`,
           displayCurrency: currency,
+          userName,
         },
       })
 

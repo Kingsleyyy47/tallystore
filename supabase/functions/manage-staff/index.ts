@@ -1032,6 +1032,7 @@ async function applySmsPendingAction(admin: ReturnType<typeof createClient>, pen
 const STAFF_ACTIONS_BY_PERMISSION: Record<string, string[]> = {
   tab_add_product: ['add_single_account'],
   tab_bulk_upload: ['bulk_upload_accounts'],
+  tab_products: ['update_product_group'],
   tab_discount_codes: ['create_discount_code', 'toggle_discount_code'],
   tab_sms_products: ['sms_update_product', 'sms_bulk_products', 'sms_apply_markup', 'sms_set_rounding'],
   tab_sms_orders: ['sms_cancel_order', 'sms_auto_cancel_stale'],

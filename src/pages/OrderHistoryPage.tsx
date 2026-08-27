@@ -466,7 +466,6 @@ export default function OrderHistoryPage() {
             failed_count: ordersData.filter((order: any) => order.status === 'failed').length,
           },
         })
-        setLoading(false)
       } catch (error) {
         console.error('Error loading orders:', error)
         setRecommendationProducts([])
@@ -478,6 +477,7 @@ export default function OrderHistoryPage() {
           title: "Error",
           description: "Failed to load order history"
         })
+      } finally {
         setLoading(false)
       }
     }

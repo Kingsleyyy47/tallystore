@@ -70,3 +70,69 @@ CREATE POLICY "Clients can select own chat interventions"
 ON public.chat_interventions
 FOR SELECT
 USING (true);
+
+
+-- ── 5. site_visits ────────────────────────────────────────────────────────────
+-- VisitorTracker inserts a row on every page load (anonymous + authenticated).
+DROP POLICY IF EXISTS "Anyone can insert site visits" ON public.site_visits;
+
+CREATE POLICY "Anyone can insert site visits"
+ON public.site_visits
+FOR INSERT
+WITH CHECK (true);
+
+
+-- ── 6. customer_communication_preferences ─────────────────────────────────────
+-- ProfilePage upserts when a customer saves their email preferences.
+DROP POLICY IF EXISTS "Clients can upsert own communication prefs" ON public.customer_communication_preferences;
+DROP POLICY IF EXISTS "Clients can select own communication prefs" ON public.customer_communication_preferences;
+
+CREATE POLICY "Clients can upsert own communication prefs"
+ON public.customer_communication_preferences
+FOR INSERT
+WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Clients can update own communication prefs"
+ON public.customer_communication_preferences
+FOR UPDATE
+USING  (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Clients can select own communication prefs"
+ON public.customer_communication_preferences
+FOR SELECT
+USING (auth.uid() = user_id);
+
+
+-- ── 7. chat_sessions ──────────────────────────────────────────────────────────
+-- ChatWidget opens, updates, and closes a chat_sessions row per session.
+DROP POLICY IF EXISTS "Clients can insert chat sessions" ON public.chat_sessions;
+DROP POLICY IF EXISTS "Clients can update chat sessions" ON public.chat_sessions;
+DROP POLICY IF EXISTS "Clients can select chat sessions" ON public.chat_sessions;
+
+CREATE POLICY "Clients can insert chat sessions"
+ON public.chat_sessions
+FOR INSERT
+WITH CHECK (true);
+
+CREATE POLICY "Clients can update chat sessions"
+ON public.chat_sessions
+FOR UPDATE
+USING  (true)
+WITH CHECK (true);
+
+CREATE POLICY "Clients can select chat sessions"
+ON public.chat_sessions
+FOR SELECT
+USING (true);
+
+
+-- ── 8. app_settings ───────────────────────────────────────────────────────────
+-- All client-side code reads app_settings (exchange rate, support links, feature
+-- flags, etc.). Without a SELECT policy these queries return 406 / no data.
+DROP POLICY IF EXISTS "Anyone can read app settings" ON public.app_settings;
+
+CREATE POLICY "Anyone can read app settings"
+ON public.app_settings
+FOR SELECT
+USING (true);

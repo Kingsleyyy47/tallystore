@@ -111,7 +111,6 @@ export default function ProductDetailPage() {
 
       if (!accountData) {
         setError('Product not found')
-        setLoading(false)
         return
       }
 
@@ -120,7 +119,6 @@ export default function ProductDetailPage() {
       const productGroupData = productGroupsData.find((row) => row.id === accountData.product_group_id) || await getProductGroupById(accountData.product_group_id)
       if (!productGroupData || !isCustomerSellableProduct(productGroupData)) {
         setError('Product is no longer available')
-        setLoading(false)
         return
       }
 
@@ -139,11 +137,10 @@ export default function ProductDetailPage() {
       setRevenueOsSettings(revenueSettings)
       setRunningCroExperiments(experiments)
       setRunningCroActionPlans(actionPlans)
-
-      setLoading(false)
     } catch (error) {
       console.error('Error loading product data:', error)
       setError('Failed to load product data')
+    } finally {
       setLoading(false)
     }
   }, [productId])

@@ -1896,7 +1896,7 @@ export async function getAppSetting(key: string): Promise<string | null> {
       .from('app_settings')
       .select('value')
       .eq('key', key)
-      .single()
+      .maybeSingle()
 
     if (error || !data) return null
     return data.value

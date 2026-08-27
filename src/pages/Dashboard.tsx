@@ -179,12 +179,18 @@ export default function Dashboard() {
       let spentTotal = 0
 
       while (true) {
-        const { data, error, count } = await supabase
-          .from('orders')
-          .select('amount', { count: from === 0 ? 'exact' : undefined })
-          .eq('user_id', user.id)
-          .eq('status', 'completed')
-          .range(from, from + pageSize - 1)
+        const iterTimeout = new Promise<{ data: null; error: Error; count: null }>(resolve =>
+          setTimeout(() => resolve({ data: null, error: new Error('stats query timeout'), count: null }), 8000)
+        )
+        const { data, error, count } = await Promise.race([
+          supabase
+            .from('orders')
+            .select('amount', { count: from === 0 ? 'exact' : undefined })
+            .eq('user_id', user.id)
+            .eq('status', 'completed')
+            .range(from, from + pageSize - 1),
+          iterTimeout,
+        ])
 
         if (error) throw error
 

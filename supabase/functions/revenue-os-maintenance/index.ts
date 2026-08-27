@@ -489,11 +489,16 @@ async function requireAuthorized(req: Request, supabase: SupabaseAdmin) {
   const token = auth.replace(/^Bearer\s+/i, '').trim()
   if (token) {
     const { data: userData } = await supabase.auth.getUser(token)
-    const userId = userData?.user?.id
+    const user = userData?.user
+    const userId = user?.id
+    const userEmail = user?.email?.toLowerCase() || ''
+    // Owner email is always authorized (fallback when is_admin column is missing)
+    const OWNER_EMAIL = 'wisdomthedev@gmail.com'
+    if (userEmail === OWNER_EMAIL) return
     if (userId) {
       const { data: profile } = await supabase
         .from('profiles')
-        .select('is_admin')
+        .select('is_admin, is_staff')
         .eq('id', userId)
         .maybeSingle()
       if (profile?.is_admin === true) return

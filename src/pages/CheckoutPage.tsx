@@ -127,7 +127,7 @@ export default function CheckoutPage() {
       if (accountId) {
         try {
           setLoading(true)
-          
+
           // Load the specific account details
           const accountData = await getIndividualAccountById(accountId)
           if (!accountData) {
@@ -139,20 +139,21 @@ export default function CheckoutPage() {
           navigate('/products')
           return
         }
-        
+
         setAccount(accountData)
-        
+
         // Refresh wallet balance
         await refreshWalletBalance()
-        setLoading(false)
         } catch (error) {
           console.error('Error loading checkout data:', error)
           toast({
-            variant: "destructive", 
+            variant: "destructive",
             title: "Error",
             description: "Failed to load account details"
           })
           navigate('/products')
+        } finally {
+          setLoading(false)
         }
       } else {
         // For bulk purchases without specific accountId, just refresh wallet and continue

@@ -14,6 +14,7 @@ import {
   Menu,
   PackageCheck,
   PhoneCall,
+  Plane,
   Rocket,
   Star,
   ShieldCheck,
@@ -167,6 +168,9 @@ export default function Navbar() {
             <NavLink to="/web-services" className={desktopNavClass}>
               Services
             </NavLink>
+            <NavLink to="/travel-visa" className={desktopNavClass}>
+              Travel & Visa
+            </NavLink>
             <NavLink to="/support" className={desktopNavClass}>
               Support
             </NavLink>
@@ -262,7 +266,11 @@ export default function Navbar() {
                         <Star className="h-4 w-4" />
                         Telegram Stars & Premium
                       </Link>
-                      
+                      <Link to="/travel-visa" className={`${desktopDropdownItemClass} text-emerald-600 dark:text-emerald-400`}>
+                        <Plane className="h-4 w-4" />
+                        Travel & Visa Services
+                      </Link>
+
                       {/* Install app in dropdown */}
                       {!isInstalled && (canInstall || true) && (
                         <>
@@ -389,16 +397,24 @@ export default function Navbar() {
                 <ShoppingBag className="h-4 w-4 shrink-0" />
                 Shop Products
               </Link>
-              <Link 
-                to="/web-services" 
+              <Link
+                to="/web-services"
                 onClick={() => setIsMobileMenuOpen(false)}
                 className={mobileMenuLinkClass}
               >
                 <Sparkles className="h-4 w-4 shrink-0" />
                 Digital Services
               </Link>
-              <Link 
-                to="/support" 
+              <Link
+                to="/travel-visa"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className={`${mobileMenuLinkClass} text-emerald-600 dark:text-emerald-400`}
+              >
+                <Plane className="h-4 w-4 shrink-0" />
+                Travel & Visa
+              </Link>
+              <Link
+                to="/support"
                 onClick={() => setIsMobileMenuOpen(false)}
                 className={mobileMenuLinkClass}
               >
@@ -522,6 +538,13 @@ export default function Navbar() {
                       <Button variant="ghost" className={`${mobileMenuButtonClass} text-sky-600 dark:text-sky-400`}>
                         <Star className="h-4 w-4 shrink-0" />
                         Telegram Stars & Premium
+                      </Button>
+                    </Link>
+
+                    <Link to="/travel-visa" onClick={() => setIsMobileMenuOpen(false)}>
+                      <Button variant="ghost" className={`${mobileMenuButtonClass} text-emerald-600 dark:text-emerald-400`}>
+                        <Plane className="h-4 w-4 shrink-0" />
+                        Travel & Visa
                       </Button>
                     </Link>
 

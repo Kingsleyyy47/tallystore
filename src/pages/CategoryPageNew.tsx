@@ -213,8 +213,7 @@ export default function CategoryPage() {
         setCategory(currentCategory)
         setProductGroups(categoryProductGroups)
         setAllCategories(categoriesData)
-        setLoading(false)
-        
+
         console.log('✅ Category data loaded:', {
           category: currentCategory.name,
           productGroups: categoryProductGroups.length
@@ -222,6 +221,7 @@ export default function CategoryPage() {
       } catch (error) {
         console.error('❌ Error loading category data:', error)
         setError('Failed to load category data')
+      } finally {
         setLoading(false)
       }
     }

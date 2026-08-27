@@ -80,6 +80,8 @@ type Intent =
   | "GIFT_SEARCH"
   | "SUPPORT"
   | "GREETING"
+  | "CHITCHAT"
+  | "BROWSING"
   | "THANKS"
   | "GOODBYE"
   | "UNKNOWN";
@@ -272,6 +274,7 @@ function extractAttributeTokens(message: string) {
 
 function classifyIntent(message: string): Intent {
   const text = normalize(message);
+  const tokens = tokenize(message);
   if (/\b(cancel|cancelled|canceled|refund|refunded|money back|reversal|reverse)\b/.test(text)) return "REFUND";
   if (/\b(payment failed|failed payment|deducted|not credited|debited|charged|payment issue|transaction issue|stuck payment|missing payment)\b/.test(text)) return "PAYMENT";
   if (/\b(human|agent|support|whatsapp|telegram|complaint|issue|problem|stuck|missing)\b/.test(text)) return "SUPPORT";
@@ -287,10 +290,20 @@ function classifyIntent(message: string): Intent {
   if (/\b(better|upgrade|stronger|higher quality|best)\b/.test(text)) return "BETTER";
   if (/\b(price|cost|how much|amount)\b/.test(text)) return "PRICE_QUERY";
   if (/\b(available|stock|left|in stock)\b/.test(text)) return "AVAILABILITY";
-  if (/\b(hi|hello|hey|good morning|good afternoon|good evening)\b/.test(text)) return "GREETING";
-  if (/\b(thanks|thank you|appreciate)\b/.test(text)) return "THANKS";
-  if (/\b(bye|goodbye|later|see you)\b/.test(text)) return "GOODBYE";
-  if (tokenize(message).length > 0) return "PRODUCT_SEARCH";
+  if (/\b(hi|hello|hey|good morning|good afternoon|good evening|howdy|yo|sup|hiya|greetings)\b/.test(text)) return "GREETING";
+  if (/\b(thanks|thank you|appreciate|thank)\b/.test(text)) return "THANKS";
+  if (/\b(bye|goodbye|later|see you|take care|ciao|peace)\b/.test(text)) return "GOODBYE";
+  if (/\b(just browsing|just looking|exploring|not sure yet|no idea|help me|guide me|where do i start|show me around)\b/.test(text)) return "BROWSING";
+  // Broad CHITCHAT: questions about the bot, social openers, reactions, opinions, anything clearly conversational
+  if (/\b(how are you|how r u|how are u|hows it|how is it|how you doing|how ya doing|doing well|i am fine|am good|am okay|feeling good|feeling great)\b/.test(text)) return "CHITCHAT";
+  if (/\b(what can you do|what do you do|what are you|who are you|tell me about yourself|what is this|what is tally|tell me more|what do you sell|what do you have|what do you offer)\b/.test(text)) return "CHITCHAT";
+  if (/\b(are you (a )?bot|are you real|are you human|are you ai|is this (a )?bot|talking to a bot)\b/.test(text)) return "CHITCHAT";
+  if (/\b(what.*your name|whats your name|who made you|who built you|who created you)\b/.test(text)) return "CHITCHAT";
+  if (/^(nice|cool|okay|ok|alright|lol|haha|lmao|😂|🤣|interesting|wow|really|sure|no problem|got it|i see|makes sense|that.s great|awesome|amazing|great|perfect|sweet|noted|understood|fair enough|true|exactly|right|nah|nope|yes|yeah|yep|yup|no|nope|hmm|hm|mmm|oh|ah|ooh|ugh|phew|damn|bro|bruv|sis|my guy|king|queen)[\s!?.]*$/.test(text.trim())) return "CHITCHAT";
+  if (tokens.length === 0) return "CHITCHAT";
+  if (tokens.length <= 1 && !/\b(buy|price|cost|account|stock|available|deposit|wallet|refund|order|platform|format|netflix|spotify|facebook|instagram|twitter|telegram|gmail|yahoo|tiktok|amazon|apple|discord|snapchat|prime|youtube|hbo|disney|adobe|canva|vpn|sms|phone|number|sim|crypto|bitcoin|usdt|star|stars|premium|boost|verification|verify|aged|bulk|cheap|cheap|bundle)\b/.test(text)) return "CHITCHAT";
+  if (/\b(what do you think|your opinion|do you like|do you know|do you believe|tell me something|fun fact|joke|funny|make me laugh|bored|entertain me|what.*happening|how.*going|what.*up|sup)\b/.test(text)) return "CHITCHAT";
+  if (tokens.length > 0) return "PRODUCT_SEARCH";
   return "UNKNOWN";
 }
 
@@ -468,7 +481,7 @@ function dialogueStageForIntent(intent: Intent, scoredCount = 0): DialogueStage 
   if (["COMPARE", "CHEAPER", "BETTER", "VARIANT_QUERY"].includes(intent)) return "COMPARISON";
   if (["BUDGET_QUERY", "GIFT_SEARCH"].includes(intent)) return "QUALIFICATION";
   if (intent === "PRODUCT_SEARCH" && scoredCount > 0) return "PRODUCT_SELECTION";
-  if (intent === "GREETING") return "OPEN";
+  if (["GREETING", "CHITCHAT", "BROWSING"].includes(intent)) return "OPEN";
   return "DISCOVERY";
 }
 
@@ -568,19 +581,19 @@ function needsClarifyingProductReference(intent: Intent, entities: ChatEntities,
 function clarificationReply(intent: Intent, messages: ChatMessage[], latest: string) {
   if (intent === "CHEAPER") {
     return chooseTemplate([
-      "Which product should I compare against? Send the product name and I’ll look for cheaper live stock.",
-      "Tell me the product you want cheaper than, then I’ll compare only available live stock.",
+      "Which product should I compare against? Send the product name and I'll look for cheaper live stock.",
+      "Tell me the product you want cheaper than, then I'll compare only available live stock.",
     ], messages, latest);
   }
   if (intent === "BETTER" || intent === "COMPARE" || intent === "VARIANT_QUERY") {
     return chooseTemplate([
-      "Which product or category should I compare? Send the name and I’ll check live alternatives.",
-      "Send the product name or category first, then I’ll compare available options without guessing.",
+      "Which product or category should I compare? Send the name and I'll check live alternatives.",
+      "Send the product name or category first, then I'll compare available options without guessing.",
     ], messages, latest);
   }
   return chooseTemplate([
-    "Which product do you mean? Send the name or category and I’ll check the live price and stock.",
-    "Tell me the product or category first, then I’ll check the live catalogue.",
+    "Which product do you mean? Send the name or category and I'll check the live price and stock.",
+    "Tell me the product or category first, then I'll check the live catalogue.",
   ], messages, latest);
 }
 
@@ -631,19 +644,128 @@ function supportReply(whatsappUrl: string, telegramUrl: string, latest: string, 
   return lines.join("\n");
 }
 
-function staticReply(intent: Intent, whatsappUrl: string, telegramUrl: string, messages: ChatMessage[], latest: string, pagePath = "") {
-  if (intent === "GREETING") {
+function conversationalReply(
+  intent: "GREETING" | "CHITCHAT" | "BROWSING" | "THANKS" | "GOODBYE" | "UNKNOWN",
+  latest: string,
+  messages: ChatMessage[],
+  userName: string | null,
+  liveProducts: CatalogProduct[],
+): string {
+  const name = userName ? `, ${userName.split(" ")[0]}` : "";
+  const text = normalize(latest);
+
+  // Pull any product/category the user mentioned earlier in the conversation
+  const priorUserText = messages
+    .filter((m) => m.role === "user")
+    .slice(0, -1) // exclude the current message
+    .map((m) => normalize(m.content))
+    .join(" ");
+
+  // See if past conversation hinted at a category
+  const categoryHints: Array<{ keyword: RegExp; label: string; example: string }> = [
+    { keyword: /netflix|streaming|movie|series|film/, label: "streaming accounts", example: "Netflix, Disney+, Prime Video" },
+    { keyword: /spotify|music|audio/, label: "music accounts", example: "Spotify Premium" },
+    { keyword: /facebook|instagram|twitter|tiktok|social/, label: "social media accounts", example: "aged and verified social accounts" },
+    { keyword: /telegram|premium|star/, label: "Telegram products", example: "Telegram Premium or Stars" },
+    { keyword: /email|gmail|yahoo|outlook/, label: "email accounts", example: "Gmail or Yahoo" },
+    { keyword: /vpn|privacy/, label: "VPN accounts", example: "VPN subscriptions" },
+    { keyword: /sms|phone|number|sim|verification|verify/, label: "SMS verification numbers", example: "virtual phone numbers" },
+    { keyword: /crypto|bitcoin|usdt|wallet/, label: "crypto-related products", example: "funded crypto accounts" },
+    { keyword: /adobe|canva|design/, label: "design tool accounts", example: "Adobe or Canva" },
+    { keyword: /format|bulk|aged/, label: "bulk accounts", example: "aged or bulk account formats" },
+  ];
+  let contextNudge = "";
+  for (const hint of categoryHints) {
+    if (hint.keyword.test(priorUserText) || hint.keyword.test(text)) {
+      contextNudge = ` Sounds like you might be interested in ${hint.label} — we carry ${hint.example} if you want me to pull up live prices.`;
+      break;
+    }
+  }
+
+  // Are they asking about what the bot is / what we sell?
+  const isBotQuestion = /what (do you|can you|are you)|who are you|tell me about|what is this|what do you (sell|have|offer)/.test(text);
+  if (isBotQuestion) {
+    const categories = [...new Set(liveProducts.map((p) => p.categories?.name).filter(Boolean))].slice(0, 5).join(", ");
+    return `I'm TallyStore's assistant — basically your digital shopping helper${name}. 🛍️ We sell digital accounts and services: ${categories || "streaming, social media, email, Telegram, SMS numbers, and more"}. All live stock, instant delivery. What are you looking for? Give me a product, platform, or budget and I'll find it.`;
+  }
+
+  // Are they asking if we're a bot?
+  if (/bot|ai|real|human|robot/.test(text)) {
     return chooseTemplate([
-      "Hi. Tell me the account type, platform, or budget you want and I’ll search live stock.",
-      "Hi. Send the platform, account type, or budget and I’ll check what is actually available.",
-      "Hello. Give me a product name, platform, or budget and I’ll search live stock only.",
+      `Ha! Caught me${name}. I'm a bot, yes — but a very helpful one. 🤖 I can search live stock, check prices, and guide you to exactly what you need. So, what are we shopping for?`,
+      `Guilty as charged${name} — I am indeed a bot. The good kind though, the kind that finds you deals in seconds. What are you after?`,
+      `You got me${name} — 100% bot, 0% human, but 100% useful. Tell me what you're looking for and let me prove it.`,
     ], messages, latest);
   }
-  if (intent === "THANKS") {
-    return chooseTemplate(["You’re welcome.", "Anytime.", "No problem."], messages, latest);
+
+  if (intent === "GREETING") {
+    return chooseTemplate([
+      `Hey${name}! Great to see you here. Looking for something specific, or want me to show you what's in stock?`,
+      `Hello${name}! What can I help you find today? Give me a product, platform, or budget and I'll check live stock right now.`,
+      `Hi${name}! Welcome to TallyStore. Are you shopping for something in particular, or just exploring what we carry?`,
+      `Hey${name}! 👋 We've got digital accounts across loads of categories — streaming, social, email, Telegram, and more. What are you after?`,
+    ], messages, latest);
   }
+
+  if (intent === "CHITCHAT") {
+    if (/how are you|how r u|how are u|how you doing/.test(text)) {
+      return chooseTemplate([
+        `Doing great${name}, thanks for asking! Can't complain when there's good stock in the catalogue. 😄 What about you — looking for anything today?`,
+        `All good here${name}! Living my best bot life, checking stock and prices all day. What are you in the market for?`,
+        `Honestly? Never been better${name} — the stock levels are looking healthy and I'm ready to help. What are you shopping for?`,
+        `Thriving${name}! Seriously though, how can I help you? I can search live stock, compare prices, or just chat if you're not ready yet. 😊`,
+      ], messages, latest);
+    }
+    if (/joke|funny|make me laugh|entertain|bored/.test(text)) {
+      return chooseTemplate([
+        `Okay${name}, here's one: Why did the digital account go to therapy? Too many login issues. 😂 Anyway — we actually have great accounts in stock. Want me to find you one?`,
+        `I tried writing a joke but my training data was too serious. 😅 What I CAN do is find you a great deal in about 3 seconds though — what are you looking for${name}?`,
+      ], messages, latest);
+    }
+    return chooseTemplate([
+      `Ha, love the energy${name}!${contextNudge} Anything I can actually help you find today? I've got live stock across streaming, social media, email, Telegram, SMS numbers, and more.`,
+      `You know what${name}, I like you already.${contextNudge} But between us — I'm at my best when I'm finding deals. What are you shopping for?`,
+      `Solid${name}.${contextNudge} Now — purely out of professional curiosity — is there anything here you'd like to check out? I can search live stock by product, platform, or budget in seconds.`,
+      `Noted${name}! 😄${contextNudge} While we're talking — anything you've been meaning to grab? Streaming accounts, social accounts, Telegram stuff, SMS numbers… I've got live stock across the board.`,
+    ], messages, latest);
+  }
+
+  if (intent === "BROWSING") {
+    const sample = liveProducts.slice(0, 3).map((p) => p.name).join(", ");
+    return chooseTemplate([
+      `Of course${name}! No pressure at all. We carry digital accounts across a bunch of categories — streaming, social media, email, Telegram Premium, SMS numbers, and more.${sample ? ` Some popular ones right now: ${sample}.` : ""} Just say a product name, platform, or budget and I'll check live stock.`,
+      `Take your time${name}! If it helps, here's what we usually carry: streaming accounts, aged social media accounts, email accounts, Telegram Stars and Premium, virtual phone numbers for SMS verification, and more. Anything there catch your eye?`,
+      `No rush${name}! 🛒 We've got a decent range of digital stuff.${contextNudge} Want me to give you a quick summary of what's in stock, or is there a specific category you're curious about?`,
+    ], messages, latest);
+  }
+
+  if (intent === "THANKS") {
+    return chooseTemplate([
+      `You're welcome${name}! 😊 Anything else you need?`,
+      `Anytime${name}! Let me know if you want to check out anything else — I've got live stock ready.`,
+      `No problem at all${name}. Come back whenever you need anything!`,
+    ], messages, latest);
+  }
+
   if (intent === "GOODBYE") {
-    return chooseTemplate(["No problem. I’ll be here if you need another product check.", "Alright. Come back anytime you want live stock checked."], messages, latest);
+    return chooseTemplate([
+      `Take care${name}! 👋 Come back whenever you're ready — I'll have the live catalogue ready for you.`,
+      `See you${name}! Don't be a stranger — great deals don't wait forever. 😄`,
+      `Goodbye${name}! Hope to see you again soon. 🙂`,
+    ], messages, latest);
+  }
+
+  // UNKNOWN — conversational fallback
+  return chooseTemplate([
+    `I'm not quite sure what you mean${name} — but I'm all ears! If you're looking for a product, just tell me the name, platform, or budget and I'll check live stock.`,
+    `Hmm, that one went over my head a little${name}! 😅 But if you're shopping for something, I can help — just drop a product name, category, or budget.`,
+    `Not sure I caught that${name}! I'm best at finding digital accounts and checking live prices. Tell me what you're after.`,
+  ], messages, latest);
+}
+
+function staticReply(intent: Intent, whatsappUrl: string, telegramUrl: string, messages: ChatMessage[], latest: string, pagePath = "", userName: string | null = null, liveProducts: CatalogProduct[] = []) {
+  if (["GREETING", "CHITCHAT", "BROWSING", "THANKS", "GOODBYE", "UNKNOWN"].includes(intent)) {
+    return conversationalReply(intent as "GREETING" | "CHITCHAT" | "BROWSING" | "THANKS" | "GOODBYE" | "UNKNOWN", latest, messages, userName, liveProducts);
   }
   if (intent === "DEPOSIT") {
     return "To fund your wallet, open Wallet and choose Add Funds. Ercas creates a fresh checkout each time, while PocketFi gives you a reusable virtual account if enabled. If a successful payment delays, use payment recovery before contacting support.";
@@ -685,9 +807,13 @@ function renderProductReply(
 ) {
   if (scored.length === 0) {
     if (intent === "CHEAPER" && referencedProduct) {
-      return `I could not find a cheaper in-stock alternative to ${referencedProduct.name} from live stock right now.`;
+      return `I couldn't find a cheaper in-stock alternative to ${referencedProduct.name} right now - it might be the best price we've got. Want me to check similar options in the same category?`;
     }
-    return "I could not find a matching in-stock product from the live catalogue. Try a product name, category, or budget like “under 5000”.";
+    return chooseTemplate([
+      `Hmm, nothing came up for that in live stock. Try a different product name, a platform (like Netflix or Telegram), or a budget like "under ₦5,000" and I'll search again.`,
+      "I searched live stock and didn't find a match for that. Could be out of stock, or I might have misread the request - try rephrasing with a product name or budget.",
+      "Nothing in live stock matched that one. We update stock regularly though, so try a category name, platform, or price range and I'll check again.",
+    ], messages, latest);
   }
 
   const acknowledgement = chooseTemplate(
@@ -763,6 +889,7 @@ serve(async (req) => {
     const messages: ChatMessage[] = Array.isArray(body?.messages) ? body.messages : [];
     const pagePath = typeof body?.pagePath === "string" ? body.pagePath : "";
     const displayCurrency: DisplayCurrency = body?.displayCurrency === "USD" ? "USD" : "NGN";
+    const userName: string | null = typeof body?.userName === "string" && body.userName.trim() ? body.userName.trim() : null;
     const latest = messages.filter((message) => message.role === "user").at(-1)?.content || "";
 
     if (!latest.trim()) return json({ success: false, error: "A user message is required" }, 400);
@@ -822,7 +949,7 @@ serve(async (req) => {
     const entities = extractEntities(latest, liveProducts, referenced);
     const conversationContext = resolveConversationContext(messages, liveProducts, latest, intent, referenced, entities);
     const personality = decidePersonality(messages, intent, latest);
-    const basic = staticReply(intent, whatsappUrl, telegramUrl, messages, latest, pagePath);
+    const basic = staticReply(intent, whatsappUrl, telegramUrl, messages, latest, pagePath, userName, liveProducts);
     const sellingEnabled = croGlobalEnabled !== "false" && !String(croFreezeReason || "").trim();
 
     if (!basic && needsClarifyingProductReference(intent, entities, referenced)) {

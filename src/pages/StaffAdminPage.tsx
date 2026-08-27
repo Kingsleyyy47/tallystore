@@ -1020,7 +1020,7 @@ export default function StaffAdminPage() {
         shopviaclone_product_id: editShopviaclone || null,
         auto_fulfill_enabled: editAutoFulfill,
       }
-      const res = await submitPendingAction('tab_templates', 'update_product_group', `Update product ${editingPg.name}`, {
+      const res = await submitPendingAction('tab_products', 'update_product_group', `Update product ${editingPg.name}`, {
         id: editingPg.id,
         updates,
       })
