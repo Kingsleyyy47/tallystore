@@ -67,7 +67,48 @@ interface BitrefillOrder {
   created_at: string;
 }
 
+function GiftCardsComingSoon() {
+  const navigate = useNavigate();
+  return (
+    <div className="min-h-screen bg-background">
+      <NavbarAuth />
+      <div className="container mx-auto max-w-lg px-4 pt-4 sm:px-6">
+        <PageBreadcrumb items={[{ label: 'Home', href: '/' }, { label: 'Gift Cards' }]} />
+      </div>
+      <div className="container mx-auto max-w-lg px-4 py-16 sm:px-6 flex flex-col items-center text-center gap-6">
+        <div className="rounded-full bg-amber-100 dark:bg-amber-950/50 p-6">
+          <Gift className="h-14 w-14 text-amber-500" />
+        </div>
+        <div className="space-y-2">
+          <div className="flex items-center justify-center gap-2 mb-1">
+            <Clock className="h-4 w-4 text-amber-500" />
+            <span className="text-xs font-semibold uppercase tracking-widest text-amber-600 dark:text-amber-400">Coming Soon</span>
+          </div>
+          <h1 className="text-3xl font-black">Gift Cards</h1>
+          <p className="text-muted-foreground max-w-sm">
+            Gift cards are being upgraded. Check back soon — we're working on something great.
+          </p>
+        </div>
+        <div className="rounded-2xl border bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800 px-6 py-4 max-w-sm w-full">
+          <p className="text-sm text-amber-800 dark:text-amber-300 font-medium">
+            In the meantime, you can top up your wallet and shop other products.
+          </p>
+        </div>
+        <Button onClick={() => navigate('/dashboard')} className="rounded-xl px-8">
+          Back to Dashboard
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function GiftCardsEsims() {
+  const { isAdmin, isStaff } = useAuth();
+  if (!isStaff && !isAdmin) return <GiftCardsComingSoon />;
+  return <GiftCardsEsimsInner />;
+}
+
+function GiftCardsEsimsInner() {
   const { user, isAdmin, isStaff, showBalances } = useAuth();
   const { recommendations: recs } = useRecommendations({ limit: 3 });
   const { formatPrice } = useCurrency();

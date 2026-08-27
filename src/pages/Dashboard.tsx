@@ -119,10 +119,11 @@ const actionItems = [
   },
   {
     title: 'Gift Cards',
-    description: 'Digital gift cards',
+    description: 'Coming soon',
     href: '/gift-cards',
     icon: Gift,
     accent: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
+    badge: 'Coming Soon',
   },
   {
     title: 'Social Boost',
@@ -550,9 +551,16 @@ export default function Dashboard() {
                         <span className={cn('grid h-11 w-11 shrink-0 place-items-center rounded-2xl', item.accent)}>
                           <Icon className="h-5 w-5" />
                         </span>
-                        <span className="min-w-0">
-                          <span className="block text-base font-black leading-tight text-slate-950 dark:text-foreground">
-                            {item.title}
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-2 flex-wrap">
+                            <span className="block text-base font-black leading-tight text-slate-950 dark:text-foreground">
+                              {item.title}
+                            </span>
+                            {item.badge && (
+                              <span className="rounded-full bg-amber-100 text-amber-700 text-[10px] font-semibold px-2 py-0.5 shrink-0">
+                                {item.badge}
+                              </span>
+                            )}
                           </span>
                           <span className="mt-1 block text-sm leading-5 text-slate-500 dark:text-muted-foreground">
                             {item.description}

@@ -1,15 +1,8 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { useState, useEffect } from "react";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -17,26 +10,89 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Bitcoin, TrendingDown, Copy, ExternalLink, Loader2, AlertCircle, CheckCircle2, Clock, Search, Zap, History } from "lucide-react";
+import { Copy, ExternalLink, Loader2, AlertCircle, CheckCircle2, Clock, History, Wallet } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
 import QRCode from "react-qr-code";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import NavbarAuth from "@/components/NavbarAuth";
 import PageBreadcrumb from "@/components/PageBreadcrumb";
 import { useAuth } from "@/contexts/SimpleAuth";
 import { blockStaffPurchase } from "@/lib/staffPurchaseGuard";
-import { getRevenueRequestContext, getRevenueVisitorId, trackRevenueEvent } from "@/lib/revenue-os";
+import { getRevenueRequestContext, trackRevenueEvent } from "@/lib/revenue-os";
 import { useCurrency } from "@/contexts/CurrencyContext";
 
-interface CryptoOption {
-  ticker: string;
-  name: string;
-  logo_url?: string;
-  networks: string[];
-}
+// ── Allowed coins only ──────────────────────────────────────────────
+const COINS = [
+  {
+    ticker: "usdttrc20",
+    label: "USDT",
+    network: "TRC-20",
+    networkTag: "TRON",
+    symbol: "₮",
+    color: "text-emerald-500",
+    bg: "bg-emerald-50 dark:bg-emerald-950/40",
+    border: "border-emerald-200 dark:border-emerald-800",
+    selectedBg: "bg-emerald-500",
+  },
+  {
+    ticker: "usdtbsc",
+    label: "USDT",
+    network: "BEP-20",
+    networkTag: "BNB Chain",
+    symbol: "₮",
+    color: "text-yellow-500",
+    bg: "bg-yellow-50 dark:bg-yellow-950/40",
+    border: "border-yellow-200 dark:border-yellow-800",
+    selectedBg: "bg-yellow-500",
+  },
+  {
+    ticker: "btc",
+    label: "BTC",
+    network: "Bitcoin",
+    networkTag: "Bitcoin",
+    symbol: "₿",
+    color: "text-orange-500",
+    bg: "bg-orange-50 dark:bg-orange-950/40",
+    border: "border-orange-200 dark:border-orange-800",
+    selectedBg: "bg-orange-500",
+  },
+  {
+    ticker: "eth",
+    label: "ETH",
+    network: "ERC-20",
+    networkTag: "Ethereum",
+    symbol: "Ξ",
+    color: "text-blue-500",
+    bg: "bg-blue-50 dark:bg-blue-950/40",
+    border: "border-blue-200 dark:border-blue-800",
+    selectedBg: "bg-blue-500",
+  },
+  {
+    ticker: "sol",
+    label: "SOL",
+    network: "Solana",
+    networkTag: "Solana",
+    symbol: "◎",
+    color: "text-purple-500",
+    bg: "bg-purple-50 dark:bg-purple-950/40",
+    border: "border-purple-200 dark:border-purple-800",
+    selectedBg: "bg-purple-500",
+  },
+  {
+    ticker: "trx",
+    label: "TRX",
+    network: "TRON",
+    networkTag: "TRON",
+    symbol: "⬡",
+    color: "text-red-500",
+    bg: "bg-red-50 dark:bg-red-950/40",
+    border: "border-red-200 dark:border-red-800",
+    selectedBg: "bg-red-500",
+  },
+] as const;
+
+type CoinTicker = (typeof COINS)[number]["ticker"];
 
 interface DepositInfo {
   transactionId: string;
@@ -51,920 +107,394 @@ interface DepositInfo {
 }
 
 export default function CryptoExchange() {
-  const [crypto, setCrypto] = useState<string>("btc");
-  const [network, setNetwork] = useState<string>("");
+  const [selectedTicker, setSelectedTicker] = useState<CoinTicker>("usdttrc20");
   const [amount, setAmount] = useState("");
   const [nairaAmount, setNairaAmount] = useState<number>(0);
   const [loading, setLoading] = useState(false);
-  const [loadingCryptos, setLoadingCryptos] = useState(true);
   const [loadingEstimate, setLoadingEstimate] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [depositInfo, setDepositInfo] = useState<DepositInfo | null>(null);
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [copied, setCopied] = useState(false);
-  const [availableCryptos, setAvailableCryptos] = useState<CryptoOption[]>([]);
-  const [personalCryptoCounts, setPersonalCryptoCounts] = useState<Record<string, number>>({});
-  const [cryptoSearchOpen, setCryptoSearchOpen] = useState(false);
-  const [cryptoSearchQuery, setCryptoSearchQuery] = useState("");
-  const [minAmount, setMinAmount] = useState<number>(0);
+  const [minAmount, setMinAmount] = useState<number>(1);
   const { toast } = useToast();
   const navigate = useNavigate();
   const { user: authUser, isStaff, isAdmin } = useAuth();
   const { formatPrice } = useCurrency();
 
-  const fetchPersonalCryptoCounts = useCallback(async () => {
-    if (!authUser?.id) {
-      setPersonalCryptoCounts({});
-      return;
-    }
+  const selectedCoin = COINS.find((c) => c.ticker === selectedTicker)!;
 
-    try {
-      const { data, error } = await supabase
-        .from('crypto_transactions')
-        .select('crypto_type, status')
-        .eq('user_id', authUser.id)
-        .limit(200);
-      if (error) throw error;
-
-      const counts: Record<string, number> = {};
-      (data || []).forEach((tx) => {
-        const status = String(tx.status || '').toLowerCase();
-        if (!['completed', 'success', 'successful'].includes(status)) return;
-        const key = String(tx.crypto_type || '').toLowerCase();
-        if (key) counts[key] = (counts[key] || 0) + 1;
-      });
-      setPersonalCryptoCounts(counts);
-    } catch (error) {
-      console.error('Error fetching personal crypto counts:', error);
-      setPersonalCryptoCounts({});
-    }
-  }, [authUser?.id]);
-
-  // Fetch available cryptocurrencies from NowPayments
+  // Min amounts per coin
   useEffect(() => {
-    fetchAvailableCryptos();
-  }, []);
+    const mins: Record<string, number> = { btc: 0.0001, eth: 0.001, sol: 0.01, trx: 10 };
+    setMinAmount(mins[selectedTicker] ?? 1);
+    setAmount("");
+    setNairaAmount(0);
+  }, [selectedTicker]);
 
-  useEffect(() => {
-    fetchPersonalCryptoCounts();
-  }, [fetchPersonalCryptoCounts]);
-
-  const orderedAvailableCryptos = useMemo(() => {
-    return [...availableCryptos].sort((left, right) => {
-      const leftKey = left.ticker.toLowerCase();
-      const rightKey = right.ticker.toLowerCase();
-      const personalDiff = (personalCryptoCounts[rightKey] || 0) - (personalCryptoCounts[leftKey] || 0);
-      if (personalDiff !== 0) return personalDiff;
-      return left.name.localeCompare(right.name);
-    });
-  }, [availableCryptos, personalCryptoCounts]);
-
-  useEffect(() => {
-    const day = new Date().toISOString().slice(0, 10);
-    trackRevenueEvent({
-      eventType: 'PAGE_VIEWED',
-      userId: authUser?.id || null,
-      surface: 'crypto_sell',
-      eventId: `PAGE_VIEWED:${day}:crypto_sell:${authUser?.id || 'anon'}`,
-      metadata: { selected_crypto: crypto.toUpperCase(), selected_network: network || null },
-    });
-  }, [authUser?.id, crypto, network]);
-
-  useEffect(() => {
-    if (orderedAvailableCryptos.length === 0) return;
-    const day = new Date().toISOString().slice(0, 10);
-    const actorKey = authUser?.id || getRevenueVisitorId() || 'anonymous';
-    orderedAvailableCryptos.slice(0, 40).forEach((coin, index) => {
-      trackRevenueEvent({
-        eventType: 'PRODUCT_IMPRESSION',
-        userId: authUser?.id || null,
-        surface: 'crypto_sell_assets',
-        eventId: `PRODUCT_IMPRESSION:${day}:${actorKey}:crypto_sell:${coin.ticker}`,
-        metadata: {
-          crypto_type: coin.ticker.toUpperCase(),
-          crypto_name: coin.name,
-          networks: coin.networks,
-          customer_repeat_asset: (personalCryptoCounts[coin.ticker.toLowerCase()] || 0) > 0,
-          personal_sell_count: personalCryptoCounts[coin.ticker.toLowerCase()] || 0,
-          position: index + 1,
-        },
-      });
-    });
-  }, [authUser?.id, orderedAvailableCryptos, personalCryptoCounts]);
-
-  // Countdown timer for deposit expiry
+  // Countdown timer
   useEffect(() => {
     if (!depositInfo) return;
-
     const interval = setInterval(() => {
-      const expiresAt = new Date(depositInfo.expiresAt).getTime();
-      const now = Date.now();
-      const remaining = Math.max(0, Math.floor((expiresAt - now) / 1000));
-      
+      const remaining = Math.max(0, Math.floor((new Date(depositInfo.expiresAt).getTime() - Date.now()) / 1000));
       setTimeRemaining(remaining);
-
-      if (remaining === 0) {
-        clearInterval(interval);
-        handleExpiry();
-      }
+      if (remaining === 0) { clearInterval(interval); handleExpiry(); }
     }, 1000);
-
     return () => clearInterval(interval);
   }, [depositInfo]);
 
-  // Get price estimate when amount changes
+  // Price estimate debounce
   useEffect(() => {
-    if (!amount || parseFloat(amount) <= 0) {
-      setNairaAmount(0);
-      return;
-    }
+    if (!amount || parseFloat(amount) <= 0) { setNairaAmount(0); return; }
+    const t = setTimeout(fetchPriceEstimate, 500);
+    return () => clearTimeout(t);
+  }, [amount, selectedTicker]);
 
-    const debounce = setTimeout(() => {
-      fetchPriceEstimate();
-    }, 500);
-
-    return () => clearTimeout(debounce);
-  }, [amount, crypto]);
-
-  // Fetch minimum amount when crypto changes
+  // Page view tracking
   useEffect(() => {
-    if (crypto) {
-      fetchMinimumAmount();
-    }
-  }, [crypto]);
-
-  useEffect(() => {
-    const cryptoAmount = parseFloat(amount);
-    if (!cryptoAmount || cryptoAmount <= 0 || !nairaAmount || nairaAmount <= 0) return;
-    if (cryptoAmount < minAmount) return;
-
     const day = new Date().toISOString().slice(0, 10);
-    const selectedCoin = availableCryptos.find((coin) => coin.ticker.toLowerCase() === crypto.toLowerCase());
     trackRevenueEvent({
-      eventType: 'PAYMENT_PROVIDER_LOADED',
+      eventType: "PAGE_VIEWED",
       userId: authUser?.id || null,
-      surface: 'crypto_sell',
-      eventId: `PAYMENT_PROVIDER_LOADED:${day}:crypto_sell:${authUser?.id || 'anon'}:${crypto.toUpperCase()}:${network || 'auto'}:${cryptoAmount}:${nairaAmount}`,
-      metadata: {
-        provider: 'nowpayments',
-        crypto_type: crypto.toUpperCase(),
-        crypto_name: selectedCoin?.name || null,
-        crypto_amount: cryptoAmount,
-        client_display_naira_amount: nairaAmount,
-        network: network && network !== 'auto' ? network : null,
-        minimum_crypto_amount: minAmount,
-        personal_sell_count: personalCryptoCounts[crypto.toLowerCase()] || 0,
-      },
+      surface: "crypto_topup",
+      eventId: `PAGE_VIEWED:${day}:crypto_topup:${authUser?.id || "anon"}`,
+      metadata: { selected_crypto: selectedTicker.toUpperCase() },
     });
-  }, [amount, authUser?.id, availableCryptos, crypto, minAmount, nairaAmount, network, personalCryptoCounts]);
-
-  const selectCrypto = (value: string) => {
-    const selectedCoin = availableCryptos.find((coin) => coin.ticker.toLowerCase() === value.toLowerCase());
-    setCrypto(value);
-    setCryptoSearchOpen(false);
-    setCryptoSearchQuery("");
-    trackRevenueEvent({
-      eventType: 'PRODUCT_CLICKED',
-      userId: authUser?.id || null,
-      surface: 'crypto_sell_assets',
-      eventId: `PRODUCT_CLICKED:${crypto.randomUUID()}:crypto_sell:${value}`,
-      metadata: {
-        crypto_type: value.toUpperCase(),
-        crypto_name: selectedCoin?.name || null,
-        networks: selectedCoin?.networks || [],
-        personal_sell_count: personalCryptoCounts[value.toLowerCase()] || 0,
-      },
-    });
-  };
-
-  const fetchAvailableCryptos = async () => {
-    try {
-      setLoadingCryptos(true);
-
-      // Fetch all available cryptos from NowPayments API
-      const { data, error } = await supabase.functions.invoke('get-available-cryptos');
-
-      if (error) {
-        throw error;
-      }
-
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to fetch cryptocurrencies');
-      }
-
-      setAvailableCryptos(data.cryptocurrencies);
-
-    } catch (error: any) {
-      console.error('Error fetching cryptocurrencies:', error);
-      
-      toast({
-        title: "Error Loading Cryptocurrencies",
-        description: "Could not load available cryptos. Please refresh.",
-        variant: "destructive",
-      });
-      
-      // Don't set fallback - force user to refresh so they get real data
-      setAvailableCryptos([]);
-    } finally {
-      setLoadingCryptos(false);
-    }
-  };
-
-  const fetchMinimumAmount = async () => {
-    try {
-      // Set reasonable defaults based on crypto type
-      if (crypto === 'btc') setMinAmount(0.0001);
-      else if (['eth', 'bnb', 'ltc'].includes(crypto)) setMinAmount(0.001);
-      else setMinAmount(1);
-    } catch (error: any) {
-      console.error('Error fetching minimum amount:', error);
-      setMinAmount(1);
-    }
-  };
+  }, [authUser?.id, selectedTicker]);
 
   const fetchPriceEstimate = async () => {
     try {
       setLoadingEstimate(true);
-
       const cryptoAmt = parseFloat(amount);
       if (!cryptoAmt || cryptoAmt <= 0) return;
 
-      // Call Edge Function to get real-time rates from NowPayments
-      const { data, error } = await supabase.functions.invoke('update-crypto-rates', {
-        body: {
-          crypto_amount: cryptoAmt,
-          crypto_currency: crypto,
-        },
+      const { data, error } = await supabase.functions.invoke("update-crypto-rates", {
+        body: { crypto_amount: cryptoAmt, crypto_currency: selectedTicker },
       });
-
-      if (error) {
-        console.error('Error fetching live rate:', error);
-        // Fallback to approximate calculation
-        throw error;
-      }
-
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to get estimate');
-      }
-
+      if (error) throw error;
+      if (!data.success) throw new Error(data.error || "Failed to get estimate");
       setNairaAmount(data.ngn_amount);
-
-    } catch (error: any) {
-      console.error('Error fetching price estimate:', error);
-      
-      // No fallback rates - show error to user
+    } catch {
       setNairaAmount(0);
-      
-      toast({
-        title: "Rate Unavailable",
-        description: "Could not fetch live rate. Please try again.",
-        variant: "destructive",
-      });
+      toast({ title: "Rate Unavailable", description: "Could not fetch live rate. Please try again.", variant: "destructive" });
     } finally {
       setLoadingEstimate(false);
     }
   };
 
-  const handleSell = async () => {
+  const handleTopUp = async () => {
     if (blockStaffPurchase(isStaff, isAdmin, toast)) return;
-
     const cryptoAmount = parseFloat(amount);
-
-    // Validation
     if (!cryptoAmount || cryptoAmount <= 0) {
-      toast({
-        title: "Invalid Amount",
-        description: "Please enter a valid amount",
-        variant: "destructive",
-      });
+      toast({ title: "Invalid Amount", description: "Please enter a valid amount", variant: "destructive" });
       return;
     }
-
     if (cryptoAmount < minAmount) {
-      toast({
-        title: "Amount Too Low",
-        description: `Minimum amount is ${minAmount} ${crypto.toUpperCase()}`,
-        variant: "destructive",
-      });
+      toast({ title: "Amount Too Low", description: `Minimum is ${minAmount} ${selectedTicker.toUpperCase()}`, variant: "destructive" });
       return;
     }
-
     if (!nairaAmount || nairaAmount <= 0) {
-      toast({
-        title: "Invalid Conversion",
-        description: "Could not calculate Naira amount. Please try again.",
-        variant: "destructive",
-      });
+      toast({ title: "Invalid Conversion", description: "Could not calculate Naira amount. Please try again.", variant: "destructive" });
       return;
     }
 
     setLoading(true);
-    const clientAttemptId = `crypto-sell-${Date.now()}-${globalThis.crypto.randomUUID()}`;
+    const clientAttemptId = `crypto-topup-${Date.now()}-${globalThis.crypto.randomUUID()}`;
 
     try {
-      // Get fresh user data from Supabase (not cached session)
       const { data: { user }, error: authError } = await supabase.auth.getUser();
-
       if (authError || !user) {
-        console.error('Not authenticated:', { hasError: !!authError, hasUser: !!user });
-        
-        // Try to refresh the session
-        const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
-        
-        if (refreshError || !session) {
-          console.error('Session refresh failed:', { hasError: !!refreshError });
-          throw new Error("Your session expired. Please log out and log back in.");
-        }
-        
-        // Retry getting user after refresh
-        const { data: { user: refreshedUser }, error: retryError } = await supabase.auth.getUser();
-        
-        if (retryError || !refreshedUser) {
-          console.error('Still not authenticated after refresh:', { hasError: !!retryError });
-          throw new Error("Authentication failed. Please log out and log back in.");
-        }
-        
+        const { data: { session } } = await supabase.auth.refreshSession();
+        if (!session) throw new Error("Your session expired. Please log out and log back in.");
       }
 
       trackRevenueEvent({
-        eventType: 'BUY_CLICKED',
-        userId: user?.id || authUser?.id || null,
-        surface: 'crypto_sell',
-        eventId: `BUY_CLICKED:crypto_sell:${clientAttemptId}`,
-        metadata: {
-          crypto_type: crypto.toUpperCase(),
-          crypto_amount: cryptoAmount,
-          client_display_naira_amount: nairaAmount,
-          network: network && network !== 'auto' ? network : null,
-          personal_sell_count: personalCryptoCounts[crypto.toLowerCase()] || 0,
-        },
+        eventType: "BUY_CLICKED",
+        userId: authUser?.id || null,
+        surface: "crypto_topup",
+        eventId: `BUY_CLICKED:crypto_topup:${clientAttemptId}`,
+        metadata: { crypto_type: selectedTicker.toUpperCase(), crypto_amount: cryptoAmount, naira_amount: nairaAmount },
       });
 
-      const { data, error } = await supabase.functions.invoke('create-crypto-sell-order', {
+      const { data, error } = await supabase.functions.invoke("create-crypto-sell-order", {
         body: {
-          crypto_type: crypto.toUpperCase(),
+          crypto_type: selectedTicker.toUpperCase(),
           crypto_amount: cryptoAmount,
           client_display_naira_amount: nairaAmount,
-          network: network && network !== 'auto' ? network : undefined,
           idempotency_key: clientAttemptId,
           revenue_context: getRevenueRequestContext(),
         },
       });
 
-      if (error) {
-        console.error('Edge function error:', error);
-        throw new Error(error.message || 'Failed to create sell order');
-      }
-
-      if (!data.success) {
-        console.error('Backend error:', { hasDetails: !!data.error_details, hasError: !!data.error });
-        const errorMsg = data.error_details || data.error || 'Failed to create sell order';
-        throw new Error(errorMsg);
-      }
+      if (error) throw new Error(error.message || "Failed to create order");
+      if (!data.success) throw new Error(data.error_details || data.error || "Failed to create order");
 
       const payment = data.payment_details;
-
-      // Set deposit info and open modal
-      // IMPORTANT: Use payment.pay_amount from NowPayments (includes their fee) 
-      // NOT the user's input cryptoAmount
       setDepositInfo({
         transactionId: data.transaction_id,
-        cryptoType: crypto.toUpperCase(),
-        cryptoAmount: payment.pay_amount, // Use NowPayments' calculated amount (includes fee)
+        cryptoType: selectedTicker.toUpperCase(),
+        cryptoAmount: payment.pay_amount,
         nairaAmount: Number(data.naira_amount || nairaAmount),
         depositAddress: payment.pay_address,
         expiresAt: payment.expiration_date,
-        network: payment.network || network,
+        network: payment.network || "",
         memo: payment.payin_extra_id,
         smartContract: payment.smart_contract,
       });
-
-      // Calculate initial time remaining
-      const expiresAt = new Date(payment.expiration_date).getTime();
-      const now = Date.now();
-      setTimeRemaining(Math.max(0, Math.floor((expiresAt - now) / 1000)));
-
+      setTimeRemaining(Math.max(0, Math.floor((new Date(payment.expiration_date).getTime() - Date.now()) / 1000)));
       setShowDepositModal(true);
-      setAmount(""); // Clear input
+      setAmount("");
       setNairaAmount(0);
-
-      toast({
-        title: "Order Created! 📋",
-        description: "Send crypto to the address shown to complete your sale",
-      });
+      toast({ title: "Address Ready!", description: "Send crypto to the address shown to top up your wallet" });
     } catch (error: any) {
-      console.error('Error creating sell order:', error);
-      toast({
-        title: "Failed to Create Order",
-        description: error.message || "Please try again",
-        variant: "destructive",
-      });
+      toast({ title: "Failed to Create Order", description: error.message || "Please try again", variant: "destructive" });
     } finally {
       setLoading(false);
     }
   };
 
   const handleExpiry = () => {
-    toast({
-      title: "Order Expired ⏱️",
-      description: "This deposit address is no longer valid. Create a new order to continue.",
-      variant: "destructive",
-    });
+    toast({ title: "Order Expired", description: "This deposit address is no longer valid. Create a new one.", variant: "destructive" });
     setShowDepositModal(false);
     setDepositInfo(null);
   };
 
-  const copyAddress = async () => {
-    if (!depositInfo) return;
-
+  const copyToClipboard = async (text: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(depositInfo.depositAddress);
+      await navigator.clipboard.writeText(text);
       setCopied(true);
-      toast({
-        title: "Copied! ✅",
-        description: "Deposit address copied to clipboard",
-      });
+      toast({ title: `${label} copied!` });
       setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      toast({
-        title: "Copy Failed",
-        description: "Please copy the address manually",
-        variant: "destructive",
-      });
+    } catch {
+      toast({ title: "Copy Failed", description: "Please copy manually", variant: "destructive" });
     }
   };
 
-  const copyMemo = async () => {
-    if (!depositInfo?.memo) return;
-
-    try {
-      await navigator.clipboard.writeText(depositInfo.memo);
-      toast({
-        title: "Memo Copied! ✅",
-        description: "Memo/Tag copied to clipboard",
-      });
-    } catch (error) {
-      toast({
-        title: "Copy Failed",
-        description: "Please copy the memo manually",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const formatTime = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const selectedCrypto = orderedAvailableCryptos.find(c => c.ticker === crypto);
-  const filteredCryptos = orderedAvailableCryptos.filter(c =>
-    c.ticker.toLowerCase().includes(cryptoSearchQuery.toLowerCase()) ||
-    c.name.toLowerCase().includes(cryptoSearchQuery.toLowerCase())
-  );
-  const personalFilteredCryptos = filteredCryptos.filter(c => (personalCryptoCounts[c.ticker.toLowerCase()] || 0) > 0);
-  const featuredCryptos = personalFilteredCryptos.length > 0
-    ? personalFilteredCryptos
-    : cryptoSearchQuery.trim() ? [] : filteredCryptos.slice(0, 8);
-  const featuredTickers = new Set(featuredCryptos.map(c => c.ticker));
-  const remainingCryptos = filteredCryptos.filter(c => !featuredTickers.has(c.ticker));
+  const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
+    <div className="min-h-screen bg-background">
       <NavbarAuth />
 
-      <div className="container mx-auto max-w-2xl px-4 pt-4 sm:px-6">
-        <PageBreadcrumb items={[{ label: 'Wallet', href: '/wallet' }, { label: 'Sell Crypto' }]} />
+      <div className="container mx-auto max-w-lg px-4 pt-4 sm:px-6">
+        <PageBreadcrumb items={[{ label: "Wallet", href: "/wallet" }, { label: "Pay with Crypto" }]} />
       </div>
 
-      <div className="container mx-auto flex max-w-2xl items-center justify-between gap-3 px-4 pt-4 sm:px-6">
-        <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')} className="gap-1 rounded-xl font-bold">
-          ← Wallet
+      {/* Top bar */}
+      <div className="container mx-auto flex max-w-lg items-center justify-between gap-3 px-4 pt-3 sm:px-6">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard")} className="gap-1 font-semibold">
+          ← Back
         </Button>
-        <div className="flex min-w-0 items-center gap-2">
-          <Bitcoin className="h-5 w-5 shrink-0 text-primary" />
-          <h1 className="truncate text-lg font-black">Sell Crypto</h1>
+        <div className="flex items-center gap-2">
+          <Wallet className="h-5 w-5 text-primary" />
+          <h1 className="text-lg font-black">Pay with Crypto</h1>
         </div>
-        <Button variant="outline" size="sm" onClick={() => navigate('/crypto-history')} className="gap-1 rounded-xl font-bold">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/crypto-history")} className="gap-1 font-semibold">
           <History className="h-4 w-4" />
           History
         </Button>
       </div>
 
-      {/* Main Content */}
-      <div className="container mx-auto p-4 sm:p-6 max-w-2xl">
-        {/* Hero Section */}
-        <div className="text-center mb-6 sm:mb-8 pt-2 sm:pt-4">
-          <div className="flex items-center justify-center gap-2 mb-3">
-            <Zap className="w-6 h-6 sm:w-8 sm:h-8 text-primary" />
-            <h2 className="text-xl sm:text-2xl md:text-3xl font-bold text-foreground">
-              200+ Cryptocurrencies
-            </h2>
+      <div className="container mx-auto max-w-lg px-4 py-6 sm:px-6 space-y-5">
+
+        {/* Coin picker */}
+        <div>
+          <p className="text-sm font-semibold mb-3 text-muted-foreground uppercase tracking-wide">Choose Coin</p>
+          <div className="grid grid-cols-3 gap-2.5">
+            {COINS.map((coin) => {
+              const active = coin.ticker === selectedTicker;
+              return (
+                <button
+                  key={coin.ticker}
+                  onClick={() => setSelectedTicker(coin.ticker)}
+                  className={`relative flex flex-col items-center gap-1 rounded-2xl border-2 px-2 py-3 transition-all ${
+                    active
+                      ? `${coin.border} ${coin.bg} shadow-md scale-[1.03]`
+                      : "border-border bg-card hover:border-muted-foreground/40"
+                  }`}
+                >
+                  {active && (
+                    <span className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-primary flex items-center justify-center">
+                      <CheckCircle2 className="h-3 w-3 text-primary-foreground" />
+                    </span>
+                  )}
+                  <span className={`text-xl font-bold ${active ? coin.color : "text-muted-foreground"}`}>
+                    {coin.symbol}
+                  </span>
+                  <span className={`text-sm font-bold leading-none ${active ? "text-foreground" : "text-muted-foreground"}`}>
+                    {coin.label}
+                  </span>
+                  <span className={`text-[10px] font-medium rounded-full px-1.5 py-0.5 ${
+                    active ? `${coin.bg} ${coin.color} border ${coin.border}` : "bg-muted text-muted-foreground"
+                  }`}>
+                    {coin.network}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-          <p className="text-sm sm:text-base text-muted-foreground px-4">
-            Live rates • Instant conversion to your balance
+        </div>
+
+        {/* Amount input */}
+        <div className="space-y-2">
+          <Label className="text-sm font-semibold">Amount to Send</Label>
+          <div className="relative">
+            <Input
+              type="number"
+              placeholder="0.00"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              step={["btc", "eth"].includes(selectedTicker) ? "0.00000001" : "0.01"}
+              min="0"
+              className="h-14 text-lg pr-24 rounded-xl"
+            />
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold text-muted-foreground uppercase">
+              {selectedCoin.label} {selectedCoin.network}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Min: {minAmount} {selectedCoin.label} · Network: {selectedCoin.networkTag}
           </p>
         </div>
 
-        <Card className="shadow-xl">
-          <CardHeader className="bg-gradient-to-r from-muted/50 to-muted/30 border-b">
-            <CardTitle className="flex items-center gap-2 text-2xl">
-              <Bitcoin className="w-7 h-7 text-primary" />
-              Sell Cryptocurrency
-            </CardTitle>
-            <CardDescription>
-              Convert your crypto to Naira and receive it in your balance
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6 pt-6">
-            {/* Crypto Selection */}
-            <div className="space-y-2">
-              <Label htmlFor="crypto-select" className="text-base font-medium">
-                Select Cryptocurrency
-              </Label>
-              
-              <Popover open={cryptoSearchOpen} onOpenChange={setCryptoSearchOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    role="combobox"
-                    aria-expanded={cryptoSearchOpen}
-                    className="w-full justify-between h-12"
-                    disabled={loadingCryptos}
-                  >
-                    {loadingCryptos ? (
-                      <span className="flex items-center gap-2">
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Loading cryptocurrencies...
-                      </span>
-                    ) : selectedCrypto ? (
-                      <span className="flex items-center gap-2">
-                        <Bitcoin className="w-5 h-5" />
-                        {selectedCrypto.name}
-                      </span>
-                    ) : (
-                      "Select cryptocurrency..."
-                    )}
-                    <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-[calc(100vw-2rem)] sm:w-[400px] p-0">
-                  <Command>
-                    <CommandInput 
-                      placeholder="Search cryptocurrency..." 
-                      value={cryptoSearchQuery}
-                      onValueChange={setCryptoSearchQuery}
-                    />
-                    <CommandList>
-                      <CommandEmpty>No cryptocurrency found.</CommandEmpty>
-                      {featuredCryptos.length > 0 && (
-                        <CommandGroup heading={personalFilteredCryptos.length > 0 ? "Your recent assets" : "Available now"}>
-                          {featuredCryptos.map((c) => (
-                            <CommandItem
-                              key={c.ticker}
-                              value={c.ticker}
-                              onSelect={(value) => {
-                                selectCrypto(value);
-                              }}
-                            >
-                              <Bitcoin className="mr-2 h-4 w-4" />
-                              <span className="font-medium">{c.name}</span>
-                              <span className="ml-2 text-xs text-muted-foreground">({c.ticker.toUpperCase()})</span>
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      )}
-                      <CommandGroup heading="All Cryptocurrencies">
-                        {remainingCryptos.map((c) => (
-                            <CommandItem
-                              key={c.ticker}
-                              value={c.ticker}
-                              onSelect={(value) => {
-                                selectCrypto(value);
-                              }}
-                            >
-                              <Bitcoin className="mr-2 h-4 w-4" />
-                              <span className="font-medium">{c.name}</span>
-                              <span className="ml-2 text-xs text-muted-foreground">({c.ticker.toUpperCase()})</span>
-                            </CommandItem>
-                          ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-
-              <p className="text-xs sm:text-sm text-muted-foreground">
-                Choose from 200+ supported cryptocurrencies
-              </p>
+        {/* Preview */}
+        {loadingEstimate ? (
+          <div className="flex items-center justify-center gap-2 py-5 rounded-2xl bg-muted/50">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span className="text-sm text-muted-foreground">Fetching live rate…</span>
+          </div>
+        ) : nairaAmount > 0 ? (
+          <div className="rounded-2xl border bg-card p-4 space-y-2">
+            <div className="flex justify-between text-sm">
+              <span className="text-muted-foreground">Live Rate</span>
+              <span className="font-medium text-green-600">Updated live ✓</span>
             </div>
-
-            {/* Network Selection (Optional) */}
-            {crypto && ['usdt', 'usdc', 'busd'].includes(crypto) && (
-              <div className="space-y-2">
-                <Label htmlFor="network-select" className="text-base font-medium">
-                  Network (Optional)
-                </Label>
-                <Select value={network} onValueChange={setNetwork}>
-                  <SelectTrigger id="network-select" className="h-12">
-                    <SelectValue placeholder="Auto-detect best network" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="auto">Auto-detect</SelectItem>
-                    <SelectItem value="trc20">TRON (TRC20)</SelectItem>
-                    <SelectItem value="erc20">Ethereum (ERC20)</SelectItem>
-                    <SelectItem value="bep20">BSC (BEP20)</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Leave as auto-detect for cheapest fees
-                </p>
-              </div>
-            )}
-
-            {/* Amount Input */}
-            <div className="space-y-2">
-              <Label htmlFor="amount-input" className="text-base font-medium">
-                Amount to Sell
-              </Label>
-              <div className="relative">
-                <Input
-                  id="amount-input"
-                  type="number"
-                  placeholder="0.00"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  step={['btc', 'eth', 'bnb'].includes(crypto) ? "0.00000001" : "0.01"}
-                  min="0"
-                  className="h-14 text-lg pr-20"
-                />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground font-medium uppercase">
-                  {crypto}
-                </span>
-              </div>
-              {minAmount > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  Minimum: {minAmount} {crypto.toUpperCase()}
-                </p>
-              )}
+            <div className="flex justify-between text-sm">
+              <span className="text-muted-foreground">Fee</span>
+              <span className="font-medium text-muted-foreground">5% included</span>
             </div>
-
-            {/* Price Preview Card */}
-            {loadingEstimate ? (
-              <Card className="bg-muted">
-                <CardContent className="pt-6 flex items-center justify-center">
-                  <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                  <span className="text-muted-foreground">Calculating price...</span>
-                </CardContent>
-              </Card>
-            ) : nairaAmount > 0 ? (
-              <Card className="bg-gradient-to-br from-green-50 to-emerald-50 border-green-200">
-                <CardContent className="pt-6">
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">Live Rate:</span>
-                      <span className="text-sm font-medium text-green-700">
-                        Updated live
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">Markup:</span>
-                      <span className="text-sm text-green-700 font-medium">5% included ✓</span>
-                    </div>
-                    <div className="border-t border-green-200 pt-3 mt-2">
-                      <div className="flex justify-between items-center">
-                        <span className="font-semibold text-base">You'll Receive:</span>
-                        <span className="text-3xl font-bold text-green-700">
-                          {formatPrice(nairaAmount)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card className="bg-muted/50 border-dashed">
-                <CardContent className="pt-6 text-center text-muted-foreground">
-                  <p className="text-sm">Enter amount to see price estimate</p>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Sell Button */}
-            <Button
-              onClick={handleSell}
-              className="w-full h-14 text-lg"
-              size="lg"
-              disabled={loading || loadingCryptos || loadingEstimate || !amount || parseFloat(amount) <= 0 || nairaAmount <= 0}
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                  Creating Order...
-                </>
-              ) : (
-                <>
-                  <TrendingDown className="w-5 h-5 mr-2" />
-                  Sell {crypto.toUpperCase()}
-                </>
-              )}
-            </Button>
-
-            {/* Info Footer */}
-            <div className="pt-4 border-t space-y-2">
-              <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5" />
-                Transaction time: 5-20 minutes after blockchain confirmation
-              </p>
-              <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                Funds added to your balance automatically
-              </p>
-              <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                <Zap className="w-3.5 h-3.5" />
-                Fixed rate locked for 20 minutes
-              </p>
+            <div className="border-t pt-3 flex justify-between items-center">
+              <span className="font-semibold">Wallet Credit</span>
+              <span className="text-2xl font-black text-primary">{formatPrice(nairaAmount)}</span>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        ) : amount && parseFloat(amount) > 0 ? (
+          <div className="rounded-2xl border bg-muted/40 py-4 text-center text-sm text-muted-foreground">
+            Enter a valid amount to see your wallet credit
+          </div>
+        ) : null}
+
+        {/* CTA */}
+        <Button
+          onClick={handleTopUp}
+          className="w-full h-14 text-base font-bold rounded-xl"
+          disabled={loading || loadingEstimate || !amount || parseFloat(amount) <= 0 || nairaAmount <= 0}
+        >
+          {loading ? (
+            <><Loader2 className="h-5 w-5 mr-2 animate-spin" /> Creating Order…</>
+          ) : (
+            <>Get Deposit Address</>
+          )}
+        </Button>
+
+        {/* Info pills */}
+        <div className="flex flex-wrap gap-2">
+          {[
+            { icon: Clock, text: "5–20 min after confirmation" },
+            { icon: CheckCircle2, text: "Auto-credited to wallet" },
+          ].map(({ icon: Icon, text }) => (
+            <div key={text} className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted rounded-full px-3 py-1.5">
+              <Icon className="h-3 w-3 flex-shrink-0" />
+              {text}
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* Deposit Instructions Modal */}
+      {/* Deposit Modal */}
       <Dialog open={showDepositModal} onOpenChange={setShowDepositModal}>
         <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-xl">
-              Send {depositInfo?.cryptoType} to Complete Sale
-            </DialogTitle>
+            <DialogTitle className="text-xl">Send {depositInfo?.cryptoType} to Top Up</DialogTitle>
             <DialogDescription>
-              Send exactly <strong>{depositInfo?.cryptoAmount} {depositInfo?.cryptoType}</strong> to the address below
+              Send exactly <strong>{depositInfo?.cryptoAmount} {depositInfo?.cryptoType}</strong> to the address below. Funds will be credited automatically.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-6 py-4">
-            {/* QR Code */}
-            <div className="flex justify-center p-4 bg-white rounded-lg border-2 border-dashed">
+          <div className="space-y-5 py-2">
+            {/* QR */}
+            <div className="flex justify-center p-4 bg-white rounded-xl border-2 border-dashed">
               {depositInfo && (
-                <QRCode 
-                  value={depositInfo.memo 
+                <QRCode
+                  value={depositInfo.memo
                     ? `${depositInfo.cryptoType.toLowerCase()}:${depositInfo.depositAddress}?dt=${depositInfo.memo}`
-                    : depositInfo.depositAddress
-                  } 
-                  size={200}
+                    : depositInfo.depositAddress}
+                  size={180}
                   level="M"
                 />
               )}
             </div>
 
-            {/* Deposit Address */}
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Deposit Address</Label>
-              
+            {/* Address */}
+            <div className="space-y-1.5">
+              <Label className="text-sm font-semibold">Deposit Address</Label>
               <div className="flex gap-2">
-                <Input
-                  value={depositInfo?.depositAddress || ""}
-                  readOnly
-                  className="font-mono text-sm"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  onClick={copyAddress}
-                  className="flex-shrink-0"
-                >
-                  {copied ? (
-                    <CheckCircle2 className="w-4 h-4 text-green-600" />
-                  ) : (
-                    <Copy className="w-4 h-4" />
-                  )}
+                <Input value={depositInfo?.depositAddress || ""} readOnly className="font-mono text-xs" />
+                <Button variant="outline" size="icon" className="flex-shrink-0" onClick={() => copyToClipboard(depositInfo?.depositAddress || "", "Address")}>
+                  {copied ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
                 </Button>
               </div>
-              
               {depositInfo?.network && (
-                <p className="text-xs text-muted-foreground">
-                  Network: {depositInfo.network.toUpperCase()}
-                </p>
-              )}
-
-              {depositInfo?.smartContract && (
-                <p className="text-xs text-muted-foreground font-mono">
-                  Contract: {depositInfo.smartContract.substring(0, 10)}...{depositInfo.smartContract.substring(depositInfo.smartContract.length - 8)}
-                </p>
+                <p className="text-xs text-muted-foreground">Network: <strong>{depositInfo.network.toUpperCase()}</strong></p>
               )}
             </div>
 
-            {/* Memo/Tag (for XRP, XLM, EOS, etc.) */}
+            {/* Memo */}
             {depositInfo?.memo && (
-              <div className="space-y-2">
-                <div className="p-3 bg-yellow-50 border-2 border-yellow-400 rounded-lg">
-                  <p className="text-sm font-bold text-yellow-900 flex items-center gap-2 mb-2">
-                    <AlertCircle className="w-5 h-5" />
-                    IMPORTANT: Memo/Tag Required!
-                  </p>
-                  <Label className="text-xs text-yellow-800">
-                    You MUST include this memo/tag in your transaction:
-                  </Label>
-                  <div className="flex gap-2 mt-2">
-                    <Input
-                      value={depositInfo.memo}
-                      readOnly
-                      className="font-mono text-sm bg-white"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      onClick={copyMemo}
-                      className="flex-shrink-0"
-                    >
-                      <Copy className="w-4 h-4" />
-                    </Button>
-                  </div>
-                  <p className="text-xs text-yellow-800 mt-2">
-                    ⚠️ Missing memo = PERMANENT LOSS of funds!
-                  </p>
+              <div className="rounded-xl border-2 border-yellow-400 bg-yellow-50 dark:bg-yellow-950/40 p-3 space-y-2">
+                <p className="text-sm font-bold text-yellow-900 dark:text-yellow-300 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4" /> MEMO / TAG Required
+                </p>
+                <div className="flex gap-2">
+                  <Input value={depositInfo.memo} readOnly className="font-mono text-xs bg-white" />
+                  <Button variant="outline" size="icon" className="flex-shrink-0" onClick={() => copyToClipboard(depositInfo.memo!, "Memo")}>
+                    <Copy className="h-4 w-4" />
+                  </Button>
                 </div>
+                <p className="text-xs text-yellow-800 dark:text-yellow-400">⚠️ Missing memo = permanent loss of funds</p>
               </div>
             )}
 
-            {/* Network Warning */}
-            <div className="p-3 bg-red-50 border-2 border-red-400 rounded-lg">
-              <p className="text-sm font-bold text-red-900 flex items-center gap-2">
-                <AlertCircle className="w-5 h-5" />
-                CRITICAL: Use Correct Network!
+            {/* Network warning */}
+            <div className="rounded-xl border-2 border-red-400 bg-red-50 dark:bg-red-950/40 p-3">
+              <p className="text-sm font-bold text-red-900 dark:text-red-300 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" /> Use Correct Network
               </p>
-              <p className="text-xs text-red-800 mt-2">
-                Network: <strong>{depositInfo?.network?.toUpperCase() || 'CHECK YOUR WALLET'}</strong>
-                <br />
-                ⚠️ Sending from wrong network = PERMANENT LOSS of funds
+              <p className="text-xs text-red-800 dark:text-red-400 mt-1">
+                Network: <strong>{depositInfo?.network?.toUpperCase() || "CHECK YOUR WALLET"}</strong>
+                <br />⚠️ Wrong network = permanent loss of funds
               </p>
             </div>
 
-            {/* Countdown Timer */}
-            <div className={`p-4 rounded-lg border-2 ${
-              timeRemaining < 300 ? 'bg-red-50 border-red-300' : 'bg-yellow-50 border-yellow-300'
+            {/* Timer */}
+            <div className={`rounded-xl border-2 p-3 flex items-center justify-between ${
+              timeRemaining < 300 ? "border-red-300 bg-red-50 dark:bg-red-950/40" : "border-amber-300 bg-amber-50 dark:bg-amber-950/40"
             }`}>
-              <div className="flex items-center justify-between">
-                <span className={`font-medium text-sm ${
-                  timeRemaining < 300 ? 'text-red-900' : 'text-yellow-900'
-                }`}>Time Remaining:</span>
-                <span className={`text-2xl font-bold tabular-nums ${
-                  timeRemaining < 300 ? 'text-red-700' : 'text-yellow-700'
-                }`}>
-                  {formatTime(timeRemaining)}
-                </span>
-              </div>
-              {timeRemaining < 300 && (
-                <p className="text-xs text-red-700 mt-2">
-                  ⚠️ Order expires soon! Complete payment now.
-                </p>
-              )}
+              <span className={`text-sm font-medium ${timeRemaining < 300 ? "text-red-800 dark:text-red-300" : "text-amber-800 dark:text-amber-300"}`}>
+                Time Remaining
+              </span>
+              <span className={`text-2xl font-black tabular-nums ${timeRemaining < 300 ? "text-red-700" : "text-amber-700"}`}>
+                {formatTime(timeRemaining)}
+              </span>
             </div>
 
-            {/* Important Warnings */}
-            <div className="space-y-2 p-4 bg-orange-50 border border-orange-200 rounded-lg">
-              <p className="text-sm font-semibold text-orange-900">⚠️ Important Instructions:</p>
-              <ul className="text-xs text-orange-800 space-y-1 list-disc list-inside">
-                <li>Send <strong>exactly {depositInfo?.cryptoAmount} {depositInfo?.cryptoType}</strong></li>
-                <li>Use <strong>{depositInfo?.network?.toUpperCase() || 'correct'}</strong> network</li>
-                {depositInfo?.memo && (
-                  <li className="text-red-700 font-bold">Include memo/tag: {depositInfo.memo}</li>
-                )}
-                <li>Funds credited after 3-6 confirmations (~5-20 minutes)</li>
-                <li>Wrong network/missing memo = <strong className="text-red-700">PERMANENT LOSS</strong></li>
-              </ul>
-            </div>
-
-            {/* Action Buttons */}
+            {/* Action buttons */}
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => {
-                  setShowDepositModal(false);
-                  navigate('/crypto-history');
-                }}
-              >
-                <ExternalLink className="w-4 h-4 mr-2" />
-                View Status
+              <Button variant="outline" className="flex-1" onClick={() => { setShowDepositModal(false); navigate("/crypto-history"); }}>
+                <ExternalLink className="h-4 w-4 mr-2" /> Track Status
               </Button>
-              <Button
-                variant="default"
-                className="flex-1"
-                onClick={() => {
-                  toast({
-                    title: "Great! 👍",
-                    description: "Redirecting to transaction history...",
-                  });
-                  setTimeout(() => {
-                    setShowDepositModal(false);
-                    navigate('/crypto-history');
-                  }, 1000);
-                }}
-              >
-                I've Sent Payment
+              <Button className="flex-1" onClick={() => { setShowDepositModal(false); navigate("/crypto-history"); }}>
+                I've Sent It
               </Button>
             </div>
           </div>

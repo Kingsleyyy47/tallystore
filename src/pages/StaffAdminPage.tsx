@@ -1534,8 +1534,8 @@ export default function StaffAdminPage() {
                         <Select value={addPgId} onValueChange={setAddPgId}>
                           <SelectTrigger><SelectValue placeholder="Select product..." /></SelectTrigger>
                           <SelectContent>
-                            {productGroups.filter(pg => pg.is_active).map(pg => (
-                              <SelectItem key={pg.id} value={pg.id}>{pg.name}</SelectItem>
+                            {productGroups.map(pg => (
+                              <SelectItem key={pg.id} value={pg.id}>{pg.name}{!pg.is_active ? ' (inactive)' : ''}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -1567,8 +1567,8 @@ export default function StaffAdminPage() {
                         <Select value={bulkPgId} onValueChange={setBulkPgId}>
                           <SelectTrigger><SelectValue placeholder="Choose product group..." /></SelectTrigger>
                           <SelectContent>
-                            {productGroups.filter(pg => pg.is_active).map(pg => (
-                              <SelectItem key={pg.id} value={pg.id}>{pg.name}</SelectItem>
+                            {productGroups.map(pg => (
+                              <SelectItem key={pg.id} value={pg.id}>{pg.name}{!pg.is_active ? ' (inactive)' : ''}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
