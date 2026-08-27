@@ -93,7 +93,7 @@ function RecipientCard({ info }: { info: RecipientInfo }) {
 }
 
 // ── Stars tab ─────────────────────────────────────────────────────────────────
-function StarsTab({ pricing, onOrderCreated }: { pricing: StarPricing | null; onOrderCreated: () => void }) {
+function StarsTab({ pricing, onOrderCreated, isStaff }: { pricing: StarPricing | null; onOrderCreated: () => void; isStaff: boolean }) {
   const { toast } = useToast()
   const [username, setUsername] = useState('')
   const [selectedQty, setSelectedQty] = useState<number | 'custom'>(50)
@@ -124,6 +124,7 @@ function StarsTab({ pricing, onOrderCreated }: { pricing: StarPricing | null; on
   }
 
   const buy = async () => {
+    if (isStaff) { toast({ title: 'Staff accounts cannot make purchases', variant: 'destructive' }); return }
     if (!recipient || activeQty < 50 || !price) return
     setBuying(true)
     try {
@@ -245,7 +246,7 @@ function StarsTab({ pricing, onOrderCreated }: { pricing: StarPricing | null; on
 }
 
 // ── Premium tab ───────────────────────────────────────────────────────────────
-function PremiumTab({ products, onOrderCreated }: { products: PremiumProduct[]; onOrderCreated: () => void }) {
+function PremiumTab({ products, onOrderCreated, isStaff }: { products: PremiumProduct[]; onOrderCreated: () => void; isStaff: boolean }) {
   const { toast } = useToast()
   const [username, setUsername] = useState('')
   const [searching, setSearching] = useState(false)
@@ -271,6 +272,7 @@ function PremiumTab({ products, onOrderCreated }: { products: PremiumProduct[]; 
   }
 
   const buy = async () => {
+    if (isStaff) { toast({ title: 'Staff accounts cannot make purchases', variant: 'destructive' }); return }
     if (!recipient || !selectedProduct) return
     setBuying(true)
     try {
@@ -457,32 +459,6 @@ export default function TelegramStarsPage() {
     window.dispatchEvent(new Event('transactionAdded'))
   }
 
-  // Only admin and staff can access — everyone else sees coming soon
-  if (!isAdmin && !isStaff) {
-    return (
-      <div className="min-h-screen flex flex-col bg-background">
-        <Navbar />
-        <main className="flex-1 flex items-center justify-center px-4 py-16">
-          <div className="text-center max-w-md space-y-5">
-            <div className="flex items-center justify-center gap-3 mb-2">
-              <Star className="h-10 w-10 text-amber-400 fill-amber-400" />
-              <Crown className="h-10 w-10 text-purple-500" />
-            </div>
-            <h1 className="text-3xl font-bold">Telegram Stars & Premium</h1>
-            <p className="text-muted-foreground">
-              We're working on something exciting! Telegram Stars and Premium gifting is coming soon.
-              You'll be able to send Stars and Telegram Premium to any user instantly.
-            </p>
-            <div className="inline-flex items-center gap-2 rounded-full bg-amber-100 px-4 py-1.5 text-sm font-semibold text-amber-700 dark:bg-amber-400/15 dark:text-amber-300">
-              <Clock className="h-4 w-4" />
-              Coming Soon
-            </div>
-          </div>
-        </main>
-        <Footer />
-      </div>
-    )
-  }
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
@@ -513,10 +489,10 @@ export default function TelegramStarsPage() {
                     </TabsTrigger>
                   </TabsList>
                   <TabsContent value="stars">
-                    <StarsTab pricing={starPricing} onOrderCreated={onOrderCreated} />
+                    <StarsTab pricing={starPricing} onOrderCreated={onOrderCreated} isStaff={isStaff} />
                   </TabsContent>
                   <TabsContent value="premium">
-                    <PremiumTab products={premiumProducts} onOrderCreated={onOrderCreated} />
+                    <PremiumTab products={premiumProducts} onOrderCreated={onOrderCreated} isStaff={isStaff} />
                   </TabsContent>
                 </Tabs>
               )
