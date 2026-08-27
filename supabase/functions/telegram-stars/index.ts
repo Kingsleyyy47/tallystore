@@ -116,27 +116,29 @@ function calculateStarPriceNgn(quantity: number, config: { cost_per_star_usdt: n
 // ── Premium pricing helpers ───────────────────────────────────────────────────
 async function getPremiumPricingConfig(admin: SupabaseAdmin): Promise<{
   costs: Record<string, number>
-  markup_ngn: number
+  markups: Record<string, number>  // per-tier NGN markup keyed by months string
   usdt_to_ngn: number
 }> {
-  const [markupRow, usdtNgn] = await Promise.all([
-    admin.from('app_settings').select('value').eq('key', 'telegram_premium_markup_ngn').maybeSingle(),
+  const [m3Row, m6Row, m12Row, usdtNgn] = await Promise.all([
+    admin.from('app_settings').select('value').eq('key', 'telegram_premium_markup_ngn_3m').maybeSingle(),
+    admin.from('app_settings').select('value').eq('key', 'telegram_premium_markup_ngn_6m').maybeSingle(),
+    admin.from('app_settings').select('value').eq('key', 'telegram_premium_markup_ngn_12m').maybeSingle(),
     getUsdtToNgn(admin),
   ])
-  const markup_ngn = Number(markupRow.data?.value || 0)
+  const markups: Record<string, number> = {
+    '3':  Number(m3Row.data?.value  || 0),
+    '6':  Number(m6Row.data?.value  || 0),
+    '12': Number(m12Row.data?.value || 0),
+  }
 
   // Fetch live pricing from iStar
   try {
     const packages = await istarGet('/premium/packages')
     const costs: Record<string, number> = {}
     for (const pkg of Array.isArray(packages) ? packages : []) {
-      if (pkg.months && pkg.usd_value) {
-        costs[String(pkg.months)] = Number(pkg.usd_value)
-      }
+      if (pkg.months && pkg.usd_value) costs[String(pkg.months)] = Number(pkg.usd_value)
     }
-    if (Object.keys(costs).length > 0) {
-      return { costs, markup_ngn, usdt_to_ngn: usdtNgn }
-    }
+    if (Object.keys(costs).length > 0) return { costs, markups, usdt_to_ngn: usdtNgn }
   } catch (err) {
     console.warn('Failed to fetch live premium packages from iStar, falling back to stored costs:', err)
   }
@@ -153,15 +155,16 @@ async function getPremiumPricingConfig(admin: SupabaseAdmin): Promise<{
       '6':  Number(c6.data?.value  || 0),
       '12': Number(c12.data?.value || 0),
     },
-    markup_ngn,
+    markups,
     usdt_to_ngn: usdtNgn,
   }
 }
 
-function calcPremiumPriceNgn(months: number, cfg: { costs: Record<string, number>; markup_ngn: number; usdt_to_ngn: number }): number {
+function calcPremiumPriceNgn(months: number, cfg: { costs: Record<string, number>; markups: Record<string, number>; usdt_to_ngn: number }): number {
   const cost = cfg.costs[String(months)] || 0
-  if (!cost) return 0 // not yet learned — admin must set a price manually
-  return Math.ceil(cost * cfg.usdt_to_ngn + cfg.markup_ngn)
+  if (!cost) return 0
+  const markup = cfg.markups[String(months)] || 0
+  return Math.ceil((cost * cfg.usdt_to_ngn + markup) / 10) * 10
 }
 
 // ── Wallet helpers ────────────────────────────────────────────────────────────
@@ -351,7 +354,7 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
     // Next customer's price = this_usdt_cost × live_ngn_rate + markup
     if (istarOrder.amount && product.months > 0) {
       const settingKey = `telegram_premium_cost_usdt_${product.months}m`
-      const newNgnPrice = Math.ceil(istarOrder.amount * premCfg.usdt_to_ngn + premCfg.markup_ngn)
+      const newNgnPrice = Math.ceil((istarOrder.amount * premCfg.usdt_to_ngn + (premCfg.markups[String(product.months)] || 0)) / 10) * 10
       await Promise.all([
         admin.from('app_settings').upsert({ key: settingKey, value: String(istarOrder.amount), updated_at: new Date().toISOString() }, { onConflict: 'key' }),
         // Also update the stored product price so admin can see what's being charged
@@ -416,9 +419,16 @@ async function handleAdminGetOrders(admin: SupabaseAdmin, userId: string) {
 
 async function handleAdminGetPremiumProducts(admin: SupabaseAdmin, userId: string) {
   await requireAdmin(admin, userId)
-  const { data, error } = await admin.from('telegram_products').select('*').eq('product_type', 'premium').order('sort_order')
+  const [{ data, error }, premCfg] = await Promise.all([
+    admin.from('telegram_products').select('*').eq('product_type', 'premium').order('sort_order'),
+    getPremiumPricingConfig(admin),
+  ])
   if (error) throw new Error(error.message)
-  return json({ success: true, data: data || [] })
+  const products = (data || []).map((p: any) => {
+    const livePrice = calcPremiumPriceNgn(p.months, premCfg)
+    return { ...p, price_ngn: livePrice || p.price_ngn }
+  })
+  return json({ success: true, data: products })
 }
 
 async function handleAdminUpsertPremiumProduct(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
@@ -439,7 +449,7 @@ async function handleAdminUpsertPremiumProduct(admin: SupabaseAdmin, userId: str
 
 async function handleAdminSaveStarConfig(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
   await requireAdmin(admin, userId)
-  const { cost_per_star_usdt, markup_tiers, premium_markup_ngn } = body as any
+  const { cost_per_star_usdt, markup_tiers, premium_markup_per_tier } = body as any
   const ops: Promise<any>[] = []
   if (cost_per_star_usdt !== undefined) {
     ops.push(admin.from('app_settings').upsert({ key: 'telegram_star_cost_usdt', value: String(Number(cost_per_star_usdt)), updated_at: new Date().toISOString() }, { onConflict: 'key' }))
@@ -447,8 +457,11 @@ async function handleAdminSaveStarConfig(admin: SupabaseAdmin, userId: string, b
   if (markup_tiers !== undefined) {
     ops.push(admin.from('app_settings').upsert({ key: 'telegram_star_markup_tiers', value: JSON.stringify(markup_tiers), updated_at: new Date().toISOString() }, { onConflict: 'key' }))
   }
-  if (premium_markup_ngn !== undefined) {
-    ops.push(admin.from('app_settings').upsert({ key: 'telegram_premium_markup_ngn', value: String(Number(premium_markup_ngn)), updated_at: new Date().toISOString() }, { onConflict: 'key' }))
+  if (premium_markup_per_tier !== undefined) {
+    const tiers = premium_markup_per_tier as Record<string, number>
+    for (const [months, markup] of Object.entries(tiers)) {
+      ops.push(admin.from('app_settings').upsert({ key: `telegram_premium_markup_ngn_${months}m`, value: String(Number(markup)), updated_at: new Date().toISOString() }, { onConflict: 'key' }))
+    }
   }
   await Promise.all(ops)
   return json({ success: true })

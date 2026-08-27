@@ -698,9 +698,12 @@ export default function AdminPage() {
       const premPricingRes = await supabase.functions.invoke('telegram-stars', { body: { action: 'admin_get_premium_pricing' } })
       if (premPricingRes.data?.data) {
         const cfg2 = premPricingRes.data.data
-        prices['__telegram_premium_markup_ngn__'] = String(cfg2.markup_ngn ?? 0)
+        prices['__usdt_to_ngn__'] = String(cfg2.usdt_to_ngn ?? 0)
         for (const [months, cost] of Object.entries(cfg2.costs as Record<string, number>)) {
           prices[`__telegram_premium_cost_usdt_${months}m__`] = String(cost)
+        }
+        for (const [months, markup] of Object.entries(cfg2.markups as Record<string, number>)) {
+          prices[`__telegram_premium_markup_ngn_${months}m__`] = String(markup)
         }
       }
       setTgProductPrices(prices)
@@ -8353,47 +8356,46 @@ export default function AdminPage() {
                   {tgProductsLoading && <div className="flex justify-center py-4"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>}
                   {!tgProductsLoading && (
                     <>
-                      {/* Markup field */}
-                      <div className="flex items-center gap-3 rounded-md border border-border p-3">
-                        <div className="flex-1">
-                          <p className="text-sm font-medium">Your markup (NGN)</p>
-                          <p className="text-xs text-muted-foreground">Added on top of the iStar cost × NGN rate for all premium tiers</p>
-                        </div>
-                        <Input
-                          type="number" className="w-32 h-8 text-sm"
-                          value={tgProductPrices['__telegram_premium_markup_ngn__'] ?? '0'}
-                          onChange={e => setTgProductPrices(prev => ({ ...prev, '__telegram_premium_markup_ngn__': e.target.value }))}
-                        />
-                        <Button size="sm" variant="outline" className="h-8" onClick={async () => {
-                          const markup = Number(tgProductPrices['__telegram_premium_markup_ngn__'] || 0)
-                          const { error } = await supabase.functions.invoke('telegram-stars', {
-                            body: { action: 'admin_save_star_config', premium_markup_ngn: markup }
-                          })
-                          if (error) { toast({ title: 'Save failed', description: error.message, variant: 'destructive' }); return }
-                          toast({ title: 'Premium markup saved' })
-                        }}>Save</Button>
-                      </div>
-
-                      {/* Per-tier breakdown */}
                       {tgProducts.filter(p => p.product_type === 'premium').length === 0 && (
                         <p className="text-center text-sm text-muted-foreground py-2">Click "Load" to view premium tiers.</p>
                       )}
                       {tgProducts.filter(p => p.product_type === 'premium').map(product => {
                         const costKey = `__telegram_premium_cost_usdt_${product.months}m__`
+                        const markupKey = `__telegram_premium_markup_ngn_${product.months}m__`
                         const istarCost = Number(tgProductPrices[costKey] || 0)
+                        const usdtToNgn = Number(tgProductPrices['__usdt_to_ngn__'] || 0)
+                        const markup = Number(tgProductPrices[markupKey] || 0)
+                        const livePrice = istarCost > 0 && usdtToNgn > 0 ? Math.ceil((istarCost * usdtToNgn + markup) / 10) * 10 : product.price_ngn
                         return (
-                          <div key={product.id} className="flex items-center gap-3 rounded-md bg-muted/30 px-3 py-2">
-                            <Switch checked={product.is_active} onCheckedChange={() => toggleTgProduct(product)} />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium">{product.label}</p>
-                              {istarCost > 0
-                                ? <p className="text-xs text-muted-foreground">iStar cost: ${istarCost.toFixed(4)} USDT</p>
-                                : <p className="text-xs text-amber-500">No order yet — iStar cost will be learned after first purchase</p>
-                              }
+                          <div key={product.id} className="rounded-md border border-border p-3 space-y-2">
+                            <div className="flex items-center gap-3">
+                              <Switch checked={product.is_active} onCheckedChange={() => toggleTgProduct(product)} />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium">{product.label}</p>
+                                {istarCost > 0
+                                  ? <p className="text-xs text-muted-foreground">iStar cost: ${istarCost.toFixed(4)} USDT × ₦{usdtToNgn.toLocaleString()} = ₦{Math.ceil(istarCost * usdtToNgn).toLocaleString()}</p>
+                                  : <p className="text-xs text-amber-500">iStar cost unavailable — check API connection</p>
+                                }
+                              </div>
+                              <div className="text-right">
+                                <p className="text-sm font-semibold">₦{livePrice.toLocaleString()}</p>
+                                <p className="text-xs text-muted-foreground">live price</p>
+                              </div>
                             </div>
-                            <div className="text-right">
-                              <p className="text-sm font-semibold">₦{product.price_ngn.toLocaleString()}</p>
-                              <p className="text-xs text-muted-foreground">live price</p>
+                            <div className="flex items-center gap-2 pl-10">
+                              <label className="text-xs text-muted-foreground whitespace-nowrap">Your markup (₦):</label>
+                              <Input
+                                type="number" className="h-7 text-xs w-28"
+                                value={tgProductPrices[markupKey] ?? '0'}
+                                onChange={e => setTgProductPrices(prev => ({ ...prev, [markupKey]: e.target.value }))}
+                              />
+                              <Button size="sm" variant="outline" className="h-7 text-xs px-2" onClick={async () => {
+                                const { error } = await supabase.functions.invoke('telegram-stars', {
+                                  body: { action: 'admin_save_star_config', premium_markup_per_tier: { [String(product.months)]: Number(tgProductPrices[markupKey] || 0) } }
+                                })
+                                if (error) { toast({ title: 'Save failed', description: error.message, variant: 'destructive' }); return }
+                                toast({ title: `${product.label} markup saved` })
+                              }}>Save</Button>
                             </div>
                           </div>
                         )
