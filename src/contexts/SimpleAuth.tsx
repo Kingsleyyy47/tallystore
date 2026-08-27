@@ -174,13 +174,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     setWalletLoading(true)
-    
+
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('wallet_balance')
-        .eq('id', user.id)
-        .single()
+      const timeoutPromise = new Promise<{ data: null; error: Error }>(resolve =>
+        setTimeout(() => resolve({ data: null, error: new Error('wallet balance refresh timeout') }), 6000)
+      )
+      const { data, error } = await Promise.race([
+        supabase.from('profiles').select('wallet_balance').eq('id', user.id).single(),
+        timeoutPromise,
+      ])
 
       if (!error && data) {
         setWalletBalance(data.wallet_balance || 0)
