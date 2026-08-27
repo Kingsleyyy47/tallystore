@@ -119,11 +119,10 @@ const actionItems = [
   },
   {
     title: 'Gift Cards',
-    description: 'Coming soon',
+    description: 'Buy gift cards',
     href: '/gift-cards',
     icon: Gift,
     accent: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200',
-    badge: 'Coming Soon',
   },
   {
     title: 'Social Boost',

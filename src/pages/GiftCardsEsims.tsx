@@ -103,8 +103,6 @@ function GiftCardsComingSoon() {
 }
 
 export default function GiftCardsEsims() {
-  const { isAdmin, isStaff } = useAuth();
-  if (!isStaff && !isAdmin) return <GiftCardsComingSoon />;
   return <GiftCardsEsimsInner />;
 }
 
