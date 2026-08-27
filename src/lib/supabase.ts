@@ -213,48 +213,73 @@ export interface Transaction {
 }
 
 // STEP 1B: Basic database functions
+// Module-level cache — shared across all components so multiple simultaneous
+// callers on the same page share a single in-flight request and reuse the result
+// for 3 minutes before hitting the DB again.
+const CACHE_TTL = 3 * 60 * 1000 // 3 minutes
+let _categoriesCache: { data: Category[]; ts: number } | null = null
+let _categoriesInflight: Promise<Category[]> | null = null
+let _pgCache: { data: ProductGroup[]; ts: number } | null = null
+let _pgInflight: Promise<ProductGroup[]> | null = null
+
 export async function getCategories(): Promise<Category[]> {
-  try {
-    const timeout = new Promise<{ data: null; error: Error }>(resolve =>
-      setTimeout(() => resolve({ data: null, error: new Error('getCategories timeout') }), 8000)
-    )
-    const { data, error } = await Promise.race([
-      supabase.from('categories').select('*').eq('is_active', true).order('name'),
-      timeout,
-    ])
-
-    if (error) {
-      console.error('Supabase error:', error)
-      throw error
-    }
-
-    return data || []
-  } catch (error) {
-    console.error('❌ Error fetching categories:', error)
-    return []
+  if (_categoriesCache && Date.now() - _categoriesCache.ts < CACHE_TTL) {
+    return _categoriesCache.data
   }
+  if (_categoriesInflight) return _categoriesInflight
+
+  _categoriesInflight = (async () => {
+    try {
+      const timeout = new Promise<{ data: null; error: Error }>(resolve =>
+        setTimeout(() => resolve({ data: null, error: new Error('getCategories timeout') }), 12000)
+      )
+      const { data, error } = await Promise.race([
+        supabase.from('categories').select('*').eq('is_active', true).order('name'),
+        timeout,
+      ])
+      if (error) { console.error('Supabase error:', error); throw error }
+      const result = data || []
+      _categoriesCache = { data: result, ts: Date.now() }
+      return result
+    } catch (error) {
+      console.error('Error fetching categories:', error)
+      return _categoriesCache?.data || []
+    } finally {
+      _categoriesInflight = null
+    }
+  })()
+
+  return _categoriesInflight
 }
 
 export async function getAllProductGroups(): Promise<ProductGroup[]> {
-  try {
-    const timeout = new Promise<{ data: null; error: Error }>(resolve =>
-      setTimeout(() => resolve({ data: null, error: new Error('getAllProductGroups timeout') }), 8000)
-    )
-    const { data, error } = await Promise.race([
-      supabase.from('product_groups').select('*').eq('is_active', true).order('name'),
-      timeout,
-    ])
-
-    if (error) {
-      console.error('Supabase error:', error)
-      throw error
-    }
-
-    return data || []
-  } catch (error) {
-    console.error('❌ Error fetching product groups:', error)
-    return []
+  if (_pgCache && Date.now() - _pgCache.ts < CACHE_TTL) {
+    return _pgCache.data
   }
+  if (_pgInflight) return _pgInflight
+
+  _pgInflight = (async () => {
+    try {
+      const timeout = new Promise<{ data: null; error: Error }>(resolve =>
+        setTimeout(() => resolve({ data: null, error: new Error('getAllProductGroups timeout') }), 12000)
+      )
+      const { data, error } = await Promise.race([
+        supabase.from('product_groups').select('*').eq('is_active', true).order('name'),
+        timeout,
+      ])
+      if (error) { console.error('Supabase error:', error); throw error }
+      const result = data || []
+      _pgCache = { data: result, ts: Date.now() }
+      return result
+    } catch (error) {
+      console.error('Error fetching product groups:', error)
+      return _pgCache?.data || []
+    } finally {
+      _pgInflight = null
+    }
+  })()
+
+  return _pgInflight
 }
 
 export async function testConnection() {

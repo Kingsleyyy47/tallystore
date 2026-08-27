@@ -48,6 +48,7 @@ export function TopUpWallet({
   // there's no "amount" step or checkoutUrl here.
   const [pocketfiAccount, setPocketfiAccount] = useState<PocketFiAccount | null>(null);
   const [loadingAccount, setLoadingAccount] = useState(false);
+  const [pocketfiError, setPocketfiError] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   const { user, walletBalance, refreshWalletBalance, showBalances } = useAuth();
@@ -82,23 +83,20 @@ export function TopUpWallet({
     }
 
     setLoadingAccount(true);
+    setPocketfiError(null);
     try {
       const response = await getOrCreatePocketFiAccount({});
       if (response.success && response.data) {
         setPocketfiAccount(response.data);
       } else {
-        toast({
-          title: "Couldn't Set Up Account",
-          description: response.message || "Failed to set up bank transfer account. Please try again.",
-          variant: "destructive",
-        });
+        const msg = response.message || "Failed to set up bank transfer account. Please try again.";
+        console.error('[PocketFi]', msg);
+        setPocketfiError(msg);
       }
     } catch (error: any) {
-      toast({
-        title: "Couldn't Set Up Account",
-        description: error.message || "Failed to set up bank transfer account.",
-        variant: "destructive",
-      });
+      const msg = error.message || "Failed to set up bank transfer account.";
+      console.error('[PocketFi]', msg);
+      setPocketfiError(msg);
     } finally {
       setLoadingAccount(false);
     }
@@ -613,10 +611,15 @@ export function TopUpWallet({
               )}
 
               {!loadingAccount && !pocketfiAccount && (
-                <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
+                <div className="flex flex-col items-center justify-center gap-3 py-6 text-center">
                   <p className="text-sm text-muted-foreground">
-                    We couldn't set up your bank transfer account.
+                    {pocketfiError || "We couldn't set up your bank transfer account."}
                   </p>
+                  {pocketfiError && (
+                    <p className="text-xs text-muted-foreground/70 max-w-xs">
+                      Please screenshot this error and send to support if the issue persists.
+                    </p>
+                  )}
                   <Button type="button" variant="outline" size="sm" onClick={handleGetPocketFiAccount}>
                     Try Again
                   </Button>

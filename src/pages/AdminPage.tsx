@@ -483,6 +483,17 @@ export default function AdminPage() {
   const [savingErcasEnabled, setSavingErcasEnabled] = useState(false)
   const [loadingErcasEnabled, setLoadingErcasEnabled] = useState(true)
 
+  // PocketFi bank picker
+  const POCKETFI_BANKS = [
+    { value: 'kuda', label: 'Kuda Bank' },
+    { value: '9psb', label: '9PSB' },
+    { value: 'paga', label: 'Paga' },
+    { value: 'saveheaven', label: 'Save Heaven' },
+  ] as const
+  const [pocketfiBank, setPocketfiBankState] = useState('kuda')
+  const [savingPocketfiBank, setSavingPocketfiBank] = useState(false)
+  const [loadingPocketfiBank, setLoadingPocketfiBank] = useState(true)
+
   // Support links settings
   const [supportWhatsappUrl, setSupportWhatsappUrl] = useState('')
   const [supportTelegramUrl, setSupportTelegramUrl] = useState('')
@@ -1103,6 +1114,41 @@ export default function AdminPage() {
       }
     } finally {
       setSavingNgnUsdRate(false)
+    }
+  }
+
+  // ==================== POCKETFI BANK PICKER ====================
+
+  useEffect(() => {
+    const loadPocketfiBank = async () => {
+      setLoadingPocketfiBank(true)
+      try {
+        const value = await getAppSetting('pocketfi_bank')
+        if (value) setPocketfiBankState(value)
+      } catch (err) {
+        console.error('Failed to load pocketfi_bank:', err)
+      } finally {
+        setLoadingPocketfiBank(false)
+      }
+    }
+    loadPocketfiBank()
+  }, [])
+
+  const handleSavePocketfiBank = async (bank: string) => {
+    setSavingPocketfiBank(true)
+    try {
+      const ok = await upsertAppSetting('pocketfi_bank', bank)
+      if (ok) {
+        setPocketfiBankState(bank)
+        const label = POCKETFI_BANKS.find((b) => b.value === bank)?.label ?? bank
+        toast({ title: 'PocketFi bank updated', description: `Virtual accounts will now use ${label}.` })
+      } else {
+        toast({ title: 'Failed to save', description: 'Please try again', variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({ title: 'Error', description: 'Could not save setting', variant: 'destructive' })
+    } finally {
+      setSavingPocketfiBank(false)
     }
   }
 
@@ -4162,6 +4208,42 @@ export default function AdminPage() {
                   >
                     {savingErcasEnabled ? 'Saving...' : ercasEnabled ? 'Enabled' : 'Disabled'}
                   </Button>
+                </div>
+
+                <div className="mt-4 pt-4 border-t">
+                  <p className="font-medium text-sm">PocketFi Virtual Account Bank</p>
+                  <p className="text-xs text-muted-foreground mt-0.5 mb-3">
+                    Choose which bank PocketFi uses to create virtual accounts for new customers.
+                    Existing accounts are not affected.
+                  </p>
+                  {loadingPocketfiBank ? (
+                    <p className="text-xs text-muted-foreground">Loading...</p>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      {POCKETFI_BANKS.map((bank) => (
+                        <button
+                          key={bank.value}
+                          onClick={() => handleSavePocketfiBank(bank.value)}
+                          disabled={savingPocketfiBank}
+                          className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors text-left ${
+                            pocketfiBank === bank.value
+                              ? 'border-primary bg-primary/10 text-primary font-semibold'
+                              : 'border-border hover:border-primary/50 text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          <span
+                            className={`h-3 w-3 rounded-full border-2 flex-shrink-0 ${
+                              pocketfiBank === bank.value ? 'border-primary bg-primary' : 'border-muted-foreground'
+                            }`}
+                          />
+                          {bank.label}
+                          {savingPocketfiBank && pocketfiBank === bank.value && (
+                            <span className="ml-auto text-[10px]">Saving…</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </AdminControlSection>
 

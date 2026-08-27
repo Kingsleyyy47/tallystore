@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
@@ -85,6 +85,8 @@ export function CryptoClosureNotice() {
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleDismiss() }}>
       <DialogContent className="max-w-md p-0 overflow-hidden" hideClose>
+        <DialogTitle className="sr-only">Crypto Balance Closing</DialogTitle>
+        <DialogDescription className="sr-only">Important notice about your crypto balance transition.</DialogDescription>
         {/* Header */}
         <div className="bg-amber-500 px-6 pt-6 pb-4 text-white relative">
           <button

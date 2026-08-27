@@ -99,7 +99,9 @@ serve(async (req) => {
       throw new Error(`Failed to load profile: ${profileError.message || profileError.code || 'unknown error'}`)
     }
 
-    if (profile.is_staff || profile.is_admin) {
+    // Staff-only accounts (not admins) cannot use the bank transfer top-up.
+    // Admins can top up their own wallets like any customer.
+    if (profile.is_staff && !profile.is_admin) {
       throw new Error('Bank transfer top-ups are only available to customer accounts.')
     }
 
@@ -119,31 +121,54 @@ serve(async (req) => {
     const body = await req.json().catch(() => ({})) as Record<string, any>
     const { first, last } = splitName(profile?.full_name || body.customerName)
 
-    const createBody = {
-      first_name: first,
-      last_name: last,
-      phone: String(body.customerPhoneNumber || '00000000000'),
-      email: user.email,
-      businessId: pocketfiBusinessId,
-      bank: 'palmpay',
+    // PocketFi valid virtual account banks (from docs):
+    //   saveheaven, paga, kuda, 9psb, palmpay
+    // palmpay REQUIRES NIN/BVN — skip it since we don't collect that.
+    // Read admin-preferred bank from app_settings; fallback to full list.
+    const VALID_BANKS = ['kuda', '9psb', 'paga', 'saveheaven']
+    const { data: bankSetting } = await supabaseAdmin
+      .from('app_settings')
+      .select('value')
+      .eq('key', 'pocketfi_bank')
+      .maybeSingle()
+    const preferredBank = bankSetting?.value && VALID_BANKS.includes(bankSetting.value) ? bankSetting.value : null
+    // Put the preferred bank first, then the others as fallback
+    const BANKS_TO_TRY = preferredBank
+      ? [preferredBank, ...VALID_BANKS.filter((b) => b !== preferredBank)]
+      : VALID_BANKS
+    let response: Response | null = null
+    let result: Record<string, any> | null = null
+    let lastMessage = 'Unable to create your bank transfer account. Please try again.'
+
+    for (const bank of BANKS_TO_TRY) {
+      const createBody = {
+        first_name: first,
+        last_name: last,
+        phone: String(body.customerPhoneNumber || '08000000000'),
+        email: user.email,
+        businessId: pocketfiBusinessId,
+        bank,
+      }
+      response = await fetch(`${pocketfiBaseUrl}/virtual-accounts/create`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${pocketfiToken}`,
+        },
+        body: JSON.stringify(createBody),
+      })
+      result = await response.json().catch(() => null) as Record<string, any> | null
+      if (response.ok && result?.status !== false) {
+        console.log(`PocketFi account created with bank=${bank}`)
+        break
+      }
+      lastMessage = result?.message || result?.error || lastMessage
+      console.error(`PocketFi create failed for bank=${bank}:`, JSON.stringify(result))
     }
 
-    const response = await fetch(`${pocketfiBaseUrl}/virtual-accounts/create`, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${pocketfiToken}`,
-      },
-      body: JSON.stringify(createBody),
-    })
-
-    const result = await response.json().catch(() => null) as Record<string, any> | null
-
-    if (!response.ok || result?.status === false) {
-      const message = result?.message || result?.error || 'Unable to create your bank transfer account. Please try again.'
-      console.error('PocketFi virtual-account create error:', JSON.stringify(result))
-      return json({ success: false, message, error: message }, 400)
+    if (!response || !response.ok || result?.status === false) {
+      return json({ success: false, message: lastMessage, error: lastMessage }, 400)
     }
 
     const bankEntry = result?.banks?.[0]

@@ -248,12 +248,12 @@ function constantTimeEquals(a: string, b: string) {
   return diff === 0
 }
 
-async function hmacSha256Hex(secret: string, message: string) {
+async function hmacSha512Hex(secret: string, message: string) {
   const encoder = new TextEncoder()
   const key = await crypto.subtle.importKey(
     'raw',
     encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
+    { name: 'HMAC', hash: 'SHA-512' },
     false,
     ['sign'],
   )
@@ -280,15 +280,19 @@ async function verifyPocketFiWebhook(req: Request, rawBody: string) {
 
   if (sharedSecret && constantTimeEquals(sharedSecret, secret)) return true
 
+  // PocketFi sends HMAC-SHA512 in the 'HTTP_POCKETFI_SIGNATURE' header.
+  // In HTTP this arrives as 'pocketfi-signature' (lowercase, no HTTP_ prefix).
   const signature = (
+    req.headers.get('pocketfi-signature') ||
+    req.headers.get('http_pocketfi_signature') ||
     req.headers.get('x-pocketfi-signature') ||
     req.headers.get('x-webhook-signature') ||
     ''
-  ).trim().toLowerCase().replace(/^sha256=/, '')
+  ).trim().toLowerCase()
 
   if (!signature) return false
 
-  const expectedSignature = await hmacSha256Hex(secret, rawBody)
+  const expectedSignature = await hmacSha512Hex(secret, rawBody)
   return constantTimeEquals(signature, expectedSignature)
 }
 
