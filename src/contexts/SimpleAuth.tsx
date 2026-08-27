@@ -56,21 +56,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const isWisdomAdmin = userEmail?.toLowerCase() === ADMIN_EMAIL
 
     try {
-      // Race the profiles query against a 6-second timeout so a slow/hung
-      // Supabase connection never freezes the auth spinner indefinitely.
+      // Keep a reference to the query Promise so we can attach a background
+      // handler if the timeout fires before the DB responds.
+      const profilePromise = supabase
+        .from('profiles')
+        .select('is_staff, wallet_balance')
+        .eq('id', userId)
+        .single()
+
       const timeoutPromise = new Promise<{ data: null; error: Error }>(resolve =>
-        setTimeout(() => resolve({ data: null, error: new Error('profiles query timeout') }), 6000)
+        setTimeout(() => resolve({ data: null, error: new Error('profiles query timeout') }), 8000)
       )
-      const { data, error } = await Promise.race([
-        supabase.from('profiles').select('is_staff, wallet_balance').eq('id', userId).single(),
-        timeoutPromise,
-      ])
+
+      const { data, error } = await Promise.race([profilePromise, timeoutPromise])
 
       if (error) {
+        // Timeout fired — resolve auth immediately so the spinner clears.
         setIsAdmin(isWisdomAdmin)
         setIsStaff(false)
         writeInternalRevenueUserFlag(isWisdomAdmin)
         setWalletBalance(0)
+
+        // The original query is still in-flight. When it lands, update state
+        // and re-navigate staff/admin who were wrongly sent to /dashboard.
+        profilePromise.then(({ data: bgData, error: bgError }) => {
+          if (!bgError && bgData) {
+            const nextIsStaff = !isWisdomAdmin && !!bgData.is_staff
+            setIsAdmin(isWisdomAdmin)
+            setIsStaff(nextIsStaff)
+            writeInternalRevenueUserFlag(isWisdomAdmin || nextIsStaff)
+            setWalletBalance(bgData.wallet_balance || 0)
+            // Re-route if ProtectedRoute sent them to the wrong page
+            if (nextIsStaff && window.location.pathname === '/dashboard') {
+              window.location.replace('/staff-admin')
+            } else if (isWisdomAdmin && window.location.pathname === '/dashboard') {
+              window.location.replace('/admin')
+            }
+          }
+        }).catch(() => {})
+
         return { isAdmin: isWisdomAdmin, isStaff: false }
       }
 
