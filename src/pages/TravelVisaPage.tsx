@@ -1,4 +1,5 @@
 import { useSupportSettings } from '@/hooks/useSupportSettings'
+import NavbarAuth from '@/components/NavbarAuth'
 import {
   Plane,
   GraduationCap,
@@ -183,6 +184,7 @@ export default function TravelVisaPage() {
 
   return (
     <div className="min-h-screen bg-white dark:bg-gray-950">
+      <NavbarAuth />
 
       {/* ── HERO ── */}
       <section className="relative overflow-hidden bg-gradient-to-br from-primary via-primary/90 to-sky-600 pb-24 pt-20 text-white">
