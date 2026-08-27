@@ -153,7 +153,7 @@ const HOW_IT_WORKS = [
   {
     step: '02',
     title: 'We Assess Your Case',
-    desc: 'Our team reviews your profile and tells you exactly what's needed  -  quickly and honestly.',
+    desc: "Our team reviews your profile and tells you exactly what's needed - quickly and honestly.",
     icon: FileText,
   },
   {
