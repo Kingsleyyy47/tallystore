@@ -490,9 +490,9 @@ export default function AdminPage() {
     { value: 'paga', label: 'Paga' },
     { value: 'saveheaven', label: 'Save Heaven' },
   ] as const
-  const [pocketfiBank, setPocketfiBankState] = useState('kuda')
+  const [pocketfiBank, setPocketfiBankState] = useState(() => localStorage.getItem('admin_pocketfi_bank') || 'kuda')
   const [savingPocketfiBank, setSavingPocketfiBank] = useState(false)
-  const [loadingPocketfiBank, setLoadingPocketfiBank] = useState(true)
+  const [loadingPocketfiBank, setLoadingPocketfiBank] = useState(!localStorage.getItem('admin_pocketfi_bank'))
 
   // Support links settings
   const [supportWhatsappUrl, setSupportWhatsappUrl] = useState('')
@@ -648,10 +648,14 @@ export default function AdminPage() {
   const [tgOrdersLoading, setTgOrdersLoading] = useState(false)
   const [tgOrdersCancellingId, setTgOrdersCancellingId] = useState<string | null>(null)
   const [tgOrdersFilter, setTgOrdersFilter] = useState<'all' | 'pending' | 'processing' | 'completed' | 'failed'>('all')
-  const [tgProducts, setTgProducts] = useState<TelegramProduct[]>([])
+  const [tgProducts, setTgProducts] = useState<TelegramProduct[]>(() => {
+    try { return JSON.parse(localStorage.getItem('admin_tg_products') || '[]') } catch { return [] }
+  })
   const [tgProductsLoading, setTgProductsLoading] = useState(false)
   const [tgProductSaving, setTgProductSaving] = useState<string | null>(null)
-  const [tgProductPrices, setTgProductPrices] = useState<Record<string, string>>({})
+  const [tgProductPrices, setTgProductPrices] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('admin_tg_prices') || '{}') } catch { return {} }
+  })
   const [tgWalletType, setTgWalletType] = useState<'USDT' | 'TON'>('USDT')
   const [tgWalletBalance, setTgWalletBalance] = useState<{ balance: number; currency: string } | null>(null)
   const [tgWalletBalanceLoading, setTgWalletBalanceLoading] = useState(false)
@@ -680,6 +684,7 @@ export default function AdminPage() {
       if (productsRes.error) throw productsRes.error
       const products: TelegramProduct[] = productsRes.data?.data || []
       setTgProducts(products)
+      localStorage.setItem('admin_tg_products', JSON.stringify(products))
       const prices: Record<string, string> = Object.fromEntries(products.map((p: TelegramProduct) => [p.id, String(p.price_ngn)]))
       if (pricingRes.data?.data) {
         const cfg = pricingRes.data.data
@@ -698,6 +703,7 @@ export default function AdminPage() {
         }
       }
       setTgProductPrices(prices)
+      localStorage.setItem('admin_tg_prices', JSON.stringify(prices))
     } catch (err: any) {
       toast({ title: 'Failed to load Telegram config', description: err.message, variant: 'destructive' })
     } finally {
@@ -713,7 +719,11 @@ export default function AdminPage() {
       })
       if (error) throw error
       if (!data?.success) throw new Error(data?.error || 'Failed to save')
-      setTgProducts(prev => prev.map(p => p.id === product.id ? { ...p, price_ngn: newPrice } : p))
+      setTgProducts(prev => {
+        const next = prev.map(p => p.id === product.id ? { ...p, price_ngn: newPrice } : p)
+        localStorage.setItem('admin_tg_products', JSON.stringify(next))
+        return next
+      })
       toast({ title: 'Price saved' })
     } catch (err: any) {
       toast({ title: 'Save failed', description: err.message, variant: 'destructive' })
@@ -729,7 +739,11 @@ export default function AdminPage() {
       })
       if (error) throw error
       if (!data?.success) throw new Error(data?.error || 'Failed to update')
-      setTgProducts(prev => prev.map(p => p.id === product.id ? { ...p, is_active: !p.is_active } : p))
+      setTgProducts(prev => {
+        const next = prev.map(p => p.id === product.id ? { ...p, is_active: !p.is_active } : p)
+        localStorage.setItem('admin_tg_products', JSON.stringify(next))
+        return next
+      })
     } catch (err: any) {
       toast({ title: 'Update failed', description: err.message, variant: 'destructive' })
     }
@@ -1124,7 +1138,10 @@ export default function AdminPage() {
       setLoadingPocketfiBank(true)
       try {
         const value = await getAppSetting('pocketfi_bank')
-        if (value) setPocketfiBankState(value)
+        if (value) {
+          setPocketfiBankState(value)
+          localStorage.setItem('admin_pocketfi_bank', value)
+        }
       } catch (err) {
         console.error('Failed to load pocketfi_bank:', err)
       } finally {
@@ -1140,6 +1157,7 @@ export default function AdminPage() {
       const ok = await upsertAppSetting('pocketfi_bank', bank)
       if (ok) {
         setPocketfiBankState(bank)
+        localStorage.setItem('admin_pocketfi_bank', bank)
         const label = POCKETFI_BANKS.find((b) => b.value === bank)?.label ?? bank
         toast({ title: 'PocketFi bank updated', description: `Virtual accounts will now use ${label}.` })
       } else {

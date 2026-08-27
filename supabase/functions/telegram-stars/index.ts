@@ -51,12 +51,12 @@ async function getAdminClient() {
 async function getUser(req: Request) {
   const auth = req.headers.get('Authorization')
   if (!auth) throw new Error('Unauthorized')
+  const jwt = auth.replace(/^Bearer\s+/i, '')
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_ANON_KEY')!,
-    { global: { headers: { Authorization: auth } } },
   )
-  const { data: { user }, error } = await supabase.auth.getUser()
+  const { data: { user }, error } = await supabase.auth.getUser(jwt)
   if (error || !user) throw new Error('Unauthorized')
   return user
 }
@@ -115,16 +115,37 @@ function calculateStarPriceNgn(quantity: number, config: { cost_per_star_usdt: n
 
 // ── Premium pricing helpers ───────────────────────────────────────────────────
 async function getPremiumPricingConfig(admin: SupabaseAdmin): Promise<{
-  costs: Record<string, number>   // e.g. { '3': 4.50, '6': 8.10, '12': 15.00 } USDT
+  costs: Record<string, number>
   markup_ngn: number
   usdt_to_ngn: number
 }> {
-  const [c3, c6, c12, markupRow, usdtNgn] = await Promise.all([
+  const [markupRow, usdtNgn] = await Promise.all([
+    admin.from('app_settings').select('value').eq('key', 'telegram_premium_markup_ngn').maybeSingle(),
+    getUsdtToNgn(admin),
+  ])
+  const markup_ngn = Number(markupRow.data?.value || 0)
+
+  // Fetch live pricing from iStar
+  try {
+    const packages = await istarGet('/premium/packages')
+    const costs: Record<string, number> = {}
+    for (const pkg of Array.isArray(packages) ? packages : []) {
+      if (pkg.months && pkg.usd_value) {
+        costs[String(pkg.months)] = Number(pkg.usd_value)
+      }
+    }
+    if (Object.keys(costs).length > 0) {
+      return { costs, markup_ngn, usdt_to_ngn: usdtNgn }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch live premium packages from iStar, falling back to stored costs:', err)
+  }
+
+  // Fallback to stored app_settings costs
+  const [c3, c6, c12] = await Promise.all([
     admin.from('app_settings').select('value').eq('key', 'telegram_premium_cost_usdt_3m').maybeSingle(),
     admin.from('app_settings').select('value').eq('key', 'telegram_premium_cost_usdt_6m').maybeSingle(),
     admin.from('app_settings').select('value').eq('key', 'telegram_premium_cost_usdt_12m').maybeSingle(),
-    admin.from('app_settings').select('value').eq('key', 'telegram_premium_markup_ngn').maybeSingle(),
-    getUsdtToNgn(admin),
   ])
   return {
     costs: {
@@ -132,7 +153,7 @@ async function getPremiumPricingConfig(admin: SupabaseAdmin): Promise<{
       '6':  Number(c6.data?.value  || 0),
       '12': Number(c12.data?.value || 0),
     },
-    markup_ngn: Number(markupRow.data?.value || 0),
+    markup_ngn,
     usdt_to_ngn: usdtNgn,
   }
 }
@@ -275,9 +296,9 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
     // Auto-learn: update cost_per_star_usdt from this real order
     if (istarOrder.amount && quantity > 0) {
       const learnedCost = Number((istarOrder.amount / quantity).toFixed(6))
-      admin.from('app_settings').upsert({
+      await admin.from('app_settings').upsert({
         key: 'telegram_star_cost_usdt', value: String(learnedCost), updated_at: new Date().toISOString(),
-      }, { onConflict: 'key' }).then(() => {}).catch(() => {}) // fire-and-forget
+      }, { onConflict: 'key' })
     }
 
     return json({ success: true, data: { ...order, istar_order_id: istarOrder.order_id, status: 'processing' } })
@@ -331,11 +352,11 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
     if (istarOrder.amount && product.months > 0) {
       const settingKey = `telegram_premium_cost_usdt_${product.months}m`
       const newNgnPrice = Math.ceil(istarOrder.amount * premCfg.usdt_to_ngn + premCfg.markup_ngn)
-      Promise.all([
+      await Promise.all([
         admin.from('app_settings').upsert({ key: settingKey, value: String(istarOrder.amount), updated_at: new Date().toISOString() }, { onConflict: 'key' }),
         // Also update the stored product price so admin can see what's being charged
         admin.from('telegram_products').update({ price_ngn: newNgnPrice, updated_at: new Date().toISOString() }).eq('product_type', 'premium').eq('months', product.months),
-      ]).catch(() => {}) // fire-and-forget
+      ])
     }
 
     return json({ success: true, data: { ...order, istar_order_id: istarOrder.order_id, status: 'processing' } })
