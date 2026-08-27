@@ -8373,7 +8373,7 @@ export default function AdminPage() {
                               <div className="flex-1 min-w-0">
                                 <p className="text-sm font-medium">{product.label}</p>
                                 {istarCost > 0
-                                  ? <p className="text-xs text-muted-foreground">iStar cost: ${istarCost.toFixed(4)} USDT × ₦{usdtToNgn.toLocaleString()} = ₦{Math.ceil(istarCost * usdtToNgn).toLocaleString()}</p>
+                                  ? <p className="text-xs text-muted-foreground">iStar cost: ${istarCost.toFixed(4)} USDT × ₦{usdtToNgn.toLocaleString()} = ₦{(Math.ceil((istarCost * usdtToNgn) / 10) * 10).toLocaleString()} base</p>
                                   : <p className="text-xs text-amber-500">iStar cost unavailable — check API connection</p>
                                 }
                               </div>

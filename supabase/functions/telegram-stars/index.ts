@@ -110,7 +110,7 @@ function calculateStarPriceNgn(quantity: number, config: { cost_per_star_usdt: n
     quantity >= t.min_qty && (t.max_qty === null || quantity <= t.max_qty)
   )
   const markup = tier ? Number(tier.markup_ngn) : 0
-  return Math.ceil(baseCost + markup)
+  return Math.ceil((baseCost + markup) / 10) * 10
 }
 
 // ── Premium pricing helpers ───────────────────────────────────────────────────

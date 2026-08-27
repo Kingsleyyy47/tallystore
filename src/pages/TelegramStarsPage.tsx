@@ -59,7 +59,7 @@ function calcStarPrice(quantity: number, pricing: StarPricing): number {
   const tier = pricing.markup_tiers.find(t =>
     quantity >= t.min_qty && (t.max_qty === null || quantity <= t.max_qty)
   )
-  return Math.ceil(base + (tier ? tier.markup_ngn : 0))
+  return Math.ceil((base + (tier ? tier.markup_ngn : 0)) / 10) * 10
 }
 
 function statusBadge(status: TelegramOrder['status']) {
