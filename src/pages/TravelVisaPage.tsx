@@ -67,7 +67,7 @@ const VISA_CATEGORIES = [
     color: 'text-primary',
     bg: 'bg-primary/5 dark:bg-primary/10',
     border: 'border-primary/20',
-    desc: 'Medical, transit, digital nomad, religious, research — if it exists, we handle it.',
+    desc: 'Medical, transit, digital nomad, religious, research  -  if it exists, we handle it.',
   },
 ]
 
@@ -125,21 +125,21 @@ const WHY_US = [
     color: 'text-violet-500',
     bg: 'bg-violet-50 dark:bg-violet-900/20',
     title: 'End-to-End Support',
-    desc: 'From document prep to embassy appointment to approval — we handle everything.',
+    desc: 'From document prep to embassy appointment to approval  -  we handle everything.',
   },
   {
     icon: ShieldCheck,
     color: 'text-rose-500',
     bg: 'bg-rose-50 dark:bg-rose-900/20',
     title: 'Genuine & Legitimate',
-    desc: 'All applications are fully authentic. No fake docs, no shortcuts — just results.',
+    desc: 'All applications are fully authentic. No fake docs, no shortcuts  -  just results.',
   },
   {
     icon: HeadphonesIcon,
     color: 'text-primary',
     bg: 'bg-primary/5 dark:bg-primary/10',
     title: '24/7 Dedicated Help',
-    desc: 'Reach us on WhatsApp or Telegram any time — before, during, and after your application.',
+    desc: 'Reach us on WhatsApp or Telegram any time  -  before, during, and after your application.',
   },
 ]
 
@@ -153,7 +153,7 @@ const HOW_IT_WORKS = [
   {
     step: '02',
     title: 'We Assess Your Case',
-    desc: 'Our team reviews your profile and tells you exactly what's needed — quickly and honestly.',
+    desc: 'Our team reviews your profile and tells you exactly what's needed  -  quickly and honestly.',
     icon: FileText,
   },
   {
@@ -193,7 +193,7 @@ export default function TravelVisaPage() {
         <div className="relative mx-auto max-w-4xl px-6 text-center">
           <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/15 px-4 py-1.5 text-sm font-semibold backdrop-blur-sm">
             <Star className="h-4 w-4 fill-yellow-300 text-yellow-300" />
-            100% Visa Success Rate — Guaranteed
+            100% Visa Success Rate  -  Guaranteed
           </div>
 
           <h1 className="mb-6 text-4xl font-black leading-tight sm:text-5xl md:text-6xl">
@@ -203,7 +203,7 @@ export default function TravelVisaPage() {
           </h1>
 
           <p className="mx-auto mb-10 max-w-2xl text-lg text-white/85 sm:text-xl">
-            Whether you're going on holiday, studying abroad, relocating for work, or visiting family —
+            Whether you're going on holiday, studying abroad, relocating for work, or visiting family  - 
             we handle your visa application start to finish. Affordable. Stress-free. Always approved.
           </p>
 
@@ -251,7 +251,7 @@ export default function TravelVisaPage() {
             Every Type of Visa, Covered
           </h2>
           <p className="mx-auto max-w-xl text-gray-500 dark:text-gray-400">
-            Whatever your reason for travelling, we've handled it before — and we'll handle yours.
+            Whatever your reason for travelling, we've handled it before  -  and we'll handle yours.
           </p>
         </div>
 
@@ -347,7 +347,7 @@ export default function TravelVisaPage() {
           </div>
 
           <p className="mt-8 text-center text-sm text-gray-400 dark:text-gray-500">
-            Don't see your destination? <span className="font-semibold text-primary">Contact us</span> — we cover every country worldwide.
+            Don't see your destination? <span className="font-semibold text-primary">Contact us</span>  -  we cover every country worldwide.
           </p>
         </div>
       </section>
@@ -364,7 +364,7 @@ export default function TravelVisaPage() {
             <h2 className="mb-3 text-3xl font-black sm:text-4xl">100% Visa Guaranteed</h2>
             <p className="mx-auto mb-8 max-w-xl text-white/85 text-lg">
               We don't play with people's dreams. Every case we take, we see through to approval.
-              No drama, no fails, no refund requests — just visas.
+              No drama, no fails, no refund requests  -  just visas.
             </p>
             <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
               <a
@@ -410,7 +410,7 @@ export default function TravelVisaPage() {
               },
               {
                 q: 'How much does it cost?',
-                a: 'Pricing depends on the country and visa type. We are competitively priced and transparent — no surprise fees. Contact us for a free quote.',
+                a: 'Pricing depends on the country and visa type. We are competitively priced and transparent  -  no surprise fees. Contact us for a free quote.',
               },
               {
                 q: 'How long does it take?',
@@ -418,11 +418,11 @@ export default function TravelVisaPage() {
               },
               {
                 q: 'Do I need to come in person?',
-                a: 'For most applications, the process is handled remotely. Some embassies require in-person biometrics — we will tell you in advance.',
+                a: 'For most applications, the process is handled remotely. Some embassies require in-person biometrics  -  we will tell you in advance.',
               },
               {
                 q: 'What documents do I need?',
-                a: 'It depends on the visa type and country. Once you contact us, we provide a clear, personalised checklist — nothing more, nothing less.',
+                a: 'It depends on the visa type and country. Once you contact us, we provide a clear, personalised checklist  -  nothing more, nothing less.',
               },
               {
                 q: 'Can you help with refusals or previous rejections?',

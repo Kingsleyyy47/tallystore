@@ -192,19 +192,11 @@ export default function ReferralsPage() {
                   <Button
                     className="w-full"
                     variant="outline"
-                    onClick={() => {
-                      trackRevenueEvent({
-                        eventType: 'OFFER_ACCEPTED',
-                        userId: user?.id || null,
-                        surface: 'referral_bank_withdrawal_opened',
-                        metadata: { amount_ngn: stats.referralBalance },
-                      })
-                      navigate('/referral-withdrawal')
-                    }}
-                    disabled={stats.referralBalance <= 0}
+                    disabled
                   >
                     <Banknote className="h-4 w-4 mr-2" />
                     Withdraw to Bank
+                    <span className="ml-2 rounded-full bg-amber-100 text-amber-700 text-[10px] font-semibold px-2 py-0.5">Coming Soon</span>
                   </Button>
                 </CardContent>
               </Card>

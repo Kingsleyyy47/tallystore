@@ -37,6 +37,7 @@ import { cn } from '@/lib/utils'
 import { trackRevenueEvent } from '@/lib/revenue-os'
 import { RecommendationStrip } from '@/components/RecommendationCard'
 import { useRecommendations } from '@/hooks/useRecommendations'
+import { CryptoClosureNotice } from '@/components/CryptoClosureNotice'
 
 const INSTALL_PROMPT_STORAGE_KEY = 'pwa-install-prompt-dismissed'
 
@@ -367,6 +368,7 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen max-w-full overflow-x-hidden bg-[#f6f7fb] text-slate-950 dark:bg-background dark:text-foreground">
+      <CryptoClosureNotice />
       <NavbarAuth />
 
       <main
