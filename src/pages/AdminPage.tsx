@@ -694,12 +694,13 @@ export default function AdminPage() {
         // we read it from app_settings via the products response which already has live prices
         // Store each product's live computed price and load premium markup separately
       }
-      // Fetch premium config from supabase app_settings directly for admin display
-      const { data: settingsData } = await supabase.from('app_settings').select('key, value')
-        .in('key', ['telegram_premium_cost_usdt_3m', 'telegram_premium_cost_usdt_6m', 'telegram_premium_cost_usdt_12m', 'telegram_premium_markup_ngn'])
-      if (settingsData) {
-        for (const row of settingsData) {
-          prices[`__${row.key}__`] = row.value
+      // Fetch live premium pricing config from edge function (hits iStar /premium/packages live)
+      const premPricingRes = await supabase.functions.invoke('telegram-stars', { body: { action: 'admin_get_premium_pricing' } })
+      if (premPricingRes.data?.data) {
+        const cfg2 = premPricingRes.data.data
+        prices['__telegram_premium_markup_ngn__'] = String(cfg2.markup_ngn ?? 0)
+        for (const [months, cost] of Object.entries(cfg2.costs as Record<string, number>)) {
+          prices[`__telegram_premium_cost_usdt_${months}m__`] = String(cost)
         }
       }
       setTgProductPrices(prices)

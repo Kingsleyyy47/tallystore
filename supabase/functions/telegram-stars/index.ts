@@ -466,6 +466,12 @@ async function handleAdminCancelOrder(admin: SupabaseAdmin, userId: string, body
   return json({ success: true })
 }
 
+async function handleAdminGetPremiumPricing(admin: SupabaseAdmin, userId: string) {
+  await requireAdmin(admin, userId)
+  const config = await getPremiumPricingConfig(admin)
+  return json({ success: true, data: config })
+}
+
 async function handleAdminWalletBalance(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
   await requireAdmin(admin, userId)
   const walletType = String(body.wallet_type || 'USDT').toUpperCase()
@@ -498,6 +504,7 @@ serve(async (req) => {
       case 'create_premium_order':       return await handleCreatePremiumOrder(admin, user.id, body)
       case 'get_my_orders':              return await handleGetMyOrders(admin, user.id)
       case 'poll_order':                 return await handlePollOrder(admin, user.id, body)
+      case 'admin_get_premium_pricing':   return await handleAdminGetPremiumPricing(admin, user.id)
       case 'admin_get_orders':           return await handleAdminGetOrders(admin, user.id)
       case 'admin_get_premium_products': return await handleAdminGetPremiumProducts(admin, user.id)
       case 'admin_upsert_premium':       return await handleAdminUpsertPremiumProduct(admin, user.id, body)
