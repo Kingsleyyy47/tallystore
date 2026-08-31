@@ -37,10 +37,13 @@ export default async function handler(req: any, res: any) {
 
     // Initialize Supabase (server-side with service role to bypass RLS)
     const { createClient } = await import('@supabase/supabase-js');
-    const supabase = createClient(
-      process.env.VITE_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!  // Service role bypasses RLS for webhook operations
-    );
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY;
+    if (!supabaseUrl || !serviceRoleKey) {
+      console.error('Missing Supabase env vars for Ercas webhook');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+    const supabase = createClient(supabaseUrl, serviceRoleKey);
 
     // Check if transaction already processed (idempotency)
     const { data: existingTransaction } = await supabase

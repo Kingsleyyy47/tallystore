@@ -270,7 +270,7 @@ function isDepositTransaction(tx: { type?: string | null; amount?: number | null
   const type = String(tx.type || '').toLowerCase()
   const amount = Number(tx.amount || 0)
   if (amount <= 0) return false
-  return ['topup', 'top_up', 'top-up', 'wallet_topup', 'deposit', 'wallet_deposit'].includes(type)
+  return ['topup', 'top_up', 'top-up', 'wallet_topup', 'deposit', 'wallet_deposit', 'credit', 'admin_credit', 'staff_credit'].includes(type)
 }
 
 function isCompletedDeposit(status?: string | null) {
@@ -3247,10 +3247,20 @@ export default function AdminPage() {
 
   // Submit balance adjustment
   const handleSubmitAdjustment = async () => {
-    if (!adjustmentAmount || !adjustmentReason || !selectedUser) {
+    const cleanReason = adjustmentReason.trim()
+    if (!adjustmentAmount || !cleanReason || !selectedUser) {
       toast({
         title: "Validation error",
         description: "Please fill in all fields",
+        variant: "destructive"
+      })
+      return
+    }
+
+    if (cleanReason.length < 3) {
+      toast({
+        title: "Reason too short",
+        description: "Enter at least 3 characters so the adjustment has an audit note.",
         variant: "destructive"
       })
       return
@@ -3284,7 +3294,7 @@ export default function AdminPage() {
       const result = await adminAdjustBalance(
         selectedUser.id,
         adjustment,
-        adjustmentReason,
+        cleanReason,
         user?.email || 'admin'
       )
 
@@ -4921,7 +4931,7 @@ export default function AdminPage() {
                 <div className="space-y-2">
                   <Label>Reason (Required)</Label>
                   <Textarea
-                    placeholder="e.g., Refund for order #123, Compensation, Manual top-up..."
+                    placeholder="e.g., Fix, Refund for order #123, Manual top-up..."
                     value={adjustmentReason}
                     onChange={(e) => setAdjustmentReason(e.target.value)}
                     rows={3}
@@ -4957,7 +4967,7 @@ export default function AdminPage() {
                 </Button>
                 <Button 
                   onClick={handleSubmitAdjustment} 
-                  disabled={!adjustmentAmount || !adjustmentReason || isAdjusting}
+                  disabled={!adjustmentAmount || adjustmentReason.trim().length < 3 || isAdjusting}
                 >
                   {isAdjusting ? 'Processing...' : (adjustmentType === 'add' ? 'Add Funds' : 'Deduct Funds')}
                 </Button>

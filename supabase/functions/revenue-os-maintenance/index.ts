@@ -1055,8 +1055,20 @@ function buildOperationalFindings(input: {
   const findings: RevenueFinding[] = []
   const hasNowPayments = Boolean(Deno.env.get('NOWPAYMENTS_API_KEY'))
   const hasDaisy = Boolean(Deno.env.get('DAISYSMS_API_KEY'))
-  const hasPocketFi = Boolean(Deno.env.get('POCKETFI_PUBLIC_KEY') && Deno.env.get('POCKETFI_BUSINESS_ID'))
-  const hasErcas = Boolean(Deno.env.get('ERCASPAY_SECRET_KEY'))
+  const hasPocketFi = Boolean(
+    (Deno.env.get('POCKETFI_PUBLIC_KEY') ||
+      Deno.env.get('POCKETFI_API_TOKEN') ||
+      Deno.env.get('VITE_POCKETFI_API_TOKEN') ||
+      Deno.env.get('VITE_POCKETFI_PUBLIC_KEY')) &&
+    (Deno.env.get('POCKETFI_BUSINESS_ID') ||
+      Deno.env.get('VITE_POCKETFI_BUSINESS_ID')),
+  )
+  const hasErcas = Boolean(
+    Deno.env.get('ERCASPAY_SECRET_KEY') ||
+    Deno.env.get('ERCAS_SECRET_KEY') ||
+    Deno.env.get('VITE_ERCASPAY_SECRET_KEY') ||
+    Deno.env.get('VITE_ERCAS_SECRET_KEY'),
+  )
 
   if (hasNowPayments && !Deno.env.get('NOWPAYMENTS_IPN_SECRET')) {
     findings.push({
@@ -1069,7 +1081,7 @@ function buildOperationalFindings(input: {
     })
   }
 
-  if (hasPocketFi && !(Deno.env.get('POCKETFI_WEBHOOK_SECRET') || Deno.env.get('POCKETFI_SECRET_API_KEY'))) {
+  if (hasPocketFi && !(Deno.env.get('POCKETFI_WEBHOOK_SECRET') || Deno.env.get('POCKETFI_SECRET_KEY') || Deno.env.get('POCKETFI_SECRET_API_KEY'))) {
     findings.push({
       check_key: 'operations.missing_pocketfi_webhook_secret',
       severity: 'critical',
@@ -1097,7 +1109,7 @@ function buildOperationalFindings(input: {
       severity: 'warning',
       status: 'failed',
       scope: 'wallet_topup',
-      message: 'ERCASPAY_SECRET_KEY is missing. Ercas wallet top-ups and recovery checks are unavailable.',
+      message: 'Ercas secret is missing. Set ERCASPAY_SECRET_KEY, ERCAS_SECRET_KEY, VITE_ERCASPAY_SECRET_KEY, or VITE_ERCAS_SECRET_KEY so wallet top-ups and recovery checks can run.',
       evidence: { ercaspay_secret_configured: false },
     })
   }

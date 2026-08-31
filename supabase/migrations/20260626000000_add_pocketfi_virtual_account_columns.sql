@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS idx_profiles_pocketfi_account_number
 -- Debugging aid: PocketFi's webhook payload shape isn't publicly documented, so we
 -- log every raw webhook delivery here. Once a real transfer lands you can inspect
 -- this table to see PocketFi's actual field names and refine the parsing logic in
--- api/webhook-pocketfi.ts if needed.
+-- supabase/functions/webhook-pocketfi/index.ts if needed.
 CREATE TABLE IF NOT EXISTS public.pocketfi_webhook_logs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   raw_payload jsonb NOT NULL,

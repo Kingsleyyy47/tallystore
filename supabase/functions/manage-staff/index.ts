@@ -483,6 +483,9 @@ function isDepositTransaction(row: any) {
     'wallet_topup',
     'deposit',
     'wallet_deposit',
+    'credit',
+    'admin_credit',
+    'staff_credit',
   ].some((token) => value === token || value.includes(token)))
 }
 
@@ -1365,7 +1368,9 @@ async function applyStaffAction(admin: ReturnType<typeof createClient>, pendingA
   if (action === 'adjust_balance') {
     const userId = String(d.user_id || '').trim()
     const amount = Number(d.amount)
+    const reason = String(d.reason || '').trim()
     if (!userId || !Number.isFinite(amount) || amount === 0) throw new Error('Valid user and amount required')
+    if (reason.length < 3) throw new Error('A reason with at least 3 characters is required')
     const { data: profile, error: loadError } = await admin
       .from('profiles')
       .select('wallet_balance,is_staff,is_admin')
@@ -1377,13 +1382,14 @@ async function applyStaffAction(admin: ReturnType<typeof createClient>, pendingA
     if (newBal < 0) throw new Error('Balance cannot go below zero')
     const { error: updateError } = await admin.from('profiles').update({ wallet_balance: newBal }).eq('id', userId)
     if (updateError) throw new Error(updateError.message)
+    const transactionType = amount > 0 ? 'staff_credit' : 'staff_debit'
     const { error: txError } = await admin.from('transactions').insert({
       user_id: userId,
-      type: 'adjustment',
-      amount,
+      type: transactionType,
+      amount: Math.abs(amount),
       status: 'completed',
       balance_after: newBal,
-      description: d.reason || 'Approved staff balance adjustment',
+      description: `Staff adjustment by ${pendingAction.staff_email || pendingAction.staff_id}: ${reason}`,
       reference: `STAFF-ADJ-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
     })
     if (txError) throw new Error(txError.message)

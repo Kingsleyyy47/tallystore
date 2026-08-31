@@ -32,6 +32,25 @@ export interface TransactionVerification {
   error?: string
 }
 
+async function getFunctionErrorMessage(error: any, fallback: string) {
+  let message = error?.message || fallback
+  const context = error?.context
+  if (context && typeof context.clone === 'function') {
+    try {
+      const body = await context.clone().json()
+      message = body?.error || body?.message || message
+    } catch {
+      try {
+        const text = await context.clone().text()
+        if (text) message = text
+      } catch {
+        // Keep the Supabase client error if the function body is unavailable.
+      }
+    }
+  }
+  return message
+}
+
 export const initiatePayment = async (paymentData: PaymentData): Promise<PaymentResponse> => {
   try {
     const { data, error } = await supabase.functions.invoke<PaymentResponse>('create-wallet-topup', {
@@ -39,7 +58,7 @@ export const initiatePayment = async (paymentData: PaymentData): Promise<Payment
     })
 
     if (error) {
-      throw new Error(error.message || 'Failed to initiate payment')
+      throw new Error(await getFunctionErrorMessage(error, 'Failed to initiate payment'))
     }
 
     if (!data) {
@@ -63,7 +82,7 @@ export const verifyPayment = async (transactionReference: string): Promise<Trans
     })
 
     if (error) {
-      throw new Error(error.message || 'Verification failed')
+      throw new Error(await getFunctionErrorMessage(error, 'Verification failed'))
     }
 
     if (!data?.success) {

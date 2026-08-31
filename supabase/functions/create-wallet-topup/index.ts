@@ -250,7 +250,7 @@ function cleanCustomerName(value: unknown) {
 function normalizeRedirectUrl(value: unknown, originHeader: string | null) {
   const fallbackOrigin = originHeader && /^https?:\/\//i.test(originHeader)
     ? originHeader
-    : 'https://tallystore.app'
+    : 'https://tallystore.org'
   const fallback = `${fallbackOrigin.replace(/\/$/, '')}/wallet`
 
   if (typeof value !== 'string' || !value) return fallback
@@ -306,7 +306,11 @@ serve(async (req) => {
       throw new Error('Maximum top-up amount is NGN 1,000,000.')
     }
 
-    const ercasSecretKey = Deno.env.get('ERCASPAY_SECRET_KEY')
+    const ercasSecretKey =
+      Deno.env.get('ERCASPAY_SECRET_KEY') ||
+      Deno.env.get('ERCAS_SECRET_KEY') ||
+      Deno.env.get('VITE_ERCASPAY_SECRET_KEY') ||
+      Deno.env.get('VITE_ERCAS_SECRET_KEY')
     if (!ercasSecretKey) {
       throw new Error('Payments are temporarily unavailable.')
     }

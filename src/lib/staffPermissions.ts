@@ -79,7 +79,19 @@ export async function submitPendingAction(
     },
   })
 
-  if (error) return { success: false, error: error.message }
+  if (error) {
+    let message = error.message || 'Action failed'
+    const context = (error as any)?.context
+    if (context && typeof context.json === 'function') {
+      try {
+        const body = await context.clone().json()
+        message = body?.error || body?.message || message
+      } catch {
+        // Keep the Supabase client error if the function did not return JSON.
+      }
+    }
+    return { success: false, error: message }
+  }
   if (data?.success === false) return { success: false, error: data.error || 'Action failed' }
   return data || { success: true }
 }

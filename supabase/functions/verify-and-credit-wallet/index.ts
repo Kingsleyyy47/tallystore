@@ -453,7 +453,11 @@ serve(async (req) => {
     }
 
     // STEP 2: Verify with Ercas Pay API
-    const ercasSecretKey = Deno.env.get('ERCASPAY_SECRET_KEY');
+    const ercasSecretKey =
+      Deno.env.get('ERCASPAY_SECRET_KEY') ||
+      Deno.env.get('ERCAS_SECRET_KEY') ||
+      Deno.env.get('VITE_ERCASPAY_SECRET_KEY') ||
+      Deno.env.get('VITE_ERCAS_SECRET_KEY');
     if (!ercasSecretKey) {
       throw new Error('Ercas Pay not configured');
     }

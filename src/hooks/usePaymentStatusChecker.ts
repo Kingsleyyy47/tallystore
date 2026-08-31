@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/SimpleAuth';
 import { useToast } from '@/hooks/use-toast';
 
 // Ercas Pay has a server-side "verify and credit" edge function the client can call
-// directly. PocketFi credits the wallet via webhook (api/webhook-pocketfi.ts) instead, so
+// directly. PocketFi credits the wallet via webhook-pocketfi instead, so
 // for PocketFi we just poll the transactions table to see if that webhook has landed yet.
 async function checkPocketFiTransaction(transactionRef: string) {
   const result = await checkTransactionByReference(transactionRef)

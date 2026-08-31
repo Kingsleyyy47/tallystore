@@ -64,13 +64,14 @@ serve(async (req) => {
     }
 
     // Parse request body
-    const { 
+    const {
       target_user_id, 
       adjustment_amount, 
       balance_type, 
       reason,
       idempotency_key 
     } = await req.json();
+    const cleanReason = String(reason || '').trim();
 
     // Validate inputs
     if (!target_user_id || typeof target_user_id !== 'string') {
@@ -85,13 +86,13 @@ serve(async (req) => {
       throw new Error('balance_type must be "wallet" or "crypto"');
     }
 
-    if (!reason || typeof reason !== 'string' || reason.length < 5) {
-      throw new Error('A reason with at least 5 characters is required');
+    if (cleanReason.length < 3) {
+      throw new Error('A reason with at least 3 characters is required');
     }
 
     console.log(`🔧 Admin ${user.email} adjusting balance for user ${target_user_id}`);
     console.log(`   Amount: ${adjustment_amount > 0 ? '+' : ''}₦${adjustment_amount}, Type: ${balance_type}`);
-    console.log(`   Reason: ${reason}`);
+    console.log(`   Reason: ${cleanReason}`);
 
     // Check idempotency (prevent duplicate adjustments)
     if (idempotency_key) {
@@ -165,7 +166,7 @@ serve(async (req) => {
         amount: Math.abs(adjustment_amount),
         status: 'completed',
         balance_after: newBalance,
-        description: `Admin adjustment by ${user.email}: ${reason}`,
+        description: `Admin adjustment by ${user.email}: ${cleanReason}`,
         reference: `ADMIN-${Date.now()}-${Math.random().toString(36).substring(7)}`,
         idempotency_key: idempotency_key || null,
       });
@@ -187,7 +188,7 @@ serve(async (req) => {
         previous_balance: currentBalance,
         adjustment: adjustment_amount,
         new_balance: newBalance,
-        reason,
+        reason: cleanReason,
         adjusted_by: user.email,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

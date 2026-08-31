@@ -1068,6 +1068,15 @@ export default function StaffAdminPage() {
     if (!adjustUserId || !adjustAmount) return
     const amount = parseFloat(adjustAmount)
     if (isNaN(amount)) return
+    const cleanReason = adjustReason.trim()
+    if (cleanReason.length < 3) {
+      toast({
+        variant: 'destructive',
+        title: 'Reason too short',
+        description: 'Enter at least 3 characters so the adjustment has an audit note.',
+      })
+      return
+    }
     const targetUser = users.find(u => u.id === adjustUserId)
     if (targetUser?.is_staff || targetUser?.is_admin) {
       toast({
@@ -1082,7 +1091,7 @@ export default function StaffAdminPage() {
       const key: PermissionKey = 'action_adjust_balance'
       const label = `${adjustType === 'add' ? 'Add' : 'Subtract'} ₦${amount.toLocaleString()} ${adjustType === 'add' ? 'to' : 'from'} ${targetUser?.email || adjustUserId}`
       const res = await submitPendingAction(key, 'adjust_balance', label, {
-        user_id: adjustUserId, amount: adjustType === 'add' ? amount : -amount, reason: adjustReason,
+        user_id: adjustUserId, amount: adjustType === 'add' ? amount : -amount, reason: cleanReason,
       })
       if (res.success) {
         toast({ title: res.applied ? 'Balance adjusted' : 'Submitted for approval' })

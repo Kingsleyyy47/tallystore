@@ -204,9 +204,10 @@ export function revenueContextMetadata(context?: RevenueRequestContext | null) {
 // with no Supabase auth token, so if JWT verification is on, every webhook
 // call gets rejected with 401 before your code even runs.
 //
-// Because JWT verification is off, POCKETFI_WEBHOOK_SECRET is required. If you
-// already stored PocketFi's "Secret API Key" as POCKETFI_SECRET_API_KEY, this
-// function accepts that as the fallback webhook secret. Configure
+// Because JWT verification is off, a PocketFi webhook secret is required. If you
+// already stored PocketFi's secret as POCKETFI_SECRET_KEY or
+// POCKETFI_SECRET_API_KEY, this function accepts either as a fallback webhook
+// secret. Configure
 // PocketFi to send it as one of:
 //   Authorization: Bearer <secret>
 //   x-pocketfi-webhook-secret: <secret>
@@ -262,9 +263,13 @@ async function hmacSha512Hex(secret: string, message: string) {
 }
 
 async function verifyPocketFiWebhook(req: Request, rawBody: string) {
-  const secret = Deno.env.get('POCKETFI_WEBHOOK_SECRET') || Deno.env.get('POCKETFI_SECRET_API_KEY') || ''
+  const secret =
+    Deno.env.get('POCKETFI_WEBHOOK_SECRET') ||
+    Deno.env.get('POCKETFI_SECRET_KEY') ||
+    Deno.env.get('POCKETFI_SECRET_API_KEY') ||
+    ''
   if (!secret) {
-    console.error('POCKETFI_WEBHOOK_SECRET/POCKETFI_SECRET_API_KEY is not configured. Refusing unsigned webhook.')
+    console.error('POCKETFI_WEBHOOK_SECRET/POCKETFI_SECRET_KEY/POCKETFI_SECRET_API_KEY is not configured. Refusing unsigned webhook.')
     return false
   }
 

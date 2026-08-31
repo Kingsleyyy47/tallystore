@@ -6,7 +6,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 // we ask PocketFi once for a dedicated bank account number tied to this user, cache
 // it on their profile, and show it to them. The user then bank-transfers money into
 // that account from their own banking app (any amount, any time). PocketFi notifies
-// us via webhook (api/webhook-pocketfi.ts) when a transfer lands, and that webhook
+// us via webhook-pocketfi when a transfer lands, and that webhook
 // credits the wallet. This function ONLY creates/returns the account — it never
 // returns a checkoutUrl, because PocketFi has none for this flow.
 //
@@ -71,15 +71,24 @@ serve(async (req) => {
     // is NOT a valid bearer token. The "Public API Key" is the Laravel Sanctum-style
     // `id|token` credential that actually authenticates outbound API calls, so that's
     // what goes in the Authorization header below.
-    const pocketfiToken = Deno.env.get('POCKETFI_PUBLIC_KEY')
-    const pocketfiBusinessId = Deno.env.get('POCKETFI_BUSINESS_ID')
+    const pocketfiToken =
+      Deno.env.get('POCKETFI_PUBLIC_KEY') ||
+      Deno.env.get('POCKETFI_API_TOKEN') ||
+      Deno.env.get('VITE_POCKETFI_API_TOKEN') ||
+      Deno.env.get('VITE_POCKETFI_PUBLIC_KEY')
+    const pocketfiBusinessId =
+      Deno.env.get('POCKETFI_BUSINESS_ID') ||
+      Deno.env.get('VITE_POCKETFI_BUSINESS_ID')
     if (!pocketfiToken || !pocketfiBusinessId) {
       throw new Error('Bank transfer top-up is temporarily unavailable.')
     }
 
     // NOTE: PocketFi's real base path is /api/v1, not /v1 — the previous version of
     // this function had the wrong default, which was part of why every call failed.
-    const pocketfiBaseUrl = Deno.env.get('POCKETFI_BASE_URL') || 'https://api.pocketfi.ng/api/v1'
+    const pocketfiBaseUrl =
+      Deno.env.get('POCKETFI_BASE_URL') ||
+      Deno.env.get('VITE_POCKETFI_BASE_URL') ||
+      'https://api.pocketfi.ng/api/v1'
 
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',

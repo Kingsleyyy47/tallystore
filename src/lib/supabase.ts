@@ -1524,7 +1524,17 @@ export async function verifyAndCreditWalletSecure(
 
     if (error) {
       console.error('❌ Edge Function error:', error);
-      return { success: false, error: error.message || 'Verification failed' };
+      let message = error.message || 'Verification failed';
+      const context = (error as any)?.context;
+      if (context && typeof context.json === 'function') {
+        try {
+          const body = await context.clone().json();
+          message = body?.error || body?.message || message;
+        } catch {
+          // Keep the Supabase client error if the function did not return JSON.
+        }
+      }
+      return { success: false, error: message };
     }
 
     if (!data?.success) {
@@ -1849,7 +1859,17 @@ export async function adminAdjustBalance(
 
     if (error) {
       console.error('Admin adjust balance Edge Function error:', error);
-      throw new Error(error.message || 'Failed to adjust balance');
+      let message = error.message || 'Failed to adjust balance';
+      const context = (error as any)?.context;
+      if (context && typeof context.json === 'function') {
+        try {
+          const body = await context.clone().json();
+          message = body?.error || body?.message || message;
+        } catch {
+          // Keep the Supabase client error if the function did not return JSON.
+        }
+      }
+      throw new Error(message);
     }
 
     if (!data.success) {
@@ -2118,7 +2138,7 @@ export function formatCount(n: number): string {
 }
 
 // Used by PocketFi top-up polling: PocketFi credits the wallet via webhook
-// (api/webhook-pocketfi.ts) rather than a client-callable verify endpoint, so the
+// (webhook-pocketfi) rather than a client-callable verify endpoint, so the
 // client just checks whether a transaction row with this reference has shown up yet.
 export async function checkTransactionByReference(reference: string): Promise<{
   found: boolean
