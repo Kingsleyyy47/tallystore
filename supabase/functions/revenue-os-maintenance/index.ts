@@ -237,6 +237,15 @@ type CroOpportunity = {
   evidence: Record<string, unknown>
 }
 
+type RevenueFeatureSnapshot = {
+  snapshot_key: string
+  scope_type: string
+  scope_id: string
+  window_start: string
+  window_end: string
+  features: Record<string, unknown>
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -1475,7 +1484,7 @@ function buildRuntimeIntelligence(input: {
   ].sort((a, b) => a.value - b.value)[0]
   const revenueDriver = previousRevenue > 0 && driver.value < -0.08 ? driver.key : 'balanced'
 
-  const featureSnapshots = [
+  const featureSnapshots: RevenueFeatureSnapshot[] = [
     {
       snapshot_key: `store:maintenance:${isoHour(now)}`,
       scope_type: 'store',
@@ -1546,7 +1555,7 @@ function buildRuntimeIntelligence(input: {
       window_start: window30Start.toISOString(),
       window_end: now.toISOString(),
       features: {
-        section,
+        section: section,
         revenue_30d: Math.round(sectionRevenue30),
         orders_30d: sectionOrders30.length,
         unique_customers_30d: sectionCustomers30.size,
