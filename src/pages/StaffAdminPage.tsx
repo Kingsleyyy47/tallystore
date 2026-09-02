@@ -1583,8 +1583,8 @@ export default function StaffAdminPage() {
                         </Select>
                       </div>
                       <div>
-                        <label className="text-sm font-medium mb-1 block">CSV File</label>
-                        <p className="text-xs text-muted-foreground mb-2">Columns: username, password, email (optional)</p>
+                        <label className="text-sm font-medium mb-1 block">CSV or TXT File</label>
+                        <p className="text-xs text-muted-foreground mb-2">CSV: header row (username, password, email) · TXT: one credential per line as <code>username:password</code> or <code>username|password</code></p>
                         <input
                           ref={fileInputRef}
                           type="file"

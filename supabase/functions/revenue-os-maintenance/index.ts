@@ -522,6 +522,53 @@ async function upsertSetting(supabase: SupabaseAdmin, key: string, value: string
   if (error) throw error
 }
 
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message
+  if (error && typeof error === 'object' && 'message' in error) return String((error as any).message || 'Unknown error')
+  return String(error || 'Unknown error')
+}
+
+function dependencyFinding(now: Date, dependency: string, error: unknown, severity: RevenueFinding['severity'] = 'critical'): RevenueFinding {
+  const message = errorMessage(error)
+  return {
+    check_key: `dependency:${dependency}:${isoHour(now)}`,
+    severity,
+    status: 'failed',
+    scope: `dependency:${dependency}`,
+    message: `Revenue OS dependency failed for ${dependency}: ${message}`,
+    evidence: {
+      dependency,
+      error: message.slice(0, 800),
+    },
+  }
+}
+
+async function safeRead<T>(
+  now: Date,
+  dependency: string,
+  query: PromiseLike<{ data: T | null; error: any }>,
+  fallback: T,
+  severity: RevenueFinding['severity'] = 'critical',
+) {
+  try {
+    const { data, error } = await query
+    if (error) return { data: fallback, finding: dependencyFinding(now, dependency, error, severity) }
+    return { data: (data ?? fallback) as T, finding: null as RevenueFinding | null }
+  } catch (error) {
+    return { data: fallback, finding: dependencyFinding(now, dependency, error, severity) }
+  }
+}
+
+async function safeWrite(now: Date, dependency: string, write: () => Promise<void>, severity: RevenueFinding['severity'] = 'critical') {
+  try {
+    await write()
+    return null
+  } catch (error) {
+    console.error(`Revenue OS maintenance write failed for ${dependency}:`, error)
+    return dependencyFinding(now, dependency, error, severity)
+  }
+}
+
 function buildCatalogueFindings(products: ProductGroup[], categories: any[]): RevenueFinding[] {
   const findings: RevenueFinding[] = []
   const categoryIds = new Set(categories.map((category) => category.id))
@@ -1921,39 +1968,56 @@ async function writeMaintenanceRecords(supabase: SupabaseAdmin, input: {
   simulationRecommendation: 'insufficient_data' | 'safe' | 'watch' | 'pause'
   now: Date
 }) {
+  const writeFindings: RevenueFinding[] = []
+
   if (input.findings.length > 0) {
-    const { error } = await supabase.from('revenue_data_quality_checks').insert(input.findings)
-    if (error) throw error
+    const finding = await safeWrite(input.now, 'revenue_data_quality_checks', async () => {
+      const { error } = await supabase.from('revenue_data_quality_checks').insert(input.findings)
+      if (error) throw error
+    })
+    if (finding) writeFindings.push(finding)
   }
 
   if (input.featureSnapshots.length > 0) {
-    const { error } = await supabase.from('revenue_feature_snapshots').upsert(
-      input.featureSnapshots.map((snapshot) => ({
-        ...snapshot,
-        source: 'SCHEDULED_MAINTENANCE',
-        updated_at: input.now.toISOString(),
-      })),
-      { onConflict: 'snapshot_key' },
-    )
-    if (error) throw error
+    const snapshotFinding = await safeWrite(input.now, 'revenue_feature_snapshots', async () => {
+      const { error } = await supabase.from('revenue_feature_snapshots').upsert(
+        input.featureSnapshots.map((snapshot) => ({
+          ...snapshot,
+          source: 'SCHEDULED_MAINTENANCE',
+          updated_at: input.now.toISOString(),
+        })),
+        { onConflict: 'snapshot_key' },
+      )
+      if (error) throw error
+    })
+    if (snapshotFinding) writeFindings.push(snapshotFinding)
 
-    await upsertFeatureStoreSnapshots(supabase, input.featureSnapshots, 'SCHEDULED_MAINTENANCE', input.now)
+    const featureStoreFinding = await safeWrite(input.now, 'feature_store', async () => {
+      await upsertFeatureStoreSnapshots(supabase, input.featureSnapshots, 'SCHEDULED_MAINTENANCE', input.now)
+    })
+    if (featureStoreFinding) writeFindings.push(featureStoreFinding)
   }
 
   if (input.opportunities.length > 0) {
-    const { error } = await supabase.from('cro_opportunities').upsert(
-      input.opportunities.map((opportunity) => ({
-        ...opportunity,
-        updated_at: input.now.toISOString(),
-      })),
-      { onConflict: 'opportunity_key' },
-    )
-    if (error) throw error
+    const finding = await safeWrite(input.now, 'cro_opportunities', async () => {
+      const { error } = await supabase.from('cro_opportunities').upsert(
+        input.opportunities.map((opportunity) => ({
+          ...opportunity,
+          updated_at: input.now.toISOString(),
+        })),
+        { onConflict: 'opportunity_key' },
+      )
+      if (error) throw error
+    })
+    if (finding) writeFindings.push(finding)
   }
 
   if (input.forecasts.length > 0) {
-    const { error } = await supabase.from('revenue_forecasts').upsert(input.forecasts, { onConflict: 'forecast_key' })
-    if (error) throw error
+    const finding = await safeWrite(input.now, 'revenue_forecasts', async () => {
+      const { error } = await supabase.from('revenue_forecasts').upsert(input.forecasts, { onConflict: 'forecast_key' })
+      if (error) throw error
+    })
+    if (finding) writeFindings.push(finding)
   }
 
   const periodStart = new Date(input.now.getTime() - 7 * 86400000).toISOString()
@@ -1978,58 +2042,69 @@ async function writeMaintenanceRecords(supabase: SupabaseAdmin, input: {
       evidence: { source: 'scheduled_maintenance' },
     },
   ]
-  const { error: driftError } = await supabase.from('cro_drift_checks').upsert(driftRows, { onConflict: 'check_key' })
-  if (driftError) throw driftError
+  const driftFinding = await safeWrite(input.now, 'cro_drift_checks', async () => {
+    const { error: driftError } = await supabase.from('cro_drift_checks').upsert(driftRows, { onConflict: 'check_key' })
+    if (driftError) throw driftError
+  })
+  if (driftFinding) writeFindings.push(driftFinding)
 
-  const { error: simulationError } = await supabase.from('cro_simulation_runs').upsert(
-    {
-      simulation_key: `maintenance:guardrail:${isoHour(input.now)}`,
-      mode: 'guardrail',
-      period_start: periodStart,
-      period_end: periodEnd,
-      sessions_evaluated: 0,
-      decisions_evaluated: 0,
-      violations: input.findings.filter((finding) => finding.status === 'failed' && finding.severity === 'critical'),
-      concentration: {},
-      recommendation: input.simulationRecommendation,
-      evidence: { source: 'scheduled_maintenance' },
-    },
-    { onConflict: 'simulation_key' },
-  )
-  if (simulationError) throw simulationError
-
-  const { error: modelError } = await supabase.from('cro_model_registry').upsert(
-    [
+  const simulationFinding = await safeWrite(input.now, 'cro_simulation_runs', async () => {
+    const { error: simulationError } = await supabase.from('cro_simulation_runs').upsert(
       {
-        model_key: 'scheduled_revenue_os_maintenance',
-        version: '1.0.0',
-        model_type: 'deterministic_guardrail_scheduler',
-        training_period: { mode: 'not_trained', reason: 'deterministic_rules' },
-        features: [
-          'catalogue_health',
-          'duplicate_event_id',
-          'missing_event_id',
-          'unknown_event_type',
-          'currency_consistency',
-          'orphan_product_event',
-          'unbacked_purchase_event_blocking',
-          'duplicate_purchase_credit_detection',
-          'payment_funnel',
-          'provider_webhook_secrets',
-          'pending_payment_recovery_health',
-          'conversion_drift',
-          'revenue_drift',
-          'low_stock_velocity',
-        ],
-        performance: { last_run_at: input.now.toISOString(), simulation_recommendation: input.simulationRecommendation },
-        deployment_state: 'active',
-        rollback_to: null,
-        updated_at: input.now.toISOString(),
+        simulation_key: `maintenance:guardrail:${isoHour(input.now)}`,
+        mode: 'guardrail',
+        period_start: periodStart,
+        period_end: periodEnd,
+        sessions_evaluated: 0,
+        decisions_evaluated: 0,
+        violations: input.findings.filter((finding) => finding.status === 'failed' && finding.severity === 'critical'),
+        concentration: {},
+        recommendation: input.simulationRecommendation,
+        evidence: { source: 'scheduled_maintenance' },
       },
-    ],
-    { onConflict: 'model_key,version' },
-  )
-  if (modelError) throw modelError
+      { onConflict: 'simulation_key' },
+    )
+    if (simulationError) throw simulationError
+  })
+  if (simulationFinding) writeFindings.push(simulationFinding)
+
+  const modelFinding = await safeWrite(input.now, 'cro_model_registry', async () => {
+    const { error: modelError } = await supabase.from('cro_model_registry').upsert(
+      [
+        {
+          model_key: 'scheduled_revenue_os_maintenance',
+          version: '1.0.0',
+          model_type: 'deterministic_guardrail_scheduler',
+          training_period: { mode: 'not_trained', reason: 'deterministic_rules' },
+          features: [
+            'catalogue_health',
+            'duplicate_event_id',
+            'missing_event_id',
+            'unknown_event_type',
+            'currency_consistency',
+            'orphan_product_event',
+            'unbacked_purchase_event_blocking',
+            'duplicate_purchase_credit_detection',
+            'payment_funnel',
+            'provider_webhook_secrets',
+            'pending_payment_recovery_health',
+            'conversion_drift',
+            'revenue_drift',
+            'low_stock_velocity',
+          ],
+          performance: { last_run_at: input.now.toISOString(), simulation_recommendation: input.simulationRecommendation },
+          deployment_state: 'active',
+          rollback_to: null,
+          updated_at: input.now.toISOString(),
+        },
+      ],
+      { onConflict: 'model_key,version' },
+    )
+    if (modelError) throw modelError
+  })
+  if (modelFinding) writeFindings.push(modelFinding)
+
+  return writeFindings
 }
 
 serve(async (req) => {
@@ -2059,71 +2134,86 @@ serve(async (req) => {
 
   try {
     const [
-      { data: products, error: productsError },
-      { data: categories, error: categoriesError },
-      { data: profiles, error: profilesError },
-      { data: orders, error: ordersError },
-      { data: smsOrders, error: smsOrdersError },
-      { data: billsRows, error: billsError },
-      { data: giftRows, error: giftError },
-      { data: socialRows, error: socialError },
-      { data: cryptoRows, error: cryptoError },
-      { data: pendingPayments, error: pendingPaymentsError },
-      { data: events, error: eventsError },
-      { data: identityLinks, error: identityLinksError },
-      { data: discountCodes, error: discountCodesError },
-      { data: communicationPreferences, error: communicationPreferencesError },
-      { data: existingLifecycleActions, error: existingLifecycleActionsError },
+      productsResult,
+      categoriesResult,
+      profilesResult,
+      ordersResult,
+      smsOrdersResult,
+      billsResult,
+      giftResult,
+      socialResult,
+      cryptoResult,
+      pendingPaymentsResult,
+      eventsResult,
+      identityLinksResult,
+      discountCodesResult,
+      communicationPreferencesResult,
+      existingLifecycleActionsResult,
       targetValue,
       ercasEnabledValue,
       promotionMaxDiscountValue,
       promotionMonthlyBudgetValue,
     ] = await Promise.all([
-      supabase.from('product_groups').select('*').limit(5000),
-      supabase.from('categories').select('id,name,is_active').limit(1000),
-      supabase.from('profiles').select('id,email,is_admin,is_staff,created_at').limit(10000),
-      supabase.from('orders').select('id,user_id,product_group_id,amount,status,account_details,created_at').gte('created_at', since.toISOString()).limit(10000),
-      supabase.from('sms_orders').select('id,user_id,amount_ngn,total_cost,status,created_at').gte('created_at', since.toISOString()).limit(10000),
-      supabase.from('bills_transactions').select('id,user_id,amount,status,created_at,transaction_type,service_provider').gte('created_at', since.toISOString()).limit(10000),
-      supabase.from('bitrefill_orders').select('id,user_id,amount_ngn,status,created_at,product_id,product_name,quantity').gte('created_at', since.toISOString()).limit(10000),
-      supabase.from('smm_orders').select('id,user_id,amount_ngn,status,created_at,service_id,quantity').gte('created_at', since.toISOString()).limit(10000),
-      supabase.from('crypto_transactions').select('id,user_id,naira_amount,status,created_at,transaction_type,crypto_type').gte('created_at', since.toISOString()).limit(10000),
-      supabase.from('pending_payments').select('id,user_id,transaction_reference,amount,status,created_at,last_check_at,check_count,error_message').gte('created_at', new Date(now.getTime() - 72 * 60 * 60 * 1000).toISOString()).limit(10000),
-      supabase.from('revenue_events').select('*').gte('created_at', since.toISOString()).limit(20000),
-      supabase.from('revenue_identity_links').select('user_id,visitor_id,session_id,last_seen_at').gte('last_seen_at', since.toISOString()).limit(20000),
-      supabase.from('discount_codes').select('*').limit(10000),
-      supabase.from('customer_communication_preferences').select('user_id,email_lifecycle_opt_in,email_promotions_opt_in').limit(10000),
-      supabase.from('cro_lifecycle_actions').select('id,action_key,user_id,status,updated_at,created_at').gte('created_at', new Date(now.getTime() - 30 * 86400000).toISOString()).limit(10000),
+      safeRead<any[]>(now, 'product_groups', supabase.from('product_groups').select('*').limit(5000), []),
+      safeRead<any[]>(now, 'categories', supabase.from('categories').select('id,name,is_active').limit(1000), []),
+      safeRead<any[]>(now, 'profiles', supabase.from('profiles').select('id,email,is_admin,is_staff,created_at').limit(10000), []),
+      safeRead<any[]>(now, 'orders', supabase.from('orders').select('id,user_id,product_group_id,amount,status,account_details,created_at').gte('created_at', since.toISOString()).limit(10000), []),
+      safeRead<any[]>(now, 'sms_orders', supabase.from('sms_orders').select('id,user_id,amount_ngn,total_cost,status,created_at').gte('created_at', since.toISOString()).limit(10000), []),
+      safeRead<any[]>(now, 'bills_transactions', supabase.from('bills_transactions').select('id,user_id,amount,status,created_at,transaction_type,service_provider').gte('created_at', since.toISOString()).limit(10000), [], 'warning'),
+      safeRead<any[]>(now, 'bitrefill_orders', supabase.from('bitrefill_orders').select('id,user_id,amount_ngn,status,created_at,product_id,product_name,quantity').gte('created_at', since.toISOString()).limit(10000), [], 'warning'),
+      safeRead<any[]>(now, 'smm_orders', supabase.from('smm_orders').select('id,user_id,amount_ngn,status,created_at,service_id,quantity').gte('created_at', since.toISOString()).limit(10000), [], 'warning'),
+      safeRead<any[]>(now, 'crypto_transactions', supabase.from('crypto_transactions').select('id,user_id,naira_amount,status,created_at,transaction_type,crypto_type').gte('created_at', since.toISOString()).limit(10000), [], 'warning'),
+      safeRead<any[]>(now, 'pending_payments', supabase.from('pending_payments').select('id,user_id,transaction_reference,amount,status,created_at,last_check_at,check_count,error_message').gte('created_at', new Date(now.getTime() - 72 * 60 * 60 * 1000).toISOString()).limit(10000), []),
+      safeRead<any[]>(now, 'revenue_events', supabase.from('revenue_events').select('*').gte('created_at', since.toISOString()).limit(20000), []),
+      safeRead<any[]>(now, 'revenue_identity_links', supabase.from('revenue_identity_links').select('user_id,visitor_id,session_id,last_seen_at').gte('last_seen_at', since.toISOString()).limit(20000), [], 'warning'),
+      safeRead<any[]>(now, 'discount_codes', supabase.from('discount_codes').select('*').limit(10000), [], 'warning'),
+      safeRead<any[]>(now, 'customer_communication_preferences', supabase.from('customer_communication_preferences').select('user_id,email_lifecycle_opt_in,email_promotions_opt_in').limit(10000), [], 'warning'),
+      safeRead<any[]>(now, 'cro_lifecycle_actions', supabase.from('cro_lifecycle_actions').select('id,action_key,user_id,status,updated_at,created_at').gte('created_at', new Date(now.getTime() - 30 * 86400000).toISOString()).limit(10000), [], 'warning'),
       getSetting(supabase, 'sales_monthly_target_ngn', '0'),
       getSetting(supabase, 'ercas_enabled', 'false'),
       getSetting(supabase, 'cro_promotion_max_discount_pct', '20'),
       getSetting(supabase, 'cro_promotion_monthly_budget_ngn', '0'),
     ])
 
-    const firstError = productsError || categoriesError || profilesError || ordersError || smsOrdersError || billsError || giftError || socialError || cryptoError || pendingPaymentsError || eventsError || discountCodesError || communicationPreferencesError || existingLifecycleActionsError
-    if (firstError) throw firstError
-    if (identityLinksError) console.warn('Revenue identity links unavailable for maintenance filtering:', identityLinksError.message)
+    const dependencyFindings = [
+      productsResult.finding,
+      categoriesResult.finding,
+      profilesResult.finding,
+      ordersResult.finding,
+      smsOrdersResult.finding,
+      billsResult.finding,
+      giftResult.finding,
+      socialResult.finding,
+      cryptoResult.finding,
+      pendingPaymentsResult.finding,
+      eventsResult.finding,
+      identityLinksResult.finding,
+      discountCodesResult.finding,
+      communicationPreferencesResult.finding,
+      existingLifecycleActionsResult.finding,
+    ].filter(Boolean) as RevenueFinding[]
 
-    const productRows = (products || []) as ProductGroup[]
-    const categoryRows = categories || []
-    const profileRows = profiles || []
-    const orderRows = (orders || []).map((order: any) => ({ ...order, commerce_source: 'products' }))
-    const smsOrderRows = (smsOrders || []).map((order: any) => ({
+    const productRows = productsResult.data as ProductGroup[]
+    const categoryRows = categoriesResult.data || []
+    const profileRows = profilesResult.data || []
+    const orderRows = (ordersResult.data || []).map((order: any) => ({ ...order, commerce_source: 'products' }))
+    const smsOrderRows = (smsOrdersResult.data || []).map((order: any) => ({
       ...order,
       amount: toNumber(order.amount_ngn, toNumber(order.total_cost)),
       commerce_source: 'sms',
     }))
     const serviceOrderRows = normalizeServiceCommerceOrders({
-      billsRows: billsRows || [],
-      giftRows: giftRows || [],
-      socialRows: socialRows || [],
-      cryptoRows: cryptoRows || [],
+      billsRows: billsResult.data || [],
+      giftRows: giftResult.data || [],
+      socialRows: socialResult.data || [],
+      cryptoRows: cryptoResult.data || [],
     })
     const allCommerceOrderRows = [...orderRows, ...smsOrderRows, ...serviceOrderRows]
-    const eventRows = events || []
-    const identityLinkRows = identityLinksError ? [] : identityLinks || []
+    const eventRows = eventsResult.data || []
+    const identityLinkRows = identityLinksResult.data || []
 
     const findings = [
+      ...dependencyFindings,
       ...buildCatalogueFindings(productRows, categoryRows),
       ...buildEventFindings({
         events: eventRows,
@@ -2137,12 +2227,12 @@ serve(async (req) => {
         now,
       }),
       ...buildOperationalFindings({
-        pendingPayments: pendingPayments || [],
+        pendingPayments: pendingPaymentsResult.data || [],
         ercasEnabled: ercasEnabledValue === 'true',
         now,
       }),
       ...buildPromotionFindings({
-        discountCodes: discountCodes || [],
+        discountCodes: discountCodesResult.data || [],
         orders: orderRows,
         products: productRows,
         maxDiscountPct: toNumber(promotionMaxDiscountValue, 20),
@@ -2167,8 +2257,8 @@ serve(async (req) => {
       orders: allCommerceOrderRows,
       products: productRows,
       profiles: profileRows,
-      communicationPreferences: communicationPreferences || [],
-      existingLifecycleActions: existingLifecycleActions || [],
+      communicationPreferences: communicationPreferencesResult.data || [],
+      existingLifecycleActions: existingLifecycleActionsResult.data || [],
       now,
     })
     const conversionDriftScore = intelligence.previousConversion > 0
@@ -2177,19 +2267,19 @@ serve(async (req) => {
     const revenueDriftScore = intelligence.previousRevenue > 0
       ? Math.abs(intelligence.currentRevenue - intelligence.previousRevenue) / intelligence.previousRevenue
       : 0
-    const criticalFindings = findings.filter((finding) => finding.status === 'failed' && finding.severity === 'critical')
+    let criticalFindings = findings.filter((finding) => finding.status === 'failed' && finding.severity === 'critical')
     const simulationRecommendation = criticalFindings.length > 0 || revenueDriftScore >= 0.65 || conversionDriftScore >= 0.65
       ? 'pause'
       : revenueDriftScore >= 0.35 || conversionDriftScore >= 0.35
         ? 'watch'
         : 'safe'
-    const freezeReason = criticalFindings.length > 0
+    let freezeReason = criticalFindings.length > 0
       ? `${criticalFindings.length} critical scheduled data-quality issue(s)`
       : simulationRecommendation === 'pause'
         ? `scheduled drift guardrail: revenue=${revenueDriftScore.toFixed(2)}, conversion=${conversionDriftScore.toFixed(2)}`
         : ''
 
-    await writeMaintenanceRecords(supabase, {
+    const writeFindings = await writeMaintenanceRecords(supabase, {
       findings,
       featureSnapshots: intelligence.featureSnapshots,
       opportunities: intelligence.opportunities,
@@ -2199,10 +2289,32 @@ serve(async (req) => {
       simulationRecommendation,
       now,
     })
+    if (writeFindings.length > 0) {
+      findings.push(...writeFindings)
+      criticalFindings = findings.filter((finding) => finding.status === 'failed' && finding.severity === 'critical')
+      if (!freezeReason && criticalFindings.length > 0) {
+        freezeReason = `${criticalFindings.length} critical scheduled maintenance dependency issue(s)`
+      }
+    }
+
     const actionPlansToWrite = freezeReason ? [] : actionPlans
     const lifecycleActionsToWrite = freezeReason ? [] : lifecycleActions
-    if (actionPlansToWrite.length > 0) await upsertActionPlans(supabase, actionPlansToWrite)
-    if (lifecycleActionsToWrite.length > 0) await upsertLifecycleActions(supabase, lifecycleActionsToWrite)
+    if (actionPlansToWrite.length > 0) {
+      const finding = await safeWrite(now, 'cro_action_plans', () => upsertActionPlans(supabase, actionPlansToWrite))
+      if (finding) {
+        findings.push(finding)
+        criticalFindings = findings.filter((item) => item.status === 'failed' && item.severity === 'critical')
+        if (!freezeReason) freezeReason = `${criticalFindings.length} critical scheduled maintenance dependency issue(s)`
+      }
+    }
+    if (lifecycleActionsToWrite.length > 0) {
+      const finding = await safeWrite(now, 'cro_lifecycle_actions', () => upsertLifecycleActions(supabase, lifecycleActionsToWrite))
+      if (finding) {
+        findings.push(finding)
+        criticalFindings = findings.filter((item) => item.status === 'failed' && item.severity === 'critical')
+        if (!freezeReason) freezeReason = `${criticalFindings.length} critical scheduled maintenance dependency issue(s)`
+      }
+    }
 
     if (freezeReason) {
       await upsertSetting(supabase, 'cro_global_enabled', 'false')
@@ -2214,6 +2326,8 @@ serve(async (req) => {
     const summary = {
       findings: findings.length,
       critical_findings: criticalFindings.length,
+      dependency_findings: dependencyFindings.length,
+      maintenance_write_failures: writeFindings.length,
       feature_snapshots: intelligence.featureSnapshots.length,
       opportunities: intelligence.opportunities.length,
       action_plans: actionPlansToWrite.length,

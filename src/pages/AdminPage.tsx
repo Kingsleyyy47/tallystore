@@ -282,6 +282,29 @@ function formatAdminNaira(value?: number | null) {
   return `₦${amount.toLocaleString('en-NG', { maximumFractionDigits: 2 })}`
 }
 
+async function getEdgeFunctionErrorMessage(error: any, fallback: string) {
+  let message = error?.message || fallback
+  const context = error?.context
+
+  if (context && typeof context.json === 'function') {
+    try {
+      const body = await context.clone().json()
+      message = body?.message || body?.error || body?.details || message
+    } catch {
+      // Keep the fallback when Supabase has already consumed the response body.
+    }
+  } else if (context?.body) {
+    try {
+      const body = typeof context.body === 'string' ? JSON.parse(context.body) : context.body
+      message = body?.message || body?.error || body?.details || message
+    } catch {
+      // Keep the fallback for non-JSON function bodies.
+    }
+  }
+
+  return message
+}
+
 function normalizeStatus(status?: string | null) {
   return String(status || 'unknown').replace(/_/g, ' ')
 }
@@ -3090,6 +3113,21 @@ export default function AdminPage() {
       acc[status] = (acc[status] || 0) + 1
       return acc
     }, {})
+    const recentDecisionGroups = Object.values(
+      croDecisionRows.slice(0, 40).reduce<Record<string, any>>((acc, row) => {
+        const metadata = row.metadata || {}
+        const action = String(row.selected_action || metadata.nextBestAction || 'DO_NOTHING')
+        const surface = String(row.surface || 'surface')
+        const reason = String(metadata.actionReason || 'highest_scored_action')
+        const key = `${action}:${surface}:${reason}`
+        if (!acc[key]) {
+          acc[key] = { ...row, __groupCount: 0 }
+        }
+        acc[key].__groupCount += 1
+        acc[key].confidence = Math.max(Number(acc[key].confidence || 0), Number(row.confidence || metadata.actionConfidence || 0))
+        return acc
+      }, {}),
+    ).slice(0, 8)
 
     return {
       activeExperiments: croExperimentRows.filter((row) => String(row.status || '').toLowerCase() === 'running').length,
@@ -3133,7 +3171,7 @@ export default function AdminPage() {
       recentQualityRows: revenueQualityRows.slice(0, 8),
       recentExperiments: croExperimentRows.slice(0, 6),
       recentInsights: croInsightRows.slice(0, 6),
-      recentDecisions: croDecisionRows.slice(0, 8),
+      recentDecisions: recentDecisionGroups,
     }
   }, [croActionPlanRows, croDecisionRows, croDriftRows, croEvaluationRows, croExperimentRows, croInsightRows, croLifecycleActionRows, croModelRows.length, croOpportunityRows, croRelationshipRows, croSimulationRows, discountCodes, productGroups, promotionMaxDiscountPct, promotionMonthlyBudgetNgn, revenueFeatureRows, revenueForecastRows, revenueQualityRows, salesOrders])
 
@@ -3479,7 +3517,7 @@ export default function AdminPage() {
       const { data, error } = await supabase.functions.invoke('revenue-os-maintenance', {
         body: { source: 'admin_manual_run' },
       })
-      if (error) throw error
+      if (error) throw new Error(await getEdgeFunctionErrorMessage(error, 'Could not run Revenue OS maintenance.'))
       if (data?.success === false) throw new Error(data?.error || 'Maintenance failed')
       const summary = data?.summary || {}
       const freezeReason = String(summary.freeze_reason || '').trim()
@@ -7118,6 +7156,11 @@ export default function AdminPage() {
                                 <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
                                   {metadata.actionReason || 'highest_scored_action'}
                                 </p>
+                                {Number(decision.__groupCount || 1) > 1 && (
+                                  <p className="mt-2 text-xs font-semibold text-muted-foreground">
+                                    {Number(decision.__groupCount).toLocaleString()} similar recent audits grouped
+                                  </p>
+                                )}
                               </div>
                             )
                           })}

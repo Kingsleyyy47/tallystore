@@ -1169,6 +1169,57 @@ export function parseCSV(csvText: string): any[] {
     .map((line) => line.trim())
     .filter(Boolean)
 
+  if (lines.length === 0) return []
+
+  // \u2500\u2500 TXT / plain-credential format detection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // If the first line contains ':' or '|' but no comma, treat every line as
+  // "username:password" or "username|password" (no header row needed).
+  const firstLine = lines[0]
+  const hasColon = firstLine.includes(':')
+  const hasPipe  = firstLine.includes('|')
+  const hasComma = firstLine.includes(',')
+  const looksLikePlainCredentials = (hasColon || hasPipe) && !hasComma
+
+  if (looksLikePlainCredentials) {
+    const sep = hasPipe ? '|' : ':'
+
+    // Column mapping by position — covers all known site formats:
+    //
+    // PIPE formats:
+    //   Facebook full (8): username | password | mail | mail_pass | recovery_mail | 2fa | year | friends
+    //   Facebook 2   (7): username | password | mail | mail_pass | (empty)       | year | friends
+    //   Twitter      (5-6): username | password | mail | mail_pass | 2fa |
+    //
+    // COLON formats:
+    //   Instagram / TikTok (4): username : password : mail : mail_pass
+
+    const COLON_FIELDS = ['username', 'password', 'email', 'email_password', 'two_fa_code']
+
+    // Detect column count from the first line
+    const colCount = lines[0].split(sep).length
+
+    const fieldMap = sep === '|'
+      ? colCount >= 8
+        // Facebook full: 8 cols — recovery_mail at 4, 2fa at 5, year at 6, friends at 7
+        ? ['username', 'password', 'email', 'email_password', 'recovery_email', 'two_fa_code', 'year', 'friends_count']
+        : colCount === 7
+        // Facebook 2: 7 cols — empty recovery at 4, year at 5, friends at 6 (no 2fa)
+        ? ['username', 'password', 'email', 'email_password', 'recovery_email', 'year', 'friends_count']
+        // Twitter / short pipe: ≤6 cols — username | password | mail | mail_pass | 2fa |
+        : ['username', 'password', 'email', 'email_password', 'two_fa_code']
+      : COLON_FIELDS
+
+    return lines.map(line => {
+      const parts = line.split(sep).map(p => p.trim())
+      const obj: Record<string, string> = {}
+      fieldMap.forEach((field, i) => {
+        if (field && parts[i] !== undefined) obj[field] = parts[i]
+      })
+      return obj
+    }).filter(r => r.username || r.password)
+  }
+
+  // \u2500\u2500 CSV format: requires at least header + one data row \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   if (lines.length < 2) return []
 
   const normalizeHeader = (header: string) => {
