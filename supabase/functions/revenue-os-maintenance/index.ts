@@ -393,8 +393,9 @@ function productIsSellable(product: ProductGroup) {
   const availabilityStatus = String((product as any).availability_status || '').toUpperCase()
   const statusSellable = ['AVAILABLE', 'LOW_STOCK', 'PREORDER', 'BACKORDER', 'UNLIMITED'].includes(availabilityStatus)
   const statusBlocked = ['UNAVAILABLE', 'PAUSED'].includes(availabilityStatus)
-  const available = explicitSellable === true || (!statusBlocked && (statusSellable || Number(product.stock_count || 0) > 0 || canAutoFulfill(product)))
-  return active && validPrice && explicitSellable !== false && available
+  const blocked = explicitSellable === false || statusBlocked
+  const available = !blocked && (statusSellable || Number(product.stock_count || 0) > 0 || canAutoFulfill(product))
+  return active && validPrice && available
 }
 
 function normalizeServiceCommerceOrders(input: {
@@ -622,22 +623,8 @@ function buildCatalogueFindings(products: ProductGroup[], categories: any[]): Re
         evidence: { product_id: product.id, stock_count: product.stock_count },
       })
     }
-    if (active && validPrice && !available) {
-      findings.push({
-        check_key: 'catalogue.active_not_sellable',
-        severity: 'warning',
-        status: 'failed',
-        scope: product.id,
-        message: `${product.name || 'Unnamed product'} is active but has no sellable availability.`,
-        evidence: {
-          product_id: product.id,
-          stock_count: product.stock_count,
-          availability_status: (product as any).availability_status || null,
-          is_sellable: (product as any).is_sellable ?? null,
-          auto_fulfillable: canAutoFulfill(product),
-        },
-      })
-    }
+    // Active but out-of-stock products are normal catalogue state. They are
+    // excluded from sellable/recommendation pools by productIsSellable().
   }
 
   for (const [name, duplicateProducts] of normalizedNames) {

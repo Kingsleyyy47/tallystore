@@ -17,6 +17,7 @@ export function isCustomerSellableProduct(productGroup: ProductGroup) {
   const availabilityStatus = String(productGroup.availability_status || '').toUpperCase()
   const statusSellable = ['AVAILABLE', 'LOW_STOCK', 'PREORDER', 'BACKORDER', 'UNLIMITED'].includes(availabilityStatus)
   const statusBlocked = ['UNAVAILABLE', 'PAUSED'].includes(availabilityStatus)
-  const available = explicitSellable === true || (!statusBlocked && (statusSellable || Number(productGroup.stock_count || 0) > 0 || canAutoFulfillProduct(productGroup)))
-  return active && validPrice && explicitSellable !== false && available
+  const blocked = explicitSellable === false || statusBlocked
+  const available = !blocked && (statusSellable || Number(productGroup.stock_count || 0) > 0 || canAutoFulfillProduct(productGroup))
+  return active && validPrice && available
 }

@@ -387,10 +387,11 @@ function isLiveSellableProduct(product: CatalogProduct) {
   const availabilityStatus = String(product.availability_status || "").toUpperCase();
   const statusSellable = ["AVAILABLE", "LOW_STOCK", "PREORDER", "BACKORDER", "UNLIMITED"].includes(availabilityStatus);
   const statusBlocked = ["UNAVAILABLE", "PAUSED"].includes(availabilityStatus);
+  const blocked = explicitSellable === false || statusBlocked;
   return Number.isFinite(price) &&
     price > 0 &&
-    explicitSellable !== false &&
-    (explicitSellable === true || (!statusBlocked && (statusSellable || Number(product.stock_count || 0) > 0 || canAutoFulfill(product))));
+    !blocked &&
+    (statusSellable || Number(product.stock_count || 0) > 0 || canAutoFulfill(product));
 }
 
 function findReferencedProduct(messages: ChatMessage[], products: CatalogProduct[], maxTurns = 4) {

@@ -396,9 +396,19 @@ serve(async (req) => {
     if (productGroup.is_active === false) {
       throw new Error('Product is no longer available for purchase');
     }
+    const availabilityStatus = String(productGroup.availability_status || '').toUpperCase();
+    if (productGroup.is_sellable === false || ['UNAVAILABLE', 'PAUSED'].includes(availabilityStatus)) {
+      throw new Error('Product is currently out of stock');
+    }
     if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
       throw new Error('Product has an invalid customer price');
     }
+    const productHasLiveProvider = Boolean(
+      productGroup.auto_fulfill_enabled &&
+        (productGroup.muabanvia_product_id ||
+          productGroup.shopclone_product_id ||
+          productGroup.shopviaclone_product_id),
+    );
     revenueContext.categoryId = productGroup.category_id;
 
     // Discount codes are enabled. Quantity-tier bulk discounts remain off for now.
@@ -691,6 +701,14 @@ serve(async (req) => {
         console.error(`Stock mismatch: found=${stillAvailable}, requested=${quantity}`);
 
         if (stillAvailable === 0) {
+          await supabaseAdmin
+            .from('product_groups')
+            .update({
+              stock_count: 0,
+              availability_status: 'UNAVAILABLE',
+              is_sellable: false,
+            })
+            .eq('id', product_group_id);
           throw new Error(`OUT_OF_STOCK: ${productGroup.name} is currently out of stock. Please check back later or contact support.`);
         } else {
           throw new Error(`INSUFFICIENT_STOCK: Only ${stillAvailable} account(s) available for ${productGroup.name}. You requested ${quantity}.`);
@@ -876,9 +894,14 @@ serve(async (req) => {
       .eq('product_group_id', product_group_id)
       .eq('status', 'available');
 
+    const nextStock = remainingStock || 0;
     await supabaseAdmin
       .from('product_groups')
-      .update({ stock_count: remainingStock || 0 })
+      .update({
+        stock_count: nextStock,
+        availability_status: nextStock > 0 ? nextStock <= 3 ? 'LOW_STOCK' : 'AVAILABLE' : productHasLiveProvider ? 'UNLIMITED' : 'UNAVAILABLE',
+        is_sellable: nextStock > 0 || productHasLiveProvider,
+      })
       .eq('id', product_group_id);
 
     // 9. Record transaction

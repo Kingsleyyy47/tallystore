@@ -266,6 +266,17 @@ type AdminHistoryRow = {
   raw?: Record<string, any>
 }
 
+type EmailedDormantCustomer = {
+  userId: string
+  email: string
+  markedAt: string
+  lastActivityAt?: string | null
+  spentBeforeEmail?: number
+}
+
+const DORMANT_EMAIL_STORAGE_KEY = 'tallystore:dormant-customer-email-cohort:v1'
+const DORMANT_EMAIL_SETTING_KEY = 'sales_dormant_customer_email_cohort'
+
 function isDepositTransaction(tx: { type?: string | null; amount?: number | null }) {
   const type = String(tx.type || '').toLowerCase()
   const amount = Number(tx.amount || 0)
@@ -427,6 +438,7 @@ export default function AdminPage() {
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historySearchQuery, setHistorySearchQuery] = useState('')
   const [historyErrors, setHistoryErrors] = useState<Record<string, string>>({})
+  const [emailedDormantCustomers, setEmailedDormantCustomers] = useState<EmailedDormantCustomer[]>([])
 
   // Sales analytics and recommendation automation
   const [salesOrders, setSalesOrders] = useState<any[]>([])
@@ -1923,6 +1935,24 @@ export default function AdminPage() {
     loadBroadcastJobs()
   }, [])
 
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(DORMANT_EMAIL_STORAGE_KEY)
+      const parsed = stored ? JSON.parse(stored) : []
+      setEmailedDormantCustomers(Array.isArray(parsed) ? parsed : [])
+    } catch {
+      setEmailedDormantCustomers([])
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DORMANT_EMAIL_STORAGE_KEY, JSON.stringify(emailedDormantCustomers))
+    } catch {
+      // Ignore storage failures; the export flow still works for this session.
+    }
+  }, [emailedDormantCustomers])
+
   const loadAllData = async () => {
     try {
       setLoading(true)
@@ -2248,6 +2278,7 @@ export default function AdminPage() {
         maintenanceLastStatus,
         maintenanceLastSummary,
         maintenanceFreezeReason,
+        dormantEmailCohort,
       ] = await Promise.all([
         readRows('Orders', 'orders', 10000),
         readRows('Customers', 'profiles', 10000),
@@ -2290,6 +2321,7 @@ export default function AdminPage() {
         getAppSetting('cro_maintenance_last_status').catch(() => 'never_run'),
         getAppSetting('cro_maintenance_last_summary').catch(() => '{}'),
         getAppSetting('cro_maintenance_freeze_reason').catch(() => ''),
+        getAppSetting(DORMANT_EMAIL_SETTING_KEY).catch(() => null),
       ])
 
       const orderUserIds = Array.from(new Set([
@@ -2367,6 +2399,17 @@ export default function AdminPage() {
         setCroMaintenanceLastSummary(JSON.parse(maintenanceLastSummary || '{}'))
       } catch {
         setCroMaintenanceLastSummary({})
+      }
+      if (dormantEmailCohort) {
+        try {
+          const parsed = JSON.parse(dormantEmailCohort)
+          if (Array.isArray(parsed)) {
+            setEmailedDormantCustomers(parsed)
+            window.localStorage.setItem(DORMANT_EMAIL_STORAGE_KEY, JSON.stringify(parsed))
+          }
+        } catch {
+          nextErrors.DormantEmails = 'Could not load dormant emailed customer tracking.'
+        }
       }
       setSalesErrors(nextErrors)
     } finally {
@@ -3046,6 +3089,210 @@ export default function AdminPage() {
     }
   }, [categories, historyRows, productGroups, salesOrders, salesProfiles, salesTargetInput, salesVisits])
 
+  const customerRetentionAnalytics = useMemo(() => {
+    const now = new Date()
+    const dormantCutoff = new Date(now.getTime() - 3 * 86400000)
+    const profileById = new Map(salesProfiles.map((profile) => [String(profile.id), profile]))
+    const customerProfiles = salesProfiles.filter((profile) =>
+      profile?.id &&
+      profile.email &&
+      profile.is_staff !== true &&
+      profile.is_admin !== true
+    )
+    const statsByUser = new Map<string, {
+      totalSpent: number
+      totalDeposited: number
+      orders: number
+      totalUnits: number
+      deposits: number
+      lastPurchaseAt: string | null
+      lastDepositAt: string | null
+      lastVisitAt: string | null
+      lastEventAt: string | null
+      lastActivityAt: string | null
+    }>()
+
+    const ensureStats = (userId: string) => {
+      const existing = statsByUser.get(userId)
+      if (existing) return existing
+      const empty = {
+        totalSpent: 0,
+        totalDeposited: 0,
+        orders: 0,
+        totalUnits: 0,
+        deposits: 0,
+        lastPurchaseAt: null,
+        lastDepositAt: null,
+        lastVisitAt: null,
+        lastEventAt: null,
+        lastActivityAt: null,
+      }
+      statsByUser.set(userId, empty)
+      return empty
+    }
+    const newerDate = (left?: string | null, right?: string | null) => {
+      if (!left) return right || null
+      if (!right) return left
+      return new Date(right).getTime() > new Date(left).getTime() ? right : left
+    }
+    const touch = (userId: string, date?: string | null) => {
+      if (!userId || !date || Number.isNaN(new Date(date).getTime())) return
+      const stats = ensureStats(userId)
+      stats.lastActivityAt = newerDate(stats.lastActivityAt, date)
+    }
+    const getHistoryRowUnits = (row: AdminHistoryRow) => {
+      const raw = row.raw || {}
+      const rawQuantity = Number(raw?.account_details?.quantity || raw?.quantity || 1)
+      return Number.isFinite(rawQuantity) && rawQuantity > 0 ? rawQuantity : 1
+    }
+
+    for (const profile of customerProfiles) {
+      touch(String(profile.id), profile.created_at)
+    }
+    const hasHistoryRows = historyRows.length > 0
+    for (const row of historyRows) {
+      if (!row.user_id || !profileById.has(String(row.user_id)) || !isCustomerHistoryVisible(row)) continue
+      const stats = ensureStats(String(row.user_id))
+      if (row.kind === 'deposits') {
+        stats.totalDeposited += Math.max(0, Number(row.amount || 0))
+        stats.deposits += 1
+        stats.lastDepositAt = newerDate(stats.lastDepositAt, row.date)
+      } else {
+        stats.totalSpent += Math.max(0, Number(row.amount || 0))
+        stats.orders += 1
+        stats.totalUnits += getHistoryRowUnits(row)
+        stats.lastPurchaseAt = newerDate(stats.lastPurchaseAt, row.date)
+      }
+      touch(String(row.user_id), row.date)
+    }
+    for (const order of hasHistoryRows ? [] : salesOrders) {
+      if (!order.user_id || !profileById.has(String(order.user_id)) || String(order.status || '').toLowerCase() !== 'completed') continue
+      const stats = ensureStats(String(order.user_id))
+      const rawQuantity = Number(order?.account_details?.quantity || order?.quantity || 1)
+      stats.totalSpent += Math.max(0, Number(order.amount || 0))
+      stats.orders += 1
+      stats.totalUnits += Number.isFinite(rawQuantity) && rawQuantity > 0 ? rawQuantity : 1
+      stats.lastPurchaseAt = newerDate(stats.lastPurchaseAt, order.created_at)
+      touch(String(order.user_id), order.created_at)
+    }
+    for (const order of hasHistoryRows ? [] : salesSmsOrders) {
+      if (!order.user_id || !profileById.has(String(order.user_id)) || !isPositiveStatus(order.status)) continue
+      const stats = ensureStats(String(order.user_id))
+      stats.totalSpent += Math.max(0, Number(order.amount_ngn || order.total_cost || order.price_ngn || 0))
+      stats.orders += 1
+      stats.totalUnits += 1
+      stats.lastPurchaseAt = newerDate(stats.lastPurchaseAt, order.created_at)
+      touch(String(order.user_id), order.created_at)
+    }
+    for (const visit of salesVisits) {
+      if (!visit.user_id || !profileById.has(String(visit.user_id))) continue
+      const stats = ensureStats(String(visit.user_id))
+      stats.lastVisitAt = newerDate(stats.lastVisitAt, visit.created_at)
+      touch(String(visit.user_id), visit.created_at)
+    }
+    for (const event of revenueEvents) {
+      if (!event.user_id || !profileById.has(String(event.user_id))) continue
+      const stats = ensureStats(String(event.user_id))
+      stats.lastEventAt = newerDate(stats.lastEventAt, event.created_at)
+      touch(String(event.user_id), event.created_at)
+    }
+
+    const dormantCustomers = customerProfiles
+      .map((profile) => {
+        const stats = ensureStats(String(profile.id))
+        const lastActivityAt = stats.lastActivityAt || profile.created_at || null
+        const lastActivityDate = lastActivityAt ? new Date(lastActivityAt) : null
+        const daysInactive = lastActivityDate && !Number.isNaN(lastActivityDate.getTime())
+          ? Math.floor((now.getTime() - lastActivityDate.getTime()) / 86400000)
+          : 999
+        return {
+          id: String(profile.id),
+          email: String(profile.email || ''),
+          name: profile.full_name || '',
+          daysInactive,
+          lastActivityAt,
+          lastPurchaseAt: stats.lastPurchaseAt,
+          lastDepositAt: stats.lastDepositAt,
+          lastVisitAt: stats.lastVisitAt,
+          totalSpent: stats.totalSpent,
+          totalDeposited: stats.totalDeposited,
+          orders: stats.orders,
+          totalUnits: stats.totalUnits,
+          deposits: stats.deposits,
+        }
+      })
+      .filter((customer) => customer.email && customer.daysInactive >= 3)
+      .sort((a, b) => b.daysInactive - a.daysInactive || b.totalSpent - a.totalSpent)
+
+    const liveStatsByUser = statsByUser
+    const emailedCustomers = emailedDormantCustomers
+      .map((record) => {
+        const profile = profileById.get(record.userId)
+        const stats = liveStatsByUser.get(record.userId) || ensureStats(record.userId)
+        const markedAt = new Date(record.markedAt)
+        const happenedAfterEmail = (date?: string | null) =>
+          !!date && !Number.isNaN(markedAt.getTime()) && new Date(date).getTime() > markedAt.getTime()
+        const purchaseRowsAfterEmail = historyRows.filter((row) =>
+          row.user_id === record.userId &&
+          row.kind !== 'deposits' &&
+          isCustomerHistoryVisible(row) &&
+          happenedAfterEmail(row.date)
+        )
+        const depositRowsAfterEmail = historyRows.filter((row) =>
+          row.user_id === record.userId &&
+          row.kind === 'deposits' &&
+          isCustomerHistoryVisible(row) &&
+          happenedAfterEmail(row.date)
+        )
+        const visitsAfterEmail = salesVisits.filter((visit) => visit.user_id === record.userId && happenedAfterEmail(visit.created_at))
+        const eventsAfterEmail = revenueEvents.filter((event) => event.user_id === record.userId && happenedAfterEmail(event.created_at))
+        const spentAfterEmail = purchaseRowsAfterEmail.reduce((sum, row) => sum + Math.max(0, Number(row.amount || 0)), 0)
+        const unitsAfterEmail = purchaseRowsAfterEmail.reduce((sum, row) => sum + getHistoryRowUnits(row), 0)
+        const depositedAfterEmail = depositRowsAfterEmail.reduce((sum, row) => sum + Math.max(0, Number(row.amount || 0)), 0)
+        const returnedAt = [
+          ...purchaseRowsAfterEmail.map((row) => row.date),
+          ...depositRowsAfterEmail.map((row) => row.date),
+          ...visitsAfterEmail.map((visit) => visit.created_at),
+          ...eventsAfterEmail.map((event) => event.created_at),
+        ].filter(Boolean).sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null
+
+        return {
+          ...record,
+          email: profile?.email || record.email,
+          name: profile?.full_name || '',
+          totalSpent: stats.totalSpent,
+          totalDeposited: stats.totalDeposited,
+          totalUnits: stats.totalUnits,
+          lastPurchaseAt: stats.lastPurchaseAt,
+          spentAfterEmail,
+          unitsAfterEmail,
+          depositedAfterEmail,
+          purchasesAfterEmail: purchaseRowsAfterEmail.length,
+          depositsAfterEmail: depositRowsAfterEmail.length,
+          visitsAfterEmail: visitsAfterEmail.length,
+          eventsAfterEmail: eventsAfterEmail.length,
+          returnedAt,
+          returned: Boolean(returnedAt),
+        }
+      })
+      .sort((a, b) =>
+        b.spentAfterEmail - a.spentAfterEmail ||
+        b.depositedAfterEmail - a.depositedAfterEmail ||
+        Number(b.returned) - Number(a.returned) ||
+        new Date(b.markedAt).getTime() - new Date(a.markedAt).getTime()
+      )
+
+    return {
+      dormantCustomers,
+      emailedCustomers,
+      returnedCustomers: emailedCustomers.filter((customer) => customer.returned),
+      dormantEmailCount: new Set(dormantCustomers.map((customer) => customer.email.toLowerCase())).size,
+      returnedRevenue: emailedCustomers.reduce((sum, customer) => sum + customer.spentAfterEmail, 0),
+      returnedDeposits: emailedCustomers.reduce((sum, customer) => sum + customer.depositedAfterEmail, 0),
+      cutoff: dormantCutoff,
+    }
+  }, [emailedDormantCustomers, historyRows, revenueEvents, salesOrders, salesProfiles, salesSmsOrders, salesVisits])
+
   const userEmailById = useMemo(() => {
     return new Map(salesProfiles.map((profile) => [String(profile.id), profile.email || profile.full_name || '']))
   }, [salesProfiles])
@@ -3406,6 +3653,200 @@ export default function AdminPage() {
     anchor.download = `tallystore-${adminTab === 'sales' ? 'sales-histories' : 'transaction-history'}-${format(new Date(), 'yyyy-MM-dd')}.csv`
     anchor.click()
     URL.revokeObjectURL(url)
+  }
+
+  const downloadCsvFile = (rows: Array<Array<string | number | null | undefined>>, filename: string) => {
+    const csv = rows
+      .map((row) => row.map((cell) => {
+        const value = String(cell ?? '')
+        return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
+      }).join(','))
+      .join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const formatCustomerCsvDate = (date?: string | null) => {
+    if (!date) return ''
+    const parsed = new Date(date)
+    return Number.isNaN(parsed.getTime()) ? '' : format(parsed, 'yyyy-MM-dd HH:mm:ss')
+  }
+
+  const buildDormantCustomerCsvRows = (customers = customerRetentionAnalytics.dormantCustomers) => [
+    [
+      'email',
+      'last_order_date',
+      'total_orders',
+      'total_units',
+      'total_spent',
+      'last_activity_date',
+      'days_inactive',
+      'total_deposits',
+      'deposit_count',
+    ],
+    ...customers.map((customer) => [
+      customer.email,
+      formatCustomerCsvDate(customer.lastPurchaseAt),
+      customer.orders,
+      customer.totalUnits,
+      customer.totalSpent,
+      formatCustomerCsvDate(customer.lastActivityAt),
+      customer.daysInactive,
+      customer.totalDeposited,
+      customer.deposits,
+    ]),
+  ]
+
+  const buildEmailedCustomerCsvRows = (customers = customerRetentionAnalytics.emailedCustomers) => [
+    [
+      'email',
+      'last_order_date',
+      'total_orders',
+      'total_units',
+      'total_spent',
+      'emailed_at',
+      'returned',
+      'returned_at',
+      'spent_after_email',
+      'orders_after_email',
+      'units_after_email',
+      'deposited_after_email',
+      'deposits_after_email',
+      'activity_after_email',
+    ],
+    ...customers.map((customer) => [
+      customer.email,
+      formatCustomerCsvDate(customer.lastPurchaseAt),
+      customer.orders,
+      customer.totalUnits,
+      customer.totalSpent,
+      formatCustomerCsvDate(customer.markedAt),
+      customer.returned ? 'yes' : 'no',
+      formatCustomerCsvDate(customer.returnedAt),
+      customer.spentAfterEmail,
+      customer.purchasesAfterEmail,
+      customer.unitsAfterEmail,
+      customer.depositedAfterEmail,
+      customer.depositsAfterEmail,
+      customer.visitsAfterEmail + customer.eventsAfterEmail,
+    ]),
+  ]
+
+  const persistEmailedDormantCustomers = async (records: EmailedDormantCustomer[]) => {
+    try {
+      window.localStorage.setItem(DORMANT_EMAIL_STORAGE_KEY, JSON.stringify(records))
+    } catch {
+      // Local cache is only a fallback; app settings remain the durable source.
+    }
+    const saved = await upsertAppSetting(DORMANT_EMAIL_SETTING_KEY, JSON.stringify(records))
+    if (!saved) throw new Error('Could not save emailed customer tracking.')
+  }
+
+  const buildEmailedDormantCustomerRecords = (
+    previous: EmailedDormantCustomer[],
+    customers = customerRetentionAnalytics.dormantCustomers,
+  ) => {
+    const markedAt = new Date().toISOString()
+    const byUser = new Map(previous.map((customer) => [customer.userId, customer]))
+    for (const customer of customers) {
+      byUser.set(customer.id, {
+        userId: customer.id,
+        email: customer.email,
+        markedAt,
+        lastActivityAt: customer.lastActivityAt,
+        spentBeforeEmail: customer.totalSpent,
+      })
+    }
+    return Array.from(byUser.values()).sort((a, b) => new Date(b.markedAt).getTime() - new Date(a.markedAt).getTime())
+  }
+
+  const markDormantCustomersAsEmailed = async (customers = customerRetentionAnalytics.dormantCustomers) => {
+    if (customers.length === 0) return
+    const nextRecords = buildEmailedDormantCustomerRecords(emailedDormantCustomers, customers)
+    setEmailedDormantCustomers(nextRecords)
+    await persistEmailedDormantCustomers(nextRecords)
+  }
+
+  const downloadDormantCustomerEmails = async () => {
+    const customers = customerRetentionAnalytics.dormantCustomers
+    if (customers.length === 0) {
+      toast({ title: 'No dormant customers', description: 'No customer has been inactive for 3+ days right now.' })
+      return
+    }
+
+    downloadCsvFile(
+      buildDormantCustomerCsvRows(customers),
+      `tallystore-dormant-customers-3-days-${format(new Date(), 'yyyy-MM-dd')}.csv`,
+    )
+    try {
+      await markDormantCustomersAsEmailed(customers)
+      toast({
+        title: 'Dormant customer CSV downloaded',
+        description: `${customers.length.toLocaleString()} customer(s) saved and marked as emailed.`,
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Customer CSV downloaded',
+        description: err?.message || 'Downloaded, but tracking could not be saved.',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const downloadEmailedCustomerCsv = () => {
+    const customers = customerRetentionAnalytics.emailedCustomers
+    if (customers.length === 0) {
+      toast({ title: 'No emailed customers', description: 'Nobody has been marked emailed yet.' })
+      return
+    }
+    downloadCsvFile(
+      buildEmailedCustomerCsvRows(customers),
+      `tallystore-emailed-customers-return-tracking-${format(new Date(), 'yyyy-MM-dd')}.csv`,
+    )
+    toast({
+      title: 'Emailed customer CSV downloaded',
+      description: `${customers.length.toLocaleString()} tracked customer(s) exported.`,
+    })
+  }
+
+  const handleMarkAllDormantEmailed = async () => {
+    const customers = customerRetentionAnalytics.dormantCustomers
+    if (customers.length === 0) {
+      toast({ title: 'No dormant customers', description: 'There is nobody to mark as emailed right now.' })
+      return
+    }
+    try {
+      await markDormantCustomersAsEmailed(customers)
+      toast({
+        title: 'All dormant customers marked emailed',
+        description: `${customers.length.toLocaleString()} customer(s) moved into the emailed tracking section.`,
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Could not save emailed tracking',
+        description: err?.message || 'Please try again.',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const clearEmailedDormantCustomers = async () => {
+    setEmailedDormantCustomers([])
+    try {
+      await persistEmailedDormantCustomers([])
+      toast({ title: 'Emailed tracking cleared' })
+    } catch (err: any) {
+      toast({
+        title: 'Tracking cleared locally',
+        description: err?.message || 'Could not clear the saved setting.',
+        variant: 'destructive',
+      })
+    }
   }
 
   const handleSaveSalesTarget = async () => {
@@ -7407,6 +7848,159 @@ export default function AdminPage() {
                             <Badge variant="outline" className="whitespace-nowrap">{formatAdminNaira(customer.revenue)}</Badge>
                           </div>
                         ))}
+                      </div>
+                    </AdminControlSection>
+                  </div>
+
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <AdminControlSection
+                      title="Dormant Customers"
+                      description="Customers with email addresses who have had no purchase, deposit, login, visit, or tracked activity for 3+ days."
+                    >
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                          <div className="rounded-xl border p-3">
+                            <p className="text-xl font-black">{customerRetentionAnalytics.dormantCustomers.length.toLocaleString()}</p>
+                            <p className="text-muted-foreground">inactive</p>
+                          </div>
+                          <div className="rounded-xl border p-3">
+                            <p className="text-xl font-black">{customerRetentionAnalytics.dormantEmailCount.toLocaleString()}</p>
+                            <p className="text-muted-foreground">emails</p>
+                          </div>
+                          <div className="rounded-xl border p-3">
+                            <p className="text-xl font-black">3+</p>
+                            <p className="text-muted-foreground">days</p>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button
+                            type="button"
+                            onClick={downloadDormantCustomerEmails}
+                            disabled={customerRetentionAnalytics.dormantCustomers.length === 0}
+                            className="min-w-0"
+                          >
+                            <Download className="h-4 w-4" />
+                            <span className="truncate">Download CSV</span>
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={handleMarkAllDormantEmailed}
+                            disabled={customerRetentionAnalytics.dormantCustomers.length === 0}
+                            className="min-w-0"
+                          >
+                            <Mail className="h-4 w-4" />
+                            <span className="truncate">All emailed</span>
+                          </Button>
+                        </div>
+
+                        <div className="space-y-3">
+                          {customerRetentionAnalytics.dormantCustomers.length === 0 ? (
+                            <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                              No dormant customers right now.
+                            </p>
+                          ) : customerRetentionAnalytics.dormantCustomers.slice(0, 8).map((customer, index) => (
+                            <div key={customer.id} className="flex items-center justify-between gap-3 rounded-xl border p-3">
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate font-black">{index + 1}. {customer.email}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {customer.orders} orders • {customer.totalUnits} units • spent {formatAdminNaira(customer.totalSpent)}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  last activity {customer.lastActivityAt ? formatDistanceToNow(new Date(customer.lastActivityAt), { addSuffix: true }) : 'unknown'}
+                                </p>
+                              </div>
+                              <Badge variant="outline" className="shrink-0 whitespace-nowrap">{customer.daysInactive}d</Badge>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </AdminControlSection>
+
+                    <AdminControlSection
+                      title="All Emailed"
+                      description="Customers already exported or marked emailed, ranked by completed spend after that email mark."
+                    >
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                          <div className="rounded-xl border p-3">
+                            <p className="text-xl font-black">{customerRetentionAnalytics.emailedCustomers.length.toLocaleString()}</p>
+                            <p className="text-muted-foreground">emailed</p>
+                          </div>
+                          <div className="rounded-xl border p-3">
+                            <p className="text-xl font-black">{customerRetentionAnalytics.returnedCustomers.length.toLocaleString()}</p>
+                            <p className="text-muted-foreground">returned</p>
+                          </div>
+                          <div className="rounded-xl border p-3">
+                            <p className="truncate text-lg font-black">{formatAdminNaira(customerRetentionAnalytics.returnedRevenue)}</p>
+                            <p className="text-muted-foreground">spent</p>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={downloadEmailedCustomerCsv}
+                            disabled={customerRetentionAnalytics.emailedCustomers.length === 0}
+                            className="min-w-0"
+                          >
+                            <Download className="h-4 w-4" />
+                            <span className="truncate">Download CSV</span>
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={clearEmailedDormantCustomers}
+                            disabled={customerRetentionAnalytics.emailedCustomers.length === 0}
+                            className="min-w-0"
+                          >
+                            <X className="h-4 w-4" />
+                            <span className="truncate">Clear</span>
+                          </Button>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0 text-xs text-muted-foreground">
+                            <p className="truncate">Deposited after email: {formatAdminNaira(customerRetentionAnalytics.returnedDeposits)}</p>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3">
+                          {customerRetentionAnalytics.emailedCustomers.length === 0 ? (
+                            <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                              Nobody has been marked emailed yet.
+                            </p>
+                          ) : customerRetentionAnalytics.emailedCustomers.slice(0, 8).map((customer, index) => (
+                            <div key={customer.userId} className="rounded-xl border p-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate font-black">{index + 1}. {customer.email}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    emailed {formatDistanceToNow(new Date(customer.markedAt), { addSuffix: true })}
+                                  </p>
+                                  <p className="truncate text-xs text-muted-foreground">
+                                    {customer.returnedAt
+                                      ? `returned ${formatDistanceToNow(new Date(customer.returnedAt), { addSuffix: true })}`
+                                      : 'not returned yet'}
+                                  </p>
+                                </div>
+                                <Badge variant="outline" className="shrink-0 whitespace-nowrap">{formatAdminNaira(customer.spentAfterEmail)}</Badge>
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                                <Badge variant={customer.returned ? 'default' : 'secondary'}>{customer.returned ? 'returned' : 'waiting'}</Badge>
+                                <Badge variant={customer.purchasesAfterEmail > 0 ? 'outline' : 'secondary'}>
+                                  {customer.purchasesAfterEmail} purchase{customer.purchasesAfterEmail === 1 ? '' : 's'}
+                                </Badge>
+                                <Badge variant={customer.depositsAfterEmail > 0 ? 'outline' : 'secondary'}>
+                                  {customer.depositsAfterEmail} deposit{customer.depositsAfterEmail === 1 ? '' : 's'}
+                                </Badge>
+                                <Badge variant="outline">{customer.visitsAfterEmail + customer.eventsAfterEmail} activity</Badge>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </AdminControlSection>
                   </div>

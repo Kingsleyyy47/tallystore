@@ -1066,10 +1066,34 @@ export async function updateProductGroupStock(productGroupId: string): Promise<b
       return false
     }
 
+    const { data: productGroup } = await supabase
+      .from('product_groups')
+      .select('is_active,is_sellable,availability_status,auto_fulfill_enabled,muabanvia_product_id,shopclone_product_id,shopviaclone_product_id')
+      .eq('id', productGroupId)
+      .maybeSingle()
+
+    const nextStock = count || 0
+    const hasLiveProvider = Boolean(
+      productGroup?.auto_fulfill_enabled &&
+      (productGroup?.muabanvia_product_id || productGroup?.shopclone_product_id || productGroup?.shopviaclone_product_id),
+    )
+    const currentlyBlocked = productGroup?.is_sellable === false || ['UNAVAILABLE', 'PAUSED'].includes(String(productGroup?.availability_status || '').toUpperCase())
+    const stockStateUpdate = nextStock > 0
+      ? {
+          stock_count: nextStock,
+          availability_status: nextStock <= 3 ? 'LOW_STOCK' : 'AVAILABLE',
+          is_sellable: productGroup?.is_active !== false,
+        }
+      : {
+          stock_count: 0,
+          availability_status: hasLiveProvider && !currentlyBlocked ? 'UNLIMITED' : 'UNAVAILABLE',
+          is_sellable: hasLiveProvider && !currentlyBlocked && productGroup?.is_active !== false,
+        }
+
     // Update the product group stock
     const { error: updateError } = await supabase
       .from('product_groups')
-      .update({ stock_count: count || 0 })
+      .update(stockStateUpdate)
       .eq('id', productGroupId)
 
     if (updateError) {

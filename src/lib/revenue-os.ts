@@ -1081,14 +1081,14 @@ export function evaluateProductEligibility(product: ProductGroup): ProductEligib
   const explicitAvailabilityStatus = String((product as any)?.availability_status || '').toUpperCase()
   const statusSellable = ['AVAILABLE', 'LOW_STOCK', 'PREORDER', 'BACKORDER', 'UNLIMITED'].includes(explicitAvailabilityStatus)
   const statusBlocked = ['UNAVAILABLE', 'PAUSED'].includes(explicitAvailabilityStatus)
-  const available = explicitSellable === true || (!statusBlocked && (statusSellable || stock > 0 || autoFulfillable))
   const blocked = explicitSellable === false || statusBlocked
+  const available = !blocked && (statusSellable || stock > 0 || autoFulfillable)
   const purchasable = validPrice && available && !blocked
 
   if (!exists) reasons.push('missing_product')
   if (!active) reasons.push('inactive')
   if (!validPrice) reasons.push('invalid_price')
-  if (!available) reasons.push('unavailable')
+  if (!available) reasons.push(stock <= 0 && !autoFulfillable ? 'out_of_stock' : 'unavailable')
   if (explicitSellable === false) reasons.push('not_sellable')
   if (blocked) reasons.push('blocked')
 
@@ -1162,16 +1162,8 @@ export function analyzeRevenueDataQuality(
       })
     }
 
-    if (product.is_active && !eligibility.isSellable) {
-      findings.push({
-        checkKey: 'catalogue.active_not_sellable',
-        severity: 'warning',
-        status: 'failed',
-        scope: product.id,
-        message: `${product.name || 'Unnamed product'} is active but cannot be sold right now.`,
-        evidence: { product_id: product.id, reasons: eligibility.reasons, availability_status: eligibility.availabilityStatus },
-      })
-    }
+    // Ordinary stock exhaustion is not a data-quality failure. Revenue OS and
+    // customer surfaces exclude non-sellable products through eligibility.
   }
 
   for (const [normalizedName, duplicates] of normalizedNames) {

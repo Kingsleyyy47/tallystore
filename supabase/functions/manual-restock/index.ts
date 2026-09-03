@@ -227,9 +227,14 @@ serve(async (req) => {
       .eq('product_group_id', product_group_id)
       .eq('status', 'available')
 
+    const nextStock = newStock || 0
     await supabaseAdmin
       .from('product_groups')
-      .update({ stock_count: newStock || 0 })
+      .update({
+        stock_count: nextStock,
+        availability_status: nextStock > 0 ? nextStock <= 3 ? 'LOW_STOCK' : 'AVAILABLE' : 'UNAVAILABLE',
+        is_sellable: nextStock > 0,
+      })
       .eq('id', product_group_id)
 
     if (totalBought === 0) {
