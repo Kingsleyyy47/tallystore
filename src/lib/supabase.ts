@@ -1186,7 +1186,30 @@ function parseCsvLine(line: string): string[] {
   return values
 }
 
-export function parseCSV(csvText: string): any[] {
+export const SITE_FORMATS: Record<string, { label: string; sep: string; fields: string[] }> = {
+  facebook:   { label: 'Facebook',    sep: '|', fields: ['username','password','email','email_password','recovery_email','two_fa_code','year','friends_count'] },
+  facebook2:  { label: 'Facebook 2',  sep: '|', fields: ['username','password','email','email_password','recovery_email','year','friends_count'] },
+  instagram:  { label: 'Instagram',   sep: ':', fields: ['username','password','email','email_password'] },
+  tiktok:     { label: 'TikTok',      sep: ':', fields: ['username','password','email','email_password'] },
+  twitter:    { label: 'Twitter',     sep: '|', fields: ['username','password','email','email_password','two_fa_code'] },
+}
+
+export const SITE_FORMAT_HEADERS: Record<string, string> = {
+  facebook:   'username | password | Mail | Mail password | Recovery Mail | 2fa key | year | No of friends',
+  facebook2:  'username | password | Mail | Mail password | Recovery Mail | year | No of friends',
+  instagram:  'username : password : Mail : Mail password',
+  tiktok:     'username : password : Mail : Mail password',
+  twitter:    'username | password | Mail | Mail password | 2fa key |',
+}
+
+export function detectAccountFormat(account: Record<string, any>): string {
+  if (account.friends_count) return 'facebook'
+  if (account.recovery_email && account.year && !account.two_fa_code) return 'facebook2'
+  if (account.two_fa_code && !account.friends_count) return 'twitter'
+  return 'instagram'
+}
+
+export function parseCSV(csvText: string, formatKey?: string): any[] {
   const lines = csvText
     .replace(/^\uFEFF/, '')
     .split(/\r?\n/)
@@ -1195,9 +1218,18 @@ export function parseCSV(csvText: string): any[] {
 
   if (lines.length === 0) return []
 
+  // \u2500\u2500 Explicit format override \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  if (formatKey && SITE_FORMATS[formatKey]) {
+    const fmt = SITE_FORMATS[formatKey]
+    return lines.map(line => {
+      const parts = line.split(fmt.sep).map((p: string) => p.trim())
+      const obj: Record<string, string> = {}
+      fmt.fields.forEach((field, i) => { obj[field] = parts[i] || '' })
+      return obj
+    }).filter((r: Record<string, string>) => r.username || r.password)
+  }
+
   // \u2500\u2500 TXT / plain-credential format detection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-  // If the first line contains ':' or '|' but no comma, treat every line as
-  // "username:password" or "username|password" (no header row needed).
   const firstLine = lines[0]
   const hasColon = firstLine.includes(':')
   const hasPipe  = firstLine.includes('|')
@@ -1247,7 +1279,14 @@ export function parseCSV(csvText: string): any[] {
   if (lines.length < 2) return []
 
   const normalizeHeader = (header: string) => {
-    const key = header.trim().toLowerCase().replace(/^\uFEFF/, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+    const key = header
+      .trim()
+      .toLowerCase()
+      .replace(/^\uFEFF/, '')
+      .replace(/\\+_/g, '_')
+      .replace(/\\/g, '')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
     const aliases: Record<string, string> = {
       user: 'username',
       user_name: 'username',
@@ -1263,6 +1302,7 @@ export function parseCSV(csvText: string): any[] {
       mail_password: 'email_password',
       emailpassword: 'email_password',
       twofa: 'two_fa_code',
+      two_fa: 'two_fa_code',
       two_factor: 'two_fa_code',
       two_factor_code: 'two_fa_code',
       authenticator: 'two_fa_code',

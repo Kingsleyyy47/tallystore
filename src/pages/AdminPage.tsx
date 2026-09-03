@@ -2681,10 +2681,10 @@ export default function AdminPage() {
     }
   }
 
-  // Handle CSV upload
+  // Handle CSV/TXT upload
   const handleCsvUpload = async () => {
     if (!csvFile) {
-      alert('Please select a CSV file')
+      alert('Please select a CSV or TXT file')
       return
     }
 
@@ -2698,7 +2698,7 @@ export default function AdminPage() {
       const csvData = parseCSV(text)
 
       if (csvData.length === 0) {
-        alert('CSV file is empty or invalid')
+        alert('File is empty or invalid')
         return
       }
 
@@ -2719,8 +2719,8 @@ export default function AdminPage() {
       }
 
     } catch (error) {
-      console.error('Error processing CSV:', error)
-      alert('Failed to process CSV file')
+      console.error('Error processing bulk upload file:', error)
+      alert('Failed to process upload file')
     }
   }
 
@@ -6215,7 +6215,7 @@ export default function AdminPage() {
                     Bulk Account Upload
                   </CardTitle>
                   <p className="text-muted-foreground">
-                    Upload CSV files with account credentials to an existing product template
+                    Upload CSV or TXT files with account credentials to an existing product template
                   </p>
                 </CardHeader>
                 <CardContent className="space-y-6">
@@ -6250,14 +6250,14 @@ export default function AdminPage() {
 
                   <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center">
                     <Upload className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                    <h3 className="text-lg font-medium mb-2">Upload CSV File</h3>
+                    <h3 className="text-lg font-medium mb-2">Upload CSV or TXT File</h3>
                     <p className="text-muted-foreground mb-4">
-                      Choose a CSV file with account credentials
+                      The system auto-detects CSV headers or TXT credential lines.
                     </p>
                     
                     <input
                       type="file"
-                      accept=".csv"
+                      accept=".csv,.txt"
                       onChange={handleCsvFileChange}
                       className="mb-4"
                     />
@@ -6273,29 +6273,27 @@ export default function AdminPage() {
                   </div>
 
                   <div className="space-y-4">
-                    <h4 className="font-medium">CSV Format Requirements:</h4>
+                    <h4 className="font-medium">CSV/TXT Format Requirements:</h4>
                     <div className="bg-muted p-4 rounded-lg text-sm">
-                      <p className="font-medium mb-2">Required columns:</p>
+                      <p className="font-medium mb-2">CSV headers:</p>
                       <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                        <li><strong>password</strong> - Account password (required)</li>
-                        <li><strong>email</strong> OR <strong>username</strong> - Account identifier (at least one required)</li>
+                        <li><strong>password</strong> - account password</li>
+                        <li><strong>email</strong> OR <strong>username</strong> - account identifier</li>
+                        <li><strong>two_fa_code</strong> and <strong>email_password</strong> are auto-detected, including escaped underscore headers.</li>
                       </ul>
-                      <p className="font-medium mb-2 mt-4">Optional columns:</p>
+                      <p className="font-medium mb-2 mt-4">TXT lines:</p>
                       <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                        <li><strong>email_password</strong> - Email account password</li>
-                        <li><strong>two_fa</strong> or <strong>two_fa_code</strong> - Two-factor authentication code</li>
-                        <li><strong>recovery_email</strong> - Recovery email address</li>
-                        <li><strong>recovery_email_password</strong> - Recovery email password</li>
-                        <li><strong>username</strong> - Account username (if email is primary identifier)</li>
+                        <li><strong>username:password</strong> or <strong>username|password</strong></li>
+                        <li>Longer rows can include email, email password, recovery email, 2FA, year, and friends count by position.</li>
                       </ul>
                       <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-950 rounded border border-blue-200 dark:border-blue-800">
                         <p className="text-sm font-medium text-blue-800 dark:text-blue-200">
-                          💡 Sample CSV format:
+                          Sample CSV format:
                         </p>
                         <code className="text-xs text-blue-700 dark:text-blue-300 block mt-1">
-                          username,password,email,email_password,two_fa,recovery_email,recovery_email_password<br/>
-                          john_doe,pass123,john@email.com,emailpass123,123456,recovery@email.com,recpass123<br/>
-                          jane_smith,mypass,jane@email.com,,,,
+                          username,password,two_fa_code,email,email_password<br/>
+                          john_doe,pass123,123456,john@email.com,emailpass123<br/>
+                          jane_smith,mypass,,jane@email.com,emailpass456
                         </code>
                       </div>
                     </div>

@@ -32,6 +32,7 @@ import WalletBalanceWidget from '@/components/WalletBalanceWidget'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
+import { detectAccountFormat, SITE_FORMAT_HEADERS } from '@/lib/supabase'
 import { getUserOrders } from '@/lib/supabase'
 import {
   getAllProductGroups,
@@ -285,6 +286,15 @@ function OrderDetailsView({
                 <div className="grid grid-cols-[1.6rem_minmax(0,1fr)] gap-2 sm:grid-cols-[2rem_minmax(0,1fr)] sm:gap-3">
                   <div className="grid h-7 w-7 place-items-center rounded-lg bg-purple-100 text-xs font-black text-purple-700 dark:bg-purple-500/15 dark:text-purple-200">{index + 1}</div>
                   <div className="min-w-0 space-y-1.5">
+                    {(() => {
+                      const fmt = detectAccountFormat(account)
+                      const header = SITE_FORMAT_HEADERS[fmt]
+                      return header ? (
+                        <div className="mb-2 rounded-lg bg-slate-100 px-3 py-1.5 font-mono text-[11px] text-slate-500 dark:bg-white/[0.06] dark:text-slate-400 select-none">
+                          {header}
+                        </div>
+                      ) : null
+                    })()}
                     {credentialFields.map((field) => {
                       const value = readCredentialValue(account, field.keys)
                       if (!value) return null

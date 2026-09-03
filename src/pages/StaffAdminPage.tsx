@@ -26,6 +26,7 @@ import {
   searchUsers,
   getDiscountCodes,
   parseCSV,
+  SITE_FORMATS,
   getUserCount,
   getAdminSalesStats,
   type ProductGroup,
@@ -163,6 +164,7 @@ export default function StaffAdminPage() {
   const [bulkPgId, setBulkPgId] = useState('')
   const [bulkUploading, setBulkUploading] = useState(false)
   const [bulkResult, setBulkResult] = useState<{ success: boolean; accountsCreated: number; error?: string; pending?: boolean } | null>(null)
+  const [bulkFormat, setBulkFormat] = useState<string>('auto')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Categories
@@ -887,10 +889,10 @@ export default function StaffAdminPage() {
     setBulkResult(null)
     try {
       const text = await csvFile.text()
-      const parsed = parseCSV(text)
+      const parsed = parseCSV(text, bulkFormat === 'auto' ? undefined : bulkFormat)
 
       if (parsed.length === 0) {
-        const result = { success: false, accountsCreated: 0, error: 'CSV file is empty or invalid' }
+        const result = { success: false, accountsCreated: 0, error: 'File is empty or format not recognised — try selecting the format manually' }
         setBulkResult(result)
         toast({ variant: 'destructive', title: 'Upload failed', description: result.error })
         return
@@ -1567,7 +1569,7 @@ export default function StaffAdminPage() {
           {can(perms, 'tab_bulk_upload') && (
             <TabsContent value="bulk" className="space-y-4">
               <Card>
-                <CardHeader><CardTitle>Bulk Upload via CSV</CardTitle></CardHeader>
+                <CardHeader><CardTitle>Bulk Upload via CSV/TXT</CardTitle></CardHeader>
                 <CardContent className="space-y-4">
                   {loadingProducts ? <Loader2 className="h-5 w-5 animate-spin" /> : (
                     <>
@@ -1583,8 +1585,30 @@ export default function StaffAdminPage() {
                         </Select>
                       </div>
                       <div>
+                        <div className="mb-3">
+                          <label className="text-sm font-medium mb-1 block">Account Format</label>
+                          <p className="text-xs text-muted-foreground mb-2">Select the site format so columns map correctly. Auto-detect works for most files.</p>
+                          <div className="flex flex-wrap gap-2">
+                            {[{ key: 'auto', label: 'Auto-detect' }, ...Object.entries(SITE_FORMATS).map(([key, f]) => ({ key, label: f.label }))].map(({ key, label }) => (
+                              <button
+                                key={key}
+                                type="button"
+                                onClick={() => setBulkFormat(key)}
+                                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${bulkFormat === key ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground'}`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="mt-2 rounded px-2 py-1.5 bg-muted text-xs font-mono text-muted-foreground">
+                            {bulkFormat === 'auto'
+                              ? <span className="not-italic font-sans text-muted-foreground">Separator (<code>:</code> or <code>|</code>) and columns detected automatically from the file</span>
+                              : SITE_FORMATS[bulkFormat]?.fields.join(` ${SITE_FORMATS[bulkFormat].sep} `)
+                            }
+                          </div>
+                        </div>
                         <label className="text-sm font-medium mb-1 block">CSV or TXT File</label>
-                        <p className="text-xs text-muted-foreground mb-2">CSV: header row (username, password, email) · TXT: one credential per line as <code>username:password</code> or <code>username|password</code></p>
+                        <p className="text-xs text-muted-foreground mb-2">CSV: header row · TXT: one credential per line</p>
                         <input
                           ref={fileInputRef}
                           type="file"
