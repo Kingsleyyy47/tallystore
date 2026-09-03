@@ -73,6 +73,7 @@ import {
   getAdminSalesStats,
   bulkCreateIndividualAccounts,
   parseCSV,
+  SITE_FORMATS,
   createProductTemplate,
   processBulkAccountUpload,
   getAllUsers,
@@ -553,6 +554,7 @@ export default function AdminPage() {
   // UI state
   const [adminTab, setAdminTab] = useState<AdminTabValue>('templates')
   const [csvFile, setCsvFile] = useState<File | null>(null)
+  const [csvFormat, setCsvFormat] = useState<string>('auto')
   const [newProduct, setNewProduct] = useState({
     title: '',
     category: '',
@@ -2695,10 +2697,10 @@ export default function AdminPage() {
 
     try {
       const text = await csvFile.text()
-      const csvData = parseCSV(text)
+      const csvData = parseCSV(text, csvFormat === 'auto' ? undefined : csvFormat)
 
       if (csvData.length === 0) {
-        alert('File is empty or invalid')
+        alert('File is empty or format not recognised — try selecting the format manually')
         return
       }
 
@@ -6246,6 +6248,29 @@ export default function AdminPage() {
                         Accounts will be added to: {productGroups.find(pg => pg.id === selectedTemplate)?.name}
                       </p>
                     )}
+                  </div>
+
+                  {/* Format picker */}
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Account Format</p>
+                    <div className="flex flex-wrap gap-2">
+                      {[{ key: 'auto', label: 'Auto-detect' }, ...Object.entries(SITE_FORMATS).map(([key, f]) => ({ key, label: f.label }))].map(({ key, label }) => (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setCsvFormat(key)}
+                          className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${csvFormat === key ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground'}`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="rounded px-3 py-2 bg-muted text-xs font-mono text-muted-foreground">
+                      {csvFormat === 'auto'
+                        ? 'Separator (: or |) and columns detected automatically from the file'
+                        : SITE_FORMATS[csvFormat]?.fields.join(` ${SITE_FORMATS[csvFormat].sep} `)
+                      }
+                    </div>
                   </div>
 
                   <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center">
