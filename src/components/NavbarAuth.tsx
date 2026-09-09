@@ -98,6 +98,15 @@ export default function Navbar() {
     return () => window.removeEventListener("scroll", handleScroll)
   }, [handleScroll])
 
+  useEffect(() => {
+    if (!isMobileMenuOpen) return
+    const originalOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = originalOverflow
+    }
+  }, [isMobileMenuOpen])
+
   const scrollToSection = (sectionId: string) => {
     const element = document.getElementById(sectionId)
     if (element) {
@@ -379,8 +388,8 @@ export default function Navbar() {
 
         {/* Mobile Menu */}
         {isMobileMenuOpen && (
-          <div className="md:hidden mt-4 mobile-menu-bg backdrop-blur-md rounded-lg border border-gray-200/50 dark:border-gray-700/50 p-4">
-            <div className="flex flex-col space-y-2">
+          <div className="fixed inset-x-3 bottom-[calc(76px+env(safe-area-inset-bottom))] top-[72px] overflow-y-auto overscroll-contain rounded-2xl border border-gray-200/50 p-4 shadow-2xl backdrop-blur-md mobile-menu-bg dark:border-gray-700/50 md:hidden">
+            <div className="flex min-h-full flex-col space-y-2 pb-4">
               <Link 
                 to="/" 
                 onClick={() => setIsMobileMenuOpen(false)}

@@ -971,6 +971,8 @@ serve(async (req) => {
         quantity: quantity,
         product_name: productGroup.name,
         new_balance: newBalance,
+        account_details: order.account_details,
+        accounts: (order.account_details as any)?.accounts || [],
         message: `Successfully purchased ${quantity} account(s)`,
         ...(rewardCode ? { reward_code: rewardCode } : {}),
       }),

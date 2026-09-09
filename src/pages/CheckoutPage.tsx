@@ -1,15 +1,14 @@
 import { useRef, useState, useEffect } from 'react'
 import { useLocation, useNavigate, Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Separator } from '@/components/ui/separator'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { CheckCircle, CreditCard, Wallet, ArrowLeft, Shield, Clock, Loader2, Users, Eye, Calendar } from 'lucide-react'
+import { CheckCircle, CreditCard, Wallet, Loader2, Copy, Download, ChevronDown } from 'lucide-react'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import NavbarAuth from '@/components/NavbarAuth'
-import Footer from '@/components/Footer'
-import { BackButton, BackToProducts } from '@/components/ui/back-button'
-import WalletBalanceWidget from '@/components/WalletBalanceWidget'
+import { BackToProducts } from '@/components/ui/back-button'
 import { useAuth } from '@/contexts/SimpleAuth'
 import {
   processPurchaseSecure,
@@ -19,8 +18,8 @@ import {
   previewDiscountCode,
   DISCOUNTS_ENABLED,
   type IndividualAccount,
+  type PurchasedAccountCredentials,
   type ProductGroup,
-  type Category
 } from '@/lib/supabase'
 import { useToast } from '@/hooks/use-toast'
 import { Input } from '@/components/ui/input'
@@ -28,8 +27,51 @@ import { Tag, X } from 'lucide-react'
 import { blockStaffPurchase } from '@/lib/staffPurchaseGuard'
 import { getRevenueRequestContext, trackRevenueEvent } from '@/lib/revenue-os'
 import { isCustomerSellableProduct } from '@/lib/productAvailability'
-import CategoryLogo from '@/components/CategoryLogo'
 import { useCurrency } from '@/contexts/CurrencyContext'
+
+const credentialFields: Array<{
+  key: keyof PurchasedAccountCredentials
+  label: string
+  labelClassName: string
+}> = [
+  { key: 'username', label: 'ID', labelClassName: 'text-white' },
+  { key: 'password', label: 'PASSWORD', labelClassName: 'text-rose-400' },
+  { key: 'two_fa_code', label: '2FA KEY', labelClassName: 'text-purple-400' },
+  { key: 'email', label: 'EMAIL', labelClassName: 'text-emerald-400 underline underline-offset-4' },
+  { key: 'email_password', label: 'MAIL PASS', labelClassName: 'text-orange-400' },
+  { key: 'recovery_email', label: 'RECOVERY MAIL', labelClassName: 'text-sky-400' },
+  { key: 'recovery_email_password', label: 'RECOVERY PASS', labelClassName: 'text-amber-400' },
+  { key: 'additional_info', label: 'EXTRA', labelClassName: 'text-cyan-300' },
+]
+
+function credentialValue(value: unknown) {
+  if (value == null) return ''
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return JSON.stringify(value, null, 2)
+}
+
+function normalizePurchasedCredentials(
+  accountDetails?: { accounts?: PurchasedAccountCredentials[] } | null,
+  accounts?: PurchasedAccountCredentials[] | null,
+) {
+  const rawAccounts = Array.isArray(accounts) && accounts.length
+    ? accounts
+    : Array.isArray(accountDetails?.accounts)
+      ? accountDetails.accounts
+      : []
+
+  return rawAccounts.map((item) => ({
+    username: credentialValue(item.username),
+    password: credentialValue(item.password),
+    email: credentialValue(item.email),
+    email_password: credentialValue(item.email_password),
+    two_fa_code: credentialValue(item.two_fa_code),
+    recovery_email: credentialValue(item.recovery_email),
+    recovery_email_password: credentialValue(item.recovery_email_password),
+    additional_info: credentialValue(item.additional_info),
+  })).filter((item) => credentialFields.some((field) => credentialValue(item[field.key])))
+}
 
 export default function CheckoutPage() {
   const location = useLocation()
@@ -46,6 +88,14 @@ export default function CheckoutPage() {
   const [loading, setLoading] = useState(true)
   const [purchasing, setPurchasing] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState('wallet')
+  const [paymentDetailsOpen, setPaymentDetailsOpen] = useState(false)
+  const [credentialsModalOpen, setCredentialsModalOpen] = useState(false)
+  const [purchasedCredentials, setPurchasedCredentials] = useState<PurchasedAccountCredentials[]>([])
+  const [completedPurchase, setCompletedPurchase] = useState<{
+    orderId?: string
+    productName?: string
+    quantity?: number
+  } | null>(null)
   const paymentAttemptedRef = useRef(false)
   const purchaseCompletedRef = useRef(false)
   const checkoutAttemptRef = useRef(`checkout_${Date.now()}_${crypto.randomUUID()}`)
@@ -71,6 +121,58 @@ export default function CheckoutPage() {
   const codeDiscountAmount = appliedCode ? tierTotal - totalAmount : 0
 
   const isBulk = quantity > 1 || isBulkPurchase
+
+  const copyCredential = async (value: string, label: string) => {
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      toast({
+        title: 'Copied',
+        description: `${label} copied to clipboard.`,
+      })
+    } catch (error) {
+      toast({
+        variant: 'destructive',
+        title: 'Copy failed',
+        description: 'Your browser blocked clipboard access.',
+      })
+    }
+  }
+
+  const buildCredentialsTxt = () => {
+    const lines = [
+      'TallyStore Account Credentials',
+      completedPurchase?.orderId ? `Order ID: ${completedPurchase.orderId}` : '',
+      `Product: ${completedPurchase?.productName || productGroup?.name || 'Purchased account'}`,
+      `Quantity: ${completedPurchase?.quantity || purchasedCredentials.length || quantity}`,
+      '',
+    ].filter(Boolean)
+
+    purchasedCredentials.forEach((credential, index) => {
+      lines.push(`Account ${index + 1}`)
+      credentialFields.forEach((field) => {
+        const value = credentialValue(credential[field.key])
+        if (value) lines.push(`${field.label}: ${value}`)
+      })
+      lines.push('')
+    })
+
+    return lines.join('\n')
+  }
+
+  const downloadCredentialsTxt = () => {
+    if (!purchasedCredentials.length) return
+    const blob = new Blob([buildCredentialsTxt()], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const suffix = completedPurchase?.orderId?.slice(0, 8) || Date.now()
+    link.href = url
+    link.download = `tallystore-credentials-${suffix}.txt`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
 
   const handleApplyCode = async () => {
     if (!codeInput.trim() || !productGroup) return
@@ -262,6 +364,15 @@ export default function CheckoutPage() {
           description: `You've successfully purchased ${accountText} from ${productGroup.name}`,
         })
 
+        const deliveredCredentials = normalizePurchasedCredentials(result.account_details, result.accounts)
+        setPurchasedCredentials(deliveredCredentials)
+        setCompletedPurchase({
+          orderId: result.order_id,
+          productName: result.account_details?.product_name || result.product_name || productGroup.name,
+          quantity: result.account_details?.quantity || quantity,
+        })
+        setCredentialsModalOpen(true)
+
         // If the purchase earned a reward code, surface it prominently
         if (result.reward_code) {
           setTimeout(() => {
@@ -272,17 +383,6 @@ export default function CheckoutPage() {
             })
           }, 1500)
         }
-
-        // Redirect to orders with success message
-        navigate('/orders', {
-          state: {
-            purchaseSuccess: true,
-            bulkPurchase: quantity > 1,
-            accountCount: quantity,
-            productGroupName: productGroup.name,
-            rewardCode: result.reward_code || null,
-          }
-        })
       } else {
         trackRevenueEvent({
           eventType: 'PAYMENT_FAILED',
@@ -371,7 +471,6 @@ export default function CheckoutPage() {
             <p>Loading checkout details...</p>
           </div>
         </div>
-        <Footer />
       </div>
     )
   }
@@ -390,266 +489,274 @@ export default function CheckoutPage() {
             <BackToProducts />
           </div>
         </div>
-        <Footer />
       </div>
     )
   }
 
   const canAfford = walletBalance >= totalAmount
   const insufficientFunds = !canAfford
+  const balanceAfter = walletBalance - totalAmount
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-[100dvh] bg-background">
       <NavbarAuth />
-      
-      {/* Wallet Balance Widget */}
-      <div className="container mx-auto px-6 pt-24 pb-4">
-        <WalletBalanceWidget showRefresh={true} />
-      </div>
-      
-      <div className="container mx-auto px-6 pb-12">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold mb-2">Complete Your Purchase</h1>
-          <p className="text-muted-foreground">Review your order and payment details</p>
-        </div>
 
-        <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Product Details */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <span>Account Details</span>
-                {category && <Badge variant="secondary">{category.name}</Badge>}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="text-center p-6 bg-gradient-to-br from-primary/10 to-secondary/10 rounded-lg">
-                <CategoryLogo name={category?.name || productGroup.name} className="mx-auto mb-3 h-14 w-14" iconClassName="h-12 w-12" />
-                {isBulk ? (
-                  <>
-                    <h3 className="text-xl font-semibold">{productGroup.name}</h3>
-                    <p className="text-muted-foreground">Purchasing {quantity} accounts</p>
-                  </>
-                ) : (
-                  <>
-                    <h3 className="text-xl font-semibold">@{account?.username}</h3>
-                    <p className="text-muted-foreground">{productGroup.name}</p>
-                  </>
-                )}
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Category:</span>
-                  <span>{category?.name || 'Social Media'}</span>
+      <main className="mx-auto flex min-h-[calc(100dvh-72px)] w-full max-w-xl items-start px-4 pb-20 pt-20 md:items-center md:py-24">
+        <Card className="w-full overflow-hidden border-primary/25 bg-card/95 shadow-2xl">
+          <CardHeader className="space-y-2 p-4 pb-2 sm:p-5 sm:pb-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="mb-2 flex items-center gap-2">
+                  {category && <Badge variant="secondary" className="max-w-full truncate">{category.name}</Badge>}
+                  <Badge variant="outline" className="shrink-0 text-green-600">Available</Badge>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Product Type:</span>
-                  <span>{productGroup.name}</span>
-                </div>
-                {isBulk ? (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Quantity:</span>
-                    <span>{quantity} accounts</span>
-                  </div>
-                ) : (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Status:</span>
-                    <Badge variant="outline" className="text-green-600">Available</Badge>
-                  </div>
-                )}
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Verification:</span>
-                  <span className="flex items-center gap-1">
-                    <Shield className="h-4 w-4 text-green-600" />
-                    Verified
-                  </span>
-                </div>
-              </div>
-
-              {productGroup.features && productGroup.features.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="font-medium">What's Included:</h4>
-                  <div className="space-y-1">
-                    {productGroup.features.map((feature: string, index: number) => (
-                      <div key={index} className="flex items-center gap-2 text-sm">
-                        <CheckCircle className="h-4 w-4 text-green-600" />
-                        <span>{feature}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Payment Details */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Payment Summary</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              {/* Order Summary */}
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span>Price per Account:</span>
-                  <span>{formatPrice(productGroup.price)}</span>
-                </div>
-                {quantity > 1 && (
-                  <div className="flex justify-between">
-                    <span>Quantity:</span>
-                    <span>{quantity} accounts</span>
-                  </div>
-                )}
-                {discountPct > 0 && (
-                  <div className="flex justify-between text-green-600">
-                    <span>Bulk discount ({discountPct}% off):</span>
-                    <span>-{formatPrice(originalTotal - tierTotal)}</span>
-                  </div>
-                )}
-                {appliedCode && (
-                  <div className="flex justify-between text-green-600">
-                    <span>Code "{appliedCode.code}" ({appliedCode.percentOff}% off):</span>
-                    <span>-{formatPrice(codeDiscountAmount)}</span>
-                  </div>
-                )}
-                <div className="flex justify-between">
-                  <span>Processing Fee:</span>
-                  <span>{formatPrice(0)}</span>
-                </div>
-                <Separator />
-                <div className="flex justify-between text-lg font-semibold">
-                  <span>Total:</span>
-                  <span className="text-primary">{formatPrice(totalAmount)}</span>
-                </div>
-              </div>
-
-              {/* Discount Code - paused store-wide alongside bulk quantity discounts (DISCOUNTS_ENABLED in src/lib/supabase.ts) while a better bundle/promo solution is worked out */}
-              {DISCOUNTS_ENABLED && (
-              <div className="space-y-2">
-                <span className="text-sm font-medium flex items-center gap-1">
-                  <Tag className="h-3.5 w-3.5" />
-                  Discount Code
-                </span>
-                {discountPct > 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    Not available — this order already has a {discountPct}% bulk quantity discount applied.
-                  </p>
-                ) : appliedCode ? (
-                  <div className="flex items-center justify-between p-2 px-3 bg-green-50 border border-green-200 rounded-md">
-                    <span className="text-sm text-green-800 font-medium">{appliedCode.code} applied</span>
-                    <button
-                      type="button"
-                      onClick={handleRemoveCode}
-                      className="text-green-700 hover:text-green-900"
-                      aria-label="Remove discount code"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex gap-2">
-                    <Input
-                      value={codeInput}
-                      onChange={(e) => setCodeInput(e.target.value)}
-                      placeholder="Enter code"
-                      className="uppercase"
-                      onKeyDown={(e) => e.key === 'Enter' && handleApplyCode()}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={handleApplyCode}
-                      disabled={checkingCode || !codeInput.trim()}
-                    >
-                      {checkingCode ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Apply'}
-                    </Button>
-                  </div>
-                )}
-                {codeError && <p className="text-sm text-red-600">{codeError}</p>}
-              </div>
-              )}
-
-              {/* Wallet Balance */}
-              <div className="p-4 bg-muted rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="flex items-center gap-2">
-                    <Wallet className="h-4 w-4" />
-                    Your Wallet Balance
-                  </span>
-                  <span className={`font-medium ${canAfford ? 'text-green-600' : 'text-red-600'}`}>
-                    {showBalances ? formatPrice(walletBalance) : '***'}
-                  </span>
-                </div>
-                {insufficientFunds && (
-                  <p className="text-sm text-red-600">
-                    {showBalances
-                      ? `Insufficient funds. You need ${formatPrice(totalAmount - walletBalance)} more.`
-                      : 'Insufficient funds. Top up your wallet to continue.'}
-                  </p>
-                )}
-              </div>
-
-              {/* Purchase Button */}
-              <div className="space-y-4">
-                {insufficientFunds ? (
-                  <div className="space-y-3">
-                    <Alert>
-                      <AlertDescription>
-                        You don't have enough balance to complete this purchase. Please top up your wallet first.
-                      </AlertDescription>
-                    </Alert>
-                    <Link to="/wallet">
-                      <Button className="w-full" variant="outline">
-                        <Wallet className="h-4 w-4 mr-2" />
-                        Top Up Wallet
-                      </Button>
-                    </Link>
-                  </div>
-                ) : (
-                  <Button 
-                    onClick={handlePurchase}
-                    disabled={purchasing}
-                    className="w-full"
-                    size="lg"
-                  >
-                    {purchasing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Processing Purchase...
-                      </>
-                    ) : (
-                      <>
-                        <CreditCard className="h-4 w-4 mr-2" />
-                        Complete Purchase
-                      </>
-                    )}
-                  </Button>
-                )}
-              </div>
-
-              {/* Security Info */}
-              <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-                <div className="flex items-center gap-2 mb-2">
-                  <Shield className="h-4 w-4 text-green-600" />
-                  <span className="font-medium text-sm text-green-800">Secure Purchase</span>
-                </div>
-                <p className="text-xs text-green-700">
-                  Account credentials will be delivered instantly after payment confirmation.
+                <CardTitle className="truncate text-xl font-black sm:text-2xl">{productGroup.name}</CardTitle>
+                <p className="mt-1 truncate text-sm text-muted-foreground">
+                  {productGroup.description || (isBulk ? `${quantity} accounts` : account?.username ? `@${account.username}` : 'Instant account delivery')}
                 </p>
               </div>
-            </CardContent>
-          </Card>
-        </div>
+              <div className="shrink-0 text-right">
+                <p className="text-xs text-muted-foreground">Total</p>
+                <p className="text-xl font-black text-primary sm:text-2xl">{formatPrice(totalAmount)}</p>
+              </div>
+            </div>
+          </CardHeader>
 
-        {/* Back Button */}
-        <div className="mt-8 text-center">
-          <BackButton />
-        </div>
-      </div>
+          <CardContent className="space-y-3 p-4 pt-2 sm:p-5 sm:pt-2">
+            <div className="rounded-2xl border bg-muted/30 p-3 sm:p-4">
+              <div className="grid grid-cols-3 gap-3 text-sm">
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground">Price</p>
+                  <p className="truncate font-bold">{formatPrice(productGroup.price)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Quantity</p>
+                  <p className="font-bold">{quantity}</p>
+                </div>
+                <div className="min-w-0 text-right">
+                  <p className="text-xs text-muted-foreground">Pay</p>
+                  <p className="truncate font-bold text-primary">{formatPrice(totalAmount)}</p>
+                </div>
+              </div>
 
-      <Footer />
+              {(discountPct > 0 || appliedCode) && (
+                <div className="mt-3 border-t pt-3 text-sm">
+                  {discountPct > 0 && (
+                    <div className="flex justify-between gap-3 text-green-600">
+                      <span className="truncate">Bulk discount ({discountPct}% off)</span>
+                      <span className="shrink-0">-{formatPrice(originalTotal - tierTotal)}</span>
+                    </div>
+                  )}
+                  {appliedCode && (
+                    <div className="flex justify-between gap-3 text-green-600">
+                      <span className="truncate">Code {appliedCode.code}</span>
+                      <span className="shrink-0">-{formatPrice(codeDiscountAmount)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <Collapsible open={paymentDetailsOpen} onOpenChange={setPaymentDetailsOpen}>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between rounded-2xl border bg-background px-4 py-2.5 text-left"
+                >
+                  <span className="flex items-center gap-2 font-semibold">
+                    <Wallet className="h-4 w-4" />
+                    Payment details
+                  </span>
+                  <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                    {showBalances ? formatPrice(walletBalance) : '***'}
+                    <ChevronDown className={`h-4 w-4 transition-transform ${paymentDetailsOpen ? 'rotate-180' : ''}`} />
+                  </span>
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-3 pt-3">
+                <div className="grid grid-cols-2 gap-3 rounded-2xl border bg-muted/30 p-3 text-sm">
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">Wallet balance</p>
+                    <p className={`truncate font-bold ${canAfford ? 'text-green-600' : 'text-red-600'}`}>
+                      {showBalances ? formatPrice(walletBalance) : '***'}
+                    </p>
+                  </div>
+                  <div className="min-w-0 text-right">
+                    <p className="text-xs text-muted-foreground">After purchase</p>
+                    <p className={`truncate text-xs font-bold ${balanceAfter >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {showBalances ? formatPrice(balanceAfter) : '***'}
+                    </p>
+                  </div>
+                </div>
+
+                {DISCOUNTS_ENABLED && (
+                  <div className="space-y-2 rounded-2xl border bg-background p-3">
+                    <span className="flex items-center gap-1 text-sm font-medium">
+                      <Tag className="h-3.5 w-3.5" />
+                      Discount code
+                    </span>
+                    {discountPct > 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        Not available with the {discountPct}% quantity discount.
+                      </p>
+                    ) : appliedCode ? (
+                      <div className="flex items-center justify-between rounded-md border border-green-200 bg-green-50 p-2 px-3">
+                        <span className="text-sm font-medium text-green-800">{appliedCode.code} applied</span>
+                        <button
+                          type="button"
+                          onClick={handleRemoveCode}
+                          className="text-green-700 hover:text-green-900"
+                          aria-label="Remove discount code"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2">
+                        <Input
+                          value={codeInput}
+                          onChange={(e) => setCodeInput(e.target.value)}
+                          placeholder="Enter code"
+                          className="h-10 uppercase"
+                          onKeyDown={(e) => e.key === 'Enter' && handleApplyCode()}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleApplyCode}
+                          disabled={checkingCode || !codeInput.trim()}
+                          className="h-10"
+                        >
+                          {checkingCode ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Apply'}
+                        </Button>
+                      </div>
+                    )}
+                    {codeError && <p className="text-xs text-red-600">{codeError}</p>}
+                  </div>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
+
+            {insufficientFunds && !completedPurchase && (
+              <Alert>
+                <AlertDescription>
+                  {showBalances
+                    ? `You need ${formatPrice(totalAmount - walletBalance)} more to buy this.`
+                    : 'Top up your wallet to continue.'}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {completedPurchase ? (
+              <Button className="w-full" size="lg" disabled>
+                <CheckCircle className="h-4 w-4 mr-2" />
+                Purchase Complete
+              </Button>
+            ) : insufficientFunds ? (
+              <Link to="/wallet" className="block">
+                <Button className="w-full" variant="outline" size="lg">
+                  <Wallet className="h-4 w-4 mr-2" />
+                  Top Up Wallet
+                </Button>
+              </Link>
+            ) : (
+              <Button
+                onClick={handlePurchase}
+                disabled={purchasing}
+                className="w-full"
+                size="lg"
+              >
+                {purchasing ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <CreditCard className="h-4 w-4 mr-2" />
+                    Buy Now
+                  </>
+                )}
+              </Button>
+            )}
+
+          </CardContent>
+        </Card>
+      </main>
+
+      <Dialog open={credentialsModalOpen} onOpenChange={setCredentialsModalOpen}>
+        <DialogContent className="max-h-[88vh] w-[calc(100vw-1.5rem)] max-w-3xl overflow-y-auto rounded-3xl border-slate-700/70 bg-[#050818] p-0 text-white shadow-2xl sm:w-full">
+          <DialogHeader className="border-b border-white/10 px-5 py-4 text-left sm:px-7">
+            <div className="flex items-start justify-between gap-4 pr-8">
+              <div className="min-w-0">
+                <DialogTitle className="text-2xl font-black text-white">Account Credentials</DialogTitle>
+                <DialogDescription className="mt-1 text-sm text-slate-300">
+                  Copy each field or download all delivered accounts as TXT.
+                </DialogDescription>
+              </div>
+              <Button
+                type="button"
+                onClick={downloadCredentialsTxt}
+                disabled={!purchasedCredentials.length}
+                className="shrink-0 rounded-full bg-purple-500 px-4 text-sm font-bold text-black hover:bg-purple-400 disabled:opacity-50"
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Download TXT
+              </Button>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-4 px-4 py-5 sm:px-7">
+            {purchasedCredentials.length === 0 ? (
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-5 text-sm text-slate-300">
+                The purchase completed, but no credentials were returned to this screen. Open Order History to view the saved order credentials.
+              </div>
+            ) : (
+              purchasedCredentials.map((credential, index) => {
+                const visibleFields = credentialFields
+                  .map((field) => ({ ...field, value: credentialValue(credential[field.key]) }))
+                  .filter((field) => field.value)
+
+                return (
+                  <div key={`${credential.username || 'account'}-${index}`} className="rounded-[28px] border border-slate-700/80 bg-[#070b20] p-4 shadow-xl sm:p-6">
+                    <div className="mb-5 flex items-start gap-4">
+                      <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-purple-950 text-2xl font-black text-white">
+                        {index + 1}
+                      </div>
+                      <div className="min-w-0 flex-1 rounded-full bg-white/[0.08] px-4 py-3 font-mono text-lg tracking-[0.18em] text-slate-300 sm:text-2xl">
+                        <span className="block truncate">username | password | Mail | Mail password | 2fa key |</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      {visibleFields.map((field) => (
+                        <div key={field.key} className="grid grid-cols-[minmax(92px,170px)_1fr_auto] items-center gap-3">
+                          <span className={`text-sm font-black uppercase tracking-wide sm:text-lg ${field.labelClassName}`}>
+                            {field.label}
+                          </span>
+                          <div className="min-w-0 rounded-full bg-white/[0.08] px-4 py-3 font-mono text-base text-slate-100 sm:text-xl">
+                            <span className="block truncate">{field.value}</span>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => copyCredential(field.value, field.label)}
+                            className="h-10 w-10 shrink-0 rounded-xl text-slate-300 hover:bg-white/10 hover:text-white"
+                            aria-label={`Copy ${field.label}`}
+                          >
+                            <Copy className="h-5 w-5" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

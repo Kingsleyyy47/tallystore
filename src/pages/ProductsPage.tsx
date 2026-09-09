@@ -59,6 +59,38 @@ type ProductCollection = 'popular' | 'refilled' | 'new'
 type SortMode = 'recommended' | 'newest' | 'price-low' | 'price-high' | 'stock'
 
 const PAGE_SIZE = 12
+const CORE_LOAD_TIMEOUT_MS = 8000
+const OPTIONAL_LOAD_TIMEOUT_MS = 3500
+
+const SAFE_REVENUE_OS_SETTINGS: RevenueOsSettings = {
+  enabled: false,
+  shadowMode: true,
+  autonomyLevel: 0,
+  explorationPct: 5,
+  pressureLimit: 2,
+  globalHoldoutPct: 5,
+  experimentationEnabled: false,
+  freezeReason: '',
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<T>((resolve) => {
+    timeoutId = setTimeout(() => {
+      console.warn(`${label} timed out; using fallback`)
+      resolve(fallback)
+    }, timeoutMs)
+  })
+
+  return Promise.race([promise, timeout])
+    .catch((error) => {
+      console.warn(`${label} failed; using fallback`, error)
+      return fallback
+    })
+    .finally(() => {
+      if (timeoutId) clearTimeout(timeoutId)
+    })
+}
 
 function isPurchasable(productGroup: ProductGroup) {
   return isCustomerSellableProduct(productGroup)
@@ -100,24 +132,33 @@ export default function ProductsPage() {
       if (showPageLoader) setLoading(true)
       setRefreshing(true)
 
-      const connectionOk = await testConnection()
-      if (!connectionOk) throw new Error('Failed to connect to database')
+      const [connectionOk, categoriesData, productGroupsData] = await Promise.all([
+        withTimeout(testConnection(), CORE_LOAD_TIMEOUT_MS, true, 'Database connection check'),
+        withTimeout(getCategories(), CORE_LOAD_TIMEOUT_MS, [], 'Categories'),
+        withTimeout(getAllProductGroups(), CORE_LOAD_TIMEOUT_MS, [], 'Products'),
+      ])
 
-      const [categoriesData, productGroupsData, accountMapData, topSellingData, favoriteIds, automationSetting, revenueSettings, experiments, actionPlans] = await Promise.all([
-        getCategories(),
-        getAllProductGroups(),
-        getAvailableAccountIdsByProductGroup(),
-        getTopSellingProductGroupIds(12),
-        getFavoriteProductGroupIds(),
-        getAppSetting('sales_recommendation_automation_enabled'),
-        loadRevenueOsSettings(),
-        loadRunningCroExperiments(),
-        loadRunningCroActionPlans(),
+      if (!connectionOk && categoriesData.length === 0 && productGroupsData.length === 0) {
+        throw new Error('Failed to connect to database')
+      }
+
+      setCategories(categoriesData)
+      setProductGroups(productGroupsData)
+      setError(null)
+      setLoading(false)
+
+      const [accountMapData, topSellingData, favoriteIds, automationSetting, revenueSettings, experiments, actionPlans, recentlyRestocked] = await Promise.all([
+        withTimeout(getAvailableAccountIdsByProductGroup(), OPTIONAL_LOAD_TIMEOUT_MS, {}, 'Available account map'),
+        withTimeout(getTopSellingProductGroupIds(12), OPTIONAL_LOAD_TIMEOUT_MS, [], 'Top sellers'),
+        withTimeout(getFavoriteProductGroupIds(), OPTIONAL_LOAD_TIMEOUT_MS, [], 'Favorite products'),
+        withTimeout(getAppSetting('sales_recommendation_automation_enabled'), OPTIONAL_LOAD_TIMEOUT_MS, null, 'Recommendation automation setting'),
+        withTimeout(loadRevenueOsSettings(), OPTIONAL_LOAD_TIMEOUT_MS, SAFE_REVENUE_OS_SETTINGS, 'Revenue OS settings'),
+        withTimeout(loadRunningCroExperiments(), OPTIONAL_LOAD_TIMEOUT_MS, [], 'Running CRO experiments'),
+        withTimeout(loadRunningCroActionPlans(), OPTIONAL_LOAD_TIMEOUT_MS, [], 'Running CRO action plans'),
+        withTimeout(getRecentlyRestockedProductGroupIds(8), OPTIONAL_LOAD_TIMEOUT_MS, [], 'Recently restocked products'),
       ])
 
       const automationEnabled = automationSetting !== 'false' && revenueSettings.enabled
-      setCategories(categoriesData)
-      setProductGroups(productGroupsData)
       setAccountMap(accountMapData)
       setTopSellingIds(automationEnabled ? topSellingData : [])
       setFavoriteProductIds(automationEnabled ? favoriteIds : [])
@@ -125,11 +166,7 @@ export default function ProductsPage() {
       setRevenueOsSettings(revenueSettings)
       setRunningCroExperiments(experiments)
       setRunningCroActionPlans(actionPlans)
-      setError(null)
-
-      getRecentlyRestockedProductGroupIds(8).then(setRestockedIds).catch((err) => {
-        console.error('Error loading restocked product groups:', err)
-      })
+      setRestockedIds(recentlyRestocked)
     } catch (err) {
       console.error('Error loading products:', err)
       setError(err instanceof Error ? err.message : 'Failed to load products')

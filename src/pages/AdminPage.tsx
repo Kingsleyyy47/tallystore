@@ -147,6 +147,7 @@ const ADMIN_TABS = [
   { value: 'sales', label: 'Sales' },
   { value: 'histories', label: 'Transactions' },
   { value: 'email', label: 'Email' },
+  { value: 'api-partners', label: 'API Partners' },
   { value: 'staff', label: 'Staff Roles' },
 ] as const
 
@@ -229,6 +230,81 @@ type AdminSmsCatalogResponse = {
   exchange_rate?: number
   exchange_rate_source?: 'override' | 'live' | 'unavailable' | 'unknown'
   round_to_nearest_10?: boolean
+}
+
+type ApiPartner = {
+  id: string
+  name: string
+  contact_email?: string | null
+  is_active: boolean
+  allowed_sections: string[]
+  markup_percent: number
+  balance_ngn: number
+  rate_limit_per_minute: number
+  webhook_url?: string | null
+  notes?: string | null
+  created_at: string
+  api_partner_keys?: ApiPartnerKey[]
+}
+
+type ApiPartnerKey = {
+  id: string
+  key_name: string
+  key_prefix: string
+  scopes: string[]
+  revoked_at?: string | null
+  last_used_at?: string | null
+  created_at: string
+}
+
+type ApiPartnerOrder = {
+  id: string
+  partner_id: string
+  partner_reference?: string | null
+  item_type: string
+  item_name?: string | null
+  quantity: number
+  amount_ngn: number
+  status: string
+  payment_provider?: string | null
+  payment_transaction_reference?: string | null
+  payment_account_number?: string | null
+  paid_at?: string | null
+  error_message?: string | null
+  created_at: string
+}
+
+type ApiPartnerLog = {
+  id: string
+  partner_id?: string | null
+  action?: string | null
+  status_code?: number | null
+  success: boolean
+  error_message?: string | null
+  created_at: string
+}
+
+type ApiPartnerWebhookDelivery = {
+  id: string
+  partner_id: string
+  order_id?: string | null
+  event_type: string
+  target_url: string
+  status: string
+  status_code?: number | null
+  error_message?: string | null
+  created_at: string
+}
+
+type ApiPartnersResponse = {
+  success: boolean
+  error?: string
+  data?: {
+    partners: ApiPartner[]
+    orders: ApiPartnerOrder[]
+    logs: ApiPartnerLog[]
+    webhooks?: ApiPartnerWebhookDelivery[]
+  }
 }
 
 type AdminDepositTransaction = {
@@ -608,6 +684,36 @@ export default function AdminPage() {
   const [smsExchangeRateSource, setSmsExchangeRateSource] = useState<'override' | 'live' | 'unavailable' | 'unknown'>('unknown')
   const [smsRoundToNearestTen, setSmsRoundToNearestTen] = useState(false)
 
+  // Private reseller / partner API
+  const PARTNER_SECTIONS = [
+    { key: 'products', label: 'Products' },
+    { key: 'sms', label: 'SMS' },
+    { key: 'social_boost', label: 'Social Boost' },
+    { key: 'bills_airtime', label: 'Bills & Airtime' },
+    { key: 'giftcards', label: 'Gift Cards' },
+    { key: 'crypto', label: 'Crypto' },
+    { key: 'telegram_stars', label: 'Telegram' },
+  ] as const
+  const PARTNER_SCOPES = ['catalogue:read', 'orders:create', 'orders:read', 'wallet:read'] as const
+  const [apiPartners, setApiPartners] = useState<ApiPartner[]>([])
+  const [apiPartnerOrders, setApiPartnerOrders] = useState<ApiPartnerOrder[]>([])
+  const [apiPartnerLogs, setApiPartnerLogs] = useState<ApiPartnerLog[]>([])
+  const [apiPartnerWebhooks, setApiPartnerWebhooks] = useState<ApiPartnerWebhookDelivery[]>([])
+  const [apiPartnersLoading, setApiPartnersLoading] = useState(false)
+  const [apiPartnerSaving, setApiPartnerSaving] = useState<string | null>(null)
+  const [generatedApiKey, setGeneratedApiKey] = useState('')
+  const [newApiPartner, setNewApiPartner] = useState({
+    name: '',
+    contact_email: '',
+    allowed_sections: PARTNER_SECTIONS.map((section) => section.key),
+    markup_percent: '0',
+    balance_ngn: '0',
+    rate_limit_per_minute: '60',
+    webhook_url: '',
+    notes: '',
+  })
+  const [partnerBalanceAdjustments, setPartnerBalanceAdjustments] = useState<Record<string, string>>({})
+
   // SMS Orders management
   type AdminSmsOrder = {
     id: string; reference: string; service_name: string; status: string
@@ -664,6 +770,144 @@ export default function AdminPage() {
       setSmsOrdersAutoCancelling(false)
     }
   }, [toast, loadSmsOrders])
+
+  const invokePartnerAdmin = useCallback(async <T,>(payload: Record<string, unknown>): Promise<T> => {
+    const { data, error } = await supabase.functions.invoke('partner-api', { body: payload })
+    if (error) {
+      const context = (error as any)?.context
+      if (context) {
+        const bodyText = await context.clone().text().catch(() => '')
+        if (bodyText) {
+          try {
+            const parsed = JSON.parse(bodyText)
+            throw new Error(parsed?.error || parsed?.message || bodyText)
+          } catch (parseError) {
+            if (parseError instanceof Error && parseError.message !== bodyText) throw parseError
+            throw new Error(bodyText)
+          }
+        }
+      }
+      throw error
+    }
+    if (!data?.success) throw new Error(data?.error || 'Partner API action failed')
+    return data as T
+  }, [])
+
+  const loadApiPartners = useCallback(async () => {
+    setApiPartnersLoading(true)
+    try {
+      const data = await invokePartnerAdmin<ApiPartnersResponse>({ action: 'admin_list_partners' })
+      setApiPartners(data.data?.partners || [])
+      setApiPartnerOrders(data.data?.orders || [])
+      setApiPartnerLogs(data.data?.logs || [])
+      setApiPartnerWebhooks(data.data?.webhooks || [])
+    } catch (err: any) {
+      toast({ title: 'Failed to load API partners', description: err.message, variant: 'destructive' })
+    } finally {
+      setApiPartnersLoading(false)
+    }
+  }, [invokePartnerAdmin, toast])
+
+  const createApiPartner = useCallback(async () => {
+    if (!newApiPartner.name.trim()) {
+      toast({ title: 'Partner name required', variant: 'destructive' })
+      return
+    }
+    setApiPartnerSaving('create')
+    try {
+      await invokePartnerAdmin({
+        action: 'admin_create_partner',
+        ...newApiPartner,
+        markup_percent: Number(newApiPartner.markup_percent || 0),
+        balance_ngn: Number(newApiPartner.balance_ngn || 0),
+        rate_limit_per_minute: Number(newApiPartner.rate_limit_per_minute || 60),
+      })
+      setNewApiPartner({
+        name: '',
+        contact_email: '',
+        allowed_sections: PARTNER_SECTIONS.map((section) => section.key),
+        markup_percent: '0',
+        balance_ngn: '0',
+        rate_limit_per_minute: '60',
+        webhook_url: '',
+        notes: '',
+      })
+      toast({ title: 'API partner created' })
+      await loadApiPartners()
+    } catch (err: any) {
+      toast({ title: 'Create partner failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setApiPartnerSaving(null)
+    }
+  }, [PARTNER_SECTIONS, invokePartnerAdmin, loadApiPartners, newApiPartner, toast])
+
+  const updateApiPartner = useCallback(async (partnerId: string, updates: Record<string, unknown>) => {
+    setApiPartnerSaving(partnerId)
+    try {
+      await invokePartnerAdmin({ action: 'admin_update_partner', partner_id: partnerId, ...updates })
+      toast({ title: 'API partner updated' })
+      await loadApiPartners()
+    } catch (err: any) {
+      toast({ title: 'Update failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setApiPartnerSaving(null)
+    }
+  }, [invokePartnerAdmin, loadApiPartners, toast])
+
+  const generateApiPartnerKey = useCallback(async (partnerId: string) => {
+    setApiPartnerSaving(`key-${partnerId}`)
+    try {
+      const data = await invokePartnerAdmin<{ success: boolean; data: ApiPartnerKey & { api_key: string } }>({
+        action: 'admin_generate_key',
+        partner_id: partnerId,
+        key_name: 'Website key',
+        scopes: PARTNER_SCOPES,
+      })
+      setGeneratedApiKey(data.data.api_key)
+      toast({ title: 'API key generated', description: 'Copy it now. It will not be shown again.' })
+      await loadApiPartners()
+    } catch (err: any) {
+      toast({ title: 'Key generation failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setApiPartnerSaving(null)
+    }
+  }, [PARTNER_SCOPES, invokePartnerAdmin, loadApiPartners, toast])
+
+  const revokeApiPartnerKey = useCallback(async (keyId: string) => {
+    setApiPartnerSaving(`revoke-${keyId}`)
+    try {
+      await invokePartnerAdmin({ action: 'admin_revoke_key', key_id: keyId })
+      toast({ title: 'API key revoked' })
+      await loadApiPartners()
+    } catch (err: any) {
+      toast({ title: 'Revoke failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setApiPartnerSaving(null)
+    }
+  }, [invokePartnerAdmin, loadApiPartners, toast])
+
+  const adjustApiPartnerBalance = useCallback(async (partnerId: string) => {
+    const amount = Number(partnerBalanceAdjustments[partnerId] || 0)
+    if (!Number.isFinite(amount) || amount === 0) {
+      toast({ title: 'Enter a non-zero balance adjustment', variant: 'destructive' })
+      return
+    }
+    setApiPartnerSaving(`balance-${partnerId}`)
+    try {
+      await invokePartnerAdmin({ action: 'admin_adjust_balance', partner_id: partnerId, amount_ngn: amount, reason: 'Admin partner wallet adjustment' })
+      setPartnerBalanceAdjustments(prev => ({ ...prev, [partnerId]: '' }))
+      toast({ title: 'Partner balance updated' })
+      await loadApiPartners()
+    } catch (err: any) {
+      toast({ title: 'Balance update failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setApiPartnerSaving(null)
+    }
+  }, [invokePartnerAdmin, loadApiPartners, partnerBalanceAdjustments, toast])
+
+  useEffect(() => {
+    loadApiPartners()
+  }, [loadApiPartners])
 
 
   // ── Telegram Stars admin state ──────────────────────────────────────────────
@@ -8499,6 +8743,258 @@ export default function AdminPage() {
                   )}
                 </CardContent>
               </Card>
+            </TabsContent>
+
+            <TabsContent value="api-partners" className="space-y-6">
+              <AdminControlSection
+                title="API Partners"
+                description="Private reseller access for trusted websites. Full keys are generated once and stored hashed."
+              >
+                {generatedApiKey && (
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="text-sm font-black">New API key</p>
+                        <p className="mt-1 break-all font-mono text-xs">{generatedApiKey}</p>
+                        <p className="mt-2 text-xs opacity-80">Copy this now. The full key will not be shown again.</p>
+                      </div>
+                      <Button type="button" variant="outline" onClick={() => navigator.clipboard?.writeText(generatedApiKey)} className="shrink-0">
+                        Copy key
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid gap-3 lg:grid-cols-3">
+                  <div className="rounded-2xl border p-4">
+                    <p className="text-sm font-black">Endpoint</p>
+                    <p className="mt-2 break-all font-mono text-xs">https://tallystore.org/api/partner-api</p>
+                    <p className="mt-2 text-xs text-muted-foreground">Partners send <code>x-tally-api-key</code>. Keys are private and only generated here.</p>
+                  </div>
+                  <div className="rounded-2xl border p-4">
+                    <p className="text-sm font-black">Catalogue</p>
+                    <p className="mt-2 font-mono text-xs">{'{ "action": "catalogue", "section": "products" }'}</p>
+                    <p className="mt-2 text-xs text-muted-foreground">Sections include products, SMS, social boost, bills, gift cards, crypto, and Telegram.</p>
+                  </div>
+                  <div className="rounded-2xl border p-4">
+                    <p className="text-sm font-black">Wallet orders</p>
+                    <p className="mt-2 font-mono text-xs">{'{ "action": "create_order", "item_type": "sms", "idempotency_key": "..." }'}</p>
+                    <p className="mt-2 text-xs text-muted-foreground">TallyStore calculates price and stock server-side before debiting partner balance.</p>
+                  </div>
+                  <div className="rounded-2xl border p-4 lg:col-span-3">
+                    <p className="text-sm font-black">PocketFi checkout</p>
+                    <p className="mt-2 break-all font-mono text-xs">{'{ "action": "create_checkout", "item_type": "product", "item_id": "...", "customer_reference": "partner-user-123", "customer_email": "buyer@example.com", "idempotency_key": "..." }'}</p>
+                    <p className="mt-2 text-xs text-muted-foreground">Returns a permanent PocketFi account number for that partner customer. After bank transfer confirmation, TallyStore fulfills the order and sends the partner webhook.</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-[0.9fr_1.4fr]">
+                  <Card className="rounded-2xl border-slate-200 dark:border-white/10">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <Shield className="h-4 w-4 text-primary" />
+                        New trusted partner
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label>Name</Label>
+                          <Input value={newApiPartner.name} onChange={(event) => setNewApiPartner(prev => ({ ...prev, name: event.target.value }))} placeholder="Partner website" />
+                        </div>
+                        <div className="space-y-1">
+                          <Label>Email</Label>
+                          <Input value={newApiPartner.contact_email} onChange={(event) => setNewApiPartner(prev => ({ ...prev, contact_email: event.target.value }))} placeholder="owner@example.com" />
+                        </div>
+                        <div className="space-y-1">
+                          <Label>Markup %</Label>
+                          <Input type="number" min="0" value={newApiPartner.markup_percent} onChange={(event) => setNewApiPartner(prev => ({ ...prev, markup_percent: event.target.value }))} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label>Opening balance</Label>
+                          <Input type="number" min="0" value={newApiPartner.balance_ngn} onChange={(event) => setNewApiPartner(prev => ({ ...prev, balance_ngn: event.target.value }))} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label>Rate limit / minute</Label>
+                          <Input type="number" min="1" value={newApiPartner.rate_limit_per_minute} onChange={(event) => setNewApiPartner(prev => ({ ...prev, rate_limit_per_minute: event.target.value }))} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label>Webhook URL</Label>
+                          <Input value={newApiPartner.webhook_url} onChange={(event) => setNewApiPartner(prev => ({ ...prev, webhook_url: event.target.value }))} placeholder="https://partner.com/webhook" />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Allowed sections</Label>
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                          {PARTNER_SECTIONS.map((section) => (
+                            <label key={section.key} className="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold">
+                              <Checkbox
+                                checked={newApiPartner.allowed_sections.includes(section.key)}
+                                onCheckedChange={(checked) => setNewApiPartner(prev => ({
+                                  ...prev,
+                                  allowed_sections: checked
+                                    ? Array.from(new Set([...prev.allowed_sections, section.key]))
+                                    : prev.allowed_sections.filter((key) => key !== section.key),
+                                }))}
+                              />
+                              {section.label}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label>Notes</Label>
+                        <Textarea value={newApiPartner.notes} onChange={(event) => setNewApiPartner(prev => ({ ...prev, notes: event.target.value }))} placeholder="Private admin notes" />
+                      </div>
+
+                      <Button type="button" onClick={createApiPartner} disabled={apiPartnerSaving === 'create'} className="w-full">
+                        {apiPartnerSaving === 'create' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                        Create partner
+                      </Button>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="rounded-2xl border-slate-200 dark:border-white/10">
+                    <CardHeader>
+                      <div className="flex items-center justify-between gap-3">
+                        <CardTitle className="flex items-center gap-2 text-base">
+                          <Users className="h-4 w-4 text-primary" />
+                          Trusted partners
+                        </CardTitle>
+                        <Button type="button" variant="outline" size="sm" onClick={loadApiPartners} disabled={apiPartnersLoading}>
+                          {apiPartnersLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                        </Button>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {apiPartners.length === 0 && !apiPartnersLoading ? (
+                        <p className="rounded-2xl border border-dashed p-6 text-center text-sm text-muted-foreground">No API partners yet.</p>
+                      ) : apiPartners.map((partner) => {
+                        const activeKeys = (partner.api_partner_keys || []).filter((key) => !key.revoked_at)
+                        return (
+                          <div key={partner.id} className="rounded-2xl border p-4">
+                            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-black">{partner.name}</p>
+                                  <Badge variant={partner.is_active ? 'default' : 'secondary'}>{partner.is_active ? 'Active' : 'Paused'}</Badge>
+                                  <Badge variant="outline">{activeKeys.length} active key(s)</Badge>
+                                </div>
+                                <p className="mt-1 text-xs text-muted-foreground">{partner.contact_email || 'No email'} · {partner.allowed_sections?.join(', ')}</p>
+                                <p className="mt-2 text-sm font-bold">Balance: ₦{Number(partner.balance_ngn || 0).toLocaleString()} · Markup: {Number(partner.markup_percent || 0)}%</p>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Button size="sm" variant="outline" onClick={() => updateApiPartner(partner.id, { is_active: !partner.is_active })} disabled={apiPartnerSaving === partner.id}>
+                                  {partner.is_active ? 'Pause' : 'Enable'}
+                                </Button>
+                                <Button size="sm" onClick={() => generateApiPartnerKey(partner.id)} disabled={apiPartnerSaving === `key-${partner.id}`}>
+                                  {apiPartnerSaving === `key-${partner.id}` ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
+                                  Generate key
+                                </Button>
+                              </div>
+                            </div>
+
+                            <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
+                              <Input
+                                type="number"
+                                placeholder="Add or subtract balance, e.g. 5000 or -5000"
+                                value={partnerBalanceAdjustments[partner.id] || ''}
+                                onChange={(event) => setPartnerBalanceAdjustments(prev => ({ ...prev, [partner.id]: event.target.value }))}
+                              />
+                              <Button type="button" variant="outline" onClick={() => adjustApiPartnerBalance(partner.id)} disabled={apiPartnerSaving === `balance-${partner.id}`}>
+                                Adjust balance
+                              </Button>
+                            </div>
+
+                            {(partner.api_partner_keys || []).length > 0 && (
+                              <div className="mt-4 space-y-2">
+                                <p className="text-xs font-black uppercase tracking-wide text-muted-foreground">Keys</p>
+                                {(partner.api_partner_keys || []).map((key) => (
+                                  <div key={key.id} className="flex flex-col gap-2 rounded-xl bg-muted/40 px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between">
+                                    <span className="font-mono">{key.key_prefix}...</span>
+                                    <span className="text-muted-foreground">Last used: {key.last_used_at ? formatDistanceToNow(new Date(key.last_used_at), { addSuffix: true }) : 'Never'}</span>
+                                    {key.revoked_at ? (
+                                      <Badge variant="secondary">Revoked</Badge>
+                                    ) : (
+                                      <Button size="sm" variant="destructive" onClick={() => revokeApiPartnerKey(key.id)} disabled={apiPartnerSaving === `revoke-${key.id}`}>
+                                        Revoke
+                                      </Button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </CardContent>
+                  </Card>
+                </div>
+              </AdminControlSection>
+
+              <div className="grid gap-6 xl:grid-cols-2">
+                <AdminControlSection title="Recent API Orders" description="Latest reseller orders created through partner-api.">
+                  <div className="space-y-3">
+                    {apiPartnerOrders.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No partner orders yet.</p>
+                    ) : apiPartnerOrders.slice(0, 12).map((order) => (
+                      <div key={order.id} className="flex items-center justify-between gap-3 rounded-2xl border p-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-black">{order.item_name || order.id}</p>
+                          <p className="text-xs text-muted-foreground">{order.item_type} · qty {order.quantity} · {formatDistanceToNow(new Date(order.created_at), { addSuffix: true })}</p>
+                          {order.payment_provider && <p className="mt-1 truncate text-xs text-muted-foreground">{order.payment_provider} · {order.payment_account_number || order.payment_transaction_reference || 'checkout pending'} · {order.paid_at ? 'paid' : 'unpaid'}</p>}
+                          {order.error_message && <p className="mt-1 truncate text-xs text-red-500">{order.error_message}</p>}
+                        </div>
+                        <div className="text-right">
+                          <Badge variant={order.status === 'failed' ? 'destructive' : order.status === 'completed' ? 'default' : 'secondary'}>{order.status}</Badge>
+                          <p className="mt-1 text-xs font-bold">₦{Number(order.amount_ngn || 0).toLocaleString()}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </AdminControlSection>
+
+                <AdminControlSection title="Recent API Logs" description="Request audit trail for partner websites and failed attempts.">
+                  <div className="space-y-3">
+                    {apiPartnerLogs.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No partner API calls logged yet.</p>
+                    ) : apiPartnerLogs.slice(0, 12).map((log) => (
+                      <div key={log.id} className="flex items-center justify-between gap-3 rounded-2xl border p-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-black">{log.action || 'request'}</p>
+                          <p className="text-xs text-muted-foreground">{formatDistanceToNow(new Date(log.created_at), { addSuffix: true })}</p>
+                          {log.error_message && <p className="mt-1 truncate text-xs text-red-500">{log.error_message}</p>}
+                        </div>
+                        <Badge variant={log.success ? 'default' : 'destructive'}>{log.status_code || 0}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                </AdminControlSection>
+              </div>
+
+              <AdminControlSection title="Partner Webhooks" description="Delivery attempts sent to partner webhook URLs when API order status changes.">
+                <div className="space-y-3">
+                  {apiPartnerWebhooks.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No partner webhooks sent yet.</p>
+                  ) : apiPartnerWebhooks.slice(0, 12).map((delivery) => (
+                    <div key={delivery.id} className="flex items-center justify-between gap-3 rounded-2xl border p-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-black">{delivery.event_type}</p>
+                        <p className="truncate text-xs text-muted-foreground">{delivery.target_url}</p>
+                        {delivery.error_message && <p className="mt-1 truncate text-xs text-red-500">{delivery.error_message}</p>}
+                      </div>
+                      <div className="text-right">
+                        <Badge variant={delivery.status === 'delivered' ? 'default' : delivery.status === 'failed' ? 'destructive' : 'secondary'}>
+                          {delivery.status}
+                        </Badge>
+                        <p className="mt-1 text-xs text-muted-foreground">{delivery.status_code || 'no code'} · {formatDistanceToNow(new Date(delivery.created_at), { addSuffix: true })}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </AdminControlSection>
             </TabsContent>
 
             {/* ── Staff Roles Tab ──────────────────────────────────────────── */}

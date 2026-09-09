@@ -786,6 +786,75 @@ async function updateProductGroupStock(admin: ReturnType<typeof createClient>, p
   if (updateError) throw new Error(updateError.message)
 }
 
+function isLikelyCredentialEmail(value?: string | null) {
+  return /^[^\s@|:;]+@[^\s@|:;]+\.[^\s@|:;]+$/.test(String(value || '').trim())
+}
+
+function isLikelyCredentialExtra(value?: string | null) {
+  const raw = String(value || '').trim()
+  const lower = raw.toLowerCase()
+  if (!raw) return false
+  if (raw.length >= 180) return true
+  if (/(^|[;\s"'{}])(csrftoken|csrf_token|csrfmiddlewaretoken|sessionid|session_id|cookie|cookies|auth_token|access_token|refresh_token|bearer)(=|:|[;\s"'{}]|$)/i.test(raw)) return true
+  if (/(^|[;\s])(c_user|xs|datr|sb|fr|wd|presence|m_pixel_ratio|ig_did|mid|ds_user_id|rur|sessionid)\s*=/.test(lower)) return true
+  if ((raw.match(/[A-Za-z0-9_.-]{2,}\s*=/g) || []).length >= 2 && raw.includes(';')) return true
+  if ((raw.startsWith('{') || raw.startsWith('[')) && raw.length >= 80) return true
+  return false
+}
+
+function isLikelyCredentialTwoFa(value?: string | null) {
+  const compact = String(value || '').replace(/\s+/g, '')
+  return /^[A-Z2-7]{16,}$/i.test(compact) || /^\d{6,8}$/.test(compact)
+}
+
+function addCredentialExtra(row: Record<string, any>, key: string, value: string) {
+  if (!value) return
+  const current = row.additional_info && typeof row.additional_info === 'object' ? row.additional_info : {}
+  const extraFields = current.extra_fields && typeof current.extra_fields === 'object' ? current.extra_fields : {}
+  let nextKey = key || 'extra'
+  let suffix = 2
+  while (extraFields[nextKey] != null) {
+    nextKey = `${key}_${suffix}`
+    suffix += 1
+  }
+  row.additional_info = { ...current, extra_fields: { ...extraFields, [nextKey]: value } }
+}
+
+function normalizeStaffBulkRow(input: Record<string, any>) {
+  const row: Record<string, any> = { ...input }
+
+  for (const field of ['email', 'email_password', 'two_fa', 'two_fa_code', 'recovery_email', 'recovery_email_password']) {
+    const value = row[field] == null ? '' : String(row[field]).trim()
+    if (value && isLikelyCredentialExtra(value)) {
+      addCredentialExtra(row, `misplaced_${field}`, value)
+      row[field] = ''
+    }
+  }
+
+  if (row.email && !isLikelyCredentialEmail(row.email)) {
+    addCredentialExtra(row, 'misplaced_email', String(row.email).trim())
+    row.email = ''
+  }
+  if (!row.email && isLikelyCredentialEmail(row.email_password)) {
+    row.email = String(row.email_password).trim()
+    row.email_password = ''
+  }
+  if (row.recovery_email && !isLikelyCredentialEmail(row.recovery_email) && !row.email_password && row.email) {
+    row.email_password = String(row.recovery_email).trim()
+    row.recovery_email = ''
+  }
+  if (row.two_fa && !row.two_fa_code) {
+    row.two_fa_code = row.two_fa
+    row.two_fa = ''
+  }
+  if (row.two_fa_code && !isLikelyCredentialTwoFa(row.two_fa_code) && !row.email_password && row.email) {
+    row.email_password = String(row.two_fa_code).trim()
+    row.two_fa_code = ''
+  }
+
+  return row
+}
+
 async function applyAccountPendingAction(admin: ReturnType<typeof createClient>, pendingAction: any) {
   const action = pendingAction.action_type
   const d = pendingAction.action_data || {}
@@ -833,6 +902,7 @@ async function applyAccountPendingAction(admin: ReturnType<typeof createClient>,
 
     const accounts = parsedRows
       .map((row: any) => {
+        row = normalizeStaffBulkRow(row || {})
         const password = row?.password ? String(row.password).trim() : ''
         const username = row?.username ? String(row.username).trim() : (row?.email ? String(row.email).trim() : '')
         const email = row?.email ? String(row.email).trim() : null
@@ -851,6 +921,7 @@ async function applyAccountPendingAction(admin: ReturnType<typeof createClient>,
           two_fa_code: twoFaCode,
           recovery_email: recoveryEmail,
           recovery_email_password: recoveryEmailPassword,
+          additional_info: row?.additional_info || null,
           status: 'available',
           created_at: now,
         }

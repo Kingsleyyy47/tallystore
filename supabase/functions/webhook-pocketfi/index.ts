@@ -518,6 +518,73 @@ serve(async (req) => {
       return json({ message: 'Event ignored' })
     }
 
+    const { data: partnerCustomer, error: partnerCustomerError } = await supabase
+      .from('api_partner_customers')
+      .select('id, partner_id, customer_reference')
+      .eq('pocketfi_account_number', accountNumber)
+      .maybeSingle()
+
+    if (partnerCustomerError) {
+      const message = `Partner PocketFi lookup failed: ${partnerCustomerError.message}`
+      console.error(message)
+      if (logRow) {
+        await supabase.from('pocketfi_webhook_logs').update({ error_message: message }).eq('id', logRow.id)
+      }
+      return json({ error: message }, 500)
+    }
+
+    if (partnerCustomer) {
+      const partnerApiUrl = `${Deno.env.get('SUPABASE_URL') ?? ''}/functions/v1/partner-api`
+      const serviceRole = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      const partnerResponse = await fetch(partnerApiUrl, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${serviceRole}`,
+        },
+        body: JSON.stringify({
+          action: 'internal_confirm_checkout',
+          account_number: accountNumber,
+          amount,
+          transaction_reference: reference,
+          webhook_payload: payload,
+        }),
+      })
+      const partnerText = await partnerResponse.text()
+      let partnerResult: Record<string, any> | null = null
+      try {
+        partnerResult = partnerText ? JSON.parse(partnerText) : null
+      } catch {
+        partnerResult = { raw: partnerText }
+      }
+
+      if (!partnerResponse.ok) {
+        const message = partnerResult?.error || partnerResult?.message || `Partner checkout confirmation failed: ${partnerResponse.status}`
+        console.error(message)
+        if (logRow) {
+          await supabase.from('pocketfi_webhook_logs').update({ error_message: message }).eq('id', logRow.id)
+        }
+        return json({ error: message }, 500)
+      }
+
+      if (logRow) {
+        await supabase
+          .from('pocketfi_webhook_logs')
+          .update({
+            processed: Boolean(partnerResult?.success),
+            error_message: partnerResult?.success ? null : partnerResult?.message || partnerResult?.error || 'Partner payment did not match a pending checkout order',
+          })
+          .eq('id', logRow.id)
+      }
+
+      return json({
+        success: Boolean(partnerResult?.success),
+        message: partnerResult?.success ? 'Partner payment processed successfully' : 'Partner payment received but needs review',
+        data: partnerResult,
+      })
+    }
+
     const { data: profile } = await supabase
       .from('profiles')
       .select('id, wallet_balance, is_staff, is_admin')

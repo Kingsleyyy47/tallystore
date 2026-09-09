@@ -515,6 +515,27 @@ export interface IndividualAccount {
   sold_at?: string
 }
 
+export interface PurchasedAccountCredentials {
+  username?: string
+  password?: string
+  email?: string
+  email_password?: string
+  two_fa_code?: string
+  recovery_email?: string
+  recovery_email_password?: string
+  additional_info?: any
+}
+
+export interface PurchaseAccountDetails {
+  accounts?: PurchasedAccountCredentials[]
+  product_name?: string
+  category?: string
+  quantity?: number
+  price_per_unit?: number
+  charged_amount_ngn?: number
+  discount_code?: string | null
+}
+
 export async function createIndividualAccount(account: Omit<IndividualAccount, 'id' | 'created_at'>): Promise<IndividualAccount | null> {
   try {
     const { data, error } = await supabase
@@ -1209,6 +1230,149 @@ export function detectAccountFormat(account: Record<string, any>): string {
   return 'instagram'
 }
 
+const ACCOUNT_STRUCTURED_FIELDS = new Set([
+  'username',
+  'password',
+  'email',
+  'email_password',
+  'two_fa',
+  'two_fa_code',
+  'recovery_email',
+  'recovery_email_password',
+  'year',
+  'friends_count',
+  'additional_info',
+])
+
+function isLikelyAccountEmail(value?: string | null) {
+  return /^[^\s@|:;]+@[^\s@|:;]+\.[^\s@|:;]+$/.test(String(value || '').trim())
+}
+
+function isLikelyAccountTwoFa(value?: string | null) {
+  const compact = String(value || '').replace(/\s+/g, '')
+  return /^[A-Z2-7]{16,}$/i.test(compact) || /^\d{6,8}$/.test(compact)
+}
+
+function isLikelyAccountYear(value?: string | null) {
+  const year = Number(String(value || '').trim())
+  return Number.isInteger(year) && year >= 1990 && year <= new Date().getFullYear() + 1
+}
+
+function isLikelyExtraCredentialValue(value?: string | null) {
+  const raw = String(value || '').trim()
+  const lower = raw.toLowerCase()
+  if (!raw) return false
+  if (raw.length >= 180) return true
+  if (/(^|[;\s"'{}])(csrftoken|csrf_token|csrfmiddlewaretoken|sessionid|session_id|cookie|cookies|auth_token|access_token|refresh_token|bearer)(=|:|[;\s"'{}]|$)/i.test(raw)) return true
+  if (/(^|[;\s])(c_user|xs|datr|sb|fr|wd|presence|m_pixel_ratio|ig_did|mid|ds_user_id|rur|sessionid)\s*=/.test(lower)) return true
+  if ((raw.match(/[A-Za-z0-9_.-]{2,}\s*=/g) || []).length >= 2 && raw.includes(';')) return true
+  if ((raw.startsWith('{') || raw.startsWith('[')) && raw.length >= 80) return true
+  return false
+}
+
+function addAccountExtraInfo(row: Record<string, any>, key: string, value: string) {
+  if (!value) return
+  const current = row.additional_info && typeof row.additional_info === 'object' ? row.additional_info : {}
+  const extraFields = current.extra_fields && typeof current.extra_fields === 'object' ? current.extra_fields : {}
+  const baseKey = key || 'extra'
+  let nextKey = baseKey
+  let suffix = 2
+  while (extraFields[nextKey] != null) {
+    nextKey = `${baseKey}_${suffix}`
+    suffix += 1
+  }
+
+  row.additional_info = {
+    ...current,
+    extra_fields: {
+      ...extraFields,
+      [nextKey]: value,
+    },
+  }
+}
+
+function normalizeParsedAccountRow(input: Record<string, any>) {
+  const row: Record<string, any> = { ...input }
+
+  for (const [key, value] of Object.entries(input)) {
+    if (!ACCOUNT_STRUCTURED_FIELDS.has(key) && value != null && String(value).trim()) {
+      addAccountExtraInfo(row, key, String(value).trim())
+      delete row[key]
+    }
+  }
+
+  for (const field of ['email', 'email_password', 'two_fa', 'two_fa_code', 'recovery_email', 'recovery_email_password']) {
+    const value = row[field] == null ? '' : String(row[field]).trim()
+    if (value && isLikelyExtraCredentialValue(value)) {
+      addAccountExtraInfo(row, `misplaced_${field}`, value)
+      row[field] = ''
+    }
+  }
+
+  if (row.email && !isLikelyAccountEmail(row.email)) {
+    addAccountExtraInfo(row, 'misplaced_email', String(row.email).trim())
+    row.email = ''
+  }
+
+  if (!row.email && isLikelyAccountEmail(row.email_password)) {
+    row.email = String(row.email_password).trim()
+    row.email_password = ''
+  }
+
+  if (!row.recovery_email && isLikelyAccountEmail(row.recovery_email_password)) {
+    row.recovery_email = String(row.recovery_email_password).trim()
+    row.recovery_email_password = ''
+  }
+
+  if (row.recovery_email && !isLikelyAccountEmail(row.recovery_email) && !row.email_password && row.email) {
+    row.email_password = String(row.recovery_email).trim()
+    row.recovery_email = ''
+  }
+
+  if (row.two_fa && !row.two_fa_code) {
+    row.two_fa_code = row.two_fa
+    row.two_fa = ''
+  }
+
+  if (row.two_fa_code && !isLikelyAccountTwoFa(row.two_fa_code) && !row.email_password && row.email) {
+    row.email_password = String(row.two_fa_code).trim()
+    row.two_fa_code = ''
+  }
+
+  return row
+}
+
+function parsePlainCredentialLine(line: string, sep: string) {
+  const parts = line.split(sep).map((p) => p.trim())
+  const row: Record<string, any> = {
+    username: parts[0] || '',
+    password: parts[1] || '',
+  }
+
+  for (const part of parts.slice(2)) {
+    if (!part) continue
+    if (isLikelyExtraCredentialValue(part)) {
+      addAccountExtraInfo(row, 'extra', part)
+    } else if (isLikelyAccountEmail(part)) {
+      if (!row.email) row.email = part
+      else if (!row.recovery_email) row.recovery_email = part
+      else addAccountExtraInfo(row, 'extra_email', part)
+    } else if (isLikelyAccountYear(part) && !row.year) {
+      row.year = part
+    } else if (/^\d+$/.test(part) && row.year && !row.friends_count) {
+      row.friends_count = part
+    } else if (isLikelyAccountTwoFa(part) && !row.two_fa_code && row.email_password) {
+      row.two_fa_code = part
+    } else if (!row.email_password && (row.email || isLikelyAccountEmail(row.username))) {
+      row.email_password = part
+    } else {
+      addAccountExtraInfo(row, 'extra', part)
+    }
+  }
+
+  return normalizeParsedAccountRow(row)
+}
+
 export function parseCSV(csvText: string, formatKey?: string): any[] {
   const lines = csvText
     .replace(/^\uFEFF/, '')
@@ -1223,9 +1387,12 @@ export function parseCSV(csvText: string, formatKey?: string): any[] {
     const fmt = SITE_FORMATS[formatKey]
     return lines.map(line => {
       const parts = line.split(fmt.sep).map((p: string) => p.trim())
-      const obj: Record<string, string> = {}
+      const obj: Record<string, any> = {}
       fmt.fields.forEach((field, i) => { obj[field] = parts[i] || '' })
-      return obj
+      for (let i = fmt.fields.length; i < parts.length; i += 1) {
+        if (parts[i]) addAccountExtraInfo(obj, 'extra', parts[i])
+      }
+      return normalizeParsedAccountRow(obj)
     }).filter((r: Record<string, string>) => r.username || r.password)
   }
 
@@ -1238,41 +1405,7 @@ export function parseCSV(csvText: string, formatKey?: string): any[] {
 
   if (looksLikePlainCredentials) {
     const sep = hasPipe ? '|' : ':'
-
-    // Column mapping by position — covers all known site formats:
-    //
-    // PIPE formats:
-    //   Facebook full (8): username | password | mail | mail_pass | recovery_mail | 2fa | year | friends
-    //   Facebook 2   (7): username | password | mail | mail_pass | (empty)       | year | friends
-    //   Twitter      (5-6): username | password | mail | mail_pass | 2fa |
-    //
-    // COLON formats:
-    //   Instagram / TikTok (4): username : password : mail : mail_pass
-
-    const COLON_FIELDS = ['username', 'password', 'email', 'email_password', 'two_fa_code']
-
-    // Detect column count from the first line
-    const colCount = lines[0].split(sep).length
-
-    const fieldMap = sep === '|'
-      ? colCount >= 8
-        // Facebook full: 8 cols — recovery_mail at 4, 2fa at 5, year at 6, friends at 7
-        ? ['username', 'password', 'email', 'email_password', 'recovery_email', 'two_fa_code', 'year', 'friends_count']
-        : colCount === 7
-        // Facebook 2: 7 cols — empty recovery at 4, year at 5, friends at 6 (no 2fa)
-        ? ['username', 'password', 'email', 'email_password', 'recovery_email', 'year', 'friends_count']
-        // Twitter / short pipe: ≤6 cols — username | password | mail | mail_pass | 2fa |
-        : ['username', 'password', 'email', 'email_password', 'two_fa_code']
-      : COLON_FIELDS
-
-    return lines.map(line => {
-      const parts = line.split(sep).map(p => p.trim())
-      const obj: Record<string, string> = {}
-      fieldMap.forEach((field, i) => {
-        if (field && parts[i] !== undefined) obj[field] = parts[i]
-      })
-      return obj
-    }).filter(r => r.username || r.password)
+    return lines.map(line => parsePlainCredentialLine(line, sep)).filter(r => r.username || r.password)
   }
 
   // \u2500\u2500 CSV format: requires at least header + one data row \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -1326,7 +1459,7 @@ export function parseCSV(csvText: string, formatKey?: string): any[] {
       obj[header] = values[index] || ''
     })
     
-    return obj
+    return normalizeParsedAccountRow(obj)
   })
 }
 
@@ -1405,7 +1538,7 @@ export async function processBulkAccountUpload(
         two_fa_code: row.two_fa || row.two_fa_code || undefined,
         recovery_email: row.recovery_email || undefined,
         recovery_email_password: row.recovery_email_password || undefined,
-        additional_info: null,
+        additional_info: row.additional_info || null,
         status: 'available'
       }
 
@@ -1536,7 +1669,7 @@ export async function processPurchaseSecure(
   preferredAccountId?: string | null,
   expectedAmountNgn?: number,
   clientIdempotencyKey?: string,
-): Promise<{ success: boolean; error?: string; order_id?: string; amount?: number; new_balance?: number; reward_code?: string }> {
+): Promise<{ success: boolean; error?: string; order_id?: string; amount?: number; new_balance?: number; product_name?: string; reward_code?: string; account_details?: PurchaseAccountDetails; accounts?: PurchasedAccountCredentials[] }> {
   try {
     // Get current session for user ID
     const { data: { session } } = await supabase.auth.getSession();
@@ -1587,7 +1720,10 @@ export async function processPurchaseSecure(
       order_id: data.order_id,
       amount: data.amount,
       new_balance: data.new_balance,
+      product_name: data.product_name,
       reward_code: data.reward_code,
+      account_details: data.account_details,
+      accounts: data.accounts,
     };
   } catch (error: any) {
     console.error('❌ processPurchaseSecure error:', error);

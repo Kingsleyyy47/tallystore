@@ -1,0 +1,2 @@
+# Partner websites call this function with a TallyStore API key, not a Supabase JWT.
+verify_jwt = false
