@@ -9,6 +9,7 @@ const corsHeaders = {
 
 const ALL_SECTIONS = ['products', 'sms', 'social_boost', 'bills_airtime', 'giftcards', 'crypto', 'telegram_stars']
 const DEFAULT_SCOPES = ['catalogue:read', 'orders:create', 'orders:read', 'wallet:read']
+const API_PARTNER_ADMIN_SELECT = 'id, name, contact_email, is_active, allowed_sections, markup_percent, balance_ngn, webhook_url, notes, created_at, updated_at'
 const DEFAULT_DAISY_BASE = 'https://daisysms.io/stubs/handler_api.php'
 const DAISY_COUNTRY = 187
 const DEFAULT_SMS_MARGIN_NGN = 700
@@ -66,6 +67,19 @@ function json(body: Record<string, unknown>, status = 200) {
 async function sha256Hex(value: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function hmacSha256Hex(secret: string, value: string) {
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(value))
+  return Array.from(new Uint8Array(signature)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function randomHex(bytes = 32) {
@@ -200,17 +214,6 @@ async function requirePartner(req: Request, admin: SupabaseAdmin): Promise<Partn
 
   await admin.from('api_partner_keys').update({ last_used_at: new Date().toISOString() }).eq('id', key.id)
   return { partner: key.api_partners, key }
-}
-
-async function enforceRateLimit(admin: SupabaseAdmin, auth: PartnerAuth) {
-  const limit = Math.max(1, Number(auth.partner.rate_limit_per_minute || 60))
-  const since = new Date(Date.now() - 60_000).toISOString()
-  const { count } = await admin
-    .from('api_partner_logs')
-    .select('id', { count: 'exact', head: true })
-    .eq('partner_id', auth.partner.id)
-    .gte('created_at', since)
-  if ((count || 0) >= limit) throw new Error('Rate limit exceeded')
 }
 
 async function writeLog(
@@ -1036,6 +1039,12 @@ async function deliverPartnerWebhook(admin: SupabaseAdmin, partner: any, order: 
     partner_id: partner.id,
     data: { order: publicPartnerOrder(order) },
   }
+  const payloadBody = JSON.stringify(payload)
+  const timestamp = String(Math.floor(Date.now() / 1000))
+  const webhookSecret = cleanText(partner.webhook_secret, 240)
+  const signature = webhookSecret
+    ? `sha256=${await hmacSha256Hex(webhookSecret, `${timestamp}.${payloadBody}`)}`
+    : null
 
   let deliveryId: string | null = null
   const inserted = await admin.from('api_partner_webhook_deliveries').insert({
@@ -1056,8 +1065,10 @@ async function deliverPartnerWebhook(admin: SupabaseAdmin, partner: any, order: 
         'User-Agent': 'TallyStore-Partner-API/1.0',
         'X-Tally-Event': eventType,
         'X-Tally-Partner-Id': String(partner.id),
+        'X-Tally-Timestamp': timestamp,
+        ...(signature ? { 'X-Tally-Signature': signature } : {}),
       },
-      body: JSON.stringify(payload),
+      body: payloadBody,
     })
     const responseBody = (await response.text()).slice(0, 4000)
     const updates = {
@@ -2189,7 +2200,7 @@ async function handleOrderStatus(admin: SupabaseAdmin, auth: PartnerAuth, body: 
 async function handleAdminList(admin: SupabaseAdmin) {
   const { data: partners, error } = await admin
     .from('api_partners')
-    .select('*, api_partner_keys(id, key_name, key_prefix, scopes, revoked_at, last_used_at, created_at)')
+    .select(`${API_PARTNER_ADMIN_SELECT}, api_partner_keys(id, key_name, key_prefix, scopes, revoked_at, last_used_at, created_at)`)
     .order('created_at', { ascending: false })
   if (error) throw new Error(`Failed to load API partners: ${error.message}`)
   const { data: orders } = await admin.from('api_partner_orders').select('*').order('created_at', { ascending: false }).limit(100)
@@ -2204,12 +2215,11 @@ async function handleAdminCreate(admin: SupabaseAdmin, body: Record<string, unkn
     contact_email: cleanEmail(body.contact_email),
     is_active: body.is_active !== false,
     allowed_sections: allowedSections(body.allowed_sections),
-    markup_percent: Math.max(0, Number(body.markup_percent || 0)),
-    balance_ngn: Math.max(0, Number(body.balance_ngn || 0)),
-    rate_limit_per_minute: Math.max(1, Math.round(Number(body.rate_limit_per_minute || 60))),
+    markup_percent: 0,
+    balance_ngn: 0,
     webhook_url: cleanUrl(body.webhook_url),
-    notes: cleanText(body.notes, 1000),
-  }).select().single()
+    notes: null,
+  }).select(API_PARTNER_ADMIN_SELECT).single()
   if (error || !data) throw new Error(`Failed to create partner: ${error?.message}`)
   return { success: true, data }
 }
@@ -2223,9 +2233,7 @@ async function handleAdminUpdate(admin: SupabaseAdmin, body: Record<string, unkn
   }
   if ('is_active' in body) updates.is_active = body.is_active === true
   if ('allowed_sections' in body) updates.allowed_sections = allowedSections(body.allowed_sections)
-  if ('markup_percent' in body) updates.markup_percent = Math.max(0, Number(body.markup_percent || 0))
-  if ('rate_limit_per_minute' in body) updates.rate_limit_per_minute = Math.max(1, Math.round(Number(body.rate_limit_per_minute || 60)))
-  const { data, error } = await admin.from('api_partners').update(updates).eq('id', id).select().single()
+  const { data, error } = await admin.from('api_partners').update(updates).eq('id', id).select(API_PARTNER_ADMIN_SELECT).single()
   if (error || !data) throw new Error(`Failed to update partner: ${error?.message}`)
   return { success: true, data }
 }
@@ -2234,6 +2242,7 @@ async function handleAdminGenerateKey(admin: SupabaseAdmin, body: Record<string,
   const partnerId = cleanText(body.partner_id, 80)
   if (!partnerId) throw new Error('partner_id is required')
   const apiKey = `tly_live_${randomHex(32)}`
+  const webhookSecret = `tly_whsec_${randomHex(32)}`
   const keyHash = await sha256Hex(apiKey)
   const { data, error } = await admin.from('api_partner_keys').insert({
     partner_id: partnerId,
@@ -2243,7 +2252,12 @@ async function handleAdminGenerateKey(admin: SupabaseAdmin, body: Record<string,
     scopes: asStringArray(body.scopes, DEFAULT_SCOPES).filter((scope) => DEFAULT_SCOPES.includes(scope)),
   }).select('id, partner_id, key_name, key_prefix, scopes, created_at').single()
   if (error || !data) throw new Error(`Failed to create API key: ${error?.message}`)
-  return { success: true, data: { ...data, api_key: apiKey } }
+  const { error: secretError } = await admin
+    .from('api_partners')
+    .update({ webhook_secret: webhookSecret, updated_at: new Date().toISOString() })
+    .eq('id', partnerId)
+  if (secretError) throw new Error(`Failed to save webhook secret: ${secretError.message}`)
+  return { success: true, data: { ...data, api_key: apiKey, webhook_secret: webhookSecret } }
 }
 
 async function handleAdminRevokeKey(admin: SupabaseAdmin, body: Record<string, unknown>) {
@@ -2262,7 +2276,7 @@ async function handleAdminAdjustBalance(admin: SupabaseAdmin, body: Record<strin
   if (error || !partner) throw new Error('Partner not found')
   const next = Number(partner.balance_ngn || 0) + amount
   if (next < 0) throw new Error('Adjustment would make partner balance negative')
-  const { data, error: updateError } = await admin.from('api_partners').update({ balance_ngn: next, updated_at: new Date().toISOString() }).eq('id', partnerId).select().single()
+  const { data, error: updateError } = await admin.from('api_partners').update({ balance_ngn: next, updated_at: new Date().toISOString() }).eq('id', partnerId).select(API_PARTNER_ADMIN_SELECT).single()
   if (updateError || !data) throw new Error(`Failed to adjust partner balance: ${updateError?.message}`)
   await admin.from('api_partner_logs').insert({
     partner_id: partnerId,
@@ -2301,7 +2315,6 @@ serve(async (req) => {
     }
 
     auth = await requirePartner(req, admin)
-    await enforceRateLimit(admin, auth)
 
     let result: ApiResult
     if (action === 'catalogue' || action === 'products') result = await handleCatalogue(admin, auth, body)
@@ -2315,7 +2328,7 @@ serve(async (req) => {
     return json(result.body, result.status || 200)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Partner API request failed'
-    const status = /missing|invalid|unauthorized|access|required scope|admin/i.test(message) ? 401 : /rate limit/i.test(message) ? 429 : 400
+    const status = /missing|invalid|unauthorized|access|required scope|admin/i.test(message) ? 401 : 400
     await writeLog(admin, req, auth, action, status, false, message).catch(() => undefined)
     return json({ success: false, error: message }, status)
   }

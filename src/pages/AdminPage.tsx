@@ -240,11 +240,16 @@ type ApiPartner = {
   allowed_sections: string[]
   markup_percent: number
   balance_ngn: number
-  rate_limit_per_minute: number
   webhook_url?: string | null
   notes?: string | null
   created_at: string
   api_partner_keys?: ApiPartnerKey[]
+}
+
+type ApiPartnerEditDraft = {
+  name: string
+  webhook_url: string
+  allowed_sections: string[]
 }
 
 type ApiPartnerKey = {
@@ -701,18 +706,13 @@ export default function AdminPage() {
   const [apiPartnerWebhooks, setApiPartnerWebhooks] = useState<ApiPartnerWebhookDelivery[]>([])
   const [apiPartnersLoading, setApiPartnersLoading] = useState(false)
   const [apiPartnerSaving, setApiPartnerSaving] = useState<string | null>(null)
-  const [generatedApiKey, setGeneratedApiKey] = useState('')
+  const [generatedApiCredentials, setGeneratedApiCredentials] = useState<{ apiKey: string; webhookSecret: string } | null>(null)
+  const [apiPartnerEditDrafts, setApiPartnerEditDrafts] = useState<Record<string, ApiPartnerEditDraft>>({})
   const [newApiPartner, setNewApiPartner] = useState({
     name: '',
-    contact_email: '',
     allowed_sections: PARTNER_SECTIONS.map((section) => section.key),
-    markup_percent: '0',
-    balance_ngn: '0',
-    rate_limit_per_minute: '60',
     webhook_url: '',
-    notes: '',
   })
-  const [partnerBalanceAdjustments, setPartnerBalanceAdjustments] = useState<Record<string, string>>({})
 
   // SMS Orders management
   type AdminSmsOrder = {
@@ -817,20 +817,14 @@ export default function AdminPage() {
     try {
       await invokePartnerAdmin({
         action: 'admin_create_partner',
-        ...newApiPartner,
-        markup_percent: Number(newApiPartner.markup_percent || 0),
-        balance_ngn: Number(newApiPartner.balance_ngn || 0),
-        rate_limit_per_minute: Number(newApiPartner.rate_limit_per_minute || 60),
+        name: newApiPartner.name,
+        webhook_url: newApiPartner.webhook_url,
+        allowed_sections: newApiPartner.allowed_sections,
       })
       setNewApiPartner({
         name: '',
-        contact_email: '',
         allowed_sections: PARTNER_SECTIONS.map((section) => section.key),
-        markup_percent: '0',
-        balance_ngn: '0',
-        rate_limit_per_minute: '60',
         webhook_url: '',
-        notes: '',
       })
       toast({ title: 'API partner created' })
       await loadApiPartners()
@@ -854,17 +848,71 @@ export default function AdminPage() {
     }
   }, [invokePartnerAdmin, loadApiPartners, toast])
 
+  const startApiPartnerEdit = useCallback((partner: ApiPartner) => {
+    setApiPartnerEditDrafts(prev => ({
+      ...prev,
+      [partner.id]: {
+        name: partner.name || '',
+        webhook_url: partner.webhook_url || '',
+        allowed_sections: partner.allowed_sections?.length
+          ? partner.allowed_sections
+          : PARTNER_SECTIONS.map((section) => section.key),
+      },
+    }))
+  }, [PARTNER_SECTIONS])
+
+  const cancelApiPartnerEdit = useCallback((partnerId: string) => {
+    setApiPartnerEditDrafts(prev => {
+      const next = { ...prev }
+      delete next[partnerId]
+      return next
+    })
+  }, [])
+
+  const saveApiPartnerEdit = useCallback(async (partnerId: string) => {
+    const draft = apiPartnerEditDrafts[partnerId]
+    if (!draft?.name.trim()) {
+      toast({ title: 'Partner name required', variant: 'destructive' })
+      return
+    }
+    if (draft.allowed_sections.length === 0) {
+      toast({ title: 'Pick at least one allowed section', variant: 'destructive' })
+      return
+    }
+
+    setApiPartnerSaving(partnerId)
+    try {
+      await invokePartnerAdmin({
+        action: 'admin_update_partner',
+        partner_id: partnerId,
+        name: draft.name.trim(),
+        webhook_url: draft.webhook_url.trim(),
+        allowed_sections: draft.allowed_sections,
+      })
+      cancelApiPartnerEdit(partnerId)
+      toast({ title: 'API partner updated', description: 'Existing API keys and webhook secret were kept.' })
+      await loadApiPartners()
+    } catch (err: any) {
+      toast({ title: 'Update failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setApiPartnerSaving(null)
+    }
+  }, [apiPartnerEditDrafts, cancelApiPartnerEdit, invokePartnerAdmin, loadApiPartners, toast])
+
   const generateApiPartnerKey = useCallback(async (partnerId: string) => {
     setApiPartnerSaving(`key-${partnerId}`)
     try {
-      const data = await invokePartnerAdmin<{ success: boolean; data: ApiPartnerKey & { api_key: string } }>({
+      const data = await invokePartnerAdmin<{ success: boolean; data: ApiPartnerKey & { api_key: string; webhook_secret?: string } }>({
         action: 'admin_generate_key',
         partner_id: partnerId,
         key_name: 'Website key',
         scopes: PARTNER_SCOPES,
       })
-      setGeneratedApiKey(data.data.api_key)
-      toast({ title: 'API key generated', description: 'Copy it now. It will not be shown again.' })
+      setGeneratedApiCredentials({
+        apiKey: data.data.api_key,
+        webhookSecret: data.data.webhook_secret || '',
+      })
+      toast({ title: 'API key generated', description: 'Copy the key and webhook secret now. They will not be shown again.' })
       await loadApiPartners()
     } catch (err: any) {
       toast({ title: 'Key generation failed', description: err.message, variant: 'destructive' })
@@ -885,25 +933,6 @@ export default function AdminPage() {
       setApiPartnerSaving(null)
     }
   }, [invokePartnerAdmin, loadApiPartners, toast])
-
-  const adjustApiPartnerBalance = useCallback(async (partnerId: string) => {
-    const amount = Number(partnerBalanceAdjustments[partnerId] || 0)
-    if (!Number.isFinite(amount) || amount === 0) {
-      toast({ title: 'Enter a non-zero balance adjustment', variant: 'destructive' })
-      return
-    }
-    setApiPartnerSaving(`balance-${partnerId}`)
-    try {
-      await invokePartnerAdmin({ action: 'admin_adjust_balance', partner_id: partnerId, amount_ngn: amount, reason: 'Admin partner wallet adjustment' })
-      setPartnerBalanceAdjustments(prev => ({ ...prev, [partnerId]: '' }))
-      toast({ title: 'Partner balance updated' })
-      await loadApiPartners()
-    } catch (err: any) {
-      toast({ title: 'Balance update failed', description: err.message, variant: 'destructive' })
-    } finally {
-      setApiPartnerSaving(null)
-    }
-  }, [invokePartnerAdmin, loadApiPartners, partnerBalanceAdjustments, toast])
 
   useEffect(() => {
     loadApiPartners()
@@ -8750,17 +8779,31 @@ export default function AdminPage() {
                 title="API Partners"
                 description="Private reseller access for trusted websites. Full keys are generated once and stored hashed."
               >
-                {generatedApiKey && (
+                {generatedApiCredentials && (
                   <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0">
-                        <p className="text-sm font-black">New API key</p>
-                        <p className="mt-1 break-all font-mono text-xs">{generatedApiKey}</p>
-                        <p className="mt-2 text-xs opacity-80">Copy this now. The full key will not be shown again.</p>
+                    <div className="space-y-4">
+                      <div>
+                        <p className="text-sm font-black">New partner credentials</p>
+                        <p className="mt-1 text-xs opacity-80">Copy these now. The full API key and webhook secret will not be shown again.</p>
                       </div>
-                      <Button type="button" variant="outline" onClick={() => navigator.clipboard?.writeText(generatedApiKey)} className="shrink-0">
-                        Copy key
-                      </Button>
+                      <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
+                        <div className="min-w-0">
+                          <p className="text-xs font-black uppercase tracking-wide opacity-80">API key</p>
+                          <p className="mt-1 break-all font-mono text-xs">{generatedApiCredentials.apiKey}</p>
+                        </div>
+                        <Button type="button" variant="outline" onClick={() => navigator.clipboard?.writeText(generatedApiCredentials.apiKey)} className="shrink-0">
+                          Copy key
+                        </Button>
+                      </div>
+                      <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
+                        <div className="min-w-0">
+                          <p className="text-xs font-black uppercase tracking-wide opacity-80">Webhook secret</p>
+                          <p className="mt-1 break-all font-mono text-xs">{generatedApiCredentials.webhookSecret}</p>
+                        </div>
+                        <Button type="button" variant="outline" onClick={() => navigator.clipboard?.writeText(generatedApiCredentials.webhookSecret)} className="shrink-0">
+                          Copy secret
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -8769,7 +8812,7 @@ export default function AdminPage() {
                   <div className="rounded-2xl border p-4">
                     <p className="text-sm font-black">Endpoint</p>
                     <p className="mt-2 break-all font-mono text-xs">https://tallystore.org/api/partner-api</p>
-                    <p className="mt-2 text-xs text-muted-foreground">Partners send <code>x-tally-api-key</code>. Keys are private and only generated here.</p>
+                    <p className="mt-2 text-xs text-muted-foreground">Partners send <code>x-tally-api-key</code>. Webhooks are signed with their one-time secret.</p>
                   </div>
                   <div className="rounded-2xl border p-4">
                     <p className="text-sm font-black">Catalogue</p>
@@ -8803,22 +8846,6 @@ export default function AdminPage() {
                           <Input value={newApiPartner.name} onChange={(event) => setNewApiPartner(prev => ({ ...prev, name: event.target.value }))} placeholder="Partner website" />
                         </div>
                         <div className="space-y-1">
-                          <Label>Email</Label>
-                          <Input value={newApiPartner.contact_email} onChange={(event) => setNewApiPartner(prev => ({ ...prev, contact_email: event.target.value }))} placeholder="owner@example.com" />
-                        </div>
-                        <div className="space-y-1">
-                          <Label>Markup %</Label>
-                          <Input type="number" min="0" value={newApiPartner.markup_percent} onChange={(event) => setNewApiPartner(prev => ({ ...prev, markup_percent: event.target.value }))} />
-                        </div>
-                        <div className="space-y-1">
-                          <Label>Opening balance</Label>
-                          <Input type="number" min="0" value={newApiPartner.balance_ngn} onChange={(event) => setNewApiPartner(prev => ({ ...prev, balance_ngn: event.target.value }))} />
-                        </div>
-                        <div className="space-y-1">
-                          <Label>Rate limit / minute</Label>
-                          <Input type="number" min="1" value={newApiPartner.rate_limit_per_minute} onChange={(event) => setNewApiPartner(prev => ({ ...prev, rate_limit_per_minute: event.target.value }))} />
-                        </div>
-                        <div className="space-y-1">
                           <Label>Webhook URL</Label>
                           <Input value={newApiPartner.webhook_url} onChange={(event) => setNewApiPartner(prev => ({ ...prev, webhook_url: event.target.value }))} placeholder="https://partner.com/webhook" />
                         </div>
@@ -8842,11 +8869,6 @@ export default function AdminPage() {
                             </label>
                           ))}
                         </div>
-                      </div>
-
-                      <div className="space-y-1">
-                        <Label>Notes</Label>
-                        <Textarea value={newApiPartner.notes} onChange={(event) => setNewApiPartner(prev => ({ ...prev, notes: event.target.value }))} placeholder="Private admin notes" />
                       </div>
 
                       <Button type="button" onClick={createApiPartner} disabled={apiPartnerSaving === 'create'} className="w-full">
@@ -8873,39 +8895,105 @@ export default function AdminPage() {
                         <p className="rounded-2xl border border-dashed p-6 text-center text-sm text-muted-foreground">No API partners yet.</p>
                       ) : apiPartners.map((partner) => {
                         const activeKeys = (partner.api_partner_keys || []).filter((key) => !key.revoked_at)
+                        const editDraft = apiPartnerEditDrafts[partner.id]
                         return (
                           <div key={partner.id} className="rounded-2xl border p-4">
                             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                               <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <p className="font-black">{partner.name}</p>
-                                  <Badge variant={partner.is_active ? 'default' : 'secondary'}>{partner.is_active ? 'Active' : 'Paused'}</Badge>
-                                  <Badge variant="outline">{activeKeys.length} active key(s)</Badge>
-                                </div>
-                                <p className="mt-1 text-xs text-muted-foreground">{partner.contact_email || 'No email'} · {partner.allowed_sections?.join(', ')}</p>
-                                <p className="mt-2 text-sm font-bold">Balance: ₦{Number(partner.balance_ngn || 0).toLocaleString()} · Markup: {Number(partner.markup_percent || 0)}%</p>
+                                {editDraft ? (
+                                  <div className="space-y-3">
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                      <div className="space-y-1">
+                                        <Label>Name</Label>
+                                        <Input
+                                          value={editDraft.name}
+                                          onChange={(event) => setApiPartnerEditDrafts(prev => ({
+                                            ...prev,
+                                            [partner.id]: { ...editDraft, name: event.target.value },
+                                          }))}
+                                          placeholder="Partner website"
+                                        />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <Label>Webhook URL</Label>
+                                        <Input
+                                          value={editDraft.webhook_url}
+                                          onChange={(event) => setApiPartnerEditDrafts(prev => ({
+                                            ...prev,
+                                            [partner.id]: { ...editDraft, webhook_url: event.target.value },
+                                          }))}
+                                          placeholder="https://partner.com/webhook"
+                                        />
+                                      </div>
+                                    </div>
+                                    <div className="space-y-2">
+                                      <Label>Allowed sections</Label>
+                                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                        {PARTNER_SECTIONS.map((section) => (
+                                          <label key={section.key} className="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold">
+                                            <Checkbox
+                                              checked={editDraft.allowed_sections.includes(section.key)}
+                                              onCheckedChange={(checked) => setApiPartnerEditDrafts(prev => ({
+                                                ...prev,
+                                                [partner.id]: {
+                                                  ...editDraft,
+                                                  allowed_sections: checked
+                                                    ? Array.from(new Set([...editDraft.allowed_sections, section.key]))
+                                                    : editDraft.allowed_sections.filter((key) => key !== section.key),
+                                                },
+                                              }))}
+                                            />
+                                            {section.label}
+                                          </label>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">Saving keeps this partner's existing API key and webhook secret unchanged.</p>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <p className="font-black">{partner.name}</p>
+                                      <Badge variant={partner.is_active ? 'default' : 'secondary'}>{partner.is_active ? 'Active' : 'Paused'}</Badge>
+                                      <Badge variant="outline">{activeKeys.length} active key(s)</Badge>
+                                    </div>
+                                    <p className="mt-1 text-xs text-muted-foreground">{partner.allowed_sections?.join(', ')}</p>
+                                    {partner.webhook_url ? (
+                                      <p className="mt-2 break-all text-xs text-muted-foreground">{partner.webhook_url}</p>
+                                    ) : (
+                                      <p className="mt-2 text-xs text-muted-foreground">No webhook URL set.</p>
+                                    )}
+                                  </>
+                                )}
                               </div>
                               <div className="flex flex-wrap gap-2">
-                                <Button size="sm" variant="outline" onClick={() => updateApiPartner(partner.id, { is_active: !partner.is_active })} disabled={apiPartnerSaving === partner.id}>
-                                  {partner.is_active ? 'Pause' : 'Enable'}
-                                </Button>
-                                <Button size="sm" onClick={() => generateApiPartnerKey(partner.id)} disabled={apiPartnerSaving === `key-${partner.id}`}>
-                                  {apiPartnerSaving === `key-${partner.id}` ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
-                                  Generate key
-                                </Button>
+                                {editDraft ? (
+                                  <>
+                                    <Button size="sm" onClick={() => saveApiPartnerEdit(partner.id)} disabled={apiPartnerSaving === partner.id}>
+                                      {apiPartnerSaving === partner.id ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : <CheckCircle2 className="mr-2 h-3 w-3" />}
+                                      Save
+                                    </Button>
+                                    <Button size="sm" variant="outline" onClick={() => cancelApiPartnerEdit(partner.id)} disabled={apiPartnerSaving === partner.id}>
+                                      <X className="mr-2 h-3 w-3" />
+                                      Cancel
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Button size="sm" variant="outline" onClick={() => startApiPartnerEdit(partner)} disabled={Boolean(apiPartnerSaving)}>
+                                      <Edit className="mr-2 h-3 w-3" />
+                                      Edit
+                                    </Button>
+                                    <Button size="sm" variant="outline" onClick={() => updateApiPartner(partner.id, { is_active: !partner.is_active })} disabled={apiPartnerSaving === partner.id}>
+                                      {partner.is_active ? 'Pause' : 'Enable'}
+                                    </Button>
+                                    <Button size="sm" onClick={() => generateApiPartnerKey(partner.id)} disabled={apiPartnerSaving === `key-${partner.id}`}>
+                                      {apiPartnerSaving === `key-${partner.id}` ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
+                                      Generate key
+                                    </Button>
+                                  </>
+                                )}
                               </div>
-                            </div>
-
-                            <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
-                              <Input
-                                type="number"
-                                placeholder="Add or subtract balance, e.g. 5000 or -5000"
-                                value={partnerBalanceAdjustments[partner.id] || ''}
-                                onChange={(event) => setPartnerBalanceAdjustments(prev => ({ ...prev, [partner.id]: event.target.value }))}
-                              />
-                              <Button type="button" variant="outline" onClick={() => adjustApiPartnerBalance(partner.id)} disabled={apiPartnerSaving === `balance-${partner.id}`}>
-                                Adjust balance
-                              </Button>
                             </div>
 
                             {(partner.api_partner_keys || []).length > 0 && (

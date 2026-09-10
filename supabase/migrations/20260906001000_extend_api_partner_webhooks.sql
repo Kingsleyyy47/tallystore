@@ -1,4 +1,5 @@
 alter table public.api_partners
+  add column if not exists webhook_secret text,
   alter column allowed_sections set default array[
     'products',
     'sms',

@@ -13,14 +13,13 @@ create table if not exists public.api_partners (
   ],
   markup_percent numeric not null default 0,
   balance_ngn numeric not null default 0,
-  rate_limit_per_minute integer not null default 60,
   webhook_url text,
+  webhook_secret text,
   notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint api_partners_markup_nonnegative check (markup_percent >= 0),
-  constraint api_partners_balance_nonnegative check (balance_ngn >= 0),
-  constraint api_partners_rate_limit_positive check (rate_limit_per_minute > 0)
+  constraint api_partners_balance_nonnegative check (balance_ngn >= 0)
 );
 
 create table if not exists public.api_partner_keys (
