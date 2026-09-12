@@ -242,6 +242,7 @@ type ApiPartner = {
   balance_ngn: number
   webhook_url?: string | null
   notes?: string | null
+  has_webhook_secret?: boolean
   created_at: string
   api_partner_keys?: ApiPartnerKey[]
 }
@@ -8786,6 +8787,14 @@ export default function AdminPage() {
                         <p className="text-sm font-black">New partner credentials</p>
                         <p className="mt-1 text-xs opacity-80">Copy these now. The full API key and webhook secret will not be shown again.</p>
                       </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => navigator.clipboard?.writeText(`TallyStore API key: ${generatedApiCredentials.apiKey}\nTallyStore webhook secret: ${generatedApiCredentials.webhookSecret}`)}
+                        className="w-full"
+                      >
+                        Copy API key + webhook secret
+                      </Button>
                       <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
                         <div className="min-w-0">
                           <p className="text-xs font-black uppercase tracking-wide opacity-80">API key</p>
@@ -8956,6 +8965,9 @@ export default function AdminPage() {
                                       <p className="font-black">{partner.name}</p>
                                       <Badge variant={partner.is_active ? 'default' : 'secondary'}>{partner.is_active ? 'Active' : 'Paused'}</Badge>
                                       <Badge variant="outline">{activeKeys.length} active key(s)</Badge>
+                                      <Badge variant={partner.has_webhook_secret ? 'outline' : 'destructive'}>
+                                        {partner.has_webhook_secret ? 'Webhook secret stored' : 'No webhook secret'}
+                                      </Badge>
                                     </div>
                                     <p className="mt-1 text-xs text-muted-foreground">{partner.allowed_sections?.join(', ')}</p>
                                     {partner.webhook_url ? (
@@ -8963,6 +8975,9 @@ export default function AdminPage() {
                                     ) : (
                                       <p className="mt-2 text-xs text-muted-foreground">No webhook URL set.</p>
                                     )}
+                                    <p className="mt-2 text-xs text-muted-foreground">
+                                      Full API keys and webhook secrets are only shown immediately after generation.
+                                    </p>
                                   </>
                                 )}
                               </div>
@@ -8989,7 +9004,7 @@ export default function AdminPage() {
                                     </Button>
                                     <Button size="sm" onClick={() => generateApiPartnerKey(partner.id)} disabled={apiPartnerSaving === `key-${partner.id}`}>
                                       {apiPartnerSaving === `key-${partner.id}` ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
-                                      Generate key
+                                      Generate API key + secret
                                     </Button>
                                   </>
                                 )}

@@ -119,6 +119,20 @@ function asStringArray(value: unknown, fallback: readonly string[]) {
   return value.map((item) => String(item).trim()).filter(Boolean)
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 function allowedSections(value: unknown) {
   const requested = asStringArray(value, ALL_SECTIONS)
   const allowed = requested.filter((section) => ALL_SECTIONS.includes(section))
@@ -934,30 +948,83 @@ async function cryptoCatalogue(partner: any) {
 async function handleCatalogue(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>): Promise<ApiResult> {
   if (!hasScope(auth, 'catalogue:read')) throw new Error('Missing catalogue:read scope')
   const requestedSection = cleanText(body.section, 40)
+  if (requestedSection && !ALL_SECTIONS.includes(requestedSection)) {
+    throw new Error(`Unsupported catalogue section. Use one of: ${ALL_SECTIONS.join(', ')}`)
+  }
+  if (requestedSection && !hasSection(auth.partner, requestedSection)) {
+    throw new Error(`${requestedSection} is not enabled for this API key`)
+  }
   const include = (section: string) => !requestedSection || requestedSection === section
+  const fallbackItem = (section: string, name: string, error: unknown) => [{
+    type: section,
+    section,
+    id: `${section}-unavailable`,
+    name,
+    price_ngn: null,
+    currency: 'NGN',
+    availability: 'out_of_stock',
+    stock: { status: 'provider_unavailable', available_quantity: 0 },
+    error: error instanceof Error ? error.message : `${name} catalogue unavailable`,
+  }]
+  const loadSection = async <T extends any[]>(section: string, name: string, loader: () => Promise<T>) => {
+    if (!include(section) || !hasSection(auth.partner, section)) return []
+    try {
+      return await withTimeout(loader(), 12_000, `${name} catalogue`)
+    } catch (error) {
+      return fallbackItem(section, name, error)
+    }
+  }
   const [products, sms, social, bills, giftcards, telegram, crypto] = await Promise.all([
-    productCatalogue(admin, auth.partner),
-    smsCatalogue(admin, auth.partner).catch((error) => [{ type: 'sms', section: 'sms', id: 'sms-unavailable', name: 'SMS', price_ngn: null, currency: 'NGN', availability: 'out_of_stock', stock: { status: 'provider_unavailable', available_quantity: 0 }, error: error instanceof Error ? error.message : 'SMS catalogue unavailable' }]),
-    socialCatalogue(admin, auth.partner),
-    include('bills_airtime') ? billsCatalogue(admin, auth.partner).catch((error) => [{ type: 'bills_airtime', section: 'bills_airtime', id: 'bills-unavailable', name: 'Bills & Airtime', price_ngn: null, currency: 'NGN', availability: 'out_of_stock', stock: { status: 'provider_unavailable', available_quantity: 0 }, error: error instanceof Error ? error.message : 'Bills catalogue unavailable' }]) : [],
-    include('giftcards') ? giftcardCatalogue(admin, auth.partner, body).catch((error) => [{ type: 'giftcards', section: 'giftcards', id: 'giftcards-unavailable', name: 'Gift cards', price_ngn: null, currency: 'NGN', availability: 'out_of_stock', stock: { status: 'provider_unavailable', available_quantity: 0 }, error: error instanceof Error ? error.message : 'Gift card catalogue unavailable' }]) : [],
-    include('telegram_stars') ? telegramCatalogue(admin, auth.partner).catch((error) => [{ type: 'telegram_stars', section: 'telegram_stars', id: 'telegram-unavailable', name: 'Telegram', price_ngn: null, currency: 'NGN', availability: 'out_of_stock', stock: { status: 'provider_unavailable', available_quantity: 0 }, error: error instanceof Error ? error.message : 'Telegram catalogue unavailable' }]) : [],
-    include('crypto') ? cryptoCatalogue(auth.partner).catch((error) => [{ type: 'crypto', section: 'crypto', id: 'crypto-unavailable', name: 'Crypto', price_ngn: null, currency: 'NGN', availability: 'out_of_stock', stock: { status: 'provider_unavailable', available_quantity: 0 }, error: error instanceof Error ? error.message : 'Crypto catalogue unavailable' }]) : [],
+    loadSection('products', 'Products', () => productCatalogue(admin, auth.partner)),
+    loadSection('sms', 'SMS', () => smsCatalogue(admin, auth.partner)),
+    loadSection('social_boost', 'Social Boost', () => socialCatalogue(admin, auth.partner)),
+    loadSection('bills_airtime', 'Bills & Airtime', () => billsCatalogue(admin, auth.partner)),
+    loadSection('giftcards', 'Gift cards', () => giftcardCatalogue(admin, auth.partner, body)),
+    loadSection('telegram_stars', 'Telegram', () => telegramCatalogue(admin, auth.partner)),
+    loadSection('crypto', 'Crypto', () => cryptoCatalogue(auth.partner)),
   ])
   const items = [...(include('products') ? products : []), ...(include('sms') ? sms : []), ...(include('social_boost') ? social : []), ...bills, ...giftcards, ...telegram, ...crypto]
+  const allowed = ALL_SECTIONS.filter((section) => hasSection(auth.partner, section))
+  const sections = ALL_SECTIONS.map((section) => ({
+    key: section,
+    items: items.filter((item: any) => item.section === section),
+  })).filter((section) => hasSection(auth.partner, section.key) && include(section.key))
+  const sectionCounts = Object.fromEntries(sections.map((section) => [section.key, section.items.length]))
+  const availableCounts = Object.fromEntries(sections.map((section) => [
+    section.key,
+    section.items.filter((item: any) => item.availability === 'available').length,
+  ]))
+  const sectionErrors = items
+    .filter((item: any) => item.error)
+    .map((item: any) => ({
+      section: item.section,
+      item_id: item.id,
+      message: item.error,
+    }))
+  const data = {
+    store: 'TallyStore',
+    currency: 'NGN',
+    generated_at: new Date().toISOString(),
+    requested_section: requestedSection || null,
+    allowed_sections: allowed,
+    items,
+    sections,
+    summary: {
+      item_count: items.length,
+      available_item_count: items.filter((item: any) => item.availability === 'available').length,
+      section_count: sections.length,
+      section_counts: sectionCounts,
+      available_counts: availableCounts,
+      section_errors: sectionErrors,
+    },
+  }
   return {
     body: {
       success: true,
-      data: {
-        store: 'TallyStore',
-        currency: 'NGN',
-        generated_at: new Date().toISOString(),
-        items,
-        sections: ALL_SECTIONS.map((section) => ({
-          key: section,
-          items: items.filter((item: any) => item.section === section),
-        })).filter((section) => hasSection(auth.partner, section.key)),
-      },
+      data,
+      items: data.items,
+      sections: data.sections,
+      summary: data.summary,
     },
   }
 }
@@ -2200,13 +2267,17 @@ async function handleOrderStatus(admin: SupabaseAdmin, auth: PartnerAuth, body: 
 async function handleAdminList(admin: SupabaseAdmin) {
   const { data: partners, error } = await admin
     .from('api_partners')
-    .select(`${API_PARTNER_ADMIN_SELECT}, api_partner_keys(id, key_name, key_prefix, scopes, revoked_at, last_used_at, created_at)`)
+    .select(`${API_PARTNER_ADMIN_SELECT}, webhook_secret, api_partner_keys(id, key_name, key_prefix, scopes, revoked_at, last_used_at, created_at)`)
     .order('created_at', { ascending: false })
   if (error) throw new Error(`Failed to load API partners: ${error.message}`)
   const { data: orders } = await admin.from('api_partner_orders').select('*').order('created_at', { ascending: false }).limit(100)
   const { data: logs } = await admin.from('api_partner_logs').select('*').order('created_at', { ascending: false }).limit(100)
   const { data: webhooks } = await admin.from('api_partner_webhook_deliveries').select('*').order('created_at', { ascending: false }).limit(100)
-  return { success: true, data: { partners: partners || [], orders: orders || [], logs: logs || [], webhooks: webhooks || [] } }
+  const safePartners = (partners || []).map((partner: any) => {
+    const { webhook_secret: webhookSecret, ...safePartner } = partner
+    return { ...safePartner, has_webhook_secret: Boolean(webhookSecret) }
+  })
+  return { success: true, data: { partners: safePartners, orders: orders || [], logs: logs || [], webhooks: webhooks || [] } }
 }
 
 async function handleAdminCreate(admin: SupabaseAdmin, body: Record<string, unknown>) {

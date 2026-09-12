@@ -9,7 +9,8 @@ create table if not exists public.api_partners (
     'social_boost',
     'bills_airtime',
     'giftcards',
-    'crypto'
+    'crypto',
+    'telegram_stars'
   ],
   markup_percent numeric not null default 0,
   balance_ngn numeric not null default 0,
