@@ -489,7 +489,7 @@ serve(async (req) => {
     const payload = rawBody ? JSON.parse(rawBody) as Record<string, any> : {}
     const accountNumber = extractAccountNumber(payload)
     const amount = extractAmount(payload)
-    const reference = extractReference(payload) || `PKF-INWARD-${Date.now()}`
+    const reference = extractReference(payload)
     const status = extractStatus(payload)
 
     console.log('PocketFi webhook received.')
@@ -503,8 +503,10 @@ serve(async (req) => {
       .select('id')
       .single()
 
-    if (!accountNumber || !amount) {
-      const message = 'Missing account number or amount in PocketFi webhook payload'
+    if (!accountNumber || !amount || !reference) {
+      const message = !reference
+        ? 'Missing transaction reference in PocketFi webhook payload. Payment logged for manual review and not credited.'
+        : 'Missing account number or amount in PocketFi webhook payload'
       console.error(message)
       if (logRow) {
         await supabase.from('pocketfi_webhook_logs').update({ error_message: message }).eq('id', logRow.id)

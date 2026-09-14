@@ -81,6 +81,7 @@ import {
   getUserTransactions,
   getUserOrdersAdmin,
   adminAdjustBalance,
+  adminRecordLedgerCredit,
   adminSuspendUser,
   adminUnsuspendUser,
   getAppSetting,
@@ -674,6 +675,7 @@ export default function AdminPage() {
   const [adjustmentAmount, setAdjustmentAmount] = useState('')
   const [adjustmentReason, setAdjustmentReason] = useState('')
   const [adjustmentType, setAdjustmentType] = useState<'add' | 'subtract'>('add')
+  const [ledgerOnlyCredit, setLedgerOnlyCredit] = useState(false)
   const [userTransactions, setUserTransactions] = useState<any[]>([])
   const [userOrders, setUserOrders] = useState<any[]>([])
   const [showAllUserTransactions, setShowAllUserTransactions] = useState(false)
@@ -4225,6 +4227,7 @@ export default function AdminPage() {
     setAdjustmentAmount('')
     setAdjustmentReason('')
     setAdjustmentType('add')
+    setLedgerOnlyCredit(false)
     setAdjustBalanceOpen(true)
   }
 
@@ -4268,11 +4271,41 @@ export default function AdminPage() {
       return
     }
 
+    if (ledgerOnlyCredit && adjustmentType !== 'add') {
+      toast({
+        title: 'Credit repair only',
+        description: 'Ledger repair records missing credits only. Use normal deduct funds to debit a balance.',
+        variant: 'destructive',
+      })
+      return
+    }
+
     // Calculate actual adjustment (negative for deduction)
     const adjustment = adjustmentType === 'add' ? amount : -amount
 
     try {
       setIsAdjusting(true)
+
+      if (ledgerOnlyCredit) {
+        const result = await adminRecordLedgerCredit(selectedUser.id, amount, cleanReason)
+
+        if (result.success) {
+          if (result.transaction) {
+            setUserTransactions(prev => [result.transaction, ...prev])
+          }
+
+          toast({
+            title: 'Ledger credit recorded',
+            description: `Recorded ₦${amount.toLocaleString()} as historical admin credit. Wallet balance was not changed.`,
+          })
+
+          setAdjustBalanceOpen(false)
+          setAdjustmentAmount('')
+          setAdjustmentReason('')
+          setLedgerOnlyCredit(false)
+          return
+        }
+      }
       
       const result = await adminAdjustBalance(
         selectedUser.id,
@@ -4298,6 +4331,7 @@ export default function AdminPage() {
         setAdjustBalanceOpen(false)
         setAdjustmentAmount('')
         setAdjustmentReason('')
+        setLedgerOnlyCredit(false)
         setSelectedUser(null)
       }
     } catch (error: any) {
@@ -6367,7 +6401,13 @@ export default function AdminPage() {
                 {/* Adjustment Type Selector */}
                 <div className="space-y-2">
                   <Label>Action</Label>
-                  <Select value={adjustmentType} onValueChange={(value: 'add' | 'subtract') => setAdjustmentType(value)}>
+                  <Select
+                    value={adjustmentType}
+                    onValueChange={(value: 'add' | 'subtract') => {
+                      setAdjustmentType(value)
+                      if (value === 'subtract') setLedgerOnlyCredit(false)
+                    }}
+                  >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -6377,6 +6417,22 @@ export default function AdminPage() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                {adjustmentType === 'add' && (
+                  <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
+                    <Checkbox
+                      checked={ledgerOnlyCredit}
+                      onCheckedChange={(checked) => setLedgerOnlyCredit(Boolean(checked))}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      <span className="font-medium">Record missing credit only</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        Use this when the wallet was already topped up before, but the transaction history is missing. This does not add money again.
+                      </span>
+                    </span>
+                  </label>
+                )}
 
                 {/* Amount Input */}
                 <div className="space-y-2">
@@ -6413,8 +6469,13 @@ export default function AdminPage() {
                         {adjustmentType === 'add' ? '+' : '-'}₦{parseFloat(adjustmentAmount || '0').toLocaleString()}
                       </p>
                       <p className="font-bold border-t pt-1 mt-1">
-                        New Balance: ₦{calculateNewBalance()}
+                        {ledgerOnlyCredit ? `Balance stays: ₦${(selectedUser?.wallet_balance || 0).toLocaleString()}` : `New Balance: ₦${calculateNewBalance()}`}
                       </p>
+                      {ledgerOnlyCredit && (
+                        <p className="text-xs text-muted-foreground">
+                          A completed admin_credit transaction will be recorded for history and fraud review only.
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -6432,7 +6493,7 @@ export default function AdminPage() {
                   onClick={handleSubmitAdjustment} 
                   disabled={!adjustmentAmount || adjustmentReason.trim().length < 3 || isAdjusting}
                 >
-                  {isAdjusting ? 'Processing...' : (adjustmentType === 'add' ? 'Add Funds' : 'Deduct Funds')}
+                  {isAdjusting ? 'Processing...' : ledgerOnlyCredit ? 'Record Credit History' : (adjustmentType === 'add' ? 'Add Funds' : 'Deduct Funds')}
                 </Button>
               </DialogFooter>
             </DialogContent>

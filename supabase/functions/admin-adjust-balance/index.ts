@@ -105,6 +105,15 @@ async function upsertFraudDeviceBans(
   return { ipBans, deviceBans }
 }
 
+async function transactionsHaveIdempotencyKey(supabaseAdmin: any) {
+  const { error } = await supabaseAdmin
+    .from('transactions')
+    .select('idempotency_key')
+    .limit(1)
+
+  return !(error && /idempotency_key/i.test(error.message || ''))
+}
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -162,6 +171,67 @@ serve(async (req) => {
 
     // Parse request body
     const body = await req.json();
+    const hasTransactionIdempotencyKey = await transactionsHaveIdempotencyKey(supabaseAdmin);
+
+    if (body?.action === 'record_ledger_credit') {
+      const targetUserId = String(body.target_user_id || '').trim();
+      const amount = Number(body.amount);
+      const cleanLedgerReason = String(body.reason || '').trim();
+
+      if (!targetUserId) throw new Error('target_user_id is required');
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('A positive amount is required');
+      if (cleanLedgerReason.length < 3) throw new Error('A reason with at least 3 characters is required');
+
+      const { data: targetProfile, error: profileError } = await supabaseAdmin
+        .from('profiles')
+        .select('id, email, wallet_balance, is_staff, is_admin')
+        .eq('id', targetUserId)
+        .single();
+
+      if (profileError || !targetProfile) {
+        throw new Error('Target user not found');
+      }
+
+      if (targetProfile.is_staff || targetProfile.is_admin) {
+        throw new Error('Ledger repair is only available for customer accounts');
+      }
+
+      const repairReference = `ADMIN-LEDGER-REPAIR-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const repairPayload: Record<string, unknown> = {
+        user_id: targetUserId,
+        type: 'admin_credit',
+        amount,
+        status: 'completed',
+        balance_after: Number(targetProfile.wallet_balance || 0),
+        description: `Admin ledger repair by ${user.email}: ${cleanLedgerReason}`,
+        reference: repairReference,
+      };
+      if (hasTransactionIdempotencyKey) repairPayload.idempotency_key = body.idempotency_key || null;
+
+      const { data: repairTx, error: repairError } = await supabaseAdmin
+        .from('transactions')
+        .insert(repairPayload)
+        .select('*')
+        .single();
+
+      if (repairError || !repairTx) {
+        throw new Error(`Could not record ledger repair: ${repairError?.message || 'unknown error'}`);
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          target_user_id: targetUserId,
+          target_email: targetProfile.email,
+          amount,
+          balance_unchanged: true,
+          current_balance: Number(targetProfile.wallet_balance || 0),
+          transaction: repairTx,
+          recorded_by: user.email,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     if (body?.action === 'suspend_user' || body?.action === 'unsuspend_user') {
       const targetUserId = String(body.target_user_id || '').trim();
@@ -281,7 +351,7 @@ serve(async (req) => {
     console.log(`   Reason: ${cleanReason}`);
 
     // Check idempotency (prevent duplicate adjustments)
-    if (idempotency_key) {
+    if (idempotency_key && hasTransactionIdempotencyKey) {
       const { data: existingTx } = await supabaseAdmin
         .from('transactions')
         .select('id')
@@ -329,18 +399,20 @@ serve(async (req) => {
     // the wallet must not move because the fraud ledger would lose authority.
     const transactionType = adjustment_amount > 0 ? 'admin_credit' : 'admin_debit';
     const adjustmentReference = `ADMIN-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    const adjustmentPayload: Record<string, unknown> = {
+      user_id: target_user_id,
+      type: transactionType,
+      amount: Math.abs(adjustment_amount),
+      status: 'pending',
+      balance_after: currentBalance,
+      description: `Admin adjustment by ${user.email}: ${cleanReason}`,
+      reference: adjustmentReference,
+    };
+    if (hasTransactionIdempotencyKey) adjustmentPayload.idempotency_key = idempotency_key || null;
+
     const { data: transactionRow, error: txInsertError } = await supabaseAdmin
       .from('transactions')
-      .insert({
-        user_id: target_user_id,
-        type: transactionType,
-        amount: Math.abs(adjustment_amount),
-        status: 'pending',
-        balance_after: currentBalance,
-        description: `Admin adjustment by ${user.email}: ${cleanReason}`,
-        reference: adjustmentReference,
-        idempotency_key: idempotency_key || null,
-      })
+      .insert(adjustmentPayload)
       .select('id')
       .single();
 

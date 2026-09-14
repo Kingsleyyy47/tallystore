@@ -2024,17 +2024,16 @@ async function handleInternalConfirmCheckout(admin: SupabaseAdmin, req: Request,
   const transactionReference = cleanText(body.transaction_reference || body.transactionReference || body.reference, 180)
   const orderId = cleanText(body.order_id || body.partner_order_id, 80)
   if ((!accountNumber || !Number.isFinite(amount) || amount <= 0) && !orderId) throw new Error('account_number and amount are required')
+  if (!transactionReference) throw new Error('transaction_reference is required to confirm a partner checkout payment')
 
-  if (transactionReference) {
-    const { data: existingPaid, error: existingPaidError } = await admin
-      .from('api_partner_orders')
-      .select('*')
-      .eq('payment_transaction_reference', transactionReference)
-      .maybeSingle()
-    if (existingPaidError) throw new Error(`Failed to check payment reference: ${existingPaidError.message}`)
-    if (existingPaid) {
-      return { success: true, data: publicPartnerOrder(existingPaid), already_processed: true }
-    }
+  const { data: existingPaid, error: existingPaidError } = await admin
+    .from('api_partner_orders')
+    .select('*')
+    .eq('payment_transaction_reference', transactionReference)
+    .maybeSingle()
+  if (existingPaidError) throw new Error(`Failed to check payment reference: ${existingPaidError.message}`)
+  if (existingPaid) {
+    return { success: true, data: publicPartnerOrder(existingPaid), already_processed: true }
   }
 
   let query = admin.from('api_partner_orders').select('*')
@@ -2117,7 +2116,7 @@ async function handleInternalConfirmCheckout(admin: SupabaseAdmin, req: Request,
     status: 'payment_confirmed',
     paid_at: new Date().toISOString(),
     payment_reference: order.payment_reference || `POCKETFI-${order.payment_account_number || accountNumber}`,
-    payment_transaction_reference: transactionReference || order.payment_transaction_reference || `POCKETFI-${accountNumber}-${Date.now()}`,
+    payment_transaction_reference: transactionReference,
     payment_amount_ngn: paidAmount,
     response_payload: {
       ...(order.response_payload || {}),

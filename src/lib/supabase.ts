@@ -2143,6 +2143,49 @@ export async function adminAdjustBalance(
   }
 }
 
+export async function adminRecordLedgerCredit(
+  userId: string,
+  amount: number,
+  reason: string,
+): Promise<{ success: boolean; transaction?: any; currentBalance?: number }> {
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-adjust-balance', {
+      body: {
+        action: 'record_ledger_credit',
+        target_user_id: userId,
+        amount,
+        reason,
+        idempotency_key: `admin-ledger-repair-${userId}-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+      },
+    })
+
+    if (error) {
+      let message = error.message || 'Failed to record ledger credit'
+      const context = (error as any)?.context
+      if (context && typeof context.json === 'function') {
+        try {
+          const body = await context.clone().json()
+          message = body?.error || body?.message || message
+        } catch {
+          // Keep Supabase client error.
+        }
+      }
+      throw new Error(message)
+    }
+
+    if (!data?.success) throw new Error(data?.error || 'Ledger credit repair failed')
+
+    return {
+      success: true,
+      transaction: data.transaction,
+      currentBalance: data.current_balance,
+    }
+  } catch (error) {
+    console.error('Error in adminRecordLedgerCredit:', error)
+    throw error
+  }
+}
+
 export async function adminUnsuspendUser(userId: string): Promise<{ success: boolean }> {
   try {
     const { data, error } = await supabase.functions.invoke('admin-adjust-balance', {
