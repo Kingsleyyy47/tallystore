@@ -13,7 +13,6 @@ import {
   Clock,
   XCircle,
   Wallet,
-  Bitcoin,
   Search,
   Copy,
 } from "lucide-react";
@@ -114,8 +113,7 @@ function GiftCardsEsimsInner() {
   const { formatPrice } = useCurrency();
 
   const [walletBalance, setWalletBalance] = useState<number>(0);
-  const [cryptoBalance, setCryptoBalance] = useState<number>(0);
-  const [paymentSource, setPaymentSource] = useState<'wallet' | 'crypto'>('wallet');
+  const paymentSource: 'wallet' = 'wallet';
   const [loadingBalance, setLoadingBalance] = useState(true);
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -230,14 +228,13 @@ function GiftCardsEsimsInner() {
 
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('wallet_balance, crypto_balance')
+        .select('wallet_balance')
         .eq('id', user.id)
         .single();
 
       if (error) throw error;
 
       setWalletBalance(profile?.wallet_balance || 0);
-      setCryptoBalance(profile?.crypto_balance || 0);
     } catch (error) {
       console.error('Error fetching balance:', error);
       toast({ title: "Error", description: "Failed to load balance", variant: "destructive" });
@@ -246,7 +243,7 @@ function GiftCardsEsimsInner() {
     }
   };
 
-  const selectedBalance = paymentSource === 'wallet' ? walletBalance : cryptoBalance;
+  const selectedBalance = walletBalance;
   const formatBalance = (value: number) =>
     showBalances ? formatPrice(value) : '***';
 
@@ -433,7 +430,7 @@ function GiftCardsEsimsInner() {
         unit_value: unitPrice,
         quantity: qty,
         expected_amount_ngn: expectedAmountNgn,
-        payment_source: paymentSource,
+        payment_source: 'wallet',
         recommended_score: selectedProduct._score || 0,
         personal_buy_count: selectedProduct._personal_buy_count || 0,
       },
@@ -446,7 +443,7 @@ function GiftCardsEsimsInner() {
         package_id: selectedPackageId || undefined,
         value: selectedPackageId ? undefined : unitPrice,
         quantity: qty,
-        payment_source: paymentSource,
+        payment_source: 'wallet',
         idempotency_key: idempotencyKey,
         expected_amount_ngn: expectedAmountNgn,
         revenue_context: getRevenueRequestContext(),
@@ -547,9 +544,8 @@ function GiftCardsEsimsInner() {
             <Card className="border-2">
               <CardContent className="pt-6">
                 <p className="text-sm font-medium text-muted-foreground mb-4">Pay with</p>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4">
                   <div
-                    onClick={() => setPaymentSource('wallet')}
                     className={`cursor-pointer p-4 rounded-lg border-2 transition-all ${
                       paymentSource === 'wallet'
                         ? 'border-green-500 bg-green-50 dark:bg-green-950'
@@ -573,45 +569,15 @@ function GiftCardsEsimsInner() {
                       </p>
                     )}
                   </div>
-
-                  <div
-                    onClick={() => setPaymentSource('crypto')}
-                    className={`cursor-pointer p-4 rounded-lg border-2 transition-all ${
-                      paymentSource === 'crypto'
-                        ? 'border-orange-500 bg-orange-50 dark:bg-orange-950'
-                        : 'border-gray-200 hover:border-gray-300 dark:border-gray-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className={`p-2 rounded-full ${paymentSource === 'crypto' ? 'bg-orange-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
-                        <Bitcoin className={`w-5 h-5 ${paymentSource === 'crypto' ? 'text-white' : 'text-gray-600 dark:text-gray-400'}`} />
-                      </div>
-                      <div>
-                        <p className="font-semibold text-sm">Crypto Balance</p>
-                        <p className="text-xs text-muted-foreground">From crypto deposits</p>
-                      </div>
-                    </div>
-                    {loadingBalance ? (
-                      <p className="text-lg font-bold">Loading...</p>
-                    ) : (
-                      <p className={`text-xl font-bold ${paymentSource === 'crypto' ? 'text-orange-700 dark:text-orange-400' : 'text-foreground'}`}>
-                        {formatBalance(cryptoBalance)}
-                      </p>
-                    )}
-                  </div>
                 </div>
 
                 <div className={`mt-4 p-3 rounded-lg flex items-center justify-between ${
                   paymentSource === 'wallet' ? 'bg-green-100 dark:bg-green-900/30' : 'bg-orange-100 dark:bg-orange-900/30'
                 }`}>
                   <div className="flex items-center gap-2">
-                    {paymentSource === 'wallet' ? (
-                      <Wallet className="w-5 h-5 text-green-700 dark:text-green-400" />
-                    ) : (
-                      <Bitcoin className="w-5 h-5 text-orange-700 dark:text-orange-400" />
-                    )}
+                    <Wallet className="w-5 h-5 text-green-700 dark:text-green-400" />
                     <span className="text-sm font-medium">
-                      Paying with {paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} Balance
+                      Paying with TallyStore Balance
                     </span>
                   </div>
                   <span className={`text-lg font-bold ${
@@ -625,10 +591,10 @@ function GiftCardsEsimsInner() {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => navigate(paymentSource === 'wallet' ? '/wallet' : '/crypto-exchange')}
+                    onClick={() => navigate('/wallet')}
                     className="mt-3 w-full"
                   >
-                    {paymentSource === 'wallet' ? 'Top Up Wallet' : 'Deposit Crypto'}
+                    Top Up Wallet
                   </Button>
                 )}
               </CardContent>

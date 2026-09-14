@@ -720,6 +720,19 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
 
+    if (String(Deno.env.get('CRYPTO_TOPUP_ENABLED') || '').trim().toLowerCase() !== 'true') {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Crypto payments are temporarily disabled. Please fund your wallet by bank transfer.',
+        }),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 403,
+        }
+      );
+    }
+
     await assertPurchasingCustomer(supabaseAdmin, user.id, req);
 
     // Parse request body

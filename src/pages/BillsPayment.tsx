@@ -30,8 +30,7 @@ import {
   Clock,
   XCircle,
   Wallet,
-  TrendingDown,
-  Bitcoin
+  TrendingDown
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase";
@@ -76,8 +75,7 @@ const SERVICE_PROVIDERS = [
 export default function BillsPayment() {
   const [activeTab, setActiveTab] = useState<'airtime' | 'data'>('airtime');
   const [walletBalance, setWalletBalance] = useState<number>(0);
-  const [cryptoBalance, setCryptoBalance] = useState<number>(0);
-  const [paymentSource, setPaymentSource] = useState<'wallet' | 'crypto'>('wallet');
+  const paymentSource: 'wallet' = 'wallet';
   const [provider, setProvider] = useState<string>('');
   const [phone, setPhone] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
@@ -244,14 +242,13 @@ export default function BillsPayment() {
 
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('wallet_balance, crypto_balance')
+        .select('wallet_balance')
         .eq('id', user.id)
         .single();
 
       if (error) throw error;
 
       setWalletBalance(profile?.wallet_balance || 0);
-      setCryptoBalance(profile?.crypto_balance || 0);
     } catch (error) {
       console.error('Error fetching balance:', error);
       toast({
@@ -265,7 +262,7 @@ export default function BillsPayment() {
   };
 
   // Get the currently selected balance
-  const selectedBalance = paymentSource === 'wallet' ? walletBalance : cryptoBalance;
+  const selectedBalance = walletBalance;
   const formatBalance = (value: number) =>
     showBalances ? formatPrice(value) : '***';
 
@@ -408,8 +405,8 @@ export default function BillsPayment() {
       toast({
         title: "Insufficient Balance",
         description: showBalances
-          ? `You need ${formatPrice(purchaseAmount)} but only have ${formatPrice(selectedBalance)} in your ${paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} balance`
-          : `You need ${formatPrice(purchaseAmount)} in your ${paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} balance`,
+          ? `You need ${formatPrice(purchaseAmount)} but only have ${formatPrice(selectedBalance)} in your TallyStore balance`
+          : `You need ${formatPrice(purchaseAmount)} in your TallyStore balance`,
         variant: "destructive",
       });
       return;
@@ -428,7 +425,7 @@ export default function BillsPayment() {
         service_provider: provider,
         phone: phone,
         data_plan_code: activeTab === 'data' ? selectedPlan : null,
-        payment_source: paymentSource,
+        payment_source: 'wallet',
         idempotency_key: idempotencyKey,
         revenue_context: getRevenueRequestContext(),
       };
@@ -448,7 +445,7 @@ export default function BillsPayment() {
           personal_plan_buy_count: activeTab === 'data' && selectedPlan
             ? dataPlanBuyCounts.get(`${provider.toUpperCase()}:${selectedPlan}`) || 0
             : 0,
-          payment_source: paymentSource,
+          payment_source: 'wallet',
         },
       });
       
@@ -570,10 +567,9 @@ export default function BillsPayment() {
             <Card className="border-2">
               <CardContent className="p-4 pt-5 sm:p-6">
                 <p className="text-sm font-medium text-muted-foreground mb-4">Pay with</p>
-                <div className="grid min-w-0 grid-cols-2 gap-2 sm:gap-4">
+                <div className="grid min-w-0 grid-cols-1 gap-2 sm:gap-4">
                   {/* TallyStore Wallet Option */}
                   <div
-                    onClick={() => setPaymentSource('wallet')}
                     className={`min-w-0 cursor-pointer rounded-lg border-2 p-3 transition-all sm:p-4 ${
                       paymentSource === 'wallet'
                         ? 'border-green-500 bg-green-50 dark:bg-green-950'
@@ -597,33 +593,6 @@ export default function BillsPayment() {
                       </p>
                     )}
                   </div>
-
-                  {/* Crypto Balance Option */}
-                  <div
-                    onClick={() => setPaymentSource('crypto')}
-                    className={`min-w-0 cursor-pointer rounded-lg border-2 p-3 transition-all sm:p-4 ${
-                      paymentSource === 'crypto'
-                        ? 'border-orange-500 bg-orange-50 dark:bg-orange-950'
-                        : 'border-gray-200 hover:border-gray-300 dark:border-gray-700'
-                    }`}
-                  >
-                    <div className="mb-2 flex min-w-0 items-center gap-2 sm:gap-3">
-                      <div className={`shrink-0 rounded-full p-2 ${paymentSource === 'crypto' ? 'bg-orange-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
-                        <Bitcoin className={`h-4 w-4 sm:h-5 sm:w-5 ${paymentSource === 'crypto' ? 'text-white' : 'text-gray-600 dark:text-gray-400'}`} />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold leading-tight sm:text-sm">Crypto Balance</p>
-                        <p className="text-[10px] leading-tight text-muted-foreground sm:text-xs">From crypto deposits</p>
-                      </div>
-                    </div>
-                    {loadingBalance ? (
-                      <p className="text-sm font-bold sm:text-lg">Loading...</p>
-                    ) : (
-                      <p className={`max-w-full truncate text-base font-black leading-tight sm:text-xl ${paymentSource === 'crypto' ? 'text-orange-700 dark:text-orange-400' : 'text-foreground'}`}>
-                        {formatBalance(cryptoBalance)}
-                      </p>
-                    )}
-                  </div>
                 </div>
                 
                 {/* Selected Balance Indicator */}
@@ -633,13 +602,9 @@ export default function BillsPayment() {
                     : 'bg-orange-100 dark:bg-orange-900/30'
                 }`}>
                   <div className="flex min-w-0 items-center gap-2">
-                    {paymentSource === 'wallet' ? (
-                      <Wallet className="h-4 w-4 shrink-0 text-green-700 dark:text-green-400 sm:h-5 sm:w-5" />
-                    ) : (
-                      <Bitcoin className="h-4 w-4 shrink-0 text-orange-700 dark:text-orange-400 sm:h-5 sm:w-5" />
-                    )}
+                    <Wallet className="h-4 w-4 shrink-0 text-green-700 dark:text-green-400 sm:h-5 sm:w-5" />
                     <span className="min-w-0 text-xs font-bold leading-tight sm:text-sm">
-                      Paying with {paymentSource === 'wallet' ? 'TallyStore' : 'Crypto'} Balance
+                      Paying with TallyStore Balance
                     </span>
                   </div>
                   <span className={`max-w-full truncate text-base font-black sm:text-lg ${
@@ -655,10 +620,10 @@ export default function BillsPayment() {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => navigate(paymentSource === 'wallet' ? '/wallet' : '/crypto-exchange')}
+                    onClick={() => navigate('/wallet')}
                     className="mt-3 w-full"
                   >
-                    {paymentSource === 'wallet' ? 'Top Up Wallet' : 'Deposit Crypto'}
+                    Top Up Wallet
                   </Button>
                 )}
               </CardContent>

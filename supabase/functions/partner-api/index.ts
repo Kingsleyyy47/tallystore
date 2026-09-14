@@ -1759,6 +1759,9 @@ async function handleTelegramOrder(admin: SupabaseAdmin, auth: PartnerAuth, body
 }
 
 async function handleCryptoOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>) {
+  if (String(Deno.env.get('CRYPTO_TOPUP_ENABLED') || '').trim().toLowerCase() !== 'true') {
+    throw new Error('Crypto payments are temporarily disabled.')
+  }
   if (!hasSection(auth.partner, 'crypto')) throw new Error('Crypto is not enabled for this API key')
   const cryptoType = String(body.crypto_type || String(body.item_id || '').replace(/^crypto:/, '')).toLowerCase()
   const cryptoAmount = Number(body.crypto_amount)

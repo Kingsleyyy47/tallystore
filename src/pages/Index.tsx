@@ -111,7 +111,7 @@ const trustPills = [
 ]
 
 const promiseCards = [
-  { title: "Secure payments", body: "Wallet, crypto, and direct checkout stay connected to your account.", icon: CreditCard },
+  { title: "Secure payments", body: "Wallet and direct checkout stay connected to your account.", icon: CreditCard },
   { title: "Real availability", body: "Categories are loaded from live product groups where stock exists.", icon: PackageCheck },
   { title: "Customer first", body: "Mobile navigation, order history, and wallet access stay one tap away.", icon: Star },
 ]

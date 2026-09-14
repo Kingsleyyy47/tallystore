@@ -426,6 +426,7 @@ function isTrustedCreditTransaction(tx: any) {
     'admin_credit',
     'staff_credit',
     'referral_withdrawal',
+    'crypto_credit',
   ].includes(type)) {
     return true
   }
@@ -443,6 +444,16 @@ function isTrustedCreditTransaction(tx: any) {
     'credited',
     'deposit',
   ].some((needle) => description.includes(needle))
+}
+
+function isTrustedCryptoCreditTransaction(tx: any) {
+  const status = normalizeLedgerText(tx.status)
+  const transactionType = normalizeLedgerText(tx.transaction_type || tx.type)
+  const amount = Number(tx.naira_amount || tx.amount || 0)
+  if (amount <= 0) return false
+  if (!tx.credited_at) return false
+  if (!['completed', 'credited', 'paid', 'finished'].includes(status)) return false
+  return ['sell', 'crypto_sell', 'deposit', 'crypto_deposit'].includes(transactionType)
 }
 
 function isWalletSpendTransaction(tx: any) {
@@ -689,6 +700,8 @@ export default function AdminPage() {
   const [fraudLoading, setFraudLoading] = useState(false)
   const [fraudError, setFraudError] = useState<string | null>(null)
   const [fraudLastLoadedAt, setFraudLastLoadedAt] = useState<string | null>(null)
+  const [fraudSearchQuery, setFraudSearchQuery] = useState('')
+  const [fraudReviewFilter, setFraudReviewFilter] = useState<'all' | 'overspent' | 'suspended' | 'unblock' | 'duplicate' | 'watchlist'>('all')
   const [fraudSuspendingUserId, setFraudSuspendingUserId] = useState<string | null>(null)
   const [fraudUnsuspendingUserId, setFraudUnsuspendingUserId] = useState<string | null>(null)
 
@@ -2690,9 +2703,10 @@ export default function AdminPage() {
     }
 
     try {
-      const [profileRows, transactionRows, siteVisitRows] = await Promise.all([
+      const [profileRows, transactionRows, cryptoTransactionRows, siteVisitRows] = await Promise.all([
         readRows('profiles', 50000),
         readRows('transactions', 500000),
+        readRows('crypto_transactions', 200000).catch(() => []),
         readRows('site_visits', 100000).catch(() => []),
       ])
 
@@ -2776,6 +2790,12 @@ export default function AdminPage() {
         } else if (isWalletRefundTransaction(tx) && amount > 0) {
           ledger.completedRefunds += amount
         }
+      }
+
+      for (const tx of cryptoTransactionRows) {
+        const userId = String(tx.user_id || '')
+        if (!userId || !isTrustedCryptoCreditTransaction(tx)) continue
+        ensureLedger(userId).trustedCredits += Number(tx.naira_amount || tx.amount || 0)
       }
 
       for (const [reference, info] of topupRefs) {
@@ -2890,6 +2910,49 @@ export default function AdminPage() {
       loadFraudReview()
     }
   }, [adminTab, fraudLoading, fraudRows.length, loadFraudReview])
+
+  const filteredFraudRows = useMemo(() => {
+    const query = fraudSearchQuery.trim().toLowerCase()
+
+    return fraudRows.filter((row) => {
+      const tabMatches =
+        fraudReviewFilter === 'all' ||
+        (fraudReviewFilter === 'overspent' && row.reviewType === 'overspent') ||
+        (fraudReviewFilter === 'suspended' && (row.reviewType === 'suspended_risk' || row.suspended)) ||
+        (fraudReviewFilter === 'unblock' && row.reviewType === 'review_unblock') ||
+        (fraudReviewFilter === 'duplicate' && row.reviewType === 'duplicate_deposit') ||
+        (fraudReviewFilter === 'watchlist' && row.reviewType === 'watchlist')
+
+      if (!tabMatches) return false
+      if (!query) return true
+
+      return [
+        row.email,
+        row.fullName,
+        row.userId,
+        row.reason,
+        row.suspensionReason,
+        row.lastIpAddress,
+        row.lastIpLocation,
+        row.lastIpIsp,
+        row.deviceLabel,
+        row.deviceType,
+        row.deviceOs,
+        row.deviceBrowser,
+        ...row.ipAddresses,
+        ...row.duplicateTopupReferences,
+      ].some((value) => String(value || '').toLowerCase().includes(query))
+    })
+  }, [fraudReviewFilter, fraudRows, fraudSearchQuery])
+
+  const fraudFilterCounts = useMemo(() => ({
+    all: fraudRows.length,
+    overspent: fraudRows.filter(row => row.reviewType === 'overspent').length,
+    suspended: fraudRows.filter(row => row.reviewType === 'suspended_risk' || row.suspended).length,
+    unblock: fraudRows.filter(row => row.reviewType === 'review_unblock').length,
+    duplicate: fraudRows.filter(row => row.reviewType === 'duplicate_deposit').length,
+    watchlist: fraudRows.filter(row => row.reviewType === 'watchlist').length,
+  }), [fraudRows])
 
   const loadSalesAnalytics = useCallback(async () => {
     setSalesLoading(true)
@@ -4168,8 +4231,15 @@ export default function AdminPage() {
       setShowAllUserOrders(false)
       
       // Load user transactions, orders, and latest server-captured visit evidence.
-      const [transactions, orders, latestVisitResult] = await Promise.all([
+      const [transactions, cryptoTransactions, orders, latestVisitResult] = await Promise.all([
         getUserTransactions(user.id),
+        supabase
+          .from('crypto_transactions' as any)
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(500)
+          .then(({ data, error }) => error ? { data: [], error } : { data: data || [], error: null }),
         getUserOrdersAdmin(user.id),
         supabase
           .from('site_visits' as any)
@@ -4201,7 +4271,20 @@ export default function AdminPage() {
         fraud_device_os: user.fraud_device_os || deviceInfo.os,
         fraud_device_browser: user.fraud_device_browser || deviceInfo.browser,
       })
-      setUserTransactions(transactions)
+      const cryptoLedgerRows = (cryptoTransactions.data || []).map((tx: any) => ({
+        id: `crypto-${tx.id}`,
+        created_at: tx.created_at,
+        type: tx.credited_at ? 'crypto_credit' : (tx.transaction_type || 'crypto'),
+        status: tx.status,
+        description: `${tx.crypto_type || 'Crypto'} sell ${tx.credited_at ? 'credited' : normalizeStatus(tx.status || 'pending')}`,
+        amount: Number(tx.naira_amount || 0),
+        reference: tx.payment_reference || tx.nowpayments_payment_id || '',
+        payment_reference: tx.payment_reference || tx.nowpayments_payment_id || '',
+        credited_at: tx.credited_at || null,
+        transaction_type: tx.transaction_type || null,
+        naira_amount: Number(tx.naira_amount || 0),
+      }))
+      setUserTransactions([...transactions, ...cryptoLedgerRows].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()))
       setUserOrders(orders)
       setViewUserOpen(true)
     } catch (error: any) {
@@ -7914,25 +7997,66 @@ export default function AdminPage() {
 
                   <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
                     <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'review_unblock').length}</p>
+                      <p className="text-2xl font-bold">{fraudFilterCounts.unblock}</p>
                       <p className="text-xs text-muted-foreground">Review to unblock</p>
                     </div>
                     <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'overspent' || row.reviewType === 'suspended_risk').length}</p>
+                      <p className="text-2xl font-bold">{fraudFilterCounts.overspent + fraudFilterCounts.suspended}</p>
                       <p className="text-xs text-muted-foreground">Overspent risk</p>
                     </div>
                     <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'duplicate_deposit').length}</p>
+                      <p className="text-2xl font-bold">{fraudFilterCounts.duplicate}</p>
                       <p className="text-xs text-muted-foreground">Duplicate deposits</p>
                     </div>
                     <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'watchlist').length}</p>
+                      <p className="text-2xl font-bold">{fraudFilterCounts.watchlist}</p>
                       <p className="text-xs text-muted-foreground">Watchlist</p>
                     </div>
                     <div className="rounded-lg border p-3">
                       <p className="text-2xl font-bold">{formatAdminNaira(fraudRows.reduce((sum, row) => sum + Math.max(row.exposure, 0), 0))}</p>
                       <p className="text-xs text-muted-foreground">Uncovered exposure</p>
                     </div>
+                  </div>
+
+                  <div className="space-y-3 rounded-lg border p-3">
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={fraudSearchQuery}
+                        onChange={(event) => setFraudSearchQuery(event.target.value)}
+                        placeholder="Search fraud by email, name, user ID, IP, location, device, reason, or deposit ref"
+                        className="pl-9"
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        ['all', 'All'],
+                        ['overspent', 'Overspent'],
+                        ['suspended', 'Suspended'],
+                        ['unblock', 'Unblock'],
+                        ['duplicate', 'Duplicate'],
+                        ['watchlist', 'Watchlist'],
+                      ].map(([id, label]) => {
+                        const filterId = id as typeof fraudReviewFilter
+                        return (
+                          <Button
+                            key={id}
+                            type="button"
+                            size="sm"
+                            variant={fraudReviewFilter === filterId ? 'default' : 'outline'}
+                            onClick={() => setFraudReviewFilter(filterId)}
+                          >
+                            {label}
+                            <Badge variant="secondary" className="ml-2">
+                              {fraudFilterCounts[filterId]}
+                            </Badge>
+                          </Button>
+                        )
+                      })}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Showing {filteredFraudRows.length} of {fraudRows.length} fraud review item(s).
+                    </p>
                   </div>
 
                   {fraudLoading ? (
@@ -7945,6 +8069,12 @@ export default function AdminPage() {
                       <CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-emerald-500" />
                       <p className="font-semibold">No fraud review items</p>
                       <p className="text-sm text-muted-foreground">No customer currently needs unblock review or risk attention.</p>
+                    </div>
+                  ) : filteredFraudRows.length === 0 ? (
+                    <div className="rounded-lg border p-8 text-center">
+                      <Search className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
+                      <p className="font-semibold">No matching fraud review items</p>
+                      <p className="text-sm text-muted-foreground">Change the search text or filter tab to see more results.</p>
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
@@ -7961,7 +8091,7 @@ export default function AdminPage() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {fraudRows.map((row) => (
+                          {filteredFraudRows.map((row) => (
                             <TableRow key={row.userId}>
                               <TableCell>
                                 <div className="space-y-1">

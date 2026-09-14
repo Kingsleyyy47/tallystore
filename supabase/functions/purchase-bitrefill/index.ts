@@ -639,8 +639,8 @@ serve(async (req) => {
     if (!idempotency_key || typeof idempotency_key !== 'string' || idempotency_key.length < 10) {
       throw new Error('Valid idempotency_key is required');
     }
-    if (!['wallet', 'crypto'].includes(payment_source)) {
-      throw new Error('Invalid payment_source. Must be "wallet" or "crypto"');
+    if (payment_source !== 'wallet') {
+      throw new Error('Crypto balance payments are temporarily disabled. Please use your TallyStore wallet.');
     }
     const expectedAmountNgn = parseFloat(expected_amount_ngn);
     if (!Number.isFinite(expectedAmountNgn) || expectedAmountNgn <= 0) {

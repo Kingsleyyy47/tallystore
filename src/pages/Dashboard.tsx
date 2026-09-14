@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button'
 import {
   ArrowDownRight,
   ArrowUpRight,
-  Bitcoin,
   ChevronDown,
   Clock,
   CreditCard,
@@ -28,7 +27,6 @@ import {
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
-import { CryptoBalanceCard } from '@/components/CryptoBalanceCard'
 import { PaymentVerificationCard } from '@/components/PaymentVerificationCard'
 import NavbarAuth from '@/components/NavbarAuth'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
@@ -37,7 +35,6 @@ import { cn } from '@/lib/utils'
 import { trackRevenueEvent } from '@/lib/revenue-os'
 import { RecommendationStrip } from '@/components/RecommendationCard'
 import { useRecommendations } from '@/hooks/useRecommendations'
-import { CryptoClosureNotice } from '@/components/CryptoClosureNotice'
 
 const INSTALL_PROMPT_STORAGE_KEY = 'pwa-install-prompt-dismissed'
 
@@ -369,7 +366,6 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen max-w-full overflow-x-hidden bg-[#f6f7fb] text-slate-950 dark:bg-background dark:text-foreground">
-      <CryptoClosureNotice />
       <NavbarAuth />
 
       <main
@@ -572,9 +568,8 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="grid gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(340px,0.65fr)]">
+              <div className="grid gap-6">
                 <PaymentVerificationCard />
-                <CryptoBalanceCard />
               </div>
             </div>
 
@@ -669,7 +664,7 @@ export default function Dashboard() {
                 <CardContent className="p-5">
                   <div className="mb-4 flex items-center gap-3">
                     <div className="grid h-10 w-10 place-items-center rounded-2xl bg-cyan-100 text-cyan-700">
-                      <Bitcoin className="h-5 w-5" />
+                      <PhoneCall className="h-5 w-5" />
                     </div>
                     <div>
                       <h2 className="font-black">US & Canada Numbers</h2>

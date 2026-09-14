@@ -2,7 +2,6 @@ import { useState, useCallback, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import {
-  Bitcoin,
   CreditCard,
   Download,
   Gift,
@@ -251,10 +250,6 @@ export default function Navbar() {
                           Rewards
                         </Link>
                       )}
-                      <Link to="/crypto-exchange" className={desktopDropdownItemClass}>
-                        <Bitcoin className="h-4 w-4" />
-                        Crypto Exchange
-                      </Link>
                       <Link to="/bills" className={desktopDropdownItemClass}>
                         <CreditCard className="h-4 w-4" />
                         Bills & Airtime
@@ -507,13 +502,6 @@ export default function Navbar() {
                         </Button>
                       </Link>
                     )}
-
-                    <Link to="/crypto-exchange" onClick={() => setIsMobileMenuOpen(false)}>
-                      <Button variant="ghost" className={mobileMenuButtonClass}>
-                        <Bitcoin className="h-4 w-4 shrink-0" />
-                        Crypto Exchange
-                      </Button>
-                    </Link>
 
                     <Link to="/bills" onClick={() => setIsMobileMenuOpen(false)}>
                       <Button variant="ghost" className={mobileMenuButtonClass}>

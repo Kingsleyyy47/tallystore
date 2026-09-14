@@ -828,8 +828,8 @@ serve(async (req) => {
     }
 
     // Validate payment source
-    if (!['wallet', 'crypto'].includes(payment_source)) {
-      throw new Error('Invalid payment_source. Must be "wallet" or "crypto"');
+    if (payment_source !== 'wallet') {
+      throw new Error('Crypto balance payments are temporarily disabled. Please use your TallyStore wallet.');
     }
 
     // Validate service provider

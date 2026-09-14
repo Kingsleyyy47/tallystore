@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Routes, Route } from "react-router-dom";
+import { Navigate, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import { AuthProvider } from '@/contexts/SimpleAuth'
 import { CurrencyProvider } from '@/contexts/CurrencyContext'
@@ -71,10 +71,7 @@ import WebServicesPage from '@/pages/WebServicesPage'
 import AdminPage from '@/pages/AdminPage'
 import StaffAdminPage from '@/pages/StaffAdminPage'
 import EmailConfirmation from '@/pages/EmailConfirmation'
-import CryptoExchange from '@/pages/CryptoExchange'
-import CryptoWithdrawal from '@/pages/CryptoWithdrawal'
 import ReferralWithdrawal from '@/pages/ReferralWithdrawal'
-import CryptoHistory from '@/pages/CryptoHistory'
 import BillsPayment from "./pages/BillsPayment";
 import GiftCardsEsims from "./pages/GiftCardsEsims";
 import SocialBoostPage from "./pages/SocialBoostPage";
@@ -217,7 +214,7 @@ const App = () => {
                 path="/crypto-exchange"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <CryptoExchange />
+                    <Navigate to="/wallet" replace />
                   </ProtectedRoute>
                 }
               />
@@ -241,7 +238,7 @@ const App = () => {
                 path="/crypto-withdrawal"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <CryptoWithdrawal />
+                    <Navigate to="/wallet" replace />
                   </ProtectedRoute>
                 }
               />
@@ -257,7 +254,7 @@ const App = () => {
                 path="/crypto-history"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <CryptoHistory />
+                    <Navigate to="/wallet" replace />
                   </ProtectedRoute>
                 }
               />

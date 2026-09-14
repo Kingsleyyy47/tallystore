@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { CreditCard, Loader2, Plus, Copy, Check, Landmark, Bitcoin } from 'lucide-react';
+import { CreditCard, Loader2, Plus, Copy, Check, Landmark } from 'lucide-react';
 import { useAuth } from '@/contexts/SimpleAuth';
 import { initiatePayment, type PaymentData } from '@/services/ercaspay';
 import { getOrCreatePocketFiAccount, type PocketFiAccount } from '@/services/pocketfi';
@@ -14,7 +14,6 @@ import { useToast } from '@/hooks/use-toast';
 import { useExchangeRate } from '@/hooks/useExchangeRate';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { cn } from '@/lib/utils';
-import { useNavigate } from 'react-router-dom';
 
 interface TopUpWalletProps {
   onSuccess?: () => void;
@@ -25,7 +24,7 @@ interface TopUpWalletProps {
   triggerSize?: ButtonProps['size'];
 }
 
-type Gateway = 'ercaspay' | 'pocketfi' | 'crypto';
+type Gateway = 'ercaspay' | 'pocketfi';
 
 const QUICK_AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 
@@ -55,7 +54,6 @@ export function TopUpWallet({
   const { toast } = useToast();
   const { ngnToUsd } = useExchangeRate();
   const { formatPrice } = useCurrency();
-  const navigate = useNavigate();
 
   // Baseline balance captured when the PocketFi account panel is shown, so we can detect
   // the webhook crediting the wallet without a transaction reference to poll against.
@@ -378,7 +376,7 @@ export function TopUpWallet({
           {/* Payment method selection */}
           <div className="space-y-3">
             <Label>Payment Method</Label>
-            <div className={cn('grid gap-2', ercasEnabled ? 'grid-cols-3' : 'grid-cols-2')}>
+            <div className={cn('grid gap-2', ercasEnabled ? 'grid-cols-2' : 'grid-cols-1')}>
               {ercasEnabled && (
                 <Button
                   type="button"
@@ -397,18 +395,6 @@ export function TopUpWallet({
               >
                 Bank Transfer
               </Button>
-              {/* Crypto top-up hidden — re-enable by uncommenting
-              <Button
-                type="button"
-                variant={gateway === 'crypto' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setGateway('crypto')}
-                className="gap-1"
-              >
-                <Bitcoin className="h-3.5 w-3.5" />
-                Crypto
-              </Button>
-              */}
             </div>
           </div>
 
@@ -515,42 +501,6 @@ export function TopUpWallet({
                 Secure payment processing
               </div>
             </>
-          )}
-
-          {gateway === 'crypto' && (
-            <div className="space-y-4">
-              <Card>
-                <CardContent className="pt-5 space-y-3">
-                  <div className="flex items-center gap-3">
-                    <div className="bg-orange-100 rounded-full p-2">
-                      <Bitcoin className="h-5 w-5 text-orange-500" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold">Pay with Crypto</p>
-                      <p className="text-xs text-muted-foreground">USDT, BTC, ETH, SOL, TRX and more</p>
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    Send crypto to a generated address and your Naira wallet is credited automatically once the transaction confirms — usually within minutes.
-                  </p>
-                  <div className="grid grid-cols-3 gap-1 text-[11px] text-center text-muted-foreground pt-1">
-                    {['USDT TRC-20', 'USDT BEP-20', 'BTC', 'ETH', 'SOL', 'TRX'].map((coin) => (
-                      <span key={coin} className="bg-muted rounded px-2 py-1 font-mono">{coin}</span>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-              <Button
-                className="w-full"
-                onClick={() => { setIsOpen(false); navigate('/crypto-exchange'); }}
-              >
-                Continue with Crypto
-              </Button>
-              <Button variant="outline" className="w-full" onClick={() => setIsOpen(false)}>
-                Cancel
-              </Button>
-              <p className="text-xs text-muted-foreground text-center">Funds credited after blockchain confirmation</p>
-            </div>
           )}
 
           {gateway === 'pocketfi' && (

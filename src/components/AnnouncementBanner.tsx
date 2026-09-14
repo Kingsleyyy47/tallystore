@@ -13,25 +13,11 @@ interface Announcement {
 // Hardcoded announcements - can be moved to Supabase later
 const ANNOUNCEMENTS: Announcement[] = [
   {
-    id: 'crypto-sell-launch',
-    message: 'Sell your crypto instantly for Naira',
-    emoji: '💰',
-    link: '/crypto-exchange',
-    linkText: 'Try Now',
-  },
-  {
     id: 'bills-launch',
     message: 'Buy Airtime & Data directly from your balance',
     emoji: '📱',
     link: '/bills',
     linkText: 'Buy Now',
-  },
-  {
-    id: 'fast-withdrawal',
-    message: 'Instant bank withdrawals now available',
-    emoji: '⚡',
-    link: '/crypto-exchange',
-    linkText: 'Get Started',
   },
   {
     id: 'premium-accounts',

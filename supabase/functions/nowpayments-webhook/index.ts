@@ -198,6 +198,9 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-nowpayments-sig',
 };
 
+const NOWPAYMENTS_API_URL = 'https://api.nowpayments.io/v1';
+const MIN_AUTO_CREDIT_DELAY_MINUTES = 30;
+
 async function recordRevenueEvent(
   supabaseAdmin: any,
   input: {
@@ -222,6 +225,102 @@ async function recordRevenueEvent(
   if (error) {
     console.error(`Failed to record NOWPayments revenue event ${eventType}:`, error.message);
   }
+}
+
+function normalizeComparable(value: unknown) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function toFiniteNumber(value: unknown) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+function constantTimeEqualHex(a: string, b: string) {
+  const left = a.trim().toLowerCase();
+  const right = b.trim().toLowerCase();
+  if (!/^[a-f0-9]+$/i.test(left) || !/^[a-f0-9]+$/i.test(right)) return false;
+  const maxLength = Math.max(left.length, right.length);
+  let diff = left.length ^ right.length;
+  for (let i = 0; i < maxLength; i += 1) {
+    const leftCode = i < left.length ? left.charCodeAt(i) : 0;
+    const rightCode = i < right.length ? right.charCodeAt(i) : 0;
+    diff |= leftCode ^ rightCode;
+  }
+  return diff === 0;
+}
+
+async function fetchNowPaymentsStatus(paymentId: string, apiKey: string) {
+  const response = await fetch(`${NOWPAYMENTS_API_URL}/payment/${encodeURIComponent(paymentId)}`, {
+    method: 'GET',
+    headers: {
+      'x-api-key': apiKey,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`NOWPayments status check failed: ${response.status} ${errorText}`);
+  }
+
+  return response.json();
+}
+
+function validateProviderFinishedPayment(existingTransaction: any, payload: any, providerPayment: any) {
+  const payloadPaymentId = String(payload.payment_id || '');
+  const savedPaymentId = String(existingTransaction.nowpayments_payment_id || '');
+  const providerPaymentId = String(providerPayment.payment_id || '');
+  const savedReference = String(existingTransaction.payment_reference || '');
+  const providerOrderId = String(providerPayment.order_id || '');
+  const providerStatus = normalizeComparable(providerPayment.payment_status);
+  const expectedCurrency = normalizeComparable(existingTransaction.outcome_currency || existingTransaction.crypto_type);
+  const providerCurrency = normalizeComparable(providerPayment.pay_currency);
+  const expectedPayAmount = toFiniteNumber(existingTransaction.outcome_amount || providerPayment.pay_amount || payload.pay_amount);
+  const providerPaidAmount = toFiniteNumber(providerPayment.actually_paid || providerPayment.pay_amount);
+  const amountTolerance = Math.max(expectedPayAmount * 0.005, 0.00000001);
+
+  if (!payloadPaymentId || !savedPaymentId || payloadPaymentId !== savedPaymentId) {
+    return { ok: false, reason: 'payment_id_mismatch' };
+  }
+
+  if (providerPaymentId && providerPaymentId !== savedPaymentId) {
+    return { ok: false, reason: 'provider_payment_id_mismatch' };
+  }
+
+  if (!savedReference || providerOrderId !== savedReference) {
+    return { ok: false, reason: 'provider_order_reference_mismatch' };
+  }
+
+  if (providerStatus !== 'finished') {
+    return { ok: false, reason: `provider_status_${providerStatus || 'missing'}` };
+  }
+
+  if (expectedCurrency && providerCurrency && expectedCurrency !== providerCurrency) {
+    return { ok: false, reason: 'provider_currency_mismatch' };
+  }
+
+  if (expectedPayAmount > 0 && providerPaidAmount + amountTolerance < expectedPayAmount) {
+    return { ok: false, reason: 'provider_paid_amount_too_low' };
+  }
+
+  return { ok: true, reason: 'verified' };
+}
+
+function cryptoAutoCreditEnabled() {
+  return String(Deno.env.get('CRYPTO_AUTO_CREDIT_ENABLED') || '').trim().toLowerCase() === 'true';
+}
+
+function cryptoAutoCreditDelayMinutes() {
+  const configured = Number(Deno.env.get('CRYPTO_AUTO_CREDIT_DELAY_MINUTES') || MIN_AUTO_CREDIT_DELAY_MINUTES);
+  return Math.max(MIN_AUTO_CREDIT_DELAY_MINUTES, Number.isFinite(configured) ? configured : MIN_AUTO_CREDIT_DELAY_MINUTES);
+}
+
+function providerPaymentAgeMinutes(providerPayment: any) {
+  const timestamp = providerPayment?.updated_at || providerPayment?.created_at || providerPayment?.payment_created_at;
+  const time = timestamp ? new Date(timestamp).getTime() : 0;
+  if (!time || Number.isNaN(time)) return 0;
+  return (Date.now() - time) / 60000;
 }
 
 // Verify IPN signature as per NowPayments docs
@@ -252,7 +351,7 @@ async function verifyIPNSignature(payload: any, receivedSignature: string, secre
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
     
-    return computedSignature === receivedSignature;
+    return constantTimeEqualHex(computedSignature, receivedSignature);
   } catch (error) {
     console.error('Signature verification error:', error);
     return false;
@@ -373,7 +472,7 @@ serve(async (req) => {
         break;
       case 'partially_paid':
         transactionStatus = 'partially_paid';
-        shouldCreditUser = true; // Credit the partial amount
+        shouldCreditUser = false;
         break;
       case 'failed':
         transactionStatus = 'failed';
@@ -388,15 +487,142 @@ serve(async (req) => {
         transactionStatus = payment_status;
     }
 
+    let verifiedProviderPayment: any = null;
+    if (shouldCreditUser) {
+      const nowpaymentsApiKey = Deno.env.get('NOWPAYMENTS_API_KEY');
+      if (!nowpaymentsApiKey) {
+        console.error('❌ NOWPAYMENTS_API_KEY is not configured - refusing to credit crypto webhook');
+        return new Response(
+          JSON.stringify({ error: 'Provider status verification is not configured' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
+        );
+      }
+
+      try {
+        verifiedProviderPayment = await fetchNowPaymentsStatus(String(payment_id || ''), nowpaymentsApiKey);
+      } catch (statusError) {
+        console.error('❌ Could not verify payment with NOWPayments before crediting:', statusError instanceof Error ? statusError.message : statusError);
+        return new Response(
+          JSON.stringify({ error: 'Provider status verification failed' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 503 }
+        );
+      }
+
+      const providerValidation = validateProviderFinishedPayment(existingTransaction, payload, verifiedProviderPayment);
+      if (!providerValidation.ok) {
+        console.error(`❌ Crypto webhook refused credit: ${providerValidation.reason}`);
+        await supabaseAdmin
+          .from('crypto_transactions')
+          .update({
+            status: 'verification_failed',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existingTransaction.id)
+          .is('credited_at', null);
+
+        return new Response(
+          JSON.stringify({ error: 'Provider payment verification failed', reason: providerValidation.reason }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 }
+        );
+      }
+    }
+
+    const verifiedActuallyPaid = verifiedProviderPayment
+      ? (verifiedProviderPayment.actually_paid || verifiedProviderPayment.pay_amount || 0)
+      : (actually_paid || 0);
+    const verifiedPayAmount = verifiedProviderPayment?.pay_amount || pay_amount;
+    const verifiedPayCurrency = verifiedProviderPayment?.pay_currency || pay_currency;
+    const verifiedOutcomeAmount = verifiedProviderPayment?.outcome_amount || outcome_amount;
+    const verifiedOutcomeCurrency = verifiedProviderPayment?.outcome_currency || outcome_currency;
+    const verifiedPayAddress = verifiedProviderPayment?.pay_address || pay_address;
+    const verifiedPayinExtraId = verifiedProviderPayment?.payin_extra_id || payin_extra_id;
+    const autoCreditEnabled = cryptoAutoCreditEnabled();
+    const autoCreditDelayMinutes = cryptoAutoCreditDelayMinutes();
+    const paymentAgeMinutes = verifiedProviderPayment ? providerPaymentAgeMinutes(verifiedProviderPayment) : 0;
+
+    if (shouldCreditUser && (!autoCreditEnabled || paymentAgeMinutes < autoCreditDelayMinutes)) {
+      const heldStatus = autoCreditEnabled ? 'completed_pending_release' : 'completed_pending_review';
+      const holdReason = autoCreditEnabled
+        ? `provider_finished_but_waiting_${autoCreditDelayMinutes}_minute_safety_delay`
+        : 'crypto_auto_credit_disabled_manual_review_required';
+
+      const { error: holdUpdateError } = await supabaseAdmin
+        .from('crypto_transactions')
+        .update({
+          status: heldStatus,
+          nowpayments_pay_address: verifiedPayAddress,
+          nowpayments_payin_extra_id: verifiedPayinExtraId,
+          nowpayments_amount_received: verifiedActuallyPaid || verifiedPayAmount,
+          actually_paid: verifiedActuallyPaid || 0,
+          outcome_amount: verifiedPayAmount || verifiedOutcomeAmount,
+          outcome_currency: verifiedPayCurrency || verifiedOutcomeCurrency,
+          payout_hash: payout_hash,
+          payment_extra_ids: payment_extra_ids ? payment_extra_ids : null,
+          parent_payment_id: parent_payment_id,
+          origin_type: origin_type,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingTransaction.id)
+        .is('credited_at', null);
+
+      if (holdUpdateError) {
+        console.error('Failed to hold verified crypto transaction:', holdUpdateError);
+        throw holdUpdateError;
+      }
+
+      await recordRevenueEvent(supabaseAdmin, {
+        eventType: 'PAYMENT_COMPLETED',
+        eventId: `crypto:PAYMENT_COMPLETED_HELD:${existingTransaction.payment_reference || existingTransaction.id}`,
+        userId: existingTransaction.user_id,
+        surface: 'crypto',
+        metadata: {
+          transaction_id: existingTransaction.id,
+          payment_reference: existingTransaction.payment_reference,
+          nowpayments_payment_id: payment_id,
+          nowpayments_purchase_id: purchase_id,
+          provider_payment_status: verifiedProviderPayment?.payment_status,
+          transaction_status: heldStatus,
+          hold_reason: holdReason,
+          auto_credit_enabled: autoCreditEnabled,
+          auto_credit_delay_minutes: autoCreditDelayMinutes,
+          provider_payment_age_minutes: Math.round(paymentAgeMinutes * 100) / 100,
+          amount_ngn: parseFloat(existingTransaction.naira_amount || '0'),
+          crypto_type: existingTransaction.crypto_type,
+          crypto_amount: existingTransaction.crypto_amount,
+          actually_paid: verifiedActuallyPaid || 0,
+          pay_amount: verifiedPayAmount,
+          pay_currency: verifiedPayCurrency,
+          provider: 'nowpayments',
+        },
+      });
+
+      console.log(`Crypto webhook verified but held without credit: ${holdReason}`);
+      return new Response(
+        JSON.stringify({
+          success: true,
+          credited: false,
+          status: heldStatus,
+          reason: holdReason,
+          message: 'Crypto payment verified but held for manual/safety review.',
+        }),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 200,
+        }
+      );
+    }
+
     // Update transaction with webhook data
     const { error: updateError } = await supabaseAdmin
       .from('crypto_transactions')
       .update({
         status: transactionStatus,
-        nowpayments_amount_received: actually_paid || pay_amount,
-        actually_paid: actually_paid || 0,
-        outcome_amount: outcome_amount,
-        outcome_currency: outcome_currency,
+        nowpayments_pay_address: verifiedPayAddress,
+        nowpayments_payin_extra_id: verifiedPayinExtraId,
+        nowpayments_amount_received: verifiedActuallyPaid || verifiedPayAmount,
+        actually_paid: verifiedActuallyPaid || 0,
+        outcome_amount: verifiedPayAmount || verifiedOutcomeAmount,
+        outcome_currency: verifiedPayCurrency || verifiedOutcomeCurrency,
         payout_hash: payout_hash,
         payment_extra_ids: payment_extra_ids ? payment_extra_ids : null,
         parent_payment_id: parent_payment_id,
@@ -409,9 +635,11 @@ serve(async (req) => {
       throw updateError;
     }
 
-    // Credit user's crypto balance if payment is finished or partially paid
+    // Credit user's crypto balance only when NOWPayments marks the payment
+    // finished. A partially_paid IPN is not safe to auto-credit against the
+    // original full naira quote.
     if (shouldCreditUser) {
-      const amountToCredit = actually_paid || pay_amount || 0;
+      const amountToCredit = verifiedActuallyPaid || verifiedPayAmount || 0;
       
       if (amountToCredit > 0) {
         const eventKey = existingTransaction.payment_reference || existingTransaction.id;
@@ -426,9 +654,9 @@ serve(async (req) => {
           ...(balanceAfter == null ? {} : { balance_after: balanceAfter }),
           crypto_type: existingTransaction.crypto_type,
           crypto_amount: existingTransaction.crypto_amount,
-          actually_paid: actually_paid || 0,
-          pay_amount,
-          pay_currency,
+          actually_paid: verifiedActuallyPaid || 0,
+          pay_amount: verifiedPayAmount,
+          pay_currency: verifiedPayCurrency,
           payout_hash,
           payin_hash,
           provider: 'nowpayments',

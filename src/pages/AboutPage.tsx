@@ -98,7 +98,7 @@ export default function AboutPage() {
             </div>
             <h2 className="text-2xl font-black text-slate-950 dark:text-white">What TallyStore offers</h2>
             <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-400">
-              Premium social media accounts, SMS numbers, wallet funding, crypto services, and support tools for customers who need direct access without scattered conversations.
+              Premium social media accounts, SMS numbers, wallet funding, and support tools for customers who need direct access without scattered conversations.
             </p>
             <Link
               to="/how-it-works"
