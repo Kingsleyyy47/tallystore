@@ -397,6 +397,7 @@ export function TopUpWallet({
               >
                 Bank Transfer
               </Button>
+              {/* Crypto top-up hidden — re-enable by uncommenting
               <Button
                 type="button"
                 variant={gateway === 'crypto' ? 'default' : 'outline'}
@@ -407,6 +408,7 @@ export function TopUpWallet({
                 <Bitcoin className="h-3.5 w-3.5" />
                 Crypto
               </Button>
+              */}
             </div>
           </div>
 
