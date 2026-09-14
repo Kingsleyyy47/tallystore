@@ -385,7 +385,7 @@ type FraudReviewRow = {
   deviceType?: string | null
   deviceOs?: string | null
   deviceBrowser?: string | null
-  reviewType: 'review_unblock' | 'suspended_risk' | 'overspent' | 'duplicate_deposit' | 'near_limit'
+  reviewType: 'review_unblock' | 'suspended_risk' | 'overspent' | 'duplicate_deposit' | 'watchlist'
   reason: string
 }
 
@@ -401,6 +401,57 @@ function isDepositTransaction(tx: { type?: string | null; amount?: number | null
 
 function isCompletedDeposit(status?: string | null) {
   return ['completed', 'success', 'successful', 'credited', 'complete', 'paid', 'finished'].includes(String(status || '').toLowerCase())
+}
+
+function normalizeLedgerText(value?: unknown) {
+  return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+}
+
+function isTrustedCreditTransaction(tx: any) {
+  const type = normalizeLedgerText(tx.type)
+  const description = String(tx.description || '').toLowerCase()
+  const amount = Number(tx.amount || 0)
+  if (amount <= 0) return false
+
+  if (['refund', 'purchase_refund', 'auto_refund'].includes(type)) return false
+
+  if ([
+    'topup',
+    'top_up',
+    'wallet_topup',
+    'wallet_deposit',
+    'deposit',
+    'credit',
+    'admin_credit',
+    'staff_credit',
+    'referral_withdrawal',
+  ].includes(type)) {
+    return true
+  }
+
+  return [
+    'wallet top-up',
+    'wallet topup',
+    'wallet deposit',
+    'bank transfer',
+    'pocketfi',
+    'ercas',
+    'admin adjustment',
+    'staff adjustment',
+    'add funds',
+    'credited',
+    'deposit',
+  ].some((needle) => description.includes(needle))
+}
+
+function isWalletSpendTransaction(tx: any) {
+  const type = normalizeLedgerText(tx.type)
+  return type === 'purchase'
+}
+
+function isWalletRefundTransaction(tx: any) {
+  const type = normalizeLedgerText(tx.type)
+  return ['refund', 'purchase_refund', 'auto_refund'].includes(type)
 }
 
 function formatAdminNaira(value?: number | null) {
@@ -2639,14 +2690,11 @@ export default function AdminPage() {
     try {
       const [profileRows, transactionRows, siteVisitRows] = await Promise.all([
         readRows('profiles', 50000),
-        readRows('transactions', 100000),
+        readRows('transactions', 500000),
         readRows('site_visits', 100000).catch(() => []),
       ])
 
       const completedStatuses = new Set(['completed', 'success', 'successful', 'credited', 'complete', 'paid', 'finished'])
-      const creditTypes = new Set(['topup', 'top_up', 'top-up', 'wallet_topup', 'deposit', 'wallet_deposit', 'credit', 'admin_credit', 'staff_credit', 'referral_withdrawal'])
-      const debitTypes = new Set(['purchase'])
-      const refundTypes = new Set(['refund'])
 
       const ledgerByUser = new Map<string, {
         trustedCredits: number
@@ -2708,22 +2756,22 @@ export default function AdminPage() {
         const status = String(tx.status || 'completed').toLowerCase()
         if (!completedStatuses.has(status)) continue
 
-        const type = String(tx.type || '').toLowerCase()
         const amount = Number(tx.amount || 0)
         const ledger = ensureLedger(userId)
 
-        if (creditTypes.has(type) && amount > 0) {
+        if (isTrustedCreditTransaction(tx)) {
           ledger.trustedCredits += amount
           const reference = String(tx.reference || '').trim()
-          if (['topup', 'top_up', 'top-up', 'wallet_topup', 'wallet_deposit', 'deposit'].includes(type) && reference) {
+          const type = normalizeLedgerText(tx.type)
+          if (['topup', 'top_up', 'wallet_topup', 'wallet_deposit', 'deposit'].includes(type) && reference) {
             const existingRef = topupRefs.get(reference) || { count: 0, userIds: new Set<string>() }
             existingRef.count += 1
             existingRef.userIds.add(userId)
             topupRefs.set(reference, existingRef)
           }
-        } else if (debitTypes.has(type)) {
+        } else if (isWalletSpendTransaction(tx)) {
           ledger.completedSpend += Math.abs(amount)
-        } else if (refundTypes.has(type) && amount > 0) {
+        } else if (isWalletRefundTransaction(tx) && amount > 0) {
           ledger.completedRefunds += amount
         }
       }
@@ -2763,9 +2811,9 @@ export default function AdminPage() {
         } else if (duplicateTopupReferences.length > 0) {
           reviewType = 'duplicate_deposit'
           reason = `Duplicate completed top-up reference detected: ${duplicateTopupReferences.slice(0, 2).join(', ')}`
-        } else if (ledger.trustedCredits > 0 && netSpend >= 10000 && spendRatio !== null && spendRatio >= 0.85) {
-          reviewType = 'near_limit'
-          reason = `High spend ratio: ${Math.round(spendRatio * 100)}% of trusted credits spent.`
+        } else if (ledger.trustedCredits > 0 && netSpend >= 250000 && spendRatio !== null && spendRatio >= 0.98 && Number(profile.wallet_balance || 0) <= 1000) {
+          reviewType = 'watchlist'
+          reason = `Watchlist only: customer spent ${Math.round(spendRatio * 100)}% of trusted credits and has low remaining wallet balance.`
         }
 
         if (!reviewType) continue
@@ -2807,7 +2855,7 @@ export default function AdminPage() {
         suspended_risk: 1,
         duplicate_deposit: 2,
         review_unblock: 3,
-        near_limit: 4,
+        watchlist: 4,
       }
 
       setFraudRows(rows.sort((a, b) =>
@@ -4369,7 +4417,7 @@ export default function AdminPage() {
 
       setFraudRows(prev => prev.flatMap(item => {
         if (item.userId !== row.userId) return [item]
-        if (item.exposure <= 1 && item.duplicateTopupReferences.length === 0 && !(item.spendRatio !== null && item.netSpend >= 10000 && item.spendRatio >= 0.85)) {
+        if (item.exposure <= 1 && item.duplicateTopupReferences.length === 0 && item.reviewType !== 'watchlist') {
           return []
         }
         return [{
@@ -4377,7 +4425,7 @@ export default function AdminPage() {
           suspended: false,
           suspensionReason: null,
           suspendedAt: null,
-          reviewType: item.exposure > 1 ? 'overspent' : item.duplicateTopupReferences.length > 0 ? 'duplicate_deposit' : 'near_limit',
+          reviewType: item.exposure > 1 ? 'overspent' : item.duplicateTopupReferences.length > 0 ? 'duplicate_deposit' : 'watchlist',
           reason: item.exposure > 1 ? item.reason : 'Unsuspended. Keep monitoring this customer.',
         }]
       }))
@@ -6542,37 +6590,33 @@ export default function AdminPage() {
                       <p className="text-center text-muted-foreground py-4">No transactions found</p>
                     ) : (
                       <div className="space-y-2">
-                        {(showAllUserTransactions ? userTransactions : userTransactions.slice(0, 5)).map((tx) => (
-                          <div key={tx.id} className="flex items-center justify-between p-3 border rounded-lg">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                <Badge 
-                                  variant={
-                                    tx.type === 'TOP_UP' || tx.type === 'ADMIN_CREDIT' 
-                                      ? 'default' 
-                                      : 'secondary'
-                                  }
-                                >
-                                  {tx.type}
-                                </Badge>
-                                <span className="text-sm text-muted-foreground">
-                                  {format(new Date(tx.created_at), 'MMM d, HH:mm')}
-                                </span>
+                        {(showAllUserTransactions ? userTransactions : userTransactions.slice(0, 5)).map((tx) => {
+                          const isCredit = isTrustedCreditTransaction(tx) || isWalletRefundTransaction(tx)
+                          const isSpend = isWalletSpendTransaction(tx)
+                          const displayAmount = Math.abs(Number(tx.amount || 0))
+
+                          return (
+                            <div key={tx.id} className="flex items-center justify-between p-3 border rounded-lg">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <Badge variant={isCredit ? 'default' : 'secondary'}>
+                                    {tx.type}
+                                  </Badge>
+                                  <span className="text-sm text-muted-foreground">
+                                    {format(new Date(tx.created_at), 'MMM d, HH:mm')}
+                                  </span>
+                                </div>
+                                <p className="text-sm">{tx.description || 'No description'}</p>
                               </div>
-                              <p className="text-sm">{tx.description || 'No description'}</p>
+                              <div className="text-right">
+                                <p className={`font-bold ${isCredit ? 'text-green-600' : isSpend ? 'text-red-600' : 'text-muted-foreground'}`}>
+                                  {isCredit ? '+' : isSpend ? '-' : ''}
+                                  ₦{displayAmount.toLocaleString()}
+                                </p>
+                              </div>
                             </div>
-                            <div className="text-right">
-                              <p className={`font-bold ${
-                                tx.type === 'TOP_UP' || tx.type === 'ADMIN_CREDIT' 
-                                  ? 'text-green-600' 
-                                  : 'text-red-600'
-                              }`}>
-                                {tx.type === 'TOP_UP' || tx.type === 'ADMIN_CREDIT' ? '+' : '-'}
-                                ₦{(tx.amount || 0).toLocaleString()}
-                              </p>
-                            </div>
-                          </div>
-                        ))}
+                          )
+                        })}
                         {userTransactions.length > 5 && (
                           <div className="pt-2 text-center">
                             <Button
@@ -7786,7 +7830,7 @@ export default function AdminPage() {
                         Fraud Review
                       </CardTitle>
                       <p className="text-muted-foreground">
-                        Customers flagged by wallet ledger checks, duplicate deposit references, or high spend risk.
+                        Customers flagged by uncovered wallet spend, duplicate deposit references, or low-confidence watchlist checks.
                       </p>
                       {fraudLastLoadedAt && (
                         <p className="mt-1 text-xs text-muted-foreground">
@@ -7821,8 +7865,8 @@ export default function AdminPage() {
                       <p className="text-xs text-muted-foreground">Duplicate deposits</p>
                     </div>
                     <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'near_limit').length}</p>
-                      <p className="text-xs text-muted-foreground">High spend ratio</p>
+                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'watchlist').length}</p>
+                      <p className="text-xs text-muted-foreground">Watchlist</p>
                     </div>
                     <div className="rounded-lg border p-3">
                       <p className="text-2xl font-bold">{formatAdminNaira(fraudRows.reduce((sum, row) => sum + Math.max(row.exposure, 0), 0))}</p>
@@ -7872,7 +7916,7 @@ export default function AdminPage() {
                               <TableCell>
                                 {row.reviewType === 'review_unblock' ? (
                                   <Badge className="bg-emerald-600 text-white">Review unblock</Badge>
-                                ) : row.reviewType === 'near_limit' ? (
+                                ) : row.reviewType === 'watchlist' ? (
                                   <Badge variant="outline">Monitor</Badge>
                                 ) : (
                                   <Badge variant="destructive">
