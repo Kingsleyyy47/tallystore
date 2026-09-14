@@ -85,17 +85,30 @@ export default function VisitorTracker() {
       eventId: `PAGE_VIEWED:${pageViewVisitorId || 'unknown'}:${today}:${path}`,
     })
 
-    supabase
-      .from('site_visits' as any)
-      .insert({
-        visitor_id: pageViewVisitorId,
-        user_id: user?.id || null,
-        path: storedPath,
-        user_agent: navigator.userAgent,
-        attribution,
-        traffic_quality: attribution.trafficQuality,
+    const visitPayload = {
+      visitor_id: pageViewVisitorId,
+      path: storedPath,
+      user_agent: navigator.userAgent,
+      attribution,
+      traffic_quality: attribution.trafficQuality,
+    }
+
+    supabase.functions
+      .invoke('record-site-visit', {
+        body: visitPayload,
       })
       .then(({ error }) => {
+        if (!error) return
+        console.warn('Server visit recording failed, using fallback:', error.message)
+        return supabase
+          .from('site_visits' as any)
+          .insert({
+            ...visitPayload,
+            user_id: user?.id || null,
+          })
+      })
+      .then((result) => {
+        const error = result && 'error' in result ? result.error : null
         if (error) console.warn('Failed to record site visit:', error.message)
       })
   }, [isAdmin, isStaff, location.pathname, location.search, user?.id])

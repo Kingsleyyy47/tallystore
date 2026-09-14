@@ -8,6 +8,103 @@ const corsHeaders = {
 
 const ADMIN_EMAIL = 'wisdomthedev@gmail.com';
 
+async function sha256Hex(value: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function cleanDeviceText(value: unknown, max = 500) {
+  return String(value || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, max)
+}
+
+async function upsertFraudDeviceBans(
+  supabaseAdmin: any,
+  targetUserId: string,
+  adminUserId: string,
+  reason: string,
+) {
+  const { data: visits, error } = await supabaseAdmin
+    .from('site_visits')
+    .select('ip_address, user_agent, created_at')
+    .eq('user_id', targetUserId)
+    .eq('ip_source', 'edge')
+    .order('created_at', { ascending: false })
+    .limit(50)
+
+  if (error) {
+    console.warn(`Could not load site visits for fraud bans: ${error.message}`)
+    return { ipBans: 0, deviceBans: 0 }
+  }
+
+  const ipAddresses = new Set<string>()
+  const userAgents = new Map<string, string>()
+
+  for (const visit of visits || []) {
+    const ip = cleanDeviceText(visit.ip_address, 80)
+    if (ip) ipAddresses.add(ip)
+
+    const userAgent = cleanDeviceText(visit.user_agent, 500)
+    if (userAgent) {
+      const hash = await sha256Hex(userAgent)
+      if (!userAgents.has(hash)) userAgents.set(hash, userAgent.slice(0, 220))
+    }
+  }
+
+  let ipBans = 0
+  let deviceBans = 0
+
+  for (const ipAddress of ipAddresses) {
+    const { data: existing } = await supabaseAdmin
+      .from('fraud_device_bans')
+      .select('id')
+      .eq('active', true)
+      .eq('banned_user_id', targetUserId)
+      .eq('ip_address', ipAddress)
+      .maybeSingle()
+
+    if (existing?.id) continue
+
+    const { error: insertError } = await supabaseAdmin
+      .from('fraud_device_bans')
+      .insert({
+        banned_user_id: targetUserId,
+        created_by: adminUserId,
+        ip_address: ipAddress,
+        reason,
+      })
+
+    if (!insertError) ipBans += 1
+    else console.warn(`Could not insert fraud IP ban ${ipAddress}: ${insertError.message}`)
+  }
+
+  for (const [userAgentHash, excerpt] of userAgents) {
+    const { data: existing } = await supabaseAdmin
+      .from('fraud_device_bans')
+      .select('id')
+      .eq('active', true)
+      .eq('banned_user_id', targetUserId)
+      .eq('user_agent_hash', userAgentHash)
+      .maybeSingle()
+
+    if (existing?.id) continue
+
+    const { error: insertError } = await supabaseAdmin
+      .from('fraud_device_bans')
+      .insert({
+        banned_user_id: targetUserId,
+        created_by: adminUserId,
+        user_agent_hash: userAgentHash,
+        user_agent_excerpt: excerpt,
+        reason,
+      })
+
+    if (!insertError) deviceBans += 1
+    else console.warn(`Could not insert fraud device ban: ${insertError.message}`)
+  }
+
+  return { ipBans, deviceBans }
+}
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -66,10 +163,15 @@ serve(async (req) => {
     // Parse request body
     const body = await req.json();
 
-    if (body?.action === 'unsuspend_user') {
+    if (body?.action === 'suspend_user' || body?.action === 'unsuspend_user') {
       const targetUserId = String(body.target_user_id || '').trim();
       if (!targetUserId) {
         throw new Error('target_user_id is required');
+      }
+      const isSuspending = body.action === 'suspend_user';
+      const cleanSuspendReason = String(body.reason || '').trim();
+      if (isSuspending && cleanSuspendReason.length < 3) {
+        throw new Error('A suspension reason with at least 3 characters is required');
       }
 
       const { data: targetProfile, error: profileError } = await supabaseAdmin
@@ -88,28 +190,61 @@ serve(async (req) => {
 
       const { error: updateError } = await supabaseAdmin
         .from('profiles')
-        .update({
-          account_suspended: false,
-          suspension_reason: null,
-          suspension_reinstated_at: new Date().toISOString(),
-          reinstated_by: user.id,
-          updated_at: new Date().toISOString(),
-        })
+        .update(isSuspending
+          ? {
+              account_suspended: true,
+              suspension_reason: cleanSuspendReason,
+              suspended_at: new Date().toISOString(),
+              suspended_by: user.id,
+              suspension_reinstated_at: null,
+              reinstated_by: null,
+              updated_at: new Date().toISOString(),
+            }
+          : {
+              account_suspended: false,
+              suspension_reason: null,
+              suspension_reinstated_at: new Date().toISOString(),
+              reinstated_by: user.id,
+              updated_at: new Date().toISOString(),
+            })
         .eq('id', targetUserId);
 
       if (updateError) {
-        throw new Error(`Failed to unsuspend account: ${updateError.message}`);
+        throw new Error(`Failed to ${isSuspending ? 'suspend' : 'unsuspend'} account: ${updateError.message}`);
       }
 
-      console.log(`✅ Admin ${user.email} unsuspended ${targetProfile.email}`);
+      const banResult = isSuspending
+        ? await upsertFraudDeviceBans(supabaseAdmin, targetUserId, user.id, cleanSuspendReason)
+        : { ipBans: 0, deviceBans: 0 };
+
+      if (!isSuspending) {
+        const { error: banUpdateError } = await supabaseAdmin
+          .from('fraud_device_bans')
+          .update({
+            active: false,
+            deactivated_at: new Date().toISOString(),
+            deactivated_by: user.id,
+          })
+          .eq('banned_user_id', targetUserId)
+          .eq('active', true);
+
+        if (banUpdateError) {
+          console.warn(`Could not deactivate fraud bans for ${targetProfile.email}: ${banUpdateError.message}`);
+        }
+      }
+
+      console.log(`✅ Admin ${user.email} ${isSuspending ? 'suspended' : 'unsuspended'} ${targetProfile.email}`);
 
       return new Response(
         JSON.stringify({
           success: true,
           target_user_id: targetUserId,
           target_email: targetProfile.email,
-          account_suspended: false,
-          reinstated_by: user.email,
+          account_suspended: isSuspending,
+          suspension_reason: isSuspending ? cleanSuspendReason : null,
+          ip_bans_created: banResult.ipBans,
+          device_bans_created: banResult.deviceBans,
+          [isSuspending ? 'suspended_by' : 'reinstated_by']: user.email,
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -190,6 +325,29 @@ serve(async (req) => {
       throw new Error(`Cannot reduce ${balance_type} balance below zero. Current: ₦${currentBalance}, Adjustment: ₦${adjustment_amount}`);
     }
 
+    // Record a pending transaction before changing the balance. If this fails,
+    // the wallet must not move because the fraud ledger would lose authority.
+    const transactionType = adjustment_amount > 0 ? 'admin_credit' : 'admin_debit';
+    const adjustmentReference = `ADMIN-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    const { data: transactionRow, error: txInsertError } = await supabaseAdmin
+      .from('transactions')
+      .insert({
+        user_id: target_user_id,
+        type: transactionType,
+        amount: Math.abs(adjustment_amount),
+        status: 'pending',
+        balance_after: currentBalance,
+        description: `Admin adjustment by ${user.email}: ${cleanReason}`,
+        reference: adjustmentReference,
+        idempotency_key: idempotency_key || null,
+      })
+      .select('id')
+      .single();
+
+    if (txInsertError || !transactionRow) {
+      throw new Error(`Could not create balance adjustment ledger entry: ${txInsertError?.message || 'unknown error'}`);
+    }
+
     // Update balance with optimistic locking
     const { data: updatedProfile, error: updateError } = await supabaseAdmin
       .from('profiles')
@@ -203,28 +361,36 @@ serve(async (req) => {
       .single();
 
     if (updateError || !updatedProfile) {
+      await supabaseAdmin
+        .from('transactions')
+        .update({ status: 'failed', description: `Failed admin adjustment by ${user.email}: ${cleanReason}` })
+        .eq('id', transactionRow.id);
       throw new Error('Balance update failed - concurrent modification detected. Please try again.');
     }
 
-    // Record transaction for audit trail
-    const transactionType = adjustment_amount > 0 ? 'admin_credit' : 'admin_debit';
-    
-    const { error: txError } = await supabaseAdmin
+    const { error: txCompleteError } = await supabaseAdmin
       .from('transactions')
-      .insert({
-        user_id: target_user_id,
-        type: transactionType,
-        amount: Math.abs(adjustment_amount),
+      .update({
         status: 'completed',
         balance_after: newBalance,
-        description: `Admin adjustment by ${user.email}: ${cleanReason}`,
-        reference: `ADMIN-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-        idempotency_key: idempotency_key || null,
-      });
+      })
+      .eq('id', transactionRow.id);
 
-    if (txError) {
-      console.error('❌ Failed to record transaction:', txError);
-      // Don't fail - balance was already updated
+    if (txCompleteError) {
+      console.error('❌ Failed to complete transaction after balance update:', txCompleteError);
+      await supabaseAdmin
+        .from('profiles')
+        .update({
+          [balanceColumn]: currentBalance,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', target_user_id)
+        .eq(balanceColumn, newBalance);
+      await supabaseAdmin
+        .from('transactions')
+        .update({ status: 'failed', description: `Rolled back admin adjustment by ${user.email}: ${cleanReason}` })
+        .eq('id', transactionRow.id);
+      throw new Error(`Balance adjustment rolled back because the ledger could not be completed: ${txCompleteError.message}`);
     }
 
     console.log(`✅ Balance adjusted: ${balance_type} ${adjustment_amount > 0 ? '+' : ''}₦${adjustment_amount}`);

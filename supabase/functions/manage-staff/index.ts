@@ -1475,21 +1475,44 @@ async function applyStaffAction(admin: ReturnType<typeof createClient>, pendingA
       .single()
     if (loadError || !profile) throw new Error(loadError?.message || 'User not found')
     if (profile.is_staff || profile.is_admin) throw new Error('Balance adjustments are only allowed for customer accounts')
-    const newBal = (Number(profile.wallet_balance) || 0) + amount
+    const currentBalance = Number(profile.wallet_balance) || 0
+    const newBal = currentBalance + amount
     if (newBal < 0) throw new Error('Balance cannot go below zero')
-    const { error: updateError } = await admin.from('profiles').update({ wallet_balance: newBal }).eq('id', userId)
-    if (updateError) throw new Error(updateError.message)
     const transactionType = amount > 0 ? 'staff_credit' : 'staff_debit'
-    const { error: txError } = await admin.from('transactions').insert({
+    const { data: transactionRow, error: txError } = await admin.from('transactions').insert({
       user_id: userId,
       type: transactionType,
       amount: Math.abs(amount),
-      status: 'completed',
-      balance_after: newBal,
+      status: 'pending',
+      balance_after: currentBalance,
       description: `Staff adjustment by ${pendingAction.staff_email || pendingAction.staff_id}: ${reason}`,
       reference: `STAFF-ADJ-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
-    })
-    if (txError) throw new Error(txError.message)
+    }).select('id').single()
+    if (txError || !transactionRow) throw new Error(txError?.message || 'Could not create adjustment ledger entry')
+
+    const { error: updateError } = await admin
+      .from('profiles')
+      .update({ wallet_balance: newBal })
+      .eq('id', userId)
+      .eq('wallet_balance', currentBalance)
+    if (updateError) {
+      await admin.from('transactions').update({ status: 'failed' }).eq('id', transactionRow.id)
+      throw new Error(updateError.message)
+    }
+
+    const { error: completeError } = await admin
+      .from('transactions')
+      .update({ status: 'completed', balance_after: newBal })
+      .eq('id', transactionRow.id)
+    if (completeError) {
+      await admin
+        .from('profiles')
+        .update({ wallet_balance: currentBalance })
+        .eq('id', userId)
+        .eq('wallet_balance', newBal)
+      await admin.from('transactions').update({ status: 'failed' }).eq('id', transactionRow.id)
+      throw new Error(`Balance adjustment rolled back because the ledger could not be completed: ${completeError.message}`)
+    }
     return { balance_after: newBal }
   }
 

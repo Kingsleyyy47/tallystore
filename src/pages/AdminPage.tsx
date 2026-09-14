@@ -81,6 +81,7 @@ import {
   getUserTransactions,
   getUserOrdersAdmin,
   adminAdjustBalance,
+  adminSuspendUser,
   adminUnsuspendUser,
   getAppSetting,
   upsertAppSetting,
@@ -374,6 +375,16 @@ type FraudReviewRow = {
   exposure: number
   spendRatio: number | null
   duplicateTopupReferences: string[]
+  lastIpAddress?: string | null
+  lastIpSeenAt?: string | null
+  ipAddresses: string[]
+  lastIpLocation?: string | null
+  lastIpIsp?: string | null
+  lastUserAgent?: string | null
+  deviceLabel?: string | null
+  deviceType?: string | null
+  deviceOs?: string | null
+  deviceBrowser?: string | null
   reviewType: 'review_unblock' | 'suspended_risk' | 'overspent' | 'duplicate_deposit' | 'near_limit'
   reason: string
 }
@@ -389,12 +400,91 @@ function isDepositTransaction(tx: { type?: string | null; amount?: number | null
 }
 
 function isCompletedDeposit(status?: string | null) {
-  return ['completed', 'success', 'successful', 'credited'].includes(String(status || '').toLowerCase())
+  return ['completed', 'success', 'successful', 'credited', 'complete', 'paid', 'finished'].includes(String(status || '').toLowerCase())
 }
 
 function formatAdminNaira(value?: number | null) {
   const amount = Number(value || 0)
   return `₦${amount.toLocaleString('en-NG', { maximumFractionDigits: 2 })}`
+}
+
+function parseAdminUserAgent(userAgent?: string | null) {
+  const ua = String(userAgent || '')
+  const lower = ua.toLowerCase()
+
+  const browser = lower.includes('edg/')
+    ? 'Edge'
+    : lower.includes('opr/') || lower.includes('opera')
+      ? 'Opera'
+      : lower.includes('crios')
+        ? 'Chrome iOS'
+        : lower.includes('chrome/')
+          ? 'Chrome'
+          : lower.includes('firefox/')
+            ? 'Firefox'
+            : lower.includes('safari/')
+              ? 'Safari'
+              : 'Unknown browser'
+
+  const os = /iphone|ipad|ipod/.test(lower)
+    ? 'iOS'
+    : lower.includes('android')
+      ? 'Android'
+      : lower.includes('windows')
+        ? 'Windows'
+        : lower.includes('mac os x') || lower.includes('macintosh')
+          ? 'macOS'
+          : lower.includes('linux')
+            ? 'Linux'
+            : 'Unknown OS'
+
+  const deviceType = /ipad|tablet/.test(lower)
+    ? 'tablet'
+    : /mobile|iphone|ipod|android/.test(lower)
+      ? 'phone'
+      : lower
+        ? 'desktop'
+        : 'unknown'
+
+  const model = lower.includes('iphone')
+    ? 'iPhone'
+    : lower.includes('ipad')
+      ? 'iPad'
+      : lower.includes('android')
+        ? 'Android device'
+        : os === 'Windows'
+          ? 'Windows desktop'
+          : os === 'macOS'
+            ? 'Mac desktop'
+            : deviceType === 'desktop'
+              ? 'Desktop'
+              : 'Unknown device'
+
+  return {
+    deviceLabel: `${model} · ${browser}`,
+    deviceType,
+    os,
+    browser,
+    userAgent: ua,
+  }
+}
+
+function formatAdminVisitLocation(visit: any): string | null {
+  if (!visit) return null
+  const parts = [
+    visit.ip_city,
+    visit.ip_region,
+    visit.ip_country || visit.ip_country_code,
+  ].map((value) => String(value || '').trim()).filter(Boolean)
+
+  return parts.length > 0 ? parts.join(', ') : null
+}
+
+function formatAdminVisitIsp(visit: any): string | null {
+  if (!visit) return null
+  const isp = String(visit.ip_isp || '').trim()
+  const asn = String(visit.ip_asn || '').trim()
+  return [isp, asn ? `ASN ${asn}` : ''].filter(Boolean).join(' · ') || null
 }
 
 async function getEdgeFunctionErrorMessage(error: any, fallback: string) {
@@ -538,6 +628,7 @@ export default function AdminPage() {
   const [showAllUserTransactions, setShowAllUserTransactions] = useState(false)
   const [showAllUserOrders, setShowAllUserOrders] = useState(false)
   const [isAdjusting, setIsAdjusting] = useState(false)
+  const [isSuspendingUser, setIsSuspendingUser] = useState(false)
   const [isUnsuspendingUser, setIsUnsuspendingUser] = useState(false)
 
   // Fraud review state
@@ -545,6 +636,7 @@ export default function AdminPage() {
   const [fraudLoading, setFraudLoading] = useState(false)
   const [fraudError, setFraudError] = useState<string | null>(null)
   const [fraudLastLoadedAt, setFraudLastLoadedAt] = useState<string | null>(null)
+  const [fraudSuspendingUserId, setFraudSuspendingUserId] = useState<string | null>(null)
   const [fraudUnsuspendingUserId, setFraudUnsuspendingUserId] = useState<string | null>(null)
 
   // Website-wide activity histories
@@ -2545,14 +2637,15 @@ export default function AdminPage() {
     }
 
     try {
-      const [profileRows, transactionRows] = await Promise.all([
+      const [profileRows, transactionRows, siteVisitRows] = await Promise.all([
         readRows('profiles', 50000),
         readRows('transactions', 100000),
+        readRows('site_visits', 100000).catch(() => []),
       ])
 
-      const completedStatuses = new Set(['completed', 'success', 'successful', 'credited'])
+      const completedStatuses = new Set(['completed', 'success', 'successful', 'credited', 'complete', 'paid', 'finished'])
       const creditTypes = new Set(['topup', 'top_up', 'top-up', 'wallet_topup', 'deposit', 'wallet_deposit', 'credit', 'admin_credit', 'staff_credit', 'referral_withdrawal'])
-      const debitTypes = new Set(['purchase', 'admin_debit', 'staff_debit'])
+      const debitTypes = new Set(['purchase'])
       const refundTypes = new Set(['refund'])
 
       const ledgerByUser = new Map<string, {
@@ -2560,6 +2653,14 @@ export default function AdminPage() {
         completedSpend: number
         completedRefunds: number
         duplicateTopupReferences: Set<string>
+      }>()
+      const ipByUser = new Map<string, {
+        lastIpAddress: string | null
+        lastIpSeenAt: string | null
+        lastUserAgent: string | null
+        lastIpLocation: string | null
+        lastIpIsp: string | null
+        ipAddresses: Set<string>
       }>()
       const topupRefs = new Map<string, { count: number; userIds: Set<string> }>()
 
@@ -2576,6 +2677,31 @@ export default function AdminPage() {
         return next
       }
 
+      for (const visit of siteVisitRows) {
+        const userId = String(visit.user_id || '')
+        const ipAddress = String(visit.ip_address || '').trim()
+        if (!userId || !ipAddress) continue
+        if (visit.ip_source && visit.ip_source !== 'edge') continue
+
+        const existing = ipByUser.get(userId) || {
+          lastIpAddress: null,
+          lastIpSeenAt: null,
+          lastUserAgent: null,
+          lastIpLocation: null,
+          lastIpIsp: null,
+          ipAddresses: new Set<string>(),
+        }
+        existing.ipAddresses.add(ipAddress)
+        if (!existing.lastIpSeenAt || new Date(visit.created_at || 0).getTime() > new Date(existing.lastIpSeenAt).getTime()) {
+          existing.lastIpAddress = ipAddress
+          existing.lastIpSeenAt = visit.created_at || null
+          existing.lastUserAgent = visit.user_agent || null
+          existing.lastIpLocation = formatAdminVisitLocation(visit)
+          existing.lastIpIsp = formatAdminVisitIsp(visit)
+        }
+        ipByUser.set(userId, existing)
+      }
+
       for (const tx of transactionRows) {
         const userId = String(tx.user_id || '')
         if (!userId) continue
@@ -2589,7 +2715,7 @@ export default function AdminPage() {
         if (creditTypes.has(type) && amount > 0) {
           ledger.trustedCredits += amount
           const reference = String(tx.reference || '').trim()
-          if (type === 'topup' && reference) {
+          if (['topup', 'top_up', 'top-up', 'wallet_topup', 'wallet_deposit', 'deposit'].includes(type) && reference) {
             const existingRef = topupRefs.get(reference) || { count: 0, userIds: new Set<string>() }
             existingRef.count += 1
             existingRef.userIds.add(userId)
@@ -2643,6 +2769,8 @@ export default function AdminPage() {
         }
 
         if (!reviewType) continue
+        const ipInfo = ipByUser.get(userId)
+        const deviceInfo = parseAdminUserAgent(ipInfo?.lastUserAgent)
 
         rows.push({
           userId,
@@ -2659,6 +2787,16 @@ export default function AdminPage() {
           exposure,
           spendRatio,
           duplicateTopupReferences,
+          lastIpAddress: ipInfo?.lastIpAddress || null,
+          lastIpSeenAt: ipInfo?.lastIpSeenAt || null,
+          lastIpLocation: ipInfo?.lastIpLocation || null,
+          lastIpIsp: ipInfo?.lastIpIsp || null,
+          lastUserAgent: ipInfo?.lastUserAgent || null,
+          deviceLabel: deviceInfo.deviceLabel,
+          deviceType: deviceInfo.deviceType,
+          deviceOs: deviceInfo.os,
+          deviceBrowser: deviceInfo.browser,
+          ipAddresses: ipInfo ? Array.from(ipInfo.ipAddresses).slice(0, 8) : [],
           reviewType,
           reason,
         })
@@ -3976,16 +4114,43 @@ export default function AdminPage() {
   // View user details
   const handleViewUser = async (user: any) => {
     try {
-      setSelectedUser(user)
       setShowAllUserTransactions(false)
       setShowAllUserOrders(false)
       
-      // Load user transactions and orders
-      const [transactions, orders] = await Promise.all([
+      // Load user transactions, orders, and latest server-captured visit evidence.
+      const [transactions, orders, latestVisitResult] = await Promise.all([
         getUserTransactions(user.id),
-        getUserOrdersAdmin(user.id)
+        getUserOrdersAdmin(user.id),
+        supabase
+          .from('site_visits' as any)
+          .select('ip_address, user_agent, created_at, ip_source, ip_country_code, ip_country, ip_region, ip_city, ip_timezone, ip_isp, ip_asn, ip_geo_source')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(25)
+          .then(({ data, error }) => error ? { data: [], error } : { data: data || [], error: null })
       ])
+
+      const visits = latestVisitResult.data || []
+      const latestServerVisit = visits.find((visit: any) => visit.ip_address && visit.ip_source === 'edge') || visits.find((visit: any) => visit.ip_address) || visits[0]
+      const deviceInfo = parseAdminUserAgent(latestServerVisit?.user_agent || user.fraud_last_user_agent)
+      const ipAddresses = Array.from(new Set([
+        ...(Array.isArray(user.fraud_ip_addresses) ? user.fraud_ip_addresses : []),
+        ...visits.map((visit: any) => String(visit.ip_address || '').trim()).filter(Boolean),
+      ])).slice(0, 8)
       
+      setSelectedUser({
+        ...user,
+        fraud_last_ip_address: user.fraud_last_ip_address || latestServerVisit?.ip_address || '',
+        fraud_ip_addresses: ipAddresses,
+        fraud_last_ip_seen_at: user.fraud_last_ip_seen_at || latestServerVisit?.created_at || '',
+        fraud_last_ip_location: user.fraud_last_ip_location || formatAdminVisitLocation(latestServerVisit) || '',
+        fraud_last_ip_isp: user.fraud_last_ip_isp || formatAdminVisitIsp(latestServerVisit) || '',
+        fraud_last_user_agent: user.fraud_last_user_agent || latestServerVisit?.user_agent || '',
+        fraud_device_label: user.fraud_device_label || deviceInfo.deviceLabel,
+        fraud_device_type: user.fraud_device_type || deviceInfo.deviceType,
+        fraud_device_os: user.fraud_device_os || deviceInfo.os,
+        fraud_device_browser: user.fraud_device_browser || deviceInfo.browser,
+      })
       setUserTransactions(transactions)
       setUserOrders(orders)
       setViewUserOpen(true)
@@ -4128,6 +4293,75 @@ export default function AdminPage() {
     }
   }
 
+  const handleSuspendSelectedUser = async () => {
+    if (!selectedUser) return
+    const reason = 'Manual fraud review: admin suspended account after suspicious spend/deposit mismatch.'
+    try {
+      setIsSuspendingUser(true)
+      await adminSuspendUser(selectedUser.id, reason)
+
+      const nextUser = {
+        ...selectedUser,
+        account_suspended: true,
+        suspension_reason: reason,
+        suspended_at: new Date().toISOString(),
+      }
+      setSelectedUser(nextUser)
+      setUsers(prev => prev.map(u => u.id === selectedUser.id ? nextUser : u))
+      await loadFraudReview()
+
+      toast({
+        title: 'Account suspended',
+        description: `${selectedUser.email || 'Customer'} cannot purchase now.`,
+      })
+    } catch (error: any) {
+      toast({
+        title: 'Suspend failed',
+        description: error.message || 'Could not suspend this account',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsSuspendingUser(false)
+    }
+  }
+
+  const handleSuspendFraudUser = async (row: FraudReviewRow) => {
+    const reason = row.reason || 'Manual fraud review: admin suspended account from Fraud section.'
+    try {
+      setFraudSuspendingUserId(row.userId)
+      await adminSuspendUser(row.userId, reason)
+
+      setFraudRows(prev => prev.map(item => item.userId === row.userId
+        ? {
+            ...item,
+            suspended: true,
+            suspensionReason: reason,
+            suspendedAt: new Date().toISOString(),
+            reviewType: item.exposure > 1 ? 'suspended_risk' : item.reviewType,
+            reason,
+          }
+        : item
+      ))
+      setUsers(prev => prev.map(u => u.id === row.userId ? { ...u, account_suspended: true, suspension_reason: reason, suspended_at: new Date().toISOString() } : u))
+      if (selectedUser?.id === row.userId) {
+        setSelectedUser((prev: any) => prev ? { ...prev, account_suspended: true, suspension_reason: reason, suspended_at: new Date().toISOString() } : prev)
+      }
+
+      toast({
+        title: 'Account suspended',
+        description: `${row.email} cannot purchase now.`,
+      })
+    } catch (error: any) {
+      toast({
+        title: 'Suspend failed',
+        description: error.message || 'Could not suspend this account',
+        variant: 'destructive',
+      })
+    } finally {
+      setFraudSuspendingUserId(null)
+    }
+  }
+
   const handleUnsuspendFraudUser = async (row: FraudReviewRow) => {
     try {
       setFraudUnsuspendingUserId(row.userId)
@@ -4223,6 +4457,154 @@ export default function AdminPage() {
     anchor.download = filename
     anchor.click()
     URL.revokeObjectURL(url)
+  }
+
+  const safeCsvFilenamePart = (value?: string | null) => {
+    return String(value || 'user')
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'user'
+  }
+
+  const downloadSelectedUserHistoryCsv = () => {
+    if (!selectedUser) return
+
+    const accountStatus = selectedUser.account_suspended
+      ? 'suspended'
+      : selectedUser.is_admin
+        ? 'admin'
+        : selectedUser.is_staff
+          ? 'staff'
+          : 'customer'
+
+    const rows: Array<Array<string | number | null | undefined>> = [
+      [
+        'section',
+        'user_id',
+        'email',
+        'full_name',
+        'wallet_balance',
+        'account_status',
+        'record_id',
+        'date',
+        'record_type',
+        'status',
+        'description',
+        'amount',
+        'reference',
+        'product',
+        'category',
+        'quantity',
+        'last_ip_address',
+        'ip_addresses',
+        'last_ip_seen_at',
+        'last_ip_location',
+        'last_ip_isp',
+        'device_label',
+        'device_type',
+        'device_os',
+        'device_browser',
+        'last_user_agent',
+        'suspension_reason',
+      ],
+      [
+        'account',
+        selectedUser.id,
+        selectedUser.email,
+        selectedUser.full_name || '',
+        Number(selectedUser.wallet_balance || 0),
+        accountStatus,
+        '',
+        formatCustomerCsvDate(selectedUser.created_at),
+        'profile',
+        accountStatus,
+        'Account summary',
+        '',
+        '',
+        '',
+        '',
+        '',
+        selectedUser.fraud_last_ip_address || '',
+        Array.isArray(selectedUser.fraud_ip_addresses) ? selectedUser.fraud_ip_addresses.join(' | ') : '',
+        formatCustomerCsvDate(selectedUser.fraud_last_ip_seen_at),
+        selectedUser.fraud_last_ip_location || '',
+        selectedUser.fraud_last_ip_isp || '',
+        selectedUser.fraud_device_label || '',
+        selectedUser.fraud_device_type || '',
+        selectedUser.fraud_device_os || '',
+        selectedUser.fraud_device_browser || '',
+        selectedUser.fraud_last_user_agent || '',
+        selectedUser.suspension_reason || '',
+      ],
+      ...userTransactions.map((tx) => [
+        'transaction',
+        selectedUser.id,
+        selectedUser.email,
+        selectedUser.full_name || '',
+        Number(selectedUser.wallet_balance || 0),
+        accountStatus,
+        tx.id || '',
+        formatCustomerCsvDate(tx.created_at),
+        tx.type || '',
+        tx.status || '',
+        tx.description || '',
+        Number(tx.amount || 0),
+        tx.reference || tx.payment_reference || tx.transaction_reference || '',
+        '',
+        '',
+        '',
+        selectedUser.fraud_last_ip_address || '',
+        Array.isArray(selectedUser.fraud_ip_addresses) ? selectedUser.fraud_ip_addresses.join(' | ') : '',
+        formatCustomerCsvDate(selectedUser.fraud_last_ip_seen_at),
+        selectedUser.fraud_last_ip_location || '',
+        selectedUser.fraud_last_ip_isp || '',
+        selectedUser.fraud_device_label || '',
+        selectedUser.fraud_device_type || '',
+        selectedUser.fraud_device_os || '',
+        selectedUser.fraud_device_browser || '',
+        selectedUser.fraud_last_user_agent || '',
+        selectedUser.suspension_reason || '',
+      ]),
+      ...userOrders.map((order) => [
+        'order',
+        selectedUser.id,
+        selectedUser.email,
+        selectedUser.full_name || '',
+        Number(selectedUser.wallet_balance || 0),
+        accountStatus,
+        order.id || '',
+        formatCustomerCsvDate(order.created_at),
+        'order',
+        order.status || '',
+        order.product_groups?.name || order.product_name || 'Unknown product',
+        Number(order.amount || 0),
+        order.reference || order.payment_reference || '',
+        order.product_groups?.name || order.product_name || 'Unknown product',
+        order.product_groups?.categories?.name || '',
+        Number(order.quantity || order.units || 1),
+        selectedUser.fraud_last_ip_address || '',
+        Array.isArray(selectedUser.fraud_ip_addresses) ? selectedUser.fraud_ip_addresses.join(' | ') : '',
+        formatCustomerCsvDate(selectedUser.fraud_last_ip_seen_at),
+        selectedUser.fraud_last_ip_location || '',
+        selectedUser.fraud_last_ip_isp || '',
+        selectedUser.fraud_device_label || '',
+        selectedUser.fraud_device_type || '',
+        selectedUser.fraud_device_os || '',
+        selectedUser.fraud_device_browser || '',
+        selectedUser.fraud_last_user_agent || '',
+        selectedUser.suspension_reason || '',
+      ]),
+    ]
+
+    downloadCsvFile(
+      rows,
+      `tallystore-user-history-${safeCsvFilenamePart(selectedUser.email || selectedUser.id)}-${format(new Date(), 'yyyy-MM-dd')}.csv`,
+    )
+    toast({
+      title: 'User history CSV downloaded',
+      description: `${userTransactions.length.toLocaleString()} transaction(s) and ${userOrders.length.toLocaleString()} order(s) exported.`,
+    })
   }
 
   const formatCustomerCsvDate = (date?: string | null) => {
@@ -6073,6 +6455,18 @@ export default function AdminPage() {
                               Unsuspend
                             </Button>
                           )}
+                          {!selectedUser?.account_suspended && !selectedUser?.is_admin && !selectedUser?.is_staff && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="destructive"
+                              onClick={handleSuspendSelectedUser}
+                              disabled={isSuspendingUser}
+                            >
+                              {isSuspendingUser ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserX className="mr-2 h-4 w-4" />}
+                              Suspend
+                            </Button>
+                          )}
                         </div>
                       </div>
                       {selectedUser?.account_suspended && (
@@ -6096,6 +6490,41 @@ export default function AdminPage() {
                         <p className="text-sm text-muted-foreground">Joined Date</p>
                         <p>{selectedUser?.created_at && format(new Date(selectedUser.created_at), 'PPP')}</p>
                       </div>
+                      {selectedUser?.fraud_last_ip_address && (
+                        <div className="sm:col-span-2 rounded-lg border p-3">
+                          <p className="text-sm font-semibold">Fraud IP evidence</p>
+                          <p className="mt-1 font-mono text-sm">{selectedUser.fraud_last_ip_address}</p>
+                          {selectedUser.fraud_last_ip_location && (
+                            <p className="mt-1 text-sm font-medium">{selectedUser.fraud_last_ip_location}</p>
+                          )}
+                          {selectedUser.fraud_last_ip_isp && (
+                            <p className="text-xs text-muted-foreground">{selectedUser.fraud_last_ip_isp}</p>
+                          )}
+                          {selectedUser.fraud_device_label && (
+                            <p className="mt-1 text-sm font-medium">{selectedUser.fraud_device_label}</p>
+                          )}
+                          {(selectedUser.fraud_device_type || selectedUser.fraud_device_os || selectedUser.fraud_device_browser) && (
+                            <p className="text-xs text-muted-foreground">
+                              {[selectedUser.fraud_device_type, selectedUser.fraud_device_os, selectedUser.fraud_device_browser].filter(Boolean).join(' · ')}
+                            </p>
+                          )}
+                          {selectedUser.fraud_last_ip_seen_at && (
+                            <p className="text-xs text-muted-foreground">
+                              Last seen {formatDistanceToNow(new Date(selectedUser.fraud_last_ip_seen_at), { addSuffix: true })}
+                            </p>
+                          )}
+                          {selectedUser.fraud_last_user_agent && (
+                            <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                              {selectedUser.fraud_last_user_agent}
+                            </p>
+                          )}
+                          {Array.isArray(selectedUser.fraud_ip_addresses) && selectedUser.fraud_ip_addresses.length > 1 && (
+                            <p className="mt-1 font-mono text-xs text-muted-foreground">
+                              Other IPs: {selectedUser.fraud_ip_addresses.filter((ip: string) => ip !== selectedUser.fraud_last_ip_address).join(', ')}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -6225,6 +6654,10 @@ export default function AdminPage() {
               </div>
 
               <DialogFooter>
+                <Button variant="outline" onClick={downloadSelectedUserHistoryCsv} disabled={!selectedUser}>
+                  <Download className="h-4 w-4 mr-2" />
+                  Download CSV
+                </Button>
                 <Button variant="outline" onClick={() => setViewUserOpen(false)}>
                   Close
                 </Button>
@@ -7416,6 +7849,7 @@ export default function AdminPage() {
                             <TableHead>Customer</TableHead>
                             <TableHead>Flag</TableHead>
                             <TableHead>Ledger</TableHead>
+                            <TableHead>IP</TableHead>
                             <TableHead>Wallet</TableHead>
                             <TableHead>Reason</TableHead>
                             <TableHead>Actions</TableHead>
@@ -7459,6 +7893,39 @@ export default function AdminPage() {
                                 </div>
                               </TableCell>
                               <TableCell>
+                                <div className="min-w-[180px] space-y-1 text-sm">
+                                  {row.lastIpAddress ? (
+                                    <>
+                                      <p className="font-mono">{row.lastIpAddress}</p>
+                                      {row.lastIpLocation && (
+                                        <p className="text-xs font-medium">{row.lastIpLocation}</p>
+                                      )}
+                                      {row.lastIpIsp && (
+                                        <p className="text-xs text-muted-foreground">{row.lastIpIsp}</p>
+                                      )}
+                                      <p className="text-xs font-medium">
+                                        {row.deviceLabel || 'Unknown device'}
+                                      </p>
+                                      <p className="text-xs text-muted-foreground">
+                                        {[row.deviceType, row.deviceOs, row.deviceBrowser].filter(Boolean).join(' · ') || 'Device unknown'}
+                                      </p>
+                                      {row.lastIpSeenAt && (
+                                        <p className="text-xs text-muted-foreground">
+                                          Seen {formatDistanceToNow(new Date(row.lastIpSeenAt), { addSuffix: true })}
+                                        </p>
+                                      )}
+                                      {row.ipAddresses.length > 1 && (
+                                        <p className="font-mono text-xs text-muted-foreground">
+                                          Also: {row.ipAddresses.filter(ip => ip !== row.lastIpAddress).slice(0, 3).join(', ')}
+                                        </p>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <p className="text-xs text-muted-foreground">No server IP yet</p>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell>
                                 <Badge variant="outline">{formatAdminNaira(row.walletBalance)}</Badge>
                               </TableCell>
                               <TableCell>
@@ -7477,18 +7944,33 @@ export default function AdminPage() {
                                     type="button"
                                     variant="outline"
                                     size="sm"
-                                    onClick={() => handleViewUser(users.find(user => user.id === row.userId) || {
-                                      id: row.userId,
-                                      email: row.email,
-                                      full_name: row.fullName,
-                                      wallet_balance: row.walletBalance,
-                                      account_suspended: row.suspended,
-                                      suspension_reason: row.suspensionReason,
-                                      suspended_at: row.suspendedAt,
-                                      is_admin: false,
-                                      is_staff: false,
-                                      created_at: new Date().toISOString(),
-                                    })}
+                                    onClick={() => {
+                                      const baseUser = users.find(user => user.id === row.userId) || {
+                                        id: row.userId,
+                                        email: row.email,
+                                        full_name: row.fullName,
+                                        wallet_balance: row.walletBalance,
+                                        account_suspended: row.suspended,
+                                        suspension_reason: row.suspensionReason,
+                                        suspended_at: row.suspendedAt,
+                                        is_admin: false,
+                                        is_staff: false,
+                                        created_at: new Date().toISOString(),
+                                      }
+                                      handleViewUser({
+                                        ...baseUser,
+                                        fraud_last_ip_address: row.lastIpAddress || '',
+                                        fraud_ip_addresses: row.ipAddresses,
+                                        fraud_last_ip_seen_at: row.lastIpSeenAt || '',
+                                        fraud_last_ip_location: row.lastIpLocation || '',
+                                        fraud_last_ip_isp: row.lastIpIsp || '',
+                                        fraud_last_user_agent: row.lastUserAgent || '',
+                                        fraud_device_label: row.deviceLabel || '',
+                                        fraud_device_type: row.deviceType || '',
+                                        fraud_device_os: row.deviceOs || '',
+                                        fraud_device_browser: row.deviceBrowser || '',
+                                      })
+                                    }}
                                   >
                                     <Eye className="mr-2 h-4 w-4" />
                                     View
@@ -7502,6 +7984,18 @@ export default function AdminPage() {
                                     >
                                       {fraudUnsuspendingUserId === row.userId ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />}
                                       Unsuspend
+                                    </Button>
+                                  )}
+                                  {!row.suspended && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="destructive"
+                                      onClick={() => handleSuspendFraudUser(row)}
+                                      disabled={fraudSuspendingUserId === row.userId}
+                                    >
+                                      {fraudSuspendingUserId === row.userId ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserX className="mr-2 h-4 w-4" />}
+                                      Suspend
                                     </Button>
                                   )}
                                 </div>

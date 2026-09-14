@@ -2177,6 +2177,41 @@ export async function adminUnsuspendUser(userId: string): Promise<{ success: boo
   }
 }
 
+export async function adminSuspendUser(userId: string, reason: string): Promise<{ success: boolean }> {
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-adjust-balance', {
+      body: {
+        action: 'suspend_user',
+        target_user_id: userId,
+        reason,
+      },
+    })
+
+    if (error) {
+      let message = error.message || 'Failed to suspend account'
+      const context = (error as any)?.context
+      if (context && typeof context.json === 'function') {
+        try {
+          const body = await context.clone().json()
+          message = body?.error || body?.message || message
+        } catch {
+          // Keep the Supabase client error if the function did not return JSON.
+        }
+      }
+      throw new Error(message)
+    }
+
+    if (!data?.success) {
+      throw new Error(data?.error || 'Failed to suspend account')
+    }
+
+    return { success: true }
+  } catch (error) {
+    console.error('Error in adminSuspendUser:', error)
+    throw error
+  }
+}
+
 // Get user's order history (admin view)
 export async function getUserOrdersAdmin(userId: string) {
   try {

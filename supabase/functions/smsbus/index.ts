@@ -194,7 +194,68 @@ export function revenueContextMetadata(context?: RevenueRequestContext | null) {
 // ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
 
 // ── staff-purchase-guard.ts ──
-export async function assertPurchasingCustomer(admin: any, userId: string) {
+async function purchaseGuardSha256Hex(value: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function cleanPurchaseGuardIp(value: string | null) {
+  if (!value) return null
+  const first = value.split(',')[0]?.trim() || ''
+  const withoutPort = first.includes('.') ? first.replace(/:\d+$/, '') : first
+  const cleaned = withoutPort.replace(/[^a-fA-F0-9:.[\]]/g, '').replace(/^\[|\]$/g, '')
+  if (!cleaned || cleaned.length > 80) return null
+  return cleaned
+}
+
+function getPurchaseGuardIp(req?: Request | null) {
+  if (!req) return null
+  return cleanPurchaseGuardIp(
+    req.headers.get('cf-connecting-ip') ||
+      req.headers.get('x-real-ip') ||
+      req.headers.get('x-forwarded-for') ||
+      req.headers.get('forwarded')?.match(/for="?([^";,]+)"?/i)?.[1] ||
+      null,
+  )
+}
+
+function getPurchaseGuardUserAgent(req?: Request | null) {
+  return String(req?.headers.get('user-agent') || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 500)
+}
+
+async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
+  const ipAddress = getPurchaseGuardIp(req)
+  const userAgent = getPurchaseGuardUserAgent(req)
+  const userAgentHash = userAgent ? await purchaseGuardSha256Hex(userAgent) : null
+
+  if (ipAddress) {
+    const { data, error } = await admin
+      .from('fraud_device_bans')
+      .select('id')
+      .eq('active', true)
+      .eq('ip_address', ipAddress)
+      .limit(1)
+
+    if (!error && data && data.length > 0) {
+      throw new Error('This device or network has been blocked from purchasing. Please contact support.')
+    }
+  }
+
+  if (userAgentHash) {
+    const { data, error } = await admin
+      .from('fraud_device_bans')
+      .select('id')
+      .eq('active', true)
+      .eq('user_agent_hash', userAgentHash)
+      .limit(1)
+
+    if (!error && data && data.length > 0) {
+      throw new Error('This device or network has been blocked from purchasing. Please contact support.')
+    }
+  }
+}
+
+export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null) {
   const { data: profile, error } = await admin
     .from('profiles')
     .select('is_staff, is_admin, account_suspended')
@@ -212,6 +273,8 @@ export async function assertPurchasingCustomer(admin: any, userId: string) {
   if (profile?.account_suspended) {
     throw new Error('This account is suspended. Please contact support.')
   }
+
+  await assertFraudDeviceNotBanned(admin, req)
 }
 
 // ── Inlined: forex-rates ──────────────────────────────────────────────────────
@@ -1363,8 +1426,8 @@ async function handleOrders(admin: SupabaseAdmin, userId: string) {
   return json({ success: true, data: reconciled.map(publicSmsOrder) })
 }
 
-async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
-  await assertPurchasingCustomer(admin, userId)
+async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request) {
+  await assertPurchasingCustomer(admin, userId, req)
 
   const key = getDaisyKey()
   if (!key) throw new Error('SMS service is not configured')
@@ -1937,7 +2000,7 @@ serve(async (req) => {
       case 'countries':    return json({ success: true, data: [{ id: DAISY_COUNTRY, name: 'United States', code: 'us' }] })
       case 'rental_areas': return json({ success: true, data: [] })
       case 'orders':       return await handleOrders(admin, user.id)
-      case 'create_otp':   return await handleCreateOtp(admin, user.id, body)
+      case 'create_otp':   return await handleCreateOtp(admin, user.id, body, req)
       case 'check_otp':    return await handleCheckOtp(admin, user.id, body)
       case 'cancel_otp':   return await handleCancelOtp(admin, user.id, body)
       case 'sync_cancelled':          return await handleSyncCancelled(admin, user.id)
