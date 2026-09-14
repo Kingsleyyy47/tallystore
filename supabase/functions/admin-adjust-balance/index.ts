@@ -64,13 +64,64 @@ serve(async (req) => {
     }
 
     // Parse request body
+    const body = await req.json();
+
+    if (body?.action === 'unsuspend_user') {
+      const targetUserId = String(body.target_user_id || '').trim();
+      if (!targetUserId) {
+        throw new Error('target_user_id is required');
+      }
+
+      const { data: targetProfile, error: profileError } = await supabaseAdmin
+        .from('profiles')
+        .select('id, email, is_staff, is_admin, account_suspended')
+        .eq('id', targetUserId)
+        .single();
+
+      if (profileError || !targetProfile) {
+        throw new Error('Target user not found');
+      }
+
+      if (targetProfile.is_staff || targetProfile.is_admin) {
+        throw new Error('Suspension controls are only available for customer accounts');
+      }
+
+      const { error: updateError } = await supabaseAdmin
+        .from('profiles')
+        .update({
+          account_suspended: false,
+          suspension_reason: null,
+          suspension_reinstated_at: new Date().toISOString(),
+          reinstated_by: user.id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', targetUserId);
+
+      if (updateError) {
+        throw new Error(`Failed to unsuspend account: ${updateError.message}`);
+      }
+
+      console.log(`✅ Admin ${user.email} unsuspended ${targetProfile.email}`);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          target_user_id: targetUserId,
+          target_email: targetProfile.email,
+          account_suspended: false,
+          reinstated_by: user.email,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     const {
       target_user_id, 
       adjustment_amount, 
       balance_type, 
       reason,
       idempotency_key 
-    } = await req.json();
+    } = body;
     const cleanReason = String(reason || '').trim();
 
     // Validate inputs

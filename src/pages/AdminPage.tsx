@@ -81,6 +81,7 @@ import {
   getUserTransactions,
   getUserOrdersAdmin,
   adminAdjustBalance,
+  adminUnsuspendUser,
   getAppSetting,
   upsertAppSetting,
   getFavoriteProductGroupIds,
@@ -144,6 +145,7 @@ const ADMIN_TABS = [
   { value: 'discount-codes', label: 'Discount Codes' },
   { value: 'categories', label: 'Categories' },
   { value: 'users', label: 'Users' },
+  { value: 'fraud', label: 'Fraud' },
   { value: 'sales', label: 'Sales' },
   { value: 'histories', label: 'Transactions' },
   { value: 'email', label: 'Email' },
@@ -357,6 +359,25 @@ type EmailedDormantCustomer = {
   spentBeforeEmail?: number
 }
 
+type FraudReviewRow = {
+  userId: string
+  email: string
+  fullName?: string | null
+  walletBalance: number
+  suspended: boolean
+  suspensionReason?: string | null
+  suspendedAt?: string | null
+  trustedCredits: number
+  completedSpend: number
+  completedRefunds: number
+  netSpend: number
+  exposure: number
+  spendRatio: number | null
+  duplicateTopupReferences: string[]
+  reviewType: 'review_unblock' | 'suspended_risk' | 'overspent' | 'duplicate_deposit' | 'near_limit'
+  reason: string
+}
+
 const DORMANT_EMAIL_STORAGE_KEY = 'tallystore:dormant-customer-email-cohort:v1'
 const DORMANT_EMAIL_SETTING_KEY = 'sales_dormant_customer_email_cohort'
 
@@ -514,7 +535,17 @@ export default function AdminPage() {
   const [adjustmentType, setAdjustmentType] = useState<'add' | 'subtract'>('add')
   const [userTransactions, setUserTransactions] = useState<any[]>([])
   const [userOrders, setUserOrders] = useState<any[]>([])
+  const [showAllUserTransactions, setShowAllUserTransactions] = useState(false)
+  const [showAllUserOrders, setShowAllUserOrders] = useState(false)
   const [isAdjusting, setIsAdjusting] = useState(false)
+  const [isUnsuspendingUser, setIsUnsuspendingUser] = useState(false)
+
+  // Fraud review state
+  const [fraudRows, setFraudRows] = useState<FraudReviewRow[]>([])
+  const [fraudLoading, setFraudLoading] = useState(false)
+  const [fraudError, setFraudError] = useState<string | null>(null)
+  const [fraudLastLoadedAt, setFraudLastLoadedAt] = useState<string | null>(null)
+  const [fraudUnsuspendingUserId, setFraudUnsuspendingUserId] = useState<string | null>(null)
 
   // Website-wide activity histories
   const [historyRows, setHistoryRows] = useState<AdminHistoryRow[]>([])
@@ -2490,11 +2521,187 @@ export default function AdminPage() {
     }
   }, [categories, productGroups, smmServices, toast])
 
+  const loadFraudReview = useCallback(async () => {
+    setFraudLoading(true)
+    setFraudError(null)
+
+    const readRows = async (table: string, maxRows = 50000) => {
+      const pageSize = 1000
+      const rows: any[] = []
+
+      for (let from = 0; from < maxRows; from += pageSize) {
+        const { data, error } = await supabase
+          .from(table as any)
+          .select('*')
+          .order('created_at', { ascending: false })
+          .range(from, from + pageSize - 1)
+
+        if (error) throw error
+        rows.push(...(data || []))
+        if (!data || data.length < pageSize) break
+      }
+
+      return rows
+    }
+
+    try {
+      const [profileRows, transactionRows] = await Promise.all([
+        readRows('profiles', 50000),
+        readRows('transactions', 100000),
+      ])
+
+      const completedStatuses = new Set(['completed', 'success', 'successful', 'credited'])
+      const creditTypes = new Set(['topup', 'top_up', 'top-up', 'wallet_topup', 'deposit', 'wallet_deposit', 'credit', 'admin_credit', 'staff_credit', 'referral_withdrawal'])
+      const debitTypes = new Set(['purchase', 'admin_debit', 'staff_debit'])
+      const refundTypes = new Set(['refund'])
+
+      const ledgerByUser = new Map<string, {
+        trustedCredits: number
+        completedSpend: number
+        completedRefunds: number
+        duplicateTopupReferences: Set<string>
+      }>()
+      const topupRefs = new Map<string, { count: number; userIds: Set<string> }>()
+
+      const ensureLedger = (userId: string) => {
+        const existing = ledgerByUser.get(userId)
+        if (existing) return existing
+        const next = {
+          trustedCredits: 0,
+          completedSpend: 0,
+          completedRefunds: 0,
+          duplicateTopupReferences: new Set<string>(),
+        }
+        ledgerByUser.set(userId, next)
+        return next
+      }
+
+      for (const tx of transactionRows) {
+        const userId = String(tx.user_id || '')
+        if (!userId) continue
+        const status = String(tx.status || 'completed').toLowerCase()
+        if (!completedStatuses.has(status)) continue
+
+        const type = String(tx.type || '').toLowerCase()
+        const amount = Number(tx.amount || 0)
+        const ledger = ensureLedger(userId)
+
+        if (creditTypes.has(type) && amount > 0) {
+          ledger.trustedCredits += amount
+          const reference = String(tx.reference || '').trim()
+          if (type === 'topup' && reference) {
+            const existingRef = topupRefs.get(reference) || { count: 0, userIds: new Set<string>() }
+            existingRef.count += 1
+            existingRef.userIds.add(userId)
+            topupRefs.set(reference, existingRef)
+          }
+        } else if (debitTypes.has(type)) {
+          ledger.completedSpend += Math.abs(amount)
+        } else if (refundTypes.has(type) && amount > 0) {
+          ledger.completedRefunds += amount
+        }
+      }
+
+      for (const [reference, info] of topupRefs) {
+        if (info.count <= 1) continue
+        for (const userId of info.userIds) {
+          ensureLedger(userId).duplicateTopupReferences.add(reference)
+        }
+      }
+
+      const rows: FraudReviewRow[] = []
+      for (const profile of profileRows) {
+        if (profile.is_admin || profile.is_staff) continue
+
+        const userId = String(profile.id || '')
+        if (!userId) continue
+        const ledger = ensureLedger(userId)
+        const netSpend = Math.max(ledger.completedSpend - ledger.completedRefunds, 0)
+        const exposure = netSpend - ledger.trustedCredits
+        const spendRatio = ledger.trustedCredits > 0 ? netSpend / ledger.trustedCredits : netSpend > 0 ? null : 0
+        const duplicateTopupReferences = Array.from(ledger.duplicateTopupReferences)
+        const suspended = profile.account_suspended === true
+
+        let reviewType: FraudReviewRow['reviewType'] | null = null
+        let reason = ''
+
+        if (suspended && exposure <= 1) {
+          reviewType = 'review_unblock'
+          reason = 'Suspended, but trusted credits now cover completed spend. Review for possible unblock.'
+        } else if (suspended) {
+          reviewType = 'suspended_risk'
+          reason = profile.suspension_reason || `Suspended with ${formatAdminNaira(Math.max(exposure, 0))} uncovered spend.`
+        } else if (exposure > 1) {
+          reviewType = 'overspent'
+          reason = `Completed spend exceeds trusted credits by ${formatAdminNaira(exposure)}.`
+        } else if (duplicateTopupReferences.length > 0) {
+          reviewType = 'duplicate_deposit'
+          reason = `Duplicate completed top-up reference detected: ${duplicateTopupReferences.slice(0, 2).join(', ')}`
+        } else if (ledger.trustedCredits > 0 && netSpend >= 10000 && spendRatio !== null && spendRatio >= 0.85) {
+          reviewType = 'near_limit'
+          reason = `High spend ratio: ${Math.round(spendRatio * 100)}% of trusted credits spent.`
+        }
+
+        if (!reviewType) continue
+
+        rows.push({
+          userId,
+          email: profile.email || 'Unknown email',
+          fullName: profile.full_name || null,
+          walletBalance: Number(profile.wallet_balance || 0),
+          suspended,
+          suspensionReason: profile.suspension_reason || null,
+          suspendedAt: profile.suspended_at || null,
+          trustedCredits: ledger.trustedCredits,
+          completedSpend: ledger.completedSpend,
+          completedRefunds: ledger.completedRefunds,
+          netSpend,
+          exposure,
+          spendRatio,
+          duplicateTopupReferences,
+          reviewType,
+          reason,
+        })
+      }
+
+      const rank: Record<FraudReviewRow['reviewType'], number> = {
+        overspent: 0,
+        suspended_risk: 1,
+        duplicate_deposit: 2,
+        review_unblock: 3,
+        near_limit: 4,
+      }
+
+      setFraudRows(rows.sort((a, b) =>
+        rank[a.reviewType] - rank[b.reviewType] ||
+        Number(b.suspended) - Number(a.suspended) ||
+        Math.max(b.exposure, 0) - Math.max(a.exposure, 0) ||
+        b.netSpend - a.netSpend
+      ))
+      setFraudLastLoadedAt(new Date().toISOString())
+    } catch (error: any) {
+      setFraudError(error?.message || 'Failed to load fraud review')
+      toast({
+        title: 'Fraud review failed',
+        description: error?.message || 'Could not load fraud review data.',
+        variant: 'destructive',
+      })
+    } finally {
+      setFraudLoading(false)
+    }
+  }, [toast])
+
   useEffect(() => {
     if ((adminTab === 'histories' || adminTab === 'sales') && historyRows.length === 0) {
       loadAdminHistories()
     }
   }, [adminTab, historyRows.length, loadAdminHistories])
+
+  useEffect(() => {
+    if (adminTab === 'fraud' && fraudRows.length === 0 && !fraudLoading) {
+      loadFraudReview()
+    }
+  }, [adminTab, fraudLoading, fraudRows.length, loadFraudReview])
 
   const loadSalesAnalytics = useCallback(async () => {
     setSalesLoading(true)
@@ -3770,6 +3977,8 @@ export default function AdminPage() {
   const handleViewUser = async (user: any) => {
     try {
       setSelectedUser(user)
+      setShowAllUserTransactions(false)
+      setShowAllUserOrders(false)
       
       // Load user transactions and orders
       const [transactions, orders] = await Promise.all([
@@ -3886,6 +4095,75 @@ export default function AdminPage() {
       })
     } finally {
       setIsAdjusting(false)
+    }
+  }
+
+  const handleUnsuspendSelectedUser = async () => {
+    if (!selectedUser) return
+    try {
+      setIsUnsuspendingUser(true)
+      await adminUnsuspendUser(selectedUser.id)
+
+      const nextUser = {
+        ...selectedUser,
+        account_suspended: false,
+        suspension_reason: null,
+        suspension_reinstated_at: new Date().toISOString(),
+      }
+      setSelectedUser(nextUser)
+      setUsers(prev => prev.map(u => u.id === selectedUser.id ? nextUser : u))
+
+      toast({
+        title: 'Account unsuspended',
+        description: `${selectedUser.email || 'Customer'} can purchase again.`,
+      })
+    } catch (error: any) {
+      toast({
+        title: 'Unsuspend failed',
+        description: error.message || 'Could not unsuspend this account',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsUnsuspendingUser(false)
+    }
+  }
+
+  const handleUnsuspendFraudUser = async (row: FraudReviewRow) => {
+    try {
+      setFraudUnsuspendingUserId(row.userId)
+      await adminUnsuspendUser(row.userId)
+
+      setFraudRows(prev => prev.flatMap(item => {
+        if (item.userId !== row.userId) return [item]
+        if (item.exposure <= 1 && item.duplicateTopupReferences.length === 0 && !(item.spendRatio !== null && item.netSpend >= 10000 && item.spendRatio >= 0.85)) {
+          return []
+        }
+        return [{
+          ...item,
+          suspended: false,
+          suspensionReason: null,
+          suspendedAt: null,
+          reviewType: item.exposure > 1 ? 'overspent' : item.duplicateTopupReferences.length > 0 ? 'duplicate_deposit' : 'near_limit',
+          reason: item.exposure > 1 ? item.reason : 'Unsuspended. Keep monitoring this customer.',
+        }]
+      }))
+      setUsers(prev => prev.map(u => u.id === row.userId ? { ...u, account_suspended: false, suspension_reason: null } : u))
+      if (selectedUser?.id === row.userId) {
+        setSelectedUser((prev: any) => prev ? { ...prev, account_suspended: false, suspension_reason: null } : prev)
+      }
+
+      toast({
+        title: 'Account unsuspended',
+        description: `${row.email} can purchase again.`,
+      })
+    } catch (error: any) {
+      toast({
+        title: 'Unsuspend failed',
+        description: error.message || 'Could not unsuspend this account',
+        variant: 'destructive',
+      })
+    } finally {
+      setFraudUnsuspendingUserId(null)
     }
   }
 
@@ -5731,7 +6009,16 @@ export default function AdminPage() {
           </Dialog>
 
           {/* User Details Modal */}
-          <Dialog open={viewUserOpen} onOpenChange={setViewUserOpen}>
+          <Dialog
+            open={viewUserOpen}
+            onOpenChange={(open) => {
+              setViewUserOpen(open)
+              if (!open) {
+                setShowAllUserTransactions(false)
+                setShowAllUserOrders(false)
+              }
+            }}
+          >
             <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto w-[95vw] sm:w-full">
               <DialogHeader>
                 <DialogTitle>User Details</DialogTitle>
@@ -5764,16 +6051,43 @@ export default function AdminPage() {
                       </div>
                       <div>
                         <p className="text-sm text-muted-foreground">Account Status</p>
-                        <div className="mt-1">
-                          {selectedUser?.is_admin ? (
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          {selectedUser?.account_suspended ? (
+                            <Badge variant="destructive">Suspended</Badge>
+                          ) : selectedUser?.is_admin ? (
                             <Badge>Admin</Badge>
                           ) : selectedUser?.is_staff ? (
                             <Badge variant="outline">Staff</Badge>
                           ) : (
                             <Badge variant="secondary">Customer</Badge>
                           )}
+                          {selectedUser?.account_suspended && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={handleUnsuspendSelectedUser}
+                              disabled={isUnsuspendingUser}
+                            >
+                              {isUnsuspendingUser ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />}
+                              Unsuspend
+                            </Button>
+                          )}
                         </div>
                       </div>
+                      {selectedUser?.account_suspended && (
+                        <div className="sm:col-span-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3">
+                          <p className="text-sm font-semibold text-destructive">Suspension reason</p>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {selectedUser.suspension_reason || 'Suspended by ledger protection.'}
+                          </p>
+                          {selectedUser.suspended_at && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Suspended {formatDistanceToNow(new Date(selectedUser.suspended_at), { addSuffix: true })}
+                            </p>
+                          )}
+                        </div>
+                      )}
                       <div>
                         <p className="text-sm text-muted-foreground">User ID</p>
                         <p className="font-mono text-xs">{selectedUser?.id}</p>
@@ -5799,7 +6113,7 @@ export default function AdminPage() {
                       <p className="text-center text-muted-foreground py-4">No transactions found</p>
                     ) : (
                       <div className="space-y-2">
-                        {userTransactions.slice(0, 5).map((tx) => (
+                        {(showAllUserTransactions ? userTransactions : userTransactions.slice(0, 5)).map((tx) => (
                           <div key={tx.id} className="flex items-center justify-between p-3 border rounded-lg">
                             <div className="flex-1">
                               <div className="flex items-center gap-2 mb-1">
@@ -5831,9 +6145,16 @@ export default function AdminPage() {
                           </div>
                         ))}
                         {userTransactions.length > 5 && (
-                          <p className="text-sm text-muted-foreground text-center pt-2">
-                            Showing 5 of {userTransactions.length} transactions
-                          </p>
+                          <div className="pt-2 text-center">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setShowAllUserTransactions(prev => !prev)}
+                            >
+                              {showAllUserTransactions ? 'Show less' : `See all ${userTransactions.length} transactions`}
+                            </Button>
+                          </div>
                         )}
                       </div>
                     )}
@@ -5865,7 +6186,7 @@ export default function AdminPage() {
                         </div>
                         
                         <div className="space-y-2">
-                          {userOrders.slice(0, 5).map((order) => (
+                          {(showAllUserOrders ? userOrders : userOrders.slice(0, 5)).map((order) => (
                             <div key={order.id} className="flex items-center justify-between p-3 border rounded-lg">
                               <div className="flex-1">
                                 <p className="font-medium">
@@ -5885,9 +6206,16 @@ export default function AdminPage() {
                             </div>
                           ))}
                           {userOrders.length > 5 && (
-                            <p className="text-sm text-muted-foreground text-center pt-2">
-                              Showing 5 of {userOrders.length} orders
-                            </p>
+                            <div className="pt-2 text-center">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setShowAllUserOrders(prev => !prev)}
+                              >
+                                {showAllUserOrders ? 'Show less' : `See all ${userOrders.length} orders`}
+                              </Button>
+                            </div>
                           )}
                         </div>
                       </div>
@@ -6946,7 +7274,9 @@ export default function AdminPage() {
                               </Badge>
                             </TableCell>
                             <TableCell>
-                              {user.is_admin ? (
+                              {user.account_suspended ? (
+                                <Badge variant="destructive">Suspended</Badge>
+                              ) : user.is_admin ? (
                                 <Badge>Admin</Badge>
                               ) : user.is_staff ? (
                                 <Badge variant="outline">Staff</Badge>
@@ -7008,6 +7338,180 @@ export default function AdminPage() {
                       <p className="text-sm text-muted-foreground">Admins</p>
                     </div>
                   </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* Fraud Review */}
+            <TabsContent value="fraud" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <Shield className="h-5 w-5 text-primary" />
+                        Fraud Review
+                      </CardTitle>
+                      <p className="text-muted-foreground">
+                        Customers flagged by wallet ledger checks, duplicate deposit references, or high spend risk.
+                      </p>
+                      {fraudLastLoadedAt && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Last scanned {formatDistanceToNow(new Date(fraudLastLoadedAt), { addSuffix: true })}
+                        </p>
+                      )}
+                    </div>
+                    <Button type="button" variant="outline" onClick={loadFraudReview} disabled={fraudLoading}>
+                      {fraudLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                      Scan fraud
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {fraudError && (
+                    <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                      {fraudError}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                    <div className="rounded-lg border p-3">
+                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'review_unblock').length}</p>
+                      <p className="text-xs text-muted-foreground">Review to unblock</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'overspent' || row.reviewType === 'suspended_risk').length}</p>
+                      <p className="text-xs text-muted-foreground">Overspent risk</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'duplicate_deposit').length}</p>
+                      <p className="text-xs text-muted-foreground">Duplicate deposits</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'near_limit').length}</p>
+                      <p className="text-xs text-muted-foreground">High spend ratio</p>
+                    </div>
+                    <div className="rounded-lg border p-3">
+                      <p className="text-2xl font-bold">{formatAdminNaira(fraudRows.reduce((sum, row) => sum + Math.max(row.exposure, 0), 0))}</p>
+                      <p className="text-xs text-muted-foreground">Uncovered exposure</p>
+                    </div>
+                  </div>
+
+                  {fraudLoading ? (
+                    <div className="flex items-center justify-center gap-2 rounded-lg border p-8 text-muted-foreground">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      Scanning customers...
+                    </div>
+                  ) : fraudRows.length === 0 ? (
+                    <div className="rounded-lg border p-8 text-center">
+                      <CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-emerald-500" />
+                      <p className="font-semibold">No fraud review items</p>
+                      <p className="text-sm text-muted-foreground">No customer currently needs unblock review or risk attention.</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Customer</TableHead>
+                            <TableHead>Flag</TableHead>
+                            <TableHead>Ledger</TableHead>
+                            <TableHead>Wallet</TableHead>
+                            <TableHead>Reason</TableHead>
+                            <TableHead>Actions</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {fraudRows.map((row) => (
+                            <TableRow key={row.userId}>
+                              <TableCell>
+                                <div className="space-y-1">
+                                  <p className="font-mono text-sm">{row.email}</p>
+                                  <p className="text-xs text-muted-foreground">{row.fullName || row.userId}</p>
+                                  {row.suspendedAt && (
+                                    <p className="text-xs text-muted-foreground">
+                                      Suspended {formatDistanceToNow(new Date(row.suspendedAt), { addSuffix: true })}
+                                    </p>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                {row.reviewType === 'review_unblock' ? (
+                                  <Badge className="bg-emerald-600 text-white">Review unblock</Badge>
+                                ) : row.reviewType === 'near_limit' ? (
+                                  <Badge variant="outline">Monitor</Badge>
+                                ) : (
+                                  <Badge variant="destructive">
+                                    {row.reviewType === 'duplicate_deposit' ? 'Duplicate deposit' : row.suspended ? 'Suspended risk' : 'Overspent'}
+                                  </Badge>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <div className="min-w-[180px] text-sm">
+                                  <p>Credits: {formatAdminNaira(row.trustedCredits)}</p>
+                                  <p>Spend: {formatAdminNaira(row.netSpend)}</p>
+                                  <p className={row.exposure > 1 ? 'font-semibold text-destructive' : 'text-muted-foreground'}>
+                                    Gap: {formatAdminNaira(Math.max(row.exposure, 0))}
+                                  </p>
+                                  {row.spendRatio !== null && (
+                                    <p className="text-xs text-muted-foreground">Ratio: {Math.round(row.spendRatio * 100)}%</p>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline">{formatAdminNaira(row.walletBalance)}</Badge>
+                              </TableCell>
+                              <TableCell>
+                                <div className="max-w-[320px] text-sm">
+                                  <p>{row.reason}</p>
+                                  {row.duplicateTopupReferences.length > 0 && (
+                                    <p className="mt-1 font-mono text-xs text-muted-foreground">
+                                      {row.duplicateTopupReferences.slice(0, 3).join(', ')}
+                                    </p>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex flex-col gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleViewUser(users.find(user => user.id === row.userId) || {
+                                      id: row.userId,
+                                      email: row.email,
+                                      full_name: row.fullName,
+                                      wallet_balance: row.walletBalance,
+                                      account_suspended: row.suspended,
+                                      suspension_reason: row.suspensionReason,
+                                      suspended_at: row.suspendedAt,
+                                      is_admin: false,
+                                      is_staff: false,
+                                      created_at: new Date().toISOString(),
+                                    })}
+                                  >
+                                    <Eye className="mr-2 h-4 w-4" />
+                                    View
+                                  </Button>
+                                  {row.suspended && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      onClick={() => handleUnsuspendFraudUser(row)}
+                                      disabled={fraudUnsuspendingUserId === row.userId}
+                                    >
+                                      {fraudUnsuspendingUserId === row.userId ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />}
+                                      Unsuspend
+                                    </Button>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </TabsContent>

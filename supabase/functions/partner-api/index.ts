@@ -530,11 +530,20 @@ function stockStatus(stock: number, isSellable: boolean, availability: string) {
 
 async function productCatalogue(admin: SupabaseAdmin, partner: any) {
   if (!hasSection(partner, 'products')) return []
-  const { data, error } = await admin
+  let { data, error } = await admin
     .from('product_groups')
     .select('id, category_id, name, description, price, stock_count, availability_status, is_sellable, is_active, created_at, categories(name)')
     .eq('is_active', true)
     .order('name')
+  if (error) {
+    const legacy = await admin
+      .from('product_groups')
+      .select('id, category_id, name, description, price, stock_count, is_active, created_at, categories(name)')
+      .eq('is_active', true)
+      .order('name')
+    data = legacy.data
+    error = legacy.error
+  }
   if (error) throw new Error(`Failed to load products: ${error.message}`)
 
   return (data || []).map((product: any) => {

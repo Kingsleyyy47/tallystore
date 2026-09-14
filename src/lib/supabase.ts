@@ -103,6 +103,11 @@ export interface Profile {
   username: string
   wallet_balance: number
   is_admin: boolean
+  is_staff?: boolean
+  account_suspended?: boolean
+  suspension_reason?: string | null
+  suspended_at?: string | null
+  suspension_reinstated_at?: string | null
   created_at: string
   updated_at: string
   referral_code?: string
@@ -2135,6 +2140,40 @@ export async function adminAdjustBalance(
   } catch (error) {
     console.error('Error in adminAdjustBalance:', error);
     throw error;
+  }
+}
+
+export async function adminUnsuspendUser(userId: string): Promise<{ success: boolean }> {
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-adjust-balance', {
+      body: {
+        action: 'unsuspend_user',
+        target_user_id: userId,
+      },
+    })
+
+    if (error) {
+      let message = error.message || 'Failed to unsuspend account'
+      const context = (error as any)?.context
+      if (context && typeof context.json === 'function') {
+        try {
+          const body = await context.clone().json()
+          message = body?.error || body?.message || message
+        } catch {
+          // Keep the Supabase client error if the function did not return JSON.
+        }
+      }
+      throw new Error(message)
+    }
+
+    if (!data?.success) {
+      throw new Error(data?.error || 'Failed to unsuspend account')
+    }
+
+    return { success: true }
+  } catch (error) {
+    console.error('Error in adminUnsuspendUser:', error)
+    throw error
   }
 }
 

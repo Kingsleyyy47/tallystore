@@ -197,7 +197,7 @@ export function revenueContextMetadata(context?: RevenueRequestContext | null) {
 export async function assertPurchasingCustomer(admin: any, userId: string) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -207,6 +207,10 @@ export async function assertPurchasingCustomer(admin: any, userId: string) {
 
   if (profile?.is_staff || profile?.is_admin) {
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
+  }
+
+  if (profile?.account_suspended) {
+    throw new Error('This account is suspended. Please contact support.')
   }
 }
 
@@ -510,6 +514,24 @@ serve(async (req) => {
       revenueContext: revenueRequestContext,
       metadata: purchaseEventMetadata,
     });
+
+    // Preflight the wallet before any live-provider auto-fulfillment. The final
+    // debit below still re-checks with optimistic locking, but this prevents a
+    // zero/low-balance customer from triggering paid supplier stock purchases.
+    const { data: preflightProfile, error: preflightProfileError } = await supabaseAdmin
+      .from('profiles')
+      .select('wallet_balance')
+      .eq('id', user.id)
+      .single();
+
+    if (preflightProfileError || !preflightProfile) {
+      throw new Error('Failed to fetch wallet balance');
+    }
+
+    const preflightWalletBalance = Number(preflightProfile.wallet_balance || 0);
+    if (preflightWalletBalance < totalPrice) {
+      throw new Error(`Insufficient balance. Required: ₦${totalPrice.toLocaleString()}, Available: ₦${preflightWalletBalance.toLocaleString()}`);
+    }
 
     // 2. Get available accounts (SERVER-SIDE ONLY - never exposed to client)
     let preferredAccount: any = null;

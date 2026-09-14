@@ -521,7 +521,7 @@ export function createSageCloudClient(config: SageCloudConfig): SageCloudClient 
 export async function assertPurchasingCustomer(admin: any, userId: string) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -531,6 +531,10 @@ export async function assertPurchasingCustomer(admin: any, userId: string) {
 
   if (profile?.is_staff || profile?.is_admin) {
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
+  }
+
+  if (profile?.account_suspended) {
+    throw new Error('This account is suspended. Please contact support.')
   }
 }
 
@@ -653,6 +657,36 @@ async function refundBalance(
   }
 
   throw new Error('Refund could not be credited. Please contact support.');
+}
+
+async function recordWalletLedgerTransaction(
+  supabaseAdmin: any,
+  input: {
+    userId: string;
+    type: 'purchase' | 'refund';
+    amount: number;
+    balanceAfter: number;
+    description: string;
+    reference: string;
+    status: 'completed' | 'pending' | 'failed';
+    paymentSource: string;
+  },
+) {
+  if (input.paymentSource !== 'wallet') return;
+
+  const { error } = await supabaseAdmin.from('transactions').insert({
+    user_id: input.userId,
+    type: input.type,
+    amount: input.amount,
+    balance_after: input.balanceAfter,
+    description: input.description,
+    reference: input.reference,
+    status: input.status,
+  });
+
+  if (error) {
+    console.error('Failed to record bills wallet ledger transaction:', error.message);
+  }
 }
 
 serve(async (req) => {
@@ -976,6 +1010,7 @@ serve(async (req) => {
         .eq('id', billRecord.id);
       throw new Error('Failed to deduct balance after multiple attempts. Please try again.');
     }
+    const balanceAfterDeduction = actualCurrentBalance - purchaseAmount;
 
     // Process purchase via SageCloud
     let purchaseResponse;
@@ -1027,6 +1062,26 @@ serve(async (req) => {
 
       if (finalStatus === 'failed') {
         const refundedBalance = await refundBalance(supabaseAdmin, user.id, balanceColumn, purchaseAmount);
+        await recordWalletLedgerTransaction(supabaseAdmin, {
+          userId: user.id,
+          type: 'purchase',
+          amount: -purchaseAmount,
+          balanceAfter: balanceAfterDeduction,
+          description: `Failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
+          reference,
+          status: 'failed',
+          paymentSource: payment_source,
+        });
+        await recordWalletLedgerTransaction(supabaseAdmin, {
+          userId: user.id,
+          type: 'refund',
+          amount: purchaseAmount,
+          balanceAfter: refundedBalance,
+          description: `Auto-refund for failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
+          reference: `REFUND-${reference}`,
+          status: 'completed',
+          paymentSource: payment_source,
+        });
         await recordRevenueEvent(supabaseAdmin, {
           eventType: 'PAYMENT_FAILED',
           eventId: `bills:PAYMENT_FAILED:${idempotency_key}`,
@@ -1109,6 +1164,16 @@ serve(async (req) => {
           provider_reference: purchaseResponse.reference || reference,
         },
       });
+      await recordWalletLedgerTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'purchase',
+        amount: -purchaseAmount,
+        balanceAfter: balanceAfterDeduction,
+        description: `${transaction_type === 'airtime' ? 'Airtime' : 'Data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
+        reference,
+        status: finalStatus === 'successful' ? 'completed' : 'pending',
+        paymentSource: payment_source,
+      });
 
     } catch (purchaseError: unknown) {
       console.error('SageCloud purchase failed:', purchaseError instanceof Error ? purchaseError.message : 'Unknown purchase error');
@@ -1125,6 +1190,26 @@ serve(async (req) => {
 
       const refundedBalance = await refundBalance(supabaseAdmin, user.id, balanceColumn, purchaseAmount);
       console.log('Bills purchase refunded after provider failure.');
+      await recordWalletLedgerTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'purchase',
+        amount: -purchaseAmount,
+        balanceAfter: balanceAfterDeduction,
+        description: `Failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone} - ${errorMessage}`,
+        reference,
+        status: 'failed',
+        paymentSource: payment_source,
+      });
+      await recordWalletLedgerTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'refund',
+        amount: purchaseAmount,
+        balanceAfter: refundedBalance,
+        description: `Auto-refund for failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
+        reference: `REFUND-${reference}`,
+        status: 'completed',
+        paymentSource: payment_source,
+      });
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
         eventId: `bills:PAYMENT_FAILED:${idempotency_key}`,

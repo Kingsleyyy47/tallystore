@@ -615,7 +615,7 @@ serve(async (req) => {
       .from('transactions')
       .select('id')
       .eq('reference', reference)
-      .eq('user_id', userId)
+      .eq('type', 'topup')
       .maybeSingle()
 
     if (existingTransaction) {

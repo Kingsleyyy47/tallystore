@@ -436,7 +436,7 @@ export async function convertToNgn(amount: number, currency: string, supabaseAdm
 export async function assertPurchasingCustomer(admin: any, userId: string) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -446,6 +446,10 @@ export async function assertPurchasingCustomer(admin: any, userId: string) {
 
   if (profile?.is_staff || profile?.is_admin) {
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
+  }
+
+  if (profile?.account_suspended) {
+    throw new Error('This account is suspended. Please contact support.')
   }
 }
 
@@ -482,6 +486,36 @@ async function recordRevenueEvent(
 
   if (error) {
     console.error(`Failed to record Bitrefill revenue event ${eventType}:`, error.message);
+  }
+}
+
+async function recordWalletLedgerTransaction(
+  supabaseAdmin: any,
+  input: {
+    userId: string;
+    type: 'purchase' | 'refund';
+    amount: number;
+    balanceAfter: number;
+    description: string;
+    reference: string;
+    status: 'completed' | 'pending' | 'failed';
+    paymentSource: string;
+  },
+) {
+  if (input.paymentSource !== 'wallet') return;
+
+  const { error } = await supabaseAdmin.from('transactions').insert({
+    user_id: input.userId,
+    type: input.type,
+    amount: input.amount,
+    balance_after: input.balanceAfter,
+    description: input.description,
+    reference: input.reference,
+    status: input.status,
+  });
+
+  if (error) {
+    console.error('Failed to record Bitrefill wallet ledger transaction:', error.message);
   }
 }
 
@@ -743,6 +777,7 @@ serve(async (req) => {
 
     // Deduct from user's balance with optimistic locking
     let balanceDeducted = false;
+    let balanceAfterDeduction = currentBalance - chargeNgn;
     for (let attempt = 0; attempt < 5 && !balanceDeducted; attempt++) {
       const { data: freshUserData } = await supabaseAdmin
         .from('profiles')
@@ -773,6 +808,7 @@ serve(async (req) => {
 
       if (updateData) {
         balanceDeducted = true;
+        balanceAfterDeduction = actualCurrentBalance - chargeNgn;
       } else {
         await new Promise((r) => setTimeout(r, 100 * (attempt + 1)));
       }
@@ -831,6 +867,26 @@ serve(async (req) => {
       if (finalStatus === 'failed') {
         // Refund — Bitrefill rejected the purchase
         const refundedBalance = await refundBalance(supabaseAdmin, user.id, balanceColumn, chargeNgn);
+        await recordWalletLedgerTransaction(supabaseAdmin, {
+          userId: user.id,
+          type: 'purchase',
+          amount: -chargeNgn,
+          balanceAfter: balanceAfterDeduction,
+          description: `Failed gift card/eSIM purchase: ${product_name}`,
+          reference,
+          status: 'failed',
+          paymentSource: payment_source,
+        });
+        await recordWalletLedgerTransaction(supabaseAdmin, {
+          userId: user.id,
+          type: 'refund',
+          amount: chargeNgn,
+          balanceAfter: refundedBalance,
+          description: `Auto-refund for failed gift card/eSIM purchase: ${product_name}`,
+          reference: `REFUND-${reference}`,
+          status: 'completed',
+          paymentSource: payment_source,
+        });
         await recordRevenueEvent(supabaseAdmin, {
           eventType: 'PAYMENT_FAILED',
           eventId: `bitrefill:PAYMENT_FAILED:${idempotency_key}`,
@@ -920,6 +976,16 @@ serve(async (req) => {
           status: finalStatus,
         },
       });
+      await recordWalletLedgerTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'purchase',
+        amount: -chargeNgn,
+        balanceAfter: balanceAfterDeduction,
+        description: `Gift card/eSIM purchase: ${product_name}`,
+        reference,
+        status: finalStatus === 'successful' ? 'completed' : 'pending',
+        paymentSource: payment_source,
+      });
 
       return new Response(
         JSON.stringify({
@@ -949,6 +1015,26 @@ serve(async (req) => {
         .eq('id', orderRecord.id);
 
       const refundedBalance = await refundBalance(supabaseAdmin, user.id, balanceColumn, chargeNgn);
+      await recordWalletLedgerTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'purchase',
+        amount: -chargeNgn,
+        balanceAfter: balanceAfterDeduction,
+        description: `Failed gift card/eSIM purchase: ${product_name} - ${errorMessage}`,
+        reference,
+        status: 'failed',
+        paymentSource: payment_source,
+      });
+      await recordWalletLedgerTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'refund',
+        amount: chargeNgn,
+        balanceAfter: refundedBalance,
+        description: `Auto-refund for failed gift card/eSIM purchase: ${product_name}`,
+        reference: `REFUND-${reference}`,
+        status: 'completed',
+        paymentSource: payment_source,
+      });
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
         eventId: `bitrefill:PAYMENT_FAILED:${idempotency_key}`,

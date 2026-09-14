@@ -66,6 +66,22 @@ async function requireAdmin(admin: SupabaseAdmin, userId: string) {
   if (!data?.is_admin) throw new Error('Admin access required')
 }
 
+async function assertPurchasingCustomer(admin: SupabaseAdmin, userId: string) {
+  const { data: profile, error } = await admin
+    .from('profiles')
+    .select('is_staff, is_admin, account_suspended')
+    .eq('id', userId)
+    .single()
+
+  if (error) throw new Error('Could not verify purchase permission')
+  if (profile?.is_staff || profile?.is_admin) {
+    throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
+  }
+  if (profile?.account_suspended) {
+    throw new Error('This account is suspended. Please contact support.')
+  }
+}
+
 // ── Exchange rate ─────────────────────────────────────────────────────────────
 async function getUsdtToNgn(admin: SupabaseAdmin): Promise<number> {
   // Try admin override first
@@ -261,6 +277,8 @@ async function handleSearchRecipientPremium(admin: SupabaseAdmin, userId: string
 }
 
 async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
+  await assertPurchasingCustomer(admin, userId)
+
   const username = String(body.username || '').replace(/^@/, '').trim()
   const recipientHash = String(body.recipient_hash || '')
   const recipientName = String(body.recipient_name || '')
@@ -313,6 +331,8 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
 }
 
 async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
+  await assertPurchasingCustomer(admin, userId)
+
   const username = String(body.username || '').replace(/^@/, '').trim()
   const recipientHash = String(body.recipient_hash || '')
   const recipientName = String(body.recipient_name || '')
