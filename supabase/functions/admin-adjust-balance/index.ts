@@ -157,6 +157,43 @@ function getTransactionMetadata(row: any) {
   return row?.metadata && typeof row.metadata === 'object' ? row.metadata : {}
 }
 
+function isBalanceNeutralAdminRepair(row: any) {
+  const metadata = getTransactionMetadata(row)
+  const balanceBefore = Number(row?.balance_before || 0)
+  const balanceAfter = Number(row?.balance_after || 0)
+  return (
+    String(metadata.source || '') === 'admin-ledger-repair' ||
+    String(metadata.balance_unchanged || '').toLowerCase() === 'true' ||
+    String(metadata.requires_owner_evidence || '').toLowerCase() === 'true' ||
+    balanceAfter <= balanceBefore
+  )
+}
+
+const WALLET_FUNDING_ENFORCEMENT_CUTOFF = '2026-09-19T00:00:00.000Z'
+
+function isLegacyGrandfatheredCredit(row: any) {
+  const createdAt = new Date(row?.created_at || '').getTime()
+  const amount = Number(row?.amount || 0)
+  const type = String(row?.type || '').toLowerCase().replace(/[\s-]+/g, '_')
+  if (!Number.isFinite(createdAt) || createdAt >= Date.parse(WALLET_FUNDING_ENFORCEMENT_CUTOFF) || amount <= 0) {
+    return false
+  }
+  if (type === 'admin_credit' && isBalanceNeutralAdminRepair(row)) return false
+
+  return [
+    'topup',
+    'top_up',
+    'wallet_topup',
+    'wallet_deposit',
+    'deposit',
+    'credit',
+    'admin_credit',
+    'staff_credit',
+    'promotion_credit',
+    'correction_credit',
+  ].includes(type)
+}
+
 function isWalletDebitType(type: string) {
   return [
     'purchase',
@@ -312,14 +349,20 @@ async function calculateWalletBacking(supabaseAdmin: any, userId: string) {
       balanceAfter <= balanceBefore
     )
     if (amount > 0) {
-      if ([
-        'topup',
-        'top_up',
-        'top-up',
-        'wallet_topup',
-        'wallet_deposit',
-        'deposit',
-      ].includes(type) && isVerifiedGatewayCredit(row, pendingPayments || [], pocketfiWebhookLogs || [])) {
+      if (
+        (
+          [
+            'topup',
+            'top_up',
+            'top-up',
+            'wallet_topup',
+            'wallet_deposit',
+            'deposit',
+          ].includes(type) &&
+          isVerifiedGatewayCredit(row, pendingPayments || [], pocketfiWebhookLogs || [])
+        ) ||
+        isLegacyGrandfatheredCredit(row)
+      ) {
         trustedCredits += amount
       } else if (
         type === 'admin_credit'

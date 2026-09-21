@@ -31,6 +31,16 @@ spending and fulfillment remain blocked while order history, deposits, wallet
 activity, and support remain readable. Manual admin suspensions are unchanged,
 and the financial review hold is not auto-cleared.
 
+The migration
+`20260921010000_grandfather_legacy_wallet_funding.sql` adds the explicit legacy
+funding cutoff of **2026-09-19 00:00:00 UTC**. Qualifying wallet credits
+recorded before that cutoff become an auditable grandfathered principal
+baseline, even if the newer provider-evidence fields did not exist at the
+time. Historical debits are linked for refund conservation only. Credits after
+the cutoff still require verified PocketFi/Ercas evidence or an approved admin
+credit. An account with spending but no qualifying pre-cutoff credit is not
+grandfathered and remains subject to wallet review.
+
 | Surface | Current repository behavior | Evidence |
 | --- | --- | --- |
 | Partner API | Public Vercel proxy returns `503 PARTNER_API_PAUSED`; Supabase `partner-api` is hard-paused for non-admin actions; existing `api_partners` rows are marked inactive by migration; partner tables are no longer directly readable or writable by browser roles; partner/API evidence cascades are replaced with restrictive foreign keys. PocketFi payments to partner customer accounts are logged for manual review without fulfilling partner orders while this pause is active. | `api/partner-api.ts`, `supabase/functions/partner-api/index.ts`, `api/webhook-pocketfi.ts`, `supabase/functions/webhook-pocketfi/index.ts`, `supabase/migrations/20260919007000_pause_existing_api_partners.sql`, `supabase/migrations/20260919008000_harden_partner_table_authority.sql`, `supabase/migrations/20260919021000_restrict_partner_cascade_evidence.sql` |
@@ -94,7 +104,11 @@ gaps.
 The purchase authorization engine and admin fraud screen now use a stricter
 trusted-credit rule:
 
-- Bank/payment top-ups count only from completed wallet ledger rows.
+- Pre-cutoff legacy top-ups and approved wallet credits count as grandfathered
+  principal through the one-time `wallet_legacy_funding` table. This preserves
+  credible older customer balances without inventing a new deposit.
+- Bank/payment top-ups recorded on or after the cutoff count only from
+  completed wallet ledger rows with current provider evidence.
 - Bank/payment top-ups also require a non-blank provider reference, matching
   `metadata.verified_amount_ngn`, and matching server-side provider evidence:
   Ercas `pending_payments` for the same user/reference/amount or PocketFi
@@ -112,6 +126,8 @@ trusted-credit rule:
 - Crypto credits are quarantined during the wallet incident review and do not
   automatically justify wallet spend.
 - Refunds offset prior spend; they are not treated as new external funding.
+- A customer who spent before the cutoff but has no qualifying historical
+  credit is treated as unresolved legacy funding, not automatically trusted.
 - Direct ledger mutations are rejected and audited in
   `transaction_ledger_blocked_attempts`.
 
@@ -122,6 +138,8 @@ trusted-credit rule:
 | Stored and backed wallet funds cover a purchase | Authorize through wallet engine, then proceed to the mapped fulfillment path. | `apply_wallet_transaction` posts the purchase, updates the balance, and creates a ledger hash chain entry. |
 | Customer has too little legitimate balance | Decline as ordinary insufficient funds, not fraud. | Wallet engine returns `insufficient_balance` before any new supplier call. |
 | Stored wallet balance is higher than backed available funds | Deny and freeze financial access for review. | Wallet engine returns `WALLET_UNBACKED_FUNDS` and sets `account_suspended = true` before delivery authorization. |
+| Pre-cutoff legacy credit exists but lacks newer provider metadata | Use the recorded grandfathered principal, then apply normal debit/refund conservation. | `wallet_legacy_funding` supplies the historical baseline; no new post-cutoff credit is created. |
+| Pre-cutoff spending exists with no qualifying historical credit | Deny new financial delivery and require review. | No grandfathered principal row is created; the wallet remains unbacked. |
 | Funding record exists without trusted source evidence | Do not count it as backing. | Purchase backing query excludes crypto review credits and requires approving actor metadata for admin/staff/promo/correction credits. |
 | Duplicate authenticated payment/webhook arrives | Idempotently acknowledge without additional credit. | Wallet engine idempotency and provider-reference checks prevent duplicate wallet credits. |
 | Partner API payment arrives during pause | Record for manual review; do not fulfill partner order. | PocketFi partner account branch logs the payment and returns `PARTNER_API_PAUSED` without order delivery. |

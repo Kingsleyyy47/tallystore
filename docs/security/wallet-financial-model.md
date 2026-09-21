@@ -103,6 +103,21 @@ original completed debit by `source_debit_transaction_id`,
 purchase reference, and that debit must have been wallet-engine-authorized from
 trusted principal with positive `trusted_principal_debit_amount` evidence.
 
+## Legacy Funding Cutoff
+
+The repository uses **2026-09-19 00:00:00 UTC** as the backed-funding
+enforcement cutoff. A one-time `wallet_legacy_funding` baseline records
+qualifying pre-cutoff wallet credits for existing customers. This is
+grandfathered historical principal, not a newly created deposit and not a
+permission to accept future unverified credits.
+
+Pre-cutoff top-up/credit rows can remain trusted even when the provider-evidence
+columns were introduced later. Matching historical debits are marked only for
+trusted refund linkage. A customer with pre-cutoff spending but no qualifying
+pre-cutoff credit receives no baseline and remains unresolved for new financial
+authorization. On and after the cutoff, only verified gateway deposits and
+approved admin credits can increase trusted principal.
+
 The calculation intentionally excludes:
 
 - crypto payments held for manual review;

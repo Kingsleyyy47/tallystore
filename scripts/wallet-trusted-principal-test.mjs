@@ -20,6 +20,27 @@ function isVerifiedGatewayDeposit(entry) {
     && String(entry.providerEvidence.paymentId || '') === String(entry.externalPaymentId || '')
 }
 
+const WALLET_FUNDING_ENFORCEMENT_CUTOFF = Date.parse('2026-09-19T00:00:00.000Z')
+
+function isLegacyGrandfatheredCredit(entry) {
+  const createdAt = Date.parse(entry.createdAt || '')
+  if (!Number.isFinite(createdAt) || createdAt >= WALLET_FUNDING_ENFORCEMENT_CUTOFF) return false
+  if (Number(entry.amount || 0) <= 0) return false
+  if (normalize(entry.type) === 'admin_credit' && entry.balanceNeutralRepair === true) return false
+  return [
+    'topup',
+    'top_up',
+    'wallet_topup',
+    'wallet_deposit',
+    'deposit',
+    'credit',
+    'admin_credit',
+    'staff_credit',
+    'promotion_credit',
+    'correction_credit',
+  ].includes(normalize(entry.type))
+}
+
 function isApprovedAdminCredit(entry) {
   if (!isCompleted(entry)) return false
   if (normalize(entry.type) !== 'admin_credit') return false
@@ -30,7 +51,7 @@ function isApprovedAdminCredit(entry) {
 }
 
 function isTrustedPrincipalCredit(entry) {
-  return isVerifiedGatewayDeposit(entry) || isApprovedAdminCredit(entry)
+  return isLegacyGrandfatheredCredit(entry) || isVerifiedGatewayDeposit(entry) || isApprovedAdminCredit(entry)
 }
 
 function isDebit(entry) {
@@ -209,6 +230,45 @@ const validRefund = {
   status: 'completed',
   originalTransactionId: 'purchase-1',
 }
+
+const legacyDeposit = {
+  id: 'legacy-deposit-1',
+  walletId: 'wallet-legacy',
+  type: 'topup',
+  amount: 50_000,
+  status: 'completed',
+  createdAt: '2026-09-10T12:00:00.000Z',
+}
+
+const legacyPurchase = {
+  id: 'legacy-purchase-1',
+  walletId: 'wallet-legacy',
+  type: 'purchase',
+  amount: -12_000,
+  status: 'completed',
+  createdAt: '2026-09-11T12:00:00.000Z',
+  metadata: {
+    trusted_principal_authorized: true,
+    trusted_principal_debit_amount: 12_000,
+    legacy_trusted_principal: true,
+  },
+}
+
+const preCutoffSpendWithoutFunding = {
+  id: 'legacy-unbacked-purchase',
+  walletId: 'wallet-unknown',
+  type: 'purchase',
+  amount: -12_000,
+  status: 'completed',
+  createdAt: '2026-09-11T12:00:00.000Z',
+}
+
+const legacyState = calculateTrustedState([legacyDeposit, legacyPurchase])
+assert(legacyState.trustedPrincipal === 50_000, 'pre-cutoff legacy credit was not grandfathered')
+assert(legacyState.trustedAvailable === 38_000, 'legacy purchase did not consume grandfathered principal')
+
+const legacyUnbackedState = calculateTrustedState([preCutoffSpendWithoutFunding])
+assert(legacyUnbackedState.trustedPrincipal === 0, 'pre-cutoff spending was incorrectly treated as funding')
 
 const nakedRefundDecision = refundDecision([verifiedDeposit, approvedAdminCredit, fundedPurchase], {
   id: 'refund-naked',
@@ -473,6 +533,8 @@ console.log(JSON.stringify({
   ok: true,
   scenarios: [
     'only verified payment-gateway deposits and approved admin credits create trusted principal',
+    'pre-cutoff legacy wallet credits are grandfathered as trusted principal',
+    'pre-cutoff spending without any qualifying credit remains unbacked',
     'refunds must reference an original trusted debit before they can restore spendable value',
     'refunds restore prior trusted debit capacity without increasing trusted principal',
     'completed status checks are case-normalized for imported or legacy rows',

@@ -170,6 +170,8 @@ Apply migrations in timestamp order. At minimum, this incident patch includes:
 20260919026000_add_order_financial_authorization_columns.sql
 20260919027000_harden_financial_security_version.sql
 20260919028000_migrate_product_purchase_reserve_capture.sql
+20260921000000_separate_wallet_review_from_account_access.sql
+20260921010000_grandfather_legacy_wallet_funding.sql
 ```
 
 These older replay migrations were also touched so a not-yet-applied database
@@ -187,6 +189,15 @@ accounts for review, but they do not clear financial review automatically.
 `20260921000000_separate_wallet_review_from_account_access.sql` moves
 system-generated holds into the wallet-review state while preserving read-only
 access to account history and deposits.
+
+`20260921010000_grandfather_legacy_wallet_funding.sql` must be applied after
+that migration. It records qualifying wallet credits before
+`2026-09-19 00:00:00 UTC` as an auditable legacy principal baseline, marks
+matching historical debits for refund conservation, and patches the fraud
+evaluator, wallet engine, and transaction guard to use the same baseline.
+Post-cutoff credits remain provider-verified or approved-admin-only. The
+migration fails if it cannot patch the expected deployed function bodies; do
+not bypass that failure by manually editing the migration in production.
 
 `20260919019000_rescan_wallet_integrity_after_hardening.sql` re-runs the
 hardened ledger evaluator for existing ordinary customer wallets after the new

@@ -410,6 +410,7 @@ type FraudReviewRow = {
 const DORMANT_EMAIL_STORAGE_KEY = 'tallystore:dormant-customer-email-cohort:v1'
 const DORMANT_EMAIL_SETTING_KEY = 'sales_dormant_customer_email_cohort'
 const ADMIN_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time'
+const WALLET_FUNDING_ENFORCEMENT_CUTOFF = '2026-09-19T00:00:00.000Z'
 
 function parseAdminDate(value?: string | null): Date | null {
   if (!value) return null
@@ -458,6 +459,29 @@ function isBalanceNeutralAdminRepair(tx: any) {
 
 function toLedgerCents(value: unknown) {
   return Math.round(Number(value || 0) * 100)
+}
+
+function isLegacyGrandfatheredCredit(tx: any) {
+  const createdAt = new Date(tx?.created_at || '').getTime()
+  const amount = Number(tx?.amount || 0)
+  const type = normalizeLedgerText(tx?.type)
+  if (!Number.isFinite(createdAt) || createdAt >= Date.parse(WALLET_FUNDING_ENFORCEMENT_CUTOFF) || amount <= 0) {
+    return false
+  }
+  if (type === 'admin_credit' && isBalanceNeutralAdminRepair(tx)) return false
+
+  return [
+    'topup',
+    'top_up',
+    'wallet_topup',
+    'wallet_deposit',
+    'deposit',
+    'credit',
+    'admin_credit',
+    'staff_credit',
+    'promotion_credit',
+    'correction_credit',
+  ].includes(type)
 }
 
 function isVerifiedGatewayCreditTransaction(
@@ -525,6 +549,7 @@ function isTrustedCreditTransaction(
   if (amount <= 0) return false
 
   if (['refund', 'purchase_refund', 'auto_refund'].includes(type)) return false
+  if (isLegacyGrandfatheredCredit(tx)) return true
   if (isVerifiedGatewayCreditTransaction(tx, pendingEvidenceByUser, pocketfiLogsById)) return true
 
   if (type === 'admin_credit') {
@@ -571,6 +596,10 @@ function getWalletDebitEvidenceId(tx: any) {
 }
 
 function getTrustedPrincipalDebitAmount(tx: any, metadata: any) {
+  if (String(metadata.legacy_trusted_principal || '').toLowerCase() === 'true') {
+    const legacyAmount = Math.abs(Number(tx.amount || 0))
+    return Number.isFinite(legacyAmount) ? legacyAmount : 0
+  }
   if (String(metadata.trusted_principal_authorized || '').toLowerCase() !== 'true') return 0
   const trustedAmount = Number(metadata.trusted_principal_debit_amount || 0)
   if (!Number.isFinite(trustedAmount) || trustedAmount <= 0) return 0
