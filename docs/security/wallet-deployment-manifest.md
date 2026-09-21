@@ -183,13 +183,16 @@ run:
 ```
 
 The old reset migration is now a no-op. The old fraud evaluators can still mark
-accounts for review, but they no longer auto-unsuspend any customer.
+accounts for review, but they do not clear financial review automatically.
+`20260921000000_separate_wallet_review_from_account_access.sql` moves
+system-generated holds into the wallet-review state while preserving read-only
+access to account history and deposits.
 
 `20260919019000_rescan_wallet_integrity_after_hardening.sql` re-runs the
 hardened ledger evaluator for existing ordinary customer wallets after the new
-trusted-principal rules are installed. It can freeze wallets for owner review,
-and if a wallet cannot be evaluated it fails closed by suspending that wallet
-for owner review. It does not auto-unsuspend any customer.
+trusted-principal rules are installed. It can create wallet-review holds for
+owner review, and if a wallet cannot be evaluated it fails closed into the same
+financial hold. It does not clear a financial review hold automatically.
 
 `20260919020000_restrict_auth_user_cascade_evidence.sql` replaces public-schema
 `auth.users` foreign keys that still used `ON DELETE CASCADE` with restrictive

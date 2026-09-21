@@ -24,9 +24,12 @@ Status labels:
 
 Deployment note: `20260919019000_rescan_wallet_integrity_after_hardening.sql`
 re-runs the hardened evaluator for existing ordinary customer wallets after the
-new trusted-principal rules are installed. The scan can freeze wallets for owner
-review, fails closed when a wallet cannot be evaluated, and does not
-auto-unsuspend customers.
+new trusted-principal rules are installed. The follow-up migration
+`20260921000000_separate_wallet_review_from_account_access.sql` routes
+system-generated integrity holds into `profiles.wallet_review_required`, so
+spending and fulfillment remain blocked while order history, deposits, wallet
+activity, and support remain readable. Manual admin suspensions are unchanged,
+and the financial review hold is not auto-cleared.
 
 | Surface | Current repository behavior | Evidence |
 | --- | --- | --- |

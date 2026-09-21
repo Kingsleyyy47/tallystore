@@ -108,6 +108,10 @@ export interface Profile {
   suspension_reason?: string | null
   suspended_at?: string | null
   suspension_reinstated_at?: string | null
+  wallet_review_required?: boolean
+  wallet_review_reason?: string | null
+  wallet_reviewed_at?: string | null
+  wallet_reviewed_by?: string | null
   created_at: string
   updated_at: string
   referral_code?: string

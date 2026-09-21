@@ -125,9 +125,11 @@ production verification checklist for the specific route being reopened.
   Existing completed loose refund rows without original-debit linkage, or with
   only forged boolean trusted metadata, are treated as review evidence only and
   cannot restore trusted spend capacity.
-- The fraud ledger scanner uses the same trusted-principal rule, excludes
-  generic `credit` rows, can suspend/review wallets, and cannot auto-unsuspend
-  them. Reinstatement remains an admin review action.
+- The fraud ledger scanner uses the same trusted-principal rule and excludes
+  generic `credit` rows. System-generated integrity findings use the separate
+  `wallet_review_required` hold so they block spending and fulfillment without
+  blocking read-only order history, deposits, wallet activity, or support.
+  Manual account suspension and financial-review resolution remain admin actions.
 
 ## Fulfillment Boundary Changes
 

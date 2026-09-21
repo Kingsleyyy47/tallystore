@@ -351,7 +351,16 @@ function OrderDetailsView({
 export default function OrderHistoryPage() {
   const location = useLocation()
   const navigate = useNavigate()
-  const { user, showBalances, accountSuspended, suspensionReason } = useAuth()
+  const {
+    user,
+    showBalances,
+    accountSuspended,
+    suspensionReason,
+    walletReviewRequired,
+    walletReviewReason,
+  } = useAuth()
+  const purchasingPaused = accountSuspended || walletReviewRequired
+  const purchasingPauseReason = suspensionReason || walletReviewReason
   const { formatPrice } = useCurrency()
   const { toast } = useToast()
   
@@ -784,7 +793,7 @@ export default function OrderHistoryPage() {
                 Open completed orders to copy or download the exact account details attached to that purchase.
               </p>
             </div>
-            {!accountSuspended && (
+            {!purchasingPaused && (
               <Button asChild className="hidden shrink-0 rounded-xl font-black sm:inline-flex">
                 <Link to="/products">
                   <ShoppingBag className="h-4 w-4" />
@@ -795,14 +804,14 @@ export default function OrderHistoryPage() {
           </div>
         </section>
 
-        {accountSuspended && (
+        {purchasingPaused && (
           <Alert className="mt-4 border-amber-500 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">
             <ShieldAlert className="h-5 w-5 text-amber-600 dark:text-amber-300" />
             <div className="ml-2">
               <h3 className="font-semibold">Purchasing is paused on this account</h3>
               <p className="text-sm">
                 You can still review completed orders, copy credentials, download credentials, and contact support.
-                {suspensionReason ? ` Reason: ${suspensionReason}` : ''}
+                {purchasingPauseReason ? ` Reason: ${purchasingPauseReason}` : ''}
               </p>
               <Button asChild variant="outline" size="sm" className="mt-3 rounded-xl bg-white/70 font-black dark:bg-white/10">
                 <Link to="/support">Contact support</Link>
@@ -908,7 +917,7 @@ export default function OrderHistoryPage() {
           </RevampCard>
         </div>
 
-        {!accountSuspended && recommendationProducts.length > 0 && (
+        {!purchasingPaused && recommendationProducts.length > 0 && (
           <section className="mt-4 rounded-2xl border border-slate-200 bg-white/85 p-3 shadow-sm dark:border-white/10 dark:bg-white/[0.035] sm:p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">

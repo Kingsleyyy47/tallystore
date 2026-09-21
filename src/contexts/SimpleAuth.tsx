@@ -17,6 +17,8 @@ interface AuthContextType {
   walletLoading: boolean
   accountSuspended: boolean
   suspensionReason: string | null
+  walletReviewRequired: boolean
+  walletReviewReason: string | null
   refreshWalletBalance: () => Promise<void>
   showBalances: boolean
   toggleBalanceVisibility: () => void
@@ -41,6 +43,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [walletLoading, setWalletLoading] = useState(true)
   const [accountSuspended, setAccountSuspended] = useState(false)
   const [suspensionReason, setSuspensionReason] = useState<string | null>(null)
+  const [walletReviewRequired, setWalletReviewRequired] = useState(false)
+  const [walletReviewReason, setWalletReviewReason] = useState<string | null>(null)
   const [showBalances, setShowBalances] = useState(() => {
     if (typeof window === 'undefined') return true
     return localStorage.getItem('show_balances') !== 'false'
@@ -64,7 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // handler if the timeout fires before the DB responds.
       const profilePromise = supabase
         .from('profiles')
-        .select('is_staff, wallet_balance, account_suspended, suspension_reason')
+        .select('is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason')
         .eq('id', userId)
         .single()
 
@@ -82,6 +86,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setWalletBalance(0)
         setAccountSuspended(false)
         setSuspensionReason(null)
+        setWalletReviewRequired(false)
+        setWalletReviewReason(null)
 
         // The original query is still in-flight. When it lands, update state
         // and re-navigate staff/admin who were wrongly sent to /dashboard.
@@ -94,6 +100,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setWalletBalance(bgData.wallet_balance || 0)
             setAccountSuspended(Boolean(bgData.account_suspended))
             setSuspensionReason(bgData.suspension_reason || null)
+            setWalletReviewRequired(Boolean(bgData.wallet_review_required))
+            setWalletReviewReason(bgData.wallet_review_reason || null)
             // Re-route if ProtectedRoute sent them to the wrong page
             if (nextIsStaff && window.location.pathname === '/dashboard') {
               window.location.replace('/staff-admin')
@@ -113,6 +121,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setWalletBalance(data?.wallet_balance || 0)
       setAccountSuspended(Boolean(data?.account_suspended))
       setSuspensionReason(data?.suspension_reason || null)
+      setWalletReviewRequired(Boolean(data?.wallet_review_required))
+      setWalletReviewReason(data?.wallet_review_reason || null)
       return { isAdmin: isWisdomAdmin, isStaff: nextIsStaff }
     } catch (error) {
       console.error('Error checking admin status:', error)
@@ -122,6 +132,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setWalletBalance(0)
       setAccountSuspended(false)
       setSuspensionReason(null)
+      setWalletReviewRequired(false)
+      setWalletReviewReason(null)
       return { isAdmin: isWisdomAdmin, isStaff: false }
     } finally {
       setWalletLoading(false)
@@ -195,6 +207,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             wallet_balance?: number
             account_suspended?: boolean
             suspension_reason?: string | null
+            wallet_review_required?: boolean
+            wallet_review_reason?: string | null
           }
           const newBalance = nextProfile.wallet_balance
           if (typeof newBalance === 'number') {
@@ -205,6 +219,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
           if ('suspension_reason' in nextProfile) {
             setSuspensionReason(nextProfile.suspension_reason || null)
+          }
+          if (typeof nextProfile.wallet_review_required === 'boolean') {
+            setWalletReviewRequired(nextProfile.wallet_review_required)
+          }
+          if ('wallet_review_reason' in nextProfile) {
+            setWalletReviewReason(nextProfile.wallet_review_reason || null)
           }
         }
       )
@@ -369,6 +389,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     walletLoading,
     accountSuspended,
     suspensionReason,
+    walletReviewRequired,
+    walletReviewReason,
     refreshWalletBalance,
     showBalances,
     toggleBalanceVisibility,

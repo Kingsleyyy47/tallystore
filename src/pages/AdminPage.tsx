@@ -380,6 +380,8 @@ type FraudReviewRow = {
   fullName?: string | null
   walletBalance: number
   suspended: boolean
+  walletReviewRequired: boolean
+  walletReviewReason?: string | null
   suspensionReason?: string | null
   suspendedAt?: string | null
   trustedCredits: number
@@ -3085,10 +3087,14 @@ export default function AdminPage() {
         const spendRatio = ledger.trustedCredits > 0 ? netSpend / ledger.trustedCredits : netSpend > 0 ? null : 0
         const duplicateTopupReferences = Array.from(ledger.duplicateTopupReferences)
         const suspended = profile.account_suspended === true
+        const walletReviewRequired = profile.wallet_review_required === true
         let reviewType: FraudReviewRow['reviewType'] | null = null
         let reason = ''
 
-        if (suspended && exposure <= 1) {
+        if (walletReviewRequired) {
+          reviewType = 'review_unblock'
+          reason = profile.wallet_review_reason || 'Wallet review hold: spending is paused while this account is reconciled.'
+        } else if (suspended && exposure <= 1) {
           reviewType = 'review_unblock'
           reason = 'Suspended, but trusted principal now covers consumed spend and displayed wallet balance. Review for possible unblock.'
         } else if (suspended) {
@@ -3118,6 +3124,8 @@ export default function AdminPage() {
           fullName: profile.full_name || null,
           walletBalance: Number(profile.wallet_balance || 0),
           suspended,
+          walletReviewRequired,
+          walletReviewReason: profile.wallet_review_reason || null,
           suspensionReason: profile.suspension_reason || null,
           suspendedAt: profile.suspended_at || null,
           trustedCredits: ledger.trustedCredits,
@@ -8357,6 +8365,8 @@ export default function AdminPage() {
                             <TableCell>
                               {user.account_suspended ? (
                                 <Badge variant="destructive">Suspended</Badge>
+                              ) : user.wallet_review_required ? (
+                                <Badge className="bg-amber-500 text-white">Wallet review</Badge>
                               ) : user.is_admin ? (
                                 <Badge>Admin</Badge>
                               ) : user.is_staff ? (
@@ -8566,7 +8576,9 @@ export default function AdminPage() {
                               </TableCell>
                               <TableCell>
                                 {row.reviewType === 'review_unblock' ? (
-                                  <Badge className="bg-emerald-600 text-white">Review unblock</Badge>
+                                  <Badge className={row.walletReviewRequired ? 'bg-amber-500 text-white' : 'bg-emerald-600 text-white'}>
+                                    {row.walletReviewRequired ? 'Wallet review' : 'Review unblock'}
+                                  </Badge>
                                 ) : row.reviewType === 'watchlist' ? (
                                   <Badge variant="outline">Monitor</Badge>
                                 ) : (
@@ -8652,6 +8664,8 @@ export default function AdminPage() {
                                         full_name: row.fullName,
                                         wallet_balance: row.walletBalance,
                                         account_suspended: row.suspended,
+                                        wallet_review_required: row.walletReviewRequired,
+                                        wallet_review_reason: row.walletReviewReason,
                                         suspension_reason: row.suspensionReason,
                                         suspended_at: row.suspendedAt,
                                         is_admin: false,

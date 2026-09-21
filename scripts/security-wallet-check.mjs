@@ -1969,7 +1969,7 @@ check('mapped purchase routes check current suspension before debit or dispatch'
 check('frozen customers keep read-only order history and support access', () => {
   const auth = read('src/contexts/SimpleAuth.tsx')
   assert(auth.includes('accountSuspended: boolean'), 'auth context must expose account suspension state')
-  assert(auth.includes("select('is_staff, wallet_balance, account_suspended, suspension_reason')"), 'auth context must load suspension state with profile')
+  assert(auth.includes("select('is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason')"), 'auth context must load account and wallet-review state with profile')
   assert(auth.includes('setAccountSuspended(Boolean(data?.account_suspended))'), 'auth context must update account suspension state')
 
   const protectedRoute = read('src/components/SimpleProtectedRoute.tsx')
@@ -1982,10 +1982,10 @@ check('frozen customers keep read-only order history and support access', () => 
   assert(app.includes('<SupportPage />'), 'support page must remain mounted')
 
   const orders = read('src/pages/OrderHistoryPage.tsx')
-  assert(orders.includes('accountSuspended, suspensionReason'), 'order history must read suspension state')
+  assert(orders.includes('accountSuspended,') && orders.includes('walletReviewRequired,') && orders.includes('walletReviewReason,'), 'order history must read account and wallet-review state')
   assert(orders.includes('You can still review completed orders, copy credentials, download credentials, and contact support.'), 'order history must explicitly preserve read-only access while suspended')
-  assert(orders.includes('!accountSuspended && recommendationProducts.length > 0'), 'order history must suppress purchase recommendations while suspended')
-  assert(orders.includes('{!accountSuspended && ('), 'order history must hide shop CTA while suspended')
+  assert(orders.includes('!purchasingPaused && recommendationProducts.length > 0'), 'order history must suppress purchase recommendations while purchasing is paused')
+  assert(orders.includes('{!purchasingPaused && ('), 'order history must hide shop CTA while purchasing is paused')
 
   const support = read('src/pages/SupportPage.tsx')
   assert(support.includes('accountSuspended, suspensionReason'), 'support page must read suspension state')

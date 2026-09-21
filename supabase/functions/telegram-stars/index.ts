@@ -152,7 +152,7 @@ async function assertFraudDeviceNotBanned(admin: SupabaseAdmin, req?: Request | 
 async function assertPurchasingCustomer(admin: SupabaseAdmin, userId: string, req?: Request | null) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin, account_suspended')
+    .select('is_staff, is_admin, account_suspended, wallet_review_required')
     .eq('id', userId)
     .single()
 
@@ -160,8 +160,8 @@ async function assertPurchasingCustomer(admin: SupabaseAdmin, userId: string, re
   if (profile?.is_staff || profile?.is_admin) {
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
   }
-  if (profile?.account_suspended) {
-    throw new Error('This account is suspended. Please contact support.')
+  if (profile?.account_suspended || profile?.wallet_review_required) {
+    throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
   }
 
   await assertFraudDeviceNotBanned(admin, req)
