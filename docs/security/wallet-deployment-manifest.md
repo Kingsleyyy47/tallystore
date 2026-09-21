@@ -172,6 +172,7 @@ Apply migrations in timestamp order. At minimum, this incident patch includes:
 20260919028000_migrate_product_purchase_reserve_capture.sql
 20260921000000_separate_wallet_review_from_account_access.sql
 20260921010000_grandfather_legacy_wallet_funding.sql
+20260921011000_reconcile_grandfathered_wallet_reviews.sql
 ```
 
 These older replay migrations were also touched so a not-yet-applied database
@@ -198,6 +199,13 @@ evaluator, wallet engine, and transaction guard to use the same baseline.
 Post-cutoff credits remain provider-verified or approved-admin-only. The
 migration fails if it cannot patch the expected deployed function bodies; do
 not bypass that failure by manually editing the migration in production.
+
+`20260921011000_reconcile_grandfathered_wallet_reviews.sql` must be applied
+after the legacy baseline. It clears only automatic wallet-review holds for
+grandfathered customer accounts whose current spend and displayed balance are
+covered by the legacy-aware evaluator. It does not change manual suspensions
+and does not clear review holds for customers without a qualifying legacy
+funding row.
 
 `20260919019000_rescan_wallet_integrity_after_hardening.sql` re-runs the
 hardened ledger evaluator for existing ordinary customer wallets after the new

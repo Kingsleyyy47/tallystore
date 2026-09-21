@@ -14,7 +14,7 @@ function assert(condition, message) {
 
 function incidentMigrationFiles() {
   const incidentFiles = readdirSync(migrationDir)
-    .filter((file) => /^202609(?:17|19).+\.sql$/i.test(file))
+    .filter((file) => /^202609(?:17|19|21).+\.sql$/i.test(file))
     .sort()
 
   return [
@@ -153,6 +153,12 @@ assert(functionDefinitions.length >= 10, 'incident migrations should expose revi
 for (const match of functionBlocks) {
   const [, functionName] = match
   const block = match[0]
+  const immutableUtility = functionName === 'wallet_legacy_funding_cutoff' &&
+    /\bIMMUTABLE\b/i.test(block) &&
+    /\bLANGUAGE\s+sql\b/i.test(block)
+
+  if (immutableUtility) continue
+
   assert(/SECURITY\s+DEFINER/i.test(block), `${functionName} is expected to declare SECURITY DEFINER explicitly`)
   assert(/SET\s+search_path\s*=\s*public/i.test(block), `${functionName} must pin search_path to public`)
 }

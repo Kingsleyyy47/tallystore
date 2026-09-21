@@ -2670,7 +2670,7 @@ check('incident migration safety tests cover grants, function exposure, and sear
   const pkg = read('package.json')
 
   assert(pkg.includes('"security:wallet:migrations": "node scripts/wallet-migration-safety-test.mjs"'), 'package script must expose migration safety tests')
-  assert(script.includes('202609(?:17|19)'), 'migration test must target incident migration set')
+  assert(script.includes('202609(?:17|19|21)'), 'migration test must target incident migration set')
   assert(script.includes('20260914007000_fix_security_definer_public_views.sql'), 'migration test must include the patched security-definer public view migration')
   assert(script.includes('protectedTables'), 'migration test must enumerate protected tables')
   assert(script.includes('stripDollarQuotedBodies'), 'migration test must inspect top-level SQL outside function bodies')
