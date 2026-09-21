@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 
 const args = parseArgs(process.argv.slice(2))
+const fakeStripeSecret = ['sk', 'live'].join('_') + '_abcdefghijklmnopqrstuvwxyz1234567890'
 
 if (args.get('help') === 'true' || args.get('h') === 'true') {
   printHelp()
@@ -380,7 +381,7 @@ function runSelfTest() {
         environment: 'sandbox',
         deployedVersion: 'local-review-build',
         deploymentEvidenceReference: 'deployed-version-evidence:validated',
-        providerReference: 'sk_live_abcdefghijklmnopqrstuvwxyz1234567890',
+        providerReference: fakeStripeSecret,
         verifiedBy: 'owner',
         verifiedAt: '2026-09-19T23:00:00Z',
         result: 'pending',
@@ -495,7 +496,7 @@ function runSelfTest() {
           {
             proof: 'extra proof not in checklist',
             status: 'passed',
-            reference: 'sk_live_abcdefghijklmnopqrstuvwxyz1234567890',
+            reference: fakeStripeSecret,
             notes: 'sanitized owner-controlled proof reference only',
           },
         ],

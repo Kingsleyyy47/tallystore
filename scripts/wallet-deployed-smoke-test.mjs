@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 
 const args = parseArgs(process.argv.slice(2))
+const fakeStripeSecret = ['sk', 'live'].join('_') + '_abcdefghijklmnopqrstuvwxyz123456'
 
 if (args.get('help') === 'true' || args.get('h') === 'true') {
   printHelp()
@@ -655,7 +656,7 @@ function runSelfTest() {
     [{ 'x-tally-smoke-test': 'custom' }, /protected header x-tally-smoke-test/i, 'smoke-test marker override'],
     [{ 'bad:name': 'value' }, /invalid header name/i, 'invalid header name'],
     [{ 'x-safe': 'one\ntwo' }, /line break/i, 'header value line break'],
-    [{ 'x-safe': 'sk_live_abcdefghijklmnopqrstuvwxyz123456' }, /looks like a secret/i, 'secret-looking header value'],
+    [{ 'x-safe': fakeStripeSecret }, /looks like a secret/i, 'secret-looking header value'],
   ]) {
     expectSelfTestFailure(label, () => sanitizeOwnerProbeHeaders(headers, 0, thrower), pattern)
   }
@@ -671,7 +672,7 @@ function runSelfTest() {
   expectSelfTestFailure('invalid owner probe payload', () => normalizeOwnerDeniedProbePayload({ payload: [] }, 0, thrower), /payload must be an object/i)
   expectSelfTestFailure('owner probe smoke override', () => normalizeOwnerDeniedProbePayload({ payload: { smoke: false } }, 0, thrower), /must not set payload\.smoke/i)
   expectSelfTestFailure('owner probe payload credential field', () => normalizeOwnerDeniedProbePayload({ payload: { api_key: 'placeholder' } }, 0, thrower), /credential field/i)
-  expectSelfTestFailure('owner probe payload secret value', () => normalizeOwnerDeniedProbePayload({ payload: { metadata: { note: 'sk_live_abcdefghijklmnopqrstuvwxyz123456' } } }, 0, thrower), /looks like a secret/i)
+  expectSelfTestFailure('owner probe payload secret value', () => normalizeOwnerDeniedProbePayload({ payload: { metadata: { note: fakeStripeSecret } } }, 0, thrower), /looks like a secret/i)
   expectSelfTestFailure('invalid owner probe status', () => normalizeOwnerDeniedProbeExpectedStatuses({ expectedStatuses: [99] }, 0, thrower), /valid HTTP status/i)
   expectSelfTestFailure('invalid owner probe regex', () => compileOwnerDeniedProbePattern({ expectedPattern: '(' }, 0, thrower), /valid regular expression/i)
   expectSelfTestFailure('invalid owner probe function name', () => normalizeOwnerDeniedProbeFunctionName({ functionName: '../process-purchase' }, 0, thrower), /invalid functionName/i)

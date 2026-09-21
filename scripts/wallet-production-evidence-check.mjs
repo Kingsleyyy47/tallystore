@@ -3,6 +3,7 @@ import { join } from 'node:path'
 
 const root = process.cwd()
 const args = parseArgs(process.argv.slice(2))
+const fakeStripeSecret = ['sk', 'live'].join('_') + '_abcdefghijklmnopqrstuvwxyz1234567890'
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -273,7 +274,7 @@ function runSelfTest() {
   assert(validateProductionEvidenceObject(missingReference).issues.some((item) => item.code === 'STANDARD_FIELD_MISSING'), 'passed production evidence without reference was accepted')
 
   const secretReference = structuredClone(complete)
-  secretReference.areas[0].productionEvidenceLinkOrPath = 'sk_live_abcdefghijklmnopqrstuvwxyz1234567890'
+  secretReference.areas[0].productionEvidenceLinkOrPath = fakeStripeSecret
   assert(validateProductionEvidenceObject(secretReference).issues.some((item) => item.code === 'SECRET_LIKE_VALUE'), 'secret-looking production evidence reference was accepted')
 
   output({

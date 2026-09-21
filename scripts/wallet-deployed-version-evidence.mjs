@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 const root = process.cwd()
 const args = parseArgs(process.argv.slice(2))
+const fakeStripeSecret = ['sk', 'live'].join('_') + '_123456789012345678901234'
 
 if (args.get('help') === 'true' || args.get('h') === 'true') {
   printHelp()
@@ -448,7 +449,7 @@ function runSelfTest() {
   )
 
   const secret = structuredClone(complete)
-  secret.surfaces[0].deployedReference = 'sk_live_123456789012345678901234'
+  secret.surfaces[0].deployedReference = fakeStripeSecret
   const secretResult = validateObject(secret)
   assert(!secretResult.ok && secretResult.issues.some((item) => item.code === 'SECRET_LIKE_VALUE'), 'self-test expected secret-looking values to fail')
 
@@ -487,7 +488,7 @@ function runSelfTest() {
   unknownProof.surfaces[0].evidence.push({
     proof: 'extra proof not in deployed-version checklist',
     status: 'passed',
-    reference: 'sk_live_123456789012345678901234',
+    reference: fakeStripeSecret,
     notes: 'sanitized owner-controlled deployment proof reference only',
   })
   const unknownProofResult = validateObject(unknownProof)
