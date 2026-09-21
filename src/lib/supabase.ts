@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+const liveAccountFulfillmentEnabled = import.meta.env.VITE_LIVE_ACCOUNT_FULFILLMENT_ENABLED === 'true'
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables')
@@ -45,16 +46,15 @@ export async function testAuthConnection(): Promise<{ success: boolean; message:
 // User authentication functions
 export async function createUserProfile(userId: string, username: string): Promise<{ success: boolean; message: string; profile?: Profile }> {
   try {
+    const profileRow = {
+      id: userId,
+      full_name: username,
+      email: username.includes('@') ? username : null,
+    }
+
     const { data, error } = await supabase
       .from('profiles')
-      .insert([
-        {
-          id: userId,
-          username: username,
-          wallet_balance: 0,
-          is_admin: false,
-        }
-      ])
+      .insert([profileRow])
       .select()
       .single()
 
@@ -1100,6 +1100,7 @@ export async function updateProductGroupStock(productGroupId: string): Promise<b
 
     const nextStock = count || 0
     const hasLiveProvider = Boolean(
+      liveAccountFulfillmentEnabled &&
       productGroup?.auto_fulfill_enabled &&
       (productGroup?.muabanvia_product_id || productGroup?.shopclone_product_id || productGroup?.shopviaclone_product_id),
     )
@@ -1459,11 +1460,11 @@ export function parseCSV(csvText: string, formatKey?: string): any[] {
   return rows.map(row => {
     const values = parseCsvLine(row)
     const obj: any = {}
-    
+
     headers.forEach((header, index) => {
       obj[header] = values[index] || ''
     })
-    
+
     return normalizeParsedAccountRow(obj)
   })
 }
@@ -1860,6 +1861,26 @@ export async function processPurchase(
   }
 }
 
+function sanitizeOrderHistoryCredentialVisibility(order: any) {
+  if (String(order?.status || '').toLowerCase() === 'completed') return order
+
+  const details = order?.account_details && typeof order.account_details === 'object'
+    ? order.account_details
+    : {}
+
+  return {
+    ...order,
+    account_details: {
+      product_name: details.product_name || null,
+      category: details.category || null,
+      category_id: details.category_id || null,
+      quantity: details.quantity || order?.quantity || 1,
+      price_per_unit: details.price_per_unit || null,
+      original_total: details.original_total || null,
+    },
+  }
+}
+
 // Get user's order history
 export async function getUserOrders(userId: string): Promise<any[]> {
   try {
@@ -1877,7 +1898,7 @@ export async function getUserOrders(userId: string): Promise<any[]> {
       return []
     }
 
-    return data || []
+    return (data || []).map(sanitizeOrderHistoryCredentialVisibility)
   } catch (error) {
     console.error('Error getting user orders:', error)
     return []
@@ -2044,26 +2065,57 @@ export async function getAdminSalesStats(): Promise<{ totalSales: number; totalR
 
 // ==================== USER MANAGEMENT FUNCTIONS ====================
 
-// Search users by email or name
+// Search users by id, email, name, or virtual account number.
 export async function searchUsers(query: string) {
   try {
-    if (!query || query.trim() === '') {
+    const cleanedQuery = String(query || '').trim()
+    if (!cleanedQuery) {
       return getAllUsers()
     }
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .or(`email.ilike.%${query}%,full_name.ilike.%${query}%`)
-      .order('created_at', { ascending: false })
-      .limit(50)
-
-    if (error) {
-      console.error('Error searching users:', error)
-      throw error
+    const rowsById = new Map<string, any>()
+    const addRows = (rows?: any[] | null) => {
+      for (const row of rows || []) {
+        if (row?.id) rowsById.set(row.id, row)
+      }
     }
 
-    return data || []
+    const searchErrors: unknown[] = []
+    const runSearch = async (builder: any) => {
+      const { data, error } = await builder
+      if (error) {
+        searchErrors.push(error)
+        console.warn('User search lookup failed:', error)
+        return
+      }
+      addRows(data)
+    }
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cleanedQuery)
+    if (isUuid) {
+      await runSearch(
+        supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', cleanedQuery)
+          .limit(1),
+      )
+    }
+
+    const likeQuery = cleanedQuery.replace(/[%_]/g, '\\$&')
+    await Promise.all([
+      runSearch(supabase.from('profiles').select('*').ilike('email', `%${likeQuery}%`).limit(50)),
+      runSearch(supabase.from('profiles').select('*').ilike('full_name', `%${likeQuery}%`).limit(50)),
+      runSearch(supabase.from('profiles').select('*').eq('pocketfi_account_number', cleanedQuery).limit(50)),
+    ])
+
+    if (rowsById.size === 0 && searchErrors.length >= 3) {
+      throw searchErrors[0]
+    }
+
+    return Array.from(rowsById.values())
+      .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
+      .slice(0, 100)
   } catch (error) {
     console.error('Error in searchUsers:', error)
     throw error
@@ -2182,6 +2234,57 @@ export async function adminRecordLedgerCredit(
     }
   } catch (error) {
     console.error('Error in adminRecordLedgerCredit:', error)
+    throw error
+  }
+}
+
+export async function adminRecordChargeback(
+  userId: string,
+  amount: number,
+  reason: string,
+  reference?: string,
+): Promise<{ success: boolean; transaction?: any; newBalance?: number; accountSuspended?: boolean }> {
+  try {
+    const cleanReference = reference?.trim()
+    if (!cleanReference || cleanReference.length < 3) {
+      throw new Error('A chargeback reference with at least 3 characters is required')
+    }
+
+    const { data, error } = await supabase.functions.invoke('admin-adjust-balance', {
+      body: {
+        action: 'record_chargeback',
+        target_user_id: userId,
+        amount,
+        reason,
+        reference: cleanReference,
+        idempotency_key: `chargeback-${userId}-${cleanReference}`,
+      },
+    })
+
+    if (error) {
+      let message = error.message || 'Failed to record chargeback'
+      const context = (error as any)?.context
+      if (context && typeof context.json === 'function') {
+        try {
+          const body = await context.clone().json()
+          message = body?.error || body?.message || message
+        } catch {
+          // Keep Supabase client error.
+        }
+      }
+      throw new Error(message)
+    }
+
+    if (!data?.success) throw new Error(data?.error || 'Chargeback recording failed')
+
+    return {
+      success: true,
+      transaction: data.transaction,
+      newBalance: data.new_balance,
+      accountSuspended: data.account_suspended,
+    }
+  } catch (error) {
+    console.error('Error in adminRecordChargeback:', error)
     throw error
   }
 }

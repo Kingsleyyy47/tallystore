@@ -24,7 +24,10 @@ function getPurchaseGuardIp(req?: Request | null) {
 }
 
 function getPurchaseGuardUserAgent(req?: Request | null) {
-  return String(req?.headers.get('user-agent') || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 500)
+  return Array.from(String(req?.headers.get('user-agent') || '')).filter((char) => {
+    const code = char.charCodeAt(0)
+    return code >= 32 && code !== 127
+  }).join('').trim().slice(0, 500)
 }
 
 async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {

@@ -220,7 +220,25 @@ function getPurchaseGuardIp(req?: Request | null) {
 }
 
 function getPurchaseGuardUserAgent(req?: Request | null) {
-  return String(req?.headers.get('user-agent') || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 500)
+  return Array.from(String(req?.headers.get('user-agent') || '')).filter((char) => {
+    const code = char.charCodeAt(0)
+    return code >= 32 && code !== 127
+  }).join('').trim().slice(0, 500)
+}
+
+async function getWalletRequestForensics(req: Request, route: string) {
+  const userAgent = getPurchaseGuardUserAgent(req)
+  return {
+    request_id: req.headers.get('x-request-id') || req.headers.get('x-correlation-id') || crypto.randomUUID(),
+    route,
+    ip_address: getPurchaseGuardIp(req),
+    user_agent: userAgent || null,
+    user_agent_hash: userAgent ? await purchaseGuardSha256Hex(userAgent) : null,
+    device_fingerprint: req.headers.get('x-device-fingerprint') || req.headers.get('x-client-device-id') || null,
+    forwarded_for: req.headers.get('x-forwarded-for') || null,
+    cf_ray: req.headers.get('cf-ray') || null,
+    vercel_id: req.headers.get('x-vercel-id') || null,
+  }
 }
 
 async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
@@ -392,6 +410,7 @@ serve(async (req) => {
       expected_amount_ngn,
     } = await req.json();
     const revenueRequestContext = sanitizeRevenueRequestContext(revenue_context);
+    const walletRequestForensics = await getWalletRequestForensics(req, 'process-purchase');
     revenueContext.requestContext = revenueRequestContext;
     revenueContext.productGroupId = product_group_id;
     revenueContext.idempotencyKey = idempotency_key;
@@ -427,23 +446,89 @@ serve(async (req) => {
     // Check idempotency - prevent duplicate purchases
     const { data: existingOrder } = await supabaseAdmin
       .from('orders')
-      .select('id, amount, status, created_at')
+      .select('id, amount, status, created_at, product_group_id, account_details, wallet_reservation_id, financial_authorization_status, financial_security_version')
       .eq('user_id', user.id)
       .eq('idempotency_key', idempotency_key)
       .single();
 
     if (existingOrder) {
-      console.log('Purchase idempotency hit: returning existing order.');
+      const existingDetails = existingOrder.account_details && typeof existingOrder.account_details === 'object'
+        ? existingOrder.account_details as Record<string, unknown>
+        : {};
+      const existingQuantity = Number(existingDetails.quantity || 0);
+      const existingAmount = Number(existingOrder.amount || 0);
+      const sameRequest =
+        String(existingOrder.product_group_id || '') === product_group_id &&
+        existingQuantity === quantity &&
+        Math.abs(existingAmount - expectedAmountNgn) <= 1;
+
+      if (!sameRequest) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'This idempotency key was already used for a different purchase request.',
+            code: 'IDEMPOTENCY_REQUEST_CONFLICT',
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 }
+        );
+      }
+
+      if (String(existingOrder.status || '').toLowerCase() === 'completed') {
+        console.log('Purchase idempotency hit: returning completed order.');
+        return new Response(
+          JSON.stringify({
+            success: true,
+            order_id: existingOrder.id,
+            amount: existingOrder.amount,
+            status: existingOrder.status,
+            message: 'Order already processed',
+            idempotency_hit: true,
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (!existingOrder.wallet_reservation_id) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'This purchase attempt needs admin review before it can be retried.',
+            code: 'PURCHASE_AUTHORIZATION_INCOMPLETE',
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 }
+        );
+      }
+
+      console.log('Purchase idempotency hit: resuming reserve-first authorization.');
+    }
+
+    // If a previous attempt debited the wallet but failed before creating the
+    // order, do not let a retry replay that old debit into a fresh credential
+    // delivery. Those cases need manual repair because a rollback refund may
+    // already have been issued.
+    const { data: orphanedPurchaseTx, error: orphanedPurchaseError } = await supabaseAdmin
+      .from('transactions')
+      .select('id, amount, status, balance_after, created_at')
+      .eq('user_id', user.id)
+      .eq('idempotency_key', `purchase:${idempotency_key}`)
+      .maybeSingle();
+
+    if (orphanedPurchaseError) {
+      throw new Error('Could not verify purchase idempotency state');
+    }
+
+    if (orphanedPurchaseTx) {
+      console.error('Blocked orphaned purchase ledger retry without matching order.', {
+        transaction_id: orphanedPurchaseTx.id,
+        idempotency_key,
+      });
       return new Response(
         JSON.stringify({
-          success: true,
-          order_id: existingOrder.id,
-          amount: existingOrder.amount,
-          status: existingOrder.status,
-          message: 'Order already processed',
-          idempotency_hit: true,
+          success: false,
+          error: 'This purchase attempt needs admin review before it can be retried.',
+          code: 'PURCHASE_LEDGER_ORPHANED',
         }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 }
       );
     }
 
@@ -470,8 +555,13 @@ serve(async (req) => {
     if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
       throw new Error('Product has an invalid customer price');
     }
+    // Incident containment: live supplier purchases must stay hard-paused until
+    // this flow is migrated to authorize/reserve backed funds before any paid
+    // supplier call. A stored wallet-balance preflight is not delivery authority.
+    const liveAccountFulfillmentEnabled = false;
     const productHasLiveProvider = Boolean(
-      productGroup.auto_fulfill_enabled &&
+      liveAccountFulfillmentEnabled &&
+        productGroup.auto_fulfill_enabled &&
         (productGroup.muabanvia_product_id ||
           productGroup.shopclone_product_id ||
           productGroup.shopviaclone_product_id),
@@ -578,338 +668,146 @@ serve(async (req) => {
       metadata: purchaseEventMetadata,
     });
 
-    // Preflight the wallet before any live-provider auto-fulfillment. The final
-    // debit below still re-checks with optimistic locking, but this prevents a
-    // zero/low-balance customer from triggering paid supplier stock purchases.
-    const { data: preflightProfile, error: preflightProfileError } = await supabaseAdmin
-      .from('profiles')
-      .select('wallet_balance')
-      .eq('id', user.id)
-      .single();
-
-    if (preflightProfileError || !preflightProfile) {
-      throw new Error('Failed to fetch wallet balance');
-    }
-
-    const preflightWalletBalance = Number(preflightProfile.wallet_balance || 0);
-    if (preflightWalletBalance < totalPrice) {
-      throw new Error(`Insufficient balance. Required: ₦${totalPrice.toLocaleString()}, Available: ₦${preflightWalletBalance.toLocaleString()}`);
-    }
-
-    // 2. Get available accounts (SERVER-SIDE ONLY - never exposed to client)
-    let preferredAccount: any = null;
-    if (preferredAccountId && quantity === 1) {
-      const { data: selectedAccount, error: selectedAccountError } = await supabaseAdmin
-        .from('individual_accounts')
-        .select('*')
-        .eq('id', preferredAccountId)
-        .eq('product_group_id', product_group_id)
-        .eq('status', 'available')
-        .maybeSingle();
-
-      if (selectedAccountError) {
-        console.error('Error fetching selected account:', selectedAccountError);
-        throw new Error('Failed to check selected account availability');
-      }
-
-      if (!selectedAccount) {
-        throw new Error('Selected account is no longer available');
-      }
-
-      preferredAccount = selectedAccount;
-    }
-
-    const { data: availableAccounts, error: accountsError } = preferredAccount
-      ? { data: [preferredAccount], error: null }
-      : await supabaseAdmin
-        .from('individual_accounts')
-        .select('*')
-        .eq('product_group_id', product_group_id)
-        .eq('status', 'available')
-        .limit(quantity);
-
-    if (accountsError) {
-      console.error('Error fetching accounts:', accountsError);
-      throw new Error('Failed to check availability');
-    }
-
-    console.log(`Found ${availableAccounts?.length || 0} available account(s) for purchase.`);
-
-    let workingAccounts = availableAccounts || [];
-
-    if (workingAccounts.length < quantity) {
-      const shortfall = quantity - workingAccounts.length;
-      const available = workingAccounts.length;
-
-      // Auto-fulfillment fallback chain: try each configured live-purchase provider in
-      // order until the shortfall is covered or every provider has been tried. The
-      // product-level auto_fulfill_enabled switch is the master kill switch; provider
-      // IDs only matter when that switch is on.
-      //
-      // All three providers share the same API shape (their own docs):
-      // POST multipart/form-data: action=buyProduct, id, amount, api_key
-      // Response: { status: "success", msg, trans_id, data: ["user|pass", ...] }
-      const providers = [
-        {
-          name: 'muabanvia',
-          enabled: !!(productGroup.auto_fulfill_enabled && productGroup.muabanvia_product_id),
-          productId: productGroup.muabanvia_product_id,
-          apiKeyEnv: 'MUABANVIA_API_KEY',
-          baseUrlEnv: 'MUABANVIA_BASE_URL',
-          defaultBaseUrl: 'https://muabanvia.org/api/buy_product',
-          // MuaBanVia's own examples send the product id as both ID and id.
-          idFieldNames: ['ID', 'id'],
-        },
-        {
-          name: 'shopclone',
-          enabled: !!(productGroup.auto_fulfill_enabled && productGroup.shopclone_product_id),
-          productId: productGroup.shopclone_product_id,
-          apiKeyEnv: 'SHOPCLONE_API_KEY',
-          baseUrlEnv: 'SHOPCLONE_BASE_URL',
-          defaultBaseUrl: 'https://shopclone.vn/api/buy_product',
-          idFieldNames: ['id'],
-        },
-        {
-          name: 'shopviaclone',
-          enabled: !!(productGroup.auto_fulfill_enabled && productGroup.shopviaclone_product_id),
-          productId: productGroup.shopviaclone_product_id,
-          apiKeyEnv: 'SHOPVIACLONE_API_KEY',
-          baseUrlEnv: 'SHOPVIACLONE_BASE_URL',
-          defaultBaseUrl: 'https://shopviaclone22.com/api/buy_product',
-          idFieldNames: ['id'],
-        },
-      ];
-
-      // Parses the shared response shape all three providers use:
-      // { status: "success", msg, trans_id, data: ["user|pass", ...] }
-      const parseFulfilledAccounts = (rawAccounts: any, limit: number) => {
-        const fulfilledRaw: any[] = Array.isArray(rawAccounts) ? rawAccounts : [];
-        return fulfilledRaw.slice(0, limit).map((item: any) => {
-          if (typeof item === 'string') {
-            const parts = item.split('|').map((p: string) => p.trim());
-            return {
-              username: parts[0] || '',
-              password: parts[1] || '',
-              email: parts[2] || null,
-              email_password: parts[3] || null,
-              two_fa_code: parts[4] || null,
-            };
-          }
-          return {
-            username: item.username || item.user || item.login || '',
-            password: item.password || item.pass || '',
-            email: item.email || null,
-            email_password: item.email_password || item.emailPass || null,
-            two_fa_code: item.two_fa_code || item.twofa || item['2fa'] || null,
-            additional_info: item,
-          };
-        });
-      };
-
-      let remainingShortfall = shortfall;
-
-      for (const provider of providers) {
-        if (remainingShortfall <= 0) break;
-        if (!provider.enabled) continue;
-
-        console.log(`Stock shortfall (${remainingShortfall}); attempting ${provider.name} auto-fulfillment.`);
-
-        try {
-          const apiKey = Deno.env.get(provider.apiKeyEnv);
-          if (!apiKey) {
-            throw new Error(`${provider.apiKeyEnv} not configured`);
-          }
-
-          const baseUrl = Deno.env.get(provider.baseUrlEnv) || provider.defaultBaseUrl;
-
-          const form = new FormData();
-          form.set('action', 'buyProduct');
-          for (const fieldName of provider.idFieldNames) {
-            form.set(fieldName, String(provider.productId));
-          }
-          form.set('amount', String(remainingShortfall));
-          form.set('api_key', apiKey);
-
-          const fulfillResponse = await fetch(baseUrl, {
-            method: 'POST',
-            body: form,
-          });
-
-          const fulfillResult = await fulfillResponse.json().catch(() => null) as any;
-
-          if (!fulfillResponse.ok || fulfillResult?.status !== 'success') {
-            throw new Error(fulfillResult?.msg || fulfillResult?.message || fulfillResult?.error || `${provider.name} could not fulfill the shortfall`);
-          }
-
-          const fulfilledAccounts = parseFulfilledAccounts(fulfillResult?.data ?? [], remainingShortfall);
-
-          if (fulfilledAccounts.length === 0) {
-            throw new Error(`${provider.name} returned no accounts`);
-          }
-
-          // Insert the live-fulfilled accounts as available stock, tagged with their source,
-          // so the rest of the purchase flow (reserve -> sell) treats them identically to
-          // pre-stocked accounts.
-          const { data: insertedAccounts, error: insertError } = await supabaseAdmin
-            .from('individual_accounts')
-            .insert(
-              fulfilledAccounts.map((acc) => ({
-                product_group_id: product_group_id,
-                username: acc.username,
-                password: acc.password,
-                email: acc.email,
-                email_password: acc.email_password,
-                two_fa_code: acc.two_fa_code,
-                additional_info: acc.additional_info || null,
-                status: 'available',
-                fulfillment_source: provider.name,
-              }))
-            )
-            .select('*');
-
-          if (insertError || !insertedAccounts) {
-            throw new Error(insertError?.message || 'Failed to record auto-fulfilled accounts');
-          }
-
-          console.log(`${provider.name} auto-fulfillment succeeded for ${insertedAccounts.length} account(s).`);
-          workingAccounts = [...workingAccounts, ...insertedAccounts];
-          remainingShortfall -= insertedAccounts.length;
-        } catch (fulfillErr) {
-          console.error(`❌ ${provider.name} auto-fulfillment failed:`, fulfillErr);
-          // Fall through to the next provider in the chain, or to the standard
-          // out-of-stock error below if this was the last one.
-        }
-      }
-
-      if (workingAccounts.length < quantity) {
-        const stillAvailable = workingAccounts.length;
-        console.error(`Stock mismatch: found=${stillAvailable}, requested=${quantity}`);
-
-        if (stillAvailable === 0) {
-          await supabaseAdmin
-            .from('product_groups')
-            .update({
-              stock_count: 0,
-              availability_status: 'UNAVAILABLE',
-              is_sellable: false,
-            })
-            .eq('id', product_group_id);
-          throw new Error(`OUT_OF_STOCK: ${productGroup.name} is currently out of stock. Please check back later or contact support.`);
-        } else {
-          throw new Error(`INSUFFICIENT_STOCK: Only ${stillAvailable} account(s) available for ${productGroup.name}. You requested ${quantity}.`);
-        }
-      }
-    }
-
-    // 3. Check wallet balance
+    // Reserve trusted funds and inventory atomically. This database boundary
+    // never trusts profiles.wallet_balance as purchase authority and creates
+    // no credential-bearing response before the hold is committed.
     const { data: profile, error: profileError } = await supabaseAdmin
       .from('profiles')
-      .select('wallet_balance')
+      .select('financial_security_version')
       .eq('id', user.id)
       .single();
 
     if (profileError || !profile) {
-      throw new Error('Failed to fetch wallet balance');
+      throw new Error('Failed to fetch financial authorization state');
     }
 
-    const walletBalance = profile.wallet_balance || 0;
-    if (walletBalance < totalPrice) {
-      throw new Error(`Insufficient balance. Required: ₦${totalPrice.toLocaleString()}, Available: ₦${walletBalance.toLocaleString()}`);
-    }
-
-    // 4. Reserve accounts atomically (workingAccounts includes any MuaBanVia auto-fulfilled
-    // accounts inserted above, already in 'available' status alongside the pre-stocked ones)
-    const accountIds = workingAccounts.slice(0, quantity).map((acc: any) => acc.id);
-    const purchasedAccounts = workingAccounts.slice(0, quantity);
-
-    const { data: reservedAccounts, error: reserveError } = await supabaseAdmin
-      .from('individual_accounts')
-      .update({ status: 'reserved' })
-      .in('id', accountIds)
-      .eq('status', 'available')
-      .select('id');
-
-    if (reserveError || !reservedAccounts || reservedAccounts.length < quantity) {
-      throw new Error('Failed to reserve accounts - some may have been sold');
-    }
-
-    // 5. Deduct wallet balance with optimistic locking
-    const newBalance = walletBalance - totalPrice;
-
-    const { data: updatedProfile, error: balanceError } = await supabaseAdmin
-      .from('profiles')
-      .update({
-        wallet_balance: newBalance,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', user.id)
-      .eq('wallet_balance', walletBalance) // Optimistic lock
-      .select()
-      .single();
-
-    if (balanceError || !updatedProfile) {
-      // Rollback: unreserve accounts
-      await supabaseAdmin
-        .from('individual_accounts')
-        .update({ status: 'available' })
-        .in('id', accountIds);
-
-      throw new Error('Balance changed during purchase. Please try again.');
-    }
-
-    // 6. Create order with credentials (stored in account_details JSON)
-    const orderData = {
-      user_id: user.id,
-      product_group_id: product_group_id,
-      amount: totalPrice,
-      status: 'completed',
-      idempotency_key: idempotency_key,
+    const requestedSecurityVersion = Math.max(
+      1,
+      Number(profile.financial_security_version || 1),
+    );
+    const authorizationMetadata = {
+      source: 'process-purchase',
+      request_forensics: walletRequestForensics,
+      product_group_id,
+      product_name: productGroup.name,
+      quantity,
+      unit_price: unitPrice,
+      original_amount_ngn: originalTotal,
+      charged_amount_ngn: totalPrice,
       discount_code_id: appliedDiscountCode?.id || null,
-      account_details: {
-        accounts: purchasedAccounts.map((acc: any) => ({
-          username: acc.username,
-          password: acc.password,
-          email: acc.email,
-          email_password: acc.email_password,
-          two_fa_code: acc.two_fa_code,
-          recovery_email: acc.recovery_email,
-          recovery_email_password: acc.recovery_email_password,
-          additional_info: acc.additional_info,
-        })),
-        product_name: productGroup.name,
-        category: productGroup.categories?.name,
-        quantity: quantity,
-        price_per_unit: unitPrice,
-        expected_amount_ngn: expectedAmountNgn,
-        original_amount_ngn: originalTotal,
-        charged_amount_ngn: totalPrice,
-        discount_pct: discountPct,
-        discount_code: appliedDiscountCode?.code || null,
-      },
+      expected_amount_ngn: expectedAmountNgn,
+      category_id: productGroup.category_id,
     };
 
-    const { data: order, error: orderError } = await supabaseAdmin
-      .from('orders')
-      .insert([orderData])
-      .select()
-      .single();
+    const { data: authorization, error: authorizationError } = await supabaseAdmin.rpc(
+      'authorize_product_purchase',
+      {
+        p_user_id: user.id,
+        p_product_group_id: product_group_id,
+        p_quantity: quantity,
+        p_amount: totalPrice,
+        p_idempotency_key: idempotency_key,
+        p_order_metadata: authorizationMetadata,
+        p_preferred_account_id: preferredAccountId,
+        p_financial_security_version: requestedSecurityVersion,
+      },
+    );
 
-    if (orderError) {
-      console.error('❌ Order creation failed:', orderError);
-
-      // Rollback: restore balance and unreserve accounts
-      await supabaseAdmin
-        .from('profiles')
-        .update({ wallet_balance: walletBalance })
-        .eq('id', user.id);
-
-      await supabaseAdmin
-        .from('individual_accounts')
-        .update({ status: 'available' })
-        .in('id', accountIds);
-
-      throw new Error(`Failed to create order: ${orderError.message}`);
+    if (authorizationError) {
+      throw new Error(authorizationError.message || 'Product financial authorization failed');
     }
+
+    const authorizationResult = authorization as any;
+    if (!authorizationResult?.success) {
+      const code = String(authorizationResult?.code || '');
+      if (code === 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS') {
+        throw new Error(`Insufficient verified funds. Required: ₦${totalPrice.toLocaleString()}`);
+      }
+      if (code === 'INSUFFICIENT_STOCK') {
+        throw new Error(`INSUFFICIENT_STOCK: Only ${authorizationResult.available || 0} account(s) available for ${productGroup.name}. You requested ${quantity}.`);
+      }
+      if (code === 'PREFERRED_ACCOUNT_UNAVAILABLE') {
+        throw new Error('Selected account is no longer available');
+      }
+      throw new Error(authorizationResult.error || 'Product financial authorization failed');
+    }
+
+    const orderId = String(authorizationResult.order_id || '');
+    const reservationId = String(authorizationResult.reservation_id || '');
+    const accountIds = Array.isArray(authorizationResult.account_ids)
+      ? authorizationResult.account_ids.map((id: unknown) => String(id)).filter(Boolean)
+      : [];
+
+    if (!orderId || !reservationId || accountIds.length !== quantity) {
+      throw new Error('Product authorization returned incomplete reservation evidence');
+    }
+
+    const { data: purchasedAccounts, error: purchasedAccountsError } = await supabaseAdmin
+      .from('individual_accounts')
+      .select('*')
+      .in('id', accountIds)
+      .eq('status', 'reserved');
+
+    if (purchasedAccountsError || !purchasedAccounts || purchasedAccounts.length !== quantity) {
+      throw new Error('Reserved product inventory could not be loaded for completion');
+    }
+
+    // Credentials are assembled only after the database has committed the
+    // reservation. The completion RPC then captures the hold, writes these
+    // credentials, and marks the reserved inventory sold atomically.
+    const accountDetails = {
+      accounts: purchasedAccounts.map((acc: any) => ({
+        username: acc.username,
+        password: acc.password,
+        email: acc.email,
+        email_password: acc.email_password,
+        two_fa_code: acc.two_fa_code,
+        recovery_email: acc.recovery_email,
+        recovery_email_password: acc.recovery_email_password,
+        additional_info: acc.additional_info,
+      })),
+      product_name: productGroup.name,
+      category: productGroup.categories?.name,
+      quantity,
+      price_per_unit: unitPrice,
+      expected_amount_ngn: expectedAmountNgn,
+      original_amount_ngn: originalTotal,
+      charged_amount_ngn: totalPrice,
+      discount_pct: discountPct,
+      discount_code: appliedDiscountCode?.code || null,
+    };
+
+    const { data: completion, error: completionError } = await supabaseAdmin.rpc(
+      'complete_product_purchase',
+      {
+        p_user_id: user.id,
+        p_order_id: orderId,
+        p_reservation_id: reservationId,
+        p_account_ids: accountIds,
+        p_account_details: accountDetails,
+        p_capture_idempotency_key: `purchase:${idempotency_key}`,
+        p_reference: `PUR-${idempotency_key.substring(0, 24)}`,
+        p_description: `Purchase: ${quantity}x ${productGroup.name}`,
+        p_created_by: null,
+      },
+    );
+
+    if (completionError) {
+      throw new Error(completionError.message || 'Product completion failed');
+    }
+
+    const completionResult = completion as any;
+    if (!completionResult?.success) {
+      throw new Error(completionResult?.error || 'Product completion failed');
+    }
+
+    const newBalance = Number(completionResult.balance_after ?? 0);
+    const order = {
+      id: orderId,
+      amount: totalPrice,
+      status: 'completed',
+      account_details: completionResult.account_details || accountDetails,
+    };
 
     // 6b. Bump the discount code's used_count now that the order is locked in.
     // Done after order creation (not before) so a failed/rolled-back purchase
@@ -963,16 +861,8 @@ serve(async (req) => {
       }
     }
 
-    // 7. Mark accounts as sold
-    await supabaseAdmin
-      .from('individual_accounts')
-      .update({
-        status: 'sold',
-        sold_at: new Date().toISOString(),
-      })
-      .in('id', accountIds);
-
-    // 8. Update product group stock
+    // The completion RPC already marked the reserved accounts sold atomically.
+    // Refresh the catalogue projection after the financial transaction.
     const { count: remainingStock } = await supabaseAdmin
       .from('individual_accounts')
       .select('*', { count: 'exact', head: true })
@@ -988,19 +878,6 @@ serve(async (req) => {
         is_sellable: nextStock > 0 || productHasLiveProvider,
       })
       .eq('id', product_group_id);
-
-    // 9. Record transaction
-    await supabaseAdmin
-      .from('transactions')
-      .insert([{
-        user_id: user.id,
-        type: 'purchase',
-        amount: -totalPrice,
-        status: 'completed',
-        balance_after: newBalance,
-        description: `Purchase: ${quantity}x ${productGroup.name}`,
-        reference: `ORD-${order.id.substring(0, 8).toUpperCase()}`,
-      }]);
 
     await Promise.all([
       recordRevenueEvent(supabaseAdmin, {

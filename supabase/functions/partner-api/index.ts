@@ -19,8 +19,19 @@ const SAGECLOUD_API_URL = 'https://api.sagecloud.ng/api'
 const ISTAR_BASE = Deno.env.get('ISTAR_BASE_URL') || 'https://v1.fragmentapi.com/api/v1/partner'
 const NOWPAYMENTS_API_URL = 'https://api.nowpayments.io/v1'
 const NIGERIAN_NETWORKS = ['MTN', 'GLO', 'AIRTEL', '9MOBILE'] as const
+// Hard pause partner-facing API traffic during the wallet security review.
+// Reopening should be a code change after the wallet/fulfillment gates are verified.
+const PARTNER_API_PAUSED = true
+const PARTNER_ADMIN_MUTATIONS_PAUSED = true
+const PARTNER_ADMIN_MUTATION_ACTIONS = new Set([
+  'admin_create_partner',
+  'admin_update_partner',
+  'admin_generate_key',
+  'admin_revoke_key',
+  'admin_adjust_balance',
+])
 
-type SupabaseAdmin = ReturnType<typeof createClient>
+type SupabaseAdmin = any
 
 type PartnerAuth = {
   partner: any
@@ -163,11 +174,9 @@ function splitName(value: unknown): { first: string; last: string } {
 function getPocketFiConfig() {
   const token = Deno.env.get('POCKETFI_PUBLIC_KEY') ||
     Deno.env.get('POCKETFI_API_TOKEN') ||
-    Deno.env.get('VITE_POCKETFI_API_TOKEN') ||
-    Deno.env.get('VITE_POCKETFI_PUBLIC_KEY') ||
     ''
-  const businessId = Deno.env.get('POCKETFI_BUSINESS_ID') || Deno.env.get('VITE_POCKETFI_BUSINESS_ID') || ''
-  const baseUrl = Deno.env.get('POCKETFI_BASE_URL') || Deno.env.get('VITE_POCKETFI_BASE_URL') || 'https://api.pocketfi.ng/api/v1'
+  const businessId = Deno.env.get('POCKETFI_BUSINESS_ID') || ''
+  const baseUrl = Deno.env.get('POCKETFI_BASE_URL') || 'https://api.pocketfi.ng/api/v1'
   if (!token || !businessId) throw new Error('PocketFi is not configured')
   return { token, businessId, baseUrl }
 }
@@ -615,7 +624,7 @@ async function getDaisyServices() {
     { action: 'getPricesVerification', country: String(DAISY_COUNTRY) },
     { action: 'getPrices' },
     { action: 'getPrices', country: String(DAISY_COUNTRY) },
-  ]) {
+  ] as Array<Record<string, string>>) {
     try {
       const text = await daisyGet(apiKey, params)
       if (text === 'BAD_KEY') throw new Error('SMS provider key is invalid')
@@ -1481,7 +1490,7 @@ async function handleBillsOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: R
   const client = sageCloudClient()
 
   let providerAmount = Math.round(Number(body.amount_ngn || body.amount || 0))
-  let dataPlanCode = cleanText(body.data_plan_code || String(body.item_id || '').split(':')[2], 80)
+  const dataPlanCode = cleanText(body.data_plan_code || String(body.item_id || '').split(':')[2], 80)
   let itemName = `${provider} Airtime`
 
   if (normalizedType === 'airtime') {
@@ -2381,6 +2390,17 @@ serve(async (req) => {
   let auth: PartnerAuth | null = null
 
   try {
+    if (PARTNER_API_PAUSED && !action.startsWith('admin_')) {
+      await writeLog(admin, req, null, action || 'unknown', 503, false, 'Partner API is paused during wallet security review', {
+        pause_reason: 'wallet_security_review',
+      }).catch(() => undefined)
+      return json({
+        success: false,
+        error: 'Partner API is temporarily paused while TallyStore completes a wallet security review.',
+        code: 'PARTNER_API_PAUSED',
+      }, 503)
+    }
+
     if (action === 'internal_confirm_checkout') {
       return json(await handleInternalConfirmCheckout(admin, req, body))
     }
@@ -2388,6 +2408,13 @@ serve(async (req) => {
     if (action.startsWith('admin_')) {
       await requireAdmin(req, admin)
       if (action === 'admin_list_partners') return json(await handleAdminList(admin))
+      if (PARTNER_ADMIN_MUTATIONS_PAUSED && PARTNER_ADMIN_MUTATION_ACTIONS.has(action)) {
+        return json({
+          success: false,
+          error: 'Partner API management is temporarily read-only while TallyStore completes a wallet security review.',
+          code: 'PARTNER_API_ADMIN_PAUSED',
+        }, 503)
+      }
       if (action === 'admin_create_partner') return json(await handleAdminCreate(admin, body))
       if (action === 'admin_update_partner') return json(await handleAdminUpdate(admin, body))
       if (action === 'admin_generate_key') return json(await handleAdminGenerateKey(admin, body))

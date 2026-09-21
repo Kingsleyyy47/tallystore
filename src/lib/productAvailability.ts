@@ -1,8 +1,10 @@
 import type { ProductGroup } from '@/lib/supabase'
 
 export function canAutoFulfillProduct(productGroup: ProductGroup) {
+  const liveFulfillmentEnabled = import.meta.env.VITE_LIVE_ACCOUNT_FULFILLMENT_ENABLED === 'true'
   return Boolean(
-    productGroup.auto_fulfill_enabled &&
+    liveFulfillmentEnabled &&
+      productGroup.auto_fulfill_enabled &&
       (productGroup.muabanvia_product_id ||
         productGroup.shopclone_product_id ||
         productGroup.shopviaclone_product_id),

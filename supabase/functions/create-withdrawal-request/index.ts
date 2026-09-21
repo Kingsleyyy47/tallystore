@@ -1,6 +1,86 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
+async function applyWalletTransaction(
+  supabaseAdmin: any,
+  params: {
+    userId: string;
+    type: string;
+    amount: number;
+    reference?: string;
+    description?: string;
+    idempotencyKey?: string;
+    metadata?: Record<string, unknown>;
+    balanceType: 'crypto' | 'referral';
+  },
+) {
+  const { data, error } = await supabaseAdmin.rpc('apply_wallet_transaction', {
+    p_user_id: params.userId,
+    p_type: params.type,
+    p_amount: params.amount,
+    p_reference: params.reference || null,
+    p_description: params.description || null,
+    p_idempotency_key: params.idempotencyKey || null,
+    p_metadata: params.metadata || {},
+    p_currency: 'NGN',
+    p_balance_type: params.balanceType,
+    p_external_payment_id: null,
+    p_created_by: null,
+  });
+
+  if (error) throw new Error(error.message || 'Wallet transaction failed');
+  const result = data as any;
+  if (!result?.success) throw new Error(result?.error || 'Wallet transaction failed');
+  return result;
+}
+
+async function purchaseGuardSha256Hex(value: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function cleanPurchaseGuardIp(value: string | null) {
+  if (!value) return null;
+  const first = value.split(',')[0]?.trim() || '';
+  const withoutPort = first.includes('.') ? first.replace(/:\d+$/, '') : first;
+  const cleaned = withoutPort.replace(/[^a-fA-F0-9:.[\]]/g, '').replace(/^\[|\]$/g, '');
+  if (!cleaned || cleaned.length > 80) return null;
+  return cleaned;
+}
+
+function getPurchaseGuardIp(req?: Request | null) {
+  if (!req) return null;
+  return cleanPurchaseGuardIp(
+    req.headers.get('cf-connecting-ip') ||
+      req.headers.get('x-real-ip') ||
+      req.headers.get('x-forwarded-for') ||
+      req.headers.get('forwarded')?.match(/for="?([^";,]+)"?/i)?.[1] ||
+      null,
+  );
+}
+
+function getPurchaseGuardUserAgent(req?: Request | null) {
+  return Array.from(String(req?.headers.get('user-agent') || '')).filter((char) => {
+    const code = char.charCodeAt(0);
+    return code >= 32 && code !== 127;
+  }).join('').trim().slice(0, 500);
+}
+
+async function getWalletRequestForensics(req: Request, route: string) {
+  const userAgent = getPurchaseGuardUserAgent(req);
+  return {
+    request_id: req.headers.get('x-request-id') || req.headers.get('x-correlation-id') || crypto.randomUUID(),
+    route,
+    ip_address: getPurchaseGuardIp(req),
+    user_agent: userAgent || null,
+    user_agent_hash: userAgent ? await purchaseGuardSha256Hex(userAgent) : null,
+    device_fingerprint: req.headers.get('x-device-fingerprint') || req.headers.get('x-client-device-id') || null,
+    forwarded_for: req.headers.get('x-forwarded-for') || null,
+    cf_ray: req.headers.get('cf-ray') || null,
+    vercel_id: req.headers.get('x-vercel-id') || null,
+  };
+}
+
 // ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
 
 // ── sagecloud-client.ts ──
@@ -333,19 +413,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Thresholds for balance alerts (in NGN)
-const LOW_BALANCE_THRESHOLD = 50000;
-const CRITICAL_BALANCE_THRESHOLD = 10000;
-
-interface BalanceCheckResult {
-  hasBalance: boolean;
-  currentBalance: number;
-  requestedAmount: number;
-  shortfall: number;
-  isLowBalance: boolean;
-  isCriticalBalance: boolean;
-}
-
 /**
  * Log admin alert for low SageCloud balance
  */
@@ -391,9 +458,20 @@ serve(async (req) => {
   }
 
   try {
-    // Kill switch - can disable all withdrawals instantly via env var
-    if (Deno.env.get('WITHDRAWALS_ENABLED') === 'false') {
-      throw new Error('Withdrawals are temporarily disabled for maintenance. Please try again later.');
+    // Fail closed during wallet security review. Re-enable only after this
+    // route is migrated to the wallet authorization engine end to end.
+    if (String(Deno.env.get('WITHDRAWALS_ENABLED') || '').trim().toLowerCase() !== 'true') {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          code: 'WITHDRAWALS_PAUSED',
+          error: 'Withdrawals are temporarily disabled during wallet security review.',
+        }),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 503,
+        },
+      );
     }
     // Get user from auth header
     const authHeader = req.headers.get('Authorization');
@@ -426,6 +504,7 @@ serve(async (req) => {
       console.error('Auth error:', userError);
       throw new Error('Unauthorized');
     }
+    const walletRequestForensics = await getWalletRequestForensics(req, 'create-withdrawal-request');
 
     // Parse request body
     const { amount, bank_code, bank_name, account_number, account_name, narration, source } = await req.json();
@@ -445,12 +524,11 @@ serve(async (req) => {
     // preserve existing behavior exactly. 'referral' lets users cash out referral_balance
     // straight to their bank via the same SageCloud transfer flow below.
     const balanceSource: 'crypto' | 'referral' = source === 'referral' ? 'referral' : 'crypto';
-    const balanceColumn = balanceSource === 'referral' ? 'referral_balance' : 'crypto_balance';
 
     // Check user's balance
     const { data: userData, error: userFetchError } = await supabaseClient
       .from('profiles')
-      .select(`${balanceColumn}, is_staff, is_admin`)
+      .select('is_staff, is_admin')
       .eq('id', user.id)
       .single();
 
@@ -460,11 +538,6 @@ serve(async (req) => {
 
     if ((userData as any).is_staff || (userData as any).is_admin) {
       throw new Error('Withdrawals are only available to customer accounts');
-    }
-
-    const currentBalance = parseFloat((userData as any)[balanceColumn] || '0');
-    if (currentBalance < withdrawalAmount) {
-      throw new Error(`Insufficient balance. Available: ₦${currentBalance.toLocaleString()}, Requested: ₦${withdrawalAmount.toLocaleString()}`);
     }
 
     // Initialize SageCloud client
@@ -571,60 +644,42 @@ serve(async (req) => {
       throw new Error(`Failed to create withdrawal record: ${dbError.message}`);
     }
 
-    // Step 4: Deduct from user's crypto balance with optimistic locking
-    let balanceDeducted = false;
-    let actualCurrentBalance = currentBalance;
-    
-    for (let attempt = 0; attempt < 5 && !balanceDeducted; attempt++) {
-      // Re-fetch balance to ensure we have latest value (use admin client to bypass RLS)
-      const { data: freshUserData } = await supabaseAdmin
-        .from('profiles')
-        .select(balanceColumn)
-        .eq('id', user.id)
-        .single();
+    // Step 4: Deduct from the selected balance through the wallet engine.
+    const debitIdempotencyKey = `withdrawal:${withdrawalRecord.id}`;
+    let debitResult: any = null;
 
-      actualCurrentBalance = parseFloat((freshUserData as any)?.[balanceColumn] || '0');
-
-      // Re-check balance is sufficient
-      if (actualCurrentBalance < withdrawalAmount) {
-        // Rollback withdrawal record
-        await supabaseAdmin
-          .from('crypto_withdrawals')
-          .delete()
-          .eq('id', withdrawalRecord.id);
-        throw new Error(`Insufficient balance. Available: ₦${actualCurrentBalance.toLocaleString()}, Requested: ₦${withdrawalAmount.toLocaleString()}`);
-      }
-
-      // Optimistic lock: only update if balance matches what we read (use admin client)
-      const { data: updateData, error: balanceError } = await supabaseAdmin
-        .from('profiles')
-        .update({ [balanceColumn]: actualCurrentBalance - withdrawalAmount })
-        .eq('id', user.id)
-        .eq(balanceColumn, actualCurrentBalance)
-        .select()
-        .single();
-
-      if (balanceError) {
-        console.warn(`⚠️ Balance deduction conflict on attempt ${attempt + 1}, retrying...`);
-        await new Promise(r => setTimeout(r, 100 * (attempt + 1)));
-        continue;
-      }
-
-      if (updateData) {
-        balanceDeducted = true;
-      } else {
-        console.warn(`🔁 No rows updated on attempt ${attempt + 1}, retrying...`);
-        await new Promise(r => setTimeout(r, 100 * (attempt + 1)));
-      }
-    }
-    
-    if (!balanceDeducted) {
-      // Rollback withdrawal record
+    try {
+      debitResult = await applyWalletTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'withdrawal',
+        amount: withdrawalAmount,
+        reference,
+        description: `${balanceSource} withdrawal to ${validatedAccountName}`,
+        idempotencyKey: debitIdempotencyKey,
+        balanceType: balanceSource,
+        metadata: {
+          source: 'create-withdrawal-request',
+          withdrawal_id: withdrawalRecord.id,
+          source_order_id: withdrawalRecord.id,
+          source_order_table: 'crypto_withdrawals',
+          balance_source: balanceSource,
+          net_amount: netAmount,
+          fee_amount: feeAmount,
+          bank_code,
+          bank_name,
+          request_forensics: walletRequestForensics,
+        },
+      });
+    } catch (debitError: unknown) {
+      const errorMessage = debitError instanceof Error ? debitError.message : 'Wallet debit failed before provider dispatch';
       await supabaseAdmin
         .from('crypto_withdrawals')
-        .delete()
+        .update({
+          status: 'failed',
+          sagecloud_response: JSON.stringify({ error: errorMessage, stage: 'wallet_debit' }),
+        })
         .eq('id', withdrawalRecord.id);
-      throw new Error('Failed to deduct balance after multiple attempts. Please try again.');
+      throw debitError;
     }
 
     // Step 5: Process transfer via SageCloud
@@ -659,6 +714,45 @@ serve(async (req) => {
         })
         .eq('id', withdrawalRecord.id);
 
+      if (finalStatus === 'failed') {
+        await applyWalletTransaction(supabaseAdmin, {
+          userId: user.id,
+          type: 'refund',
+          amount: withdrawalAmount,
+          reference: `REFUND-${reference}`,
+          description: `Refund failed ${balanceSource} withdrawal to ${validatedAccountName}`,
+          idempotencyKey: `withdrawal:refund:${withdrawalRecord.id}:provider-returned-failed`,
+          balanceType: balanceSource,
+          metadata: {
+            source: 'create-withdrawal-request',
+            withdrawal_id: withdrawalRecord.id,
+            source_order_id: withdrawalRecord.id,
+            source_order_table: 'crypto_withdrawals',
+            original_reference: reference,
+            source_debit_transaction_id: debitResult?.transaction?.id || null,
+            source_debit_idempotency_key: debitIdempotencyKey,
+            balance_source: balanceSource,
+            reason: 'provider_returned_failed',
+            provider_status: transferResponse.status,
+            request_forensics: walletRequestForensics,
+          },
+        });
+
+        return new Response(
+          JSON.stringify({
+            success: false,
+            withdrawal_id: withdrawalRecord.id,
+            reference,
+            status: finalStatus,
+            error: 'Withdrawal failed. Your balance has been restored.',
+          }),
+          {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 200,
+          }
+        );
+      }
+
     } catch (transferError: unknown) {
       console.error('SageCloud transfer failed:', transferError instanceof Error ? transferError.message : 'Unknown transfer error');
       const errorMessage = transferError instanceof Error ? transferError.message : 'Unknown transfer error';
@@ -672,33 +766,29 @@ serve(async (req) => {
         })
         .eq('id', withdrawalRecord.id);
 
-      // Refund user's balance with optimistic locking
-      let refunded = false;
-      for (let attempt = 0; attempt < 5 && !refunded; attempt++) {
-        const { data: currentUserData } = await supabaseAdmin
-          .from('profiles')
-          .select(balanceColumn)
-          .eq('id', user.id)
-          .single();
-
-        const currentBal = parseFloat((currentUserData as any)?.[balanceColumn] || '0');
-        const refundedBalance = currentBal + withdrawalAmount;
-
-        const { data: refundData } = await supabaseAdmin
-          .from('profiles')
-          .update({ [balanceColumn]: refundedBalance })
-          .eq('id', user.id)
-          .eq(balanceColumn, currentBal)
-          .select()
-          .single();
-        
-        if (refundData) {
-          refunded = true;
-          console.log('Withdrawal refunded after provider failure.');
-        } else {
-          await new Promise(r => setTimeout(r, 100 * (attempt + 1)));
-        }
-      }
+      await applyWalletTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'refund',
+        amount: withdrawalAmount,
+        reference: `REFUND-${reference}`,
+        description: `Refund failed ${balanceSource} withdrawal to ${validatedAccountName}`,
+        idempotencyKey: `withdrawal:refund:${withdrawalRecord.id}`,
+        balanceType: balanceSource,
+        metadata: {
+          source: 'create-withdrawal-request',
+          withdrawal_id: withdrawalRecord.id,
+          source_order_id: withdrawalRecord.id,
+          source_order_table: 'crypto_withdrawals',
+          original_reference: reference,
+          source_debit_transaction_id: debitResult?.transaction?.id || null,
+          source_debit_idempotency_key: debitIdempotencyKey,
+          balance_source: balanceSource,
+          reason: 'provider_transfer_error',
+          error: errorMessage,
+          request_forensics: walletRequestForensics,
+        },
+      });
+      console.log('Withdrawal refunded after provider failure.');
 
       throw new Error(`Transfer failed: ${errorMessage}`);
     }

@@ -117,15 +117,16 @@ serve(async (req) => {
       }
     );
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('SMM Get Services Error:', error);
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message || 'An unexpected error occurred',
+        error: errorMessage,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: error.message === 'Unauthorized' ? 401 : 500,
+        status: errorMessage === 'Unauthorized' ? 401 : 500,
       }
     );
   }

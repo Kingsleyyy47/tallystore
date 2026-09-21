@@ -11,6 +11,40 @@
 
 import crypto from 'crypto'
 
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+}
+
+async function readRawBody(req: any): Promise<string> {
+  if (typeof req.body === 'string') return req.body
+  if (Buffer.isBuffer(req.body)) return req.body.toString('utf8')
+
+  const chunks: Buffer[] = []
+  try {
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    }
+  } catch {
+    // Some serverless adapters still provide a parsed body instead of a stream.
+  }
+
+  if (chunks.length > 0) return Buffer.concat(chunks).toString('utf8')
+  return req.body ? JSON.stringify(req.body) : ''
+}
+
+function parsePayload(rawBody: string, fallback: any) {
+  if (rawBody) {
+    try {
+      return JSON.parse(rawBody)
+    } catch {
+      return fallback
+    }
+  }
+  return fallback
+}
+
 function verifySignature(rawBody: string, signature: string | undefined, secret: string): boolean {
   if (!signature) return false
   const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
@@ -25,30 +59,29 @@ export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
 
   const webhookSecret = process.env.ISTAR_WEBHOOK_SECRET || ''
+  if (!webhookSecret) {
+    console.error('Missing ISTAR_WEBHOOK_SECRET')
+    return res.status(503).json({ error: 'Webhook is not configured' })
+  }
 
-  // Vercel parses JSON automatically; re-stringify to get the body for HMAC.
-  // Note: if signature keeps failing, disable verification (leave ISTAR_WEBHOOK_SECRET unset).
-  const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body)
+  const rawBody = await readRawBody(req)
 
-  // Verify signature if secret is configured
-  if (webhookSecret) {
-    const sig = req.headers['x-istar-signature']
-    if (!verifySignature(rawBody, sig, webhookSecret)) {
-      console.warn('⚠️  iStar webhook signature mismatch — processing anyway to avoid missed events')
-      // Don't hard-reject; log and continue so orders still get processed
-    }
+  const sig = req.headers['x-istar-signature']
+  if (!verifySignature(rawBody, sig, webhookSecret)) {
+    console.warn('iStar webhook signature mismatch')
+    return res.status(401).json({ error: 'Invalid webhook signature' })
   }
 
   const { createClient } = await import('@supabase/supabase-js')
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY
+  const supabaseUrl = process.env.SUPABASE_URL
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!supabaseUrl || !serviceRoleKey) {
     console.error('Missing Supabase env vars for iStar webhook')
     return res.status(500).json({ error: 'Server configuration error' })
   }
   const supabase = createClient(supabaseUrl, serviceRoleKey)
 
-  const payload = req.body
+  const payload = parsePayload(rawBody, req.body)
   const eventType = payload?.event_type || req.headers['x-istar-event'] || ''
   const istarOrderId = payload?.order?.id || ''
 
@@ -113,25 +146,34 @@ export default async function handler(req: any, res: any) {
         const refundRef = `REFUND-${order.reference}`
         const { data: existingTx } = await supabase.from('transactions').select('id, status').eq('reference', refundRef).maybeSingle()
         if (!existingTx) {
-          const { data: p } = await supabase.from('profiles').select('wallet_balance').eq('id', order.user_id).single()
-          if (p) {
-            const next = Number(p.wallet_balance || 0) + Number(order.price_ngn)
-            await supabase.from('profiles').update({ wallet_balance: next, updated_at: new Date().toISOString() }).eq('id', order.user_id)
-            await supabase.from('transactions').insert({
-              user_id: order.user_id,
-              type: 'refund',
-              amount: Number(order.price_ngn),
-              balance_after: next,
-              description: `Refund: Telegram ${order.order_type} order failed — ${reason}`,
-              reference: refundRef,
-              status: 'completed',
-            })
+          const { error: refundError } = await supabase.rpc('apply_wallet_transaction', {
+            p_user_id: order.user_id,
+            p_type: 'refund',
+            p_amount: Number(order.price_ngn),
+            p_reference: refundRef,
+            p_description: `Refund: Telegram ${order.order_type} order failed - ${reason}`,
+            p_idempotency_key: `istar:refund:${order.id}`,
+            p_metadata: {
+              source: 'webhook-istar',
+              source_order_id: order.id,
+              source_order_table: 'telegram_orders',
+              order_id: order.id,
+              original_reference: order.reference,
+            },
+            p_currency: 'NGN',
+            p_balance_type: 'wallet',
+            p_external_payment_id: null,
+            p_created_by: null,
+          })
+          if (!refundError) {
             await supabase.from('telegram_orders').update({
               refunded_at: new Date().toISOString(),
               refund_amount_ngn: order.price_ngn,
               refund_reference: refundRef,
             }).eq('id', order.id)
             console.log('💸 Refunded', order.price_ngn, 'NGN to user', order.user_id)
+          } else {
+            throw new Error(`Refund failed: ${refundError.message}`)
           }
         }
       }

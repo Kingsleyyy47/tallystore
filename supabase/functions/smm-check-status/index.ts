@@ -1,6 +1,37 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
+async function applyRefundTransaction(
+  supabaseAdmin: any,
+  params: {
+    userId: string
+    amount: number
+    reference: string
+    description: string
+    idempotencyKey: string
+    metadata?: Record<string, unknown>
+  },
+) {
+  const { data, error } = await supabaseAdmin.rpc('apply_wallet_transaction', {
+    p_user_id: params.userId,
+    p_type: 'refund',
+    p_amount: params.amount,
+    p_reference: params.reference,
+    p_description: params.description,
+    p_idempotency_key: params.idempotencyKey,
+    p_metadata: params.metadata || {},
+    p_currency: 'NGN',
+    p_balance_type: 'wallet',
+    p_external_payment_id: null,
+    p_created_by: null,
+  })
+
+  if (error) throw new Error(error.message || 'Wallet transaction failed')
+  const result = data as any
+  if (!result?.success) throw new Error(result?.error || 'Wallet transaction failed')
+  return result
+}
+
 // ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
 
 // ── smm-panel-client.ts ──
@@ -638,39 +669,23 @@ serve(async (req) => {
         .limit(1);
 
       if (!existingRefund || existingRefund.length === 0) {
-        // Get current wallet balance
-        const { data: userProfile } = await supabaseAdmin
-          .from('profiles')
-          .select('wallet_balance')
-          .eq('id', order.user_id)
-          .single();
+        await applyRefundTransaction(supabaseAdmin, {
+          userId: order.user_id,
+          amount: refundAmount,
+          reference: `REFUND-${order.reference}`,
+          description: refundMessage + `: ${order.reference}`,
+          idempotencyKey: `smm:refund:${order.id}:${newStatus}`,
+          metadata: {
+            source: 'smm-check-status',
+            source_order_id: order.id,
+            source_order_table: 'smm_orders',
+            order_id: order.id,
+            original_reference: order.reference,
+            new_status: newStatus,
+          },
+        });
 
-        if (userProfile) {
-          const currentWallet = parseFloat(userProfile.wallet_balance) || 0;
-          const refundedBalance = currentWallet + refundAmount;
-
-          // Credit wallet
-          await supabaseAdmin
-            .from('profiles')
-            .update({
-              wallet_balance: refundedBalance,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', order.user_id);
-
-          // Record refund transaction
-          await supabaseAdmin.from('transactions').insert({
-            user_id: order.user_id,
-            type: 'refund',
-            amount: refundAmount,
-            balance_after: refundedBalance,
-            description: refundMessage + `: ${order.reference}`,
-            reference: `REFUND-${order.reference}`,
-            status: 'completed',
-          });
-
-          console.log(`Auto-refunded SMM order after ${newStatus} status.`);
-        }
+        console.log(`Auto-refunded SMM order after ${newStatus} status.`);
       }
     }
 
@@ -719,15 +734,16 @@ serve(async (req) => {
       }
     );
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('SMM Check Status Error:', error);
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message || 'An unexpected error occurred',
+        error: errorMessage,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: error.message === 'Unauthorized' ? 401 : 400,
+        status: errorMessage === 'Unauthorized' ? 401 : 400,
       }
     );
   }

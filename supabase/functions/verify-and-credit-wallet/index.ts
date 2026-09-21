@@ -1,6 +1,42 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
+async function applyWalletTransaction(
+  supabaseAdmin: any,
+  params: {
+    userId: string
+    type: string
+    amount: number
+    reference?: string
+    description?: string
+    idempotencyKey?: string
+    metadata?: Record<string, unknown>
+    balanceType?: 'wallet' | 'crypto' | 'referral'
+    externalPaymentId?: string
+  },
+) {
+  const { data, error } = await supabaseAdmin.rpc('apply_wallet_transaction', {
+    p_user_id: params.userId,
+    p_type: params.type,
+    p_amount: params.amount,
+    p_reference: params.reference || null,
+    p_description: params.description || null,
+    p_idempotency_key: params.idempotencyKey || null,
+    p_metadata: params.metadata || {},
+    p_currency: 'NGN',
+    p_balance_type: params.balanceType || 'wallet',
+    p_external_payment_id: params.externalPaymentId || null,
+    p_created_by: null,
+  })
+
+  if (error) throw new Error(error.message || 'Wallet transaction failed')
+
+  const result = data as any
+  if (!result?.success) throw new Error(result?.error || 'Wallet transaction failed')
+
+  return result
+}
+
 // ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
 
 // ── revenue-events.ts ──
@@ -200,8 +236,26 @@ const corsHeaders = {
 
 const ERCASPAY_BASE_URL = 'https://api.ercaspay.com/api/v1';
 
+function cleanProviderIdentity(value: unknown) {
+  return typeof value === 'string' || typeof value === 'number'
+    ? String(value).trim()
+    : ''
+}
+
+function firstProviderIdentity(source: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const direct = cleanProviderIdentity(source[key])
+    if (direct) return direct
+  }
+  return ''
+}
+
+function normalizeProviderIdentity(value: string) {
+  return value.trim().toLowerCase()
+}
+
 async function recordRevenueEvent(
-  supabaseAdmin: ReturnType<typeof createClient>,
+  supabaseAdmin: any,
   input: {
     eventType: RevenueEventType;
     eventId: string;
@@ -232,7 +286,7 @@ async function recordRevenueEvent(
 // deposit amount (admin-configurable in app_settings, default 5%).
 // Non-blocking: any failure must never affect the top-up that already completed.
 async function creditReferrerForTopup(
-  supabaseAdmin: ReturnType<typeof createClient>,
+  supabaseAdmin: any,
   userId: string,
   amount: number
 ) {
@@ -275,20 +329,22 @@ async function creditReferrerForTopup(
     const commissionAmount = (amount * commissionPct) / 100;
     if (commissionAmount <= 0) return;
 
-    const { data: referrerProfile } = await supabaseAdmin
-      .from('profiles')
-      .select('referral_balance')
-      .eq('id', referrerId)
-      .single();
-
-    if (!referrerProfile) return;
-
-    const newReferralBalance = (referrerProfile.referral_balance || 0) + commissionAmount;
-
-    await supabaseAdmin
-      .from('profiles')
-      .update({ referral_balance: newReferralBalance })
-      .eq('id', referrerId);
+    await applyWalletTransaction(supabaseAdmin, {
+      userId: referrerId,
+      type: 'referral_credit',
+      amount: commissionAmount,
+      reference: `REF-${userId}-${depositCount}`,
+      description: `Referral commission from deposit #${depositCount}`,
+      idempotencyKey: `referral:${userId}:${depositCount}`,
+      balanceType: 'referral',
+      metadata: {
+        source: 'verify-and-credit-wallet',
+        referred_user_id: userId,
+        deposit_count: depositCount,
+        order_amount: amount,
+        commission_pct: commissionPct,
+      },
+    });
 
     await supabaseAdmin
       .from('referral_earnings')
@@ -304,6 +360,44 @@ async function creditReferrerForTopup(
   } catch (referralError) {
     console.error('⚠️ Referral top-up reward error (non-blocking):', referralError);
   }
+}
+
+async function markPendingPaymentVerificationRetry(
+  supabaseAdmin: any,
+  pendingPayment: { id: string; check_count?: number | null },
+  message: string
+) {
+  const { error } = await supabaseAdmin
+    .from('pending_payments')
+    .update({
+      status: 'pending',
+      last_check_at: new Date().toISOString(),
+      check_count: Number(pendingPayment.check_count || 0) + 1,
+      error_message: message,
+    })
+    .eq('id', pendingPayment.id)
+    .eq('status', 'pending');
+
+  if (error) throw new Error(`Failed to record payment verification retry: ${error.message}`);
+}
+
+async function markPendingPaymentVerificationFailed(
+  supabaseAdmin: any,
+  pendingPayment: { id: string; check_count?: number | null },
+  message: string
+) {
+  const { error } = await supabaseAdmin
+    .from('pending_payments')
+    .update({
+      status: 'failed',
+      last_check_at: new Date().toISOString(),
+      check_count: Number(pendingPayment.check_count || 0) + 1,
+      error_message: message,
+    })
+    .eq('id', pendingPayment.id)
+    .eq('status', 'pending');
+
+  if (error) throw new Error(`Failed to close failed payment evidence: ${error.message}`);
 }
 
 serve(async (req) => {
@@ -399,7 +493,8 @@ serve(async (req) => {
       await supabaseAdmin
         .from('pending_payments')
         .update({ status: 'credited', error_message: 'Already credited' })
-        .eq('transaction_reference', transaction_reference);
+        .eq('transaction_reference', transaction_reference)
+        .eq('user_id', userId);
       
       return new Response(
         JSON.stringify({
@@ -418,7 +513,7 @@ serve(async (req) => {
     // someone could submit another successful Ercas reference and claim credit.
     const { data: pendingPayment, error: pendingPaymentError } = await supabaseAdmin
       .from('pending_payments')
-      .select('id, user_id, amount, status')
+      .select('id, user_id, amount, status, check_count')
       .eq('transaction_reference', transaction_reference)
       .eq('user_id', userId)
       .maybeSingle();
@@ -455,25 +550,60 @@ serve(async (req) => {
     // STEP 2: Verify with Ercas Pay API
     const ercasSecretKey =
       Deno.env.get('ERCASPAY_SECRET_KEY') ||
-      Deno.env.get('ERCAS_SECRET_KEY') ||
-      Deno.env.get('VITE_ERCASPAY_SECRET_KEY') ||
-      Deno.env.get('VITE_ERCAS_SECRET_KEY');
+      Deno.env.get('ERCAS_SECRET_KEY');
     if (!ercasSecretKey) {
       throw new Error('Ercas Pay not configured');
     }
 
-    const verifyResponse = await fetch(
-      `${ERCASPAY_BASE_URL}/payment/transaction/verify/${transaction_reference}`,
-      {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': `Bearer ${ercasSecretKey}`,
-        },
-      }
-    );
+    const verifyController = new AbortController();
+    const verifyTimeout = setTimeout(() => verifyController.abort('ercas_verify_timeout'), 15000);
+    let verifyResult: any;
+    try {
+      const verifyResponse = await fetch(
+        `${ERCASPAY_BASE_URL}/payment/transaction/verify/${transaction_reference}`,
+        {
+          method: 'GET',
+          signal: verifyController.signal,
+          headers: {
+            'Accept': 'application/json',
+            'Authorization': `Bearer ${ercasSecretKey}`,
+          },
+        }
+      );
 
-    const verifyResult = await verifyResponse.json();
+      verifyResult = await verifyResponse.json();
+    } catch (verificationError) {
+      const errorMessage = verificationError instanceof Error ? verificationError.message : 'Payment verification request failed';
+      const retryMessage = `Payment verification retry required: ${errorMessage}`;
+      console.warn('⏳ Ercas verification unavailable; leaving payment pending for retry:', errorMessage);
+      await markPendingPaymentVerificationRetry(supabaseAdmin, pendingPayment, retryMessage);
+      await recordRevenueEvent(supabaseAdmin, {
+        eventType: 'PAYMENT_ATTEMPTED',
+        eventId: `wallet_topup:PAYMENT_VERIFICATION_RETRY:${transaction_reference}`,
+        userId,
+        surface: 'wallet_topup',
+        metadata: {
+          event_subtype: 'PAYMENT_VERIFICATION_RETRY',
+          transaction_reference,
+          ercas_reference,
+          provider: 'ercaspay',
+          error: errorMessage,
+          pending_payment_id: pendingPayment.id,
+        },
+      });
+      return new Response(
+        JSON.stringify({
+          success: false,
+          status: 'pending',
+          retryable: true,
+          error: 'Payment verification is temporarily unavailable. We will retry automatically.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 }
+      );
+    } finally {
+      clearTimeout(verifyTimeout);
+    }
+
     // Handle pending
     if (verifyResult.responseBody?.status === 'PENDING' || verifyResult.responseCode === 'pending') {
       console.log('⏳ Payment is still pending');
@@ -491,6 +621,7 @@ serve(async (req) => {
     if (!verifyResult.requestSuccessful && verifyResult.responseBody?.status !== 'SUCCESSFUL') {
       const errorMsg = verifyResult.errorMessage || verifyResult.responseMessage || 'Payment verification failed';
       console.error('❌ Verification failed:', errorMsg);
+      await markPendingPaymentVerificationFailed(supabaseAdmin, pendingPayment, errorMsg);
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
         eventId: `wallet_topup:PAYMENT_FAILED:${transaction_reference}`,
@@ -517,6 +648,11 @@ serve(async (req) => {
     const transaction = verifyResult.responseBody;
 
     if (transaction.status !== 'SUCCESSFUL') {
+      await markPendingPaymentVerificationFailed(
+        supabaseAdmin,
+        pendingPayment,
+        `Payment status: ${transaction.status}`
+      );
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
         eventId: `wallet_topup:PAYMENT_FAILED:${transaction_reference}`,
@@ -543,16 +679,37 @@ serve(async (req) => {
     const ercasRef = transaction.ercs_reference;
     const expectedAmount = Number(pendingPayment.amount);
     const verifiedAmount = Number(amount);
+    const providerCurrency = firstProviderIdentity(transaction, ['currency', 'currency_code', 'currencyCode']);
+    const providerMerchant = firstProviderIdentity(transaction, [
+      'merchant_id',
+      'merchantId',
+      'merchant',
+      'business_id',
+      'businessId',
+      'account_id',
+      'accountId',
+    ]);
+    const providerEnvironment = firstProviderIdentity(transaction, ['environment', 'env', 'mode']);
+    const expectedMerchant = cleanProviderIdentity(
+      Deno.env.get('ERCASPAY_MERCHANT_ID') ||
+      Deno.env.get('ERCAS_MERCHANT_ID') ||
+      Deno.env.get('ERCASPAY_BUSINESS_ID') ||
+      Deno.env.get('ERCAS_BUSINESS_ID')
+    );
+    const expectedEnvironment = cleanProviderIdentity(
+      Deno.env.get('ERCASPAY_ENVIRONMENT') ||
+      Deno.env.get('ERCAS_ENVIRONMENT') ||
+      Deno.env.get('ERCASPAY_MODE') ||
+      Deno.env.get('ERCAS_MODE')
+    );
 
     if (!Number.isFinite(expectedAmount) || !Number.isFinite(verifiedAmount) || Math.abs(expectedAmount - verifiedAmount) > 0.01) {
       console.error('❌ Payment amount mismatch during wallet verification.');
-      await supabaseAdmin
-        .from('pending_payments')
-        .update({
-          status: 'failed',
-          error_message: `Amount mismatch. Expected ${expectedAmount}, got ${verifiedAmount}`,
-        })
-        .eq('id', pendingPayment.id);
+      await markPendingPaymentVerificationFailed(
+        supabaseAdmin,
+        pendingPayment,
+        `Amount mismatch. Expected ${expectedAmount}, got ${verifiedAmount}`
+      );
 
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
@@ -579,157 +736,138 @@ serve(async (req) => {
       );
     }
 
-    // STEP 3: INSERT transaction record FIRST as the atomic lock
-    // The unique constraint on reference prevents double-crediting:
-    // If two concurrent requests both pass the idempotency check above,
-    // only ONE insert will succeed — the other hits unique constraint and fails.
-    // This is the ONLY reliable way to prevent race conditions.
-    
-    // Read current balance for the record
-    const { data: profile, error: profileError } = await supabaseAdmin
-      .from('profiles')
-      .select('wallet_balance')
-      .eq('id', userId)
-      .single();
+    if (providerCurrency && normalizeProviderIdentity(providerCurrency) !== 'ngn') {
+      console.error('❌ Payment currency mismatch during wallet verification.');
+      await markPendingPaymentVerificationFailed(
+        supabaseAdmin,
+        pendingPayment,
+        `Currency mismatch. Expected NGN, got ${providerCurrency}`
+      );
 
-    if (profileError || !profile) {
-      throw new Error('Failed to fetch wallet balance');
-    }
-
-    const currentBalance = parseFloat(profile.wallet_balance) || 0;
-    const newBalance = currentBalance + amount;
-
-    // Insert transaction first — if this fails due to unique constraint, another request already handled it
-    const { error: txError } = await supabaseAdmin
-      .from('transactions')
-      .insert({
-        user_id: userId,
-        type: 'topup',
-        amount: amount,
-        status: 'completed',
-        balance_after: newBalance,
-        description: 'Wallet top-up via Ercas Pay',
-        reference: transaction_reference,
-        ercas_reference: ercasRef,
+      await recordRevenueEvent(supabaseAdmin, {
+        eventType: 'PAYMENT_FAILED',
+        eventId: `wallet_topup:PAYMENT_FAILED:${transaction_reference}:currency_mismatch`,
+        userId,
+        surface: 'wallet_topup',
+        metadata: {
+          transaction_reference,
+          ercas_reference: ercasRef,
+          provider: 'ercaspay',
+          expected_currency: 'NGN',
+          verified_currency: providerCurrency,
+          error: 'currency_mismatch',
+        },
       });
 
-    if (txError) {
-      // Check if it's a unique constraint violation — means another request already processed this
-      if (txError.code === '23505') {
-      console.log('Transaction insert conflict: payment already processed by concurrent request.');
-        
-        // Fetch the existing transaction to return correct data
-        const { data: existingTx2 } = await supabaseAdmin
-          .from('transactions')
-          .select('amount, balance_after')
-          .eq('reference', transaction_reference)
-          .eq('user_id', userId)
-          .eq('type', 'topup')
-          .maybeSingle();
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            already_processed: true,
-            amount: existingTx2?.amount || amount,
-            new_balance: existingTx2?.balance_after || newBalance,
-            message: 'Payment already credited to wallet',
-          }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-      
-      console.error('❌ Failed to record transaction:', txError);
-      throw new Error('Failed to record transaction');
+      return new Response(
+        JSON.stringify({
+          success: false,
+          status: 'failed',
+          error: 'Payment currency did not match the created checkout.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 }
+      );
     }
 
-    // STEP 4: Transaction inserted successfully — now we're the ONLY request processing this.
-    // Update wallet balance safely.
-    const { data: updatedProfile, error: updateError } = await supabaseAdmin
-      .from('profiles')
-      .update({
-        wallet_balance: newBalance,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', userId)
-      .eq('wallet_balance', currentBalance)
-      .select('wallet_balance')
-      .single();
+    if (expectedMerchant && providerMerchant && normalizeProviderIdentity(providerMerchant) !== normalizeProviderIdentity(expectedMerchant)) {
+      console.error('❌ Payment merchant mismatch during wallet verification.');
+      await markPendingPaymentVerificationFailed(
+        supabaseAdmin,
+        pendingPayment,
+        'Merchant identity mismatch during provider verification.'
+      );
 
-    if (updateError || !updatedProfile) {
-      // Optimistic lock failed — balance changed between read and write.
-      // Re-read and apply the credit.
-      const { data: freshProfile } = await supabaseAdmin
-        .from('profiles')
-        .select('wallet_balance')
-        .eq('id', userId)
-        .single();
+      await recordRevenueEvent(supabaseAdmin, {
+        eventType: 'PAYMENT_FAILED',
+        eventId: `wallet_topup:PAYMENT_FAILED:${transaction_reference}:merchant_mismatch`,
+        userId,
+        surface: 'wallet_topup',
+        metadata: {
+          transaction_reference,
+          ercas_reference: ercasRef,
+          provider: 'ercaspay',
+          expected_merchant_hash: await sha256Hex(expectedMerchant),
+          verified_merchant_hash: await sha256Hex(providerMerchant),
+          error: 'merchant_mismatch',
+        },
+      });
 
-      if (freshProfile) {
-        const freshBalance = parseFloat(freshProfile.wallet_balance) || 0;
-        const retryBalance = freshBalance + amount;
-        
-        await supabaseAdmin
-          .from('profiles')
-          .update({
-            wallet_balance: retryBalance,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', userId);
-
-        // Update the transaction record with correct balance_after
-        await supabaseAdmin
-          .from('transactions')
-          .update({ balance_after: retryBalance })
-          .eq('reference', transaction_reference)
-          .eq('user_id', userId)
-          .eq('type', 'topup');
-
-        console.log('Wallet credited on retry path.');
-
-        await creditReferrerForTopup(supabaseAdmin, userId, amount);
-        await recordRevenueEvent(supabaseAdmin, {
-          eventType: 'PAYMENT_COMPLETED',
-          eventId: `wallet_topup:PAYMENT_COMPLETED:${transaction_reference}`,
-          userId,
-          surface: 'wallet_topup',
-          metadata: {
-            transaction_reference,
-            ercas_reference: ercasRef,
-            provider: 'ercaspay',
-            amount_ngn: amount,
-            balance_after: retryBalance,
-            credited_via: 'retry',
-          },
-        });
-
-        // Update pending_payment status
-        await supabaseAdmin
-          .from('pending_payments')
-          .update({ status: 'credited' })
-          .eq('transaction_reference', transaction_reference);
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            amount: amount,
-            new_balance: retryBalance,
-            message: `₦${amount.toLocaleString()} has been added to your wallet`,
-          }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
+      return new Response(
+        JSON.stringify({
+          success: false,
+          status: 'failed',
+          error: 'Payment merchant did not match TallyStore.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 }
+      );
     }
+
+    if (expectedEnvironment && providerEnvironment && normalizeProviderIdentity(providerEnvironment) !== normalizeProviderIdentity(expectedEnvironment)) {
+      console.error('❌ Payment environment mismatch during wallet verification.');
+      await markPendingPaymentVerificationFailed(
+        supabaseAdmin,
+        pendingPayment,
+        'Payment environment mismatch during provider verification.'
+      );
+
+      await recordRevenueEvent(supabaseAdmin, {
+        eventType: 'PAYMENT_FAILED',
+        eventId: `wallet_topup:PAYMENT_FAILED:${transaction_reference}:environment_mismatch`,
+        userId,
+        surface: 'wallet_topup',
+        metadata: {
+          transaction_reference,
+          ercas_reference: ercasRef,
+          provider: 'ercaspay',
+          expected_environment: expectedEnvironment,
+          verified_environment: providerEnvironment,
+          error: 'environment_mismatch',
+        },
+      });
+
+      return new Response(
+        JSON.stringify({
+          success: false,
+          status: 'failed',
+          error: 'Payment environment did not match TallyStore.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 }
+      );
+    }
+
+    const creditResult = await applyWalletTransaction(supabaseAdmin, {
+      userId,
+      type: 'topup',
+      amount: verifiedAmount,
+      reference: transaction_reference,
+      description: 'Wallet top-up via Ercas Pay',
+      idempotencyKey: `ercas:${transaction_reference}`,
+      externalPaymentId: ercasRef || transaction_reference,
+      metadata: {
+        source: 'verify-and-credit-wallet',
+        transaction_reference,
+        ercas_reference: ercasRef,
+        provider: 'ercaspay',
+        expected_amount_ngn: expectedAmount,
+        verified_amount_ngn: verifiedAmount,
+        verified_currency: providerCurrency || 'NGN',
+        merchant_identity_checked: Boolean(expectedMerchant && providerMerchant),
+        environment_checked: Boolean(expectedEnvironment && providerEnvironment),
+      },
+    });
+
+    const newBalance = Number(creditResult.balance_after ?? 0);
 
     // Update pending_payment status
     await supabaseAdmin
       .from('pending_payments')
       .update({ status: 'credited' })
-      .eq('transaction_reference', transaction_reference);
+      .eq('id', pendingPayment.id)
+      .eq('user_id', userId);
 
     console.log('Wallet credited.');
 
-    await creditReferrerForTopup(supabaseAdmin, userId, amount);
+    await creditReferrerForTopup(supabaseAdmin, userId, verifiedAmount);
     await recordRevenueEvent(supabaseAdmin, {
       eventType: 'PAYMENT_COMPLETED',
       eventId: `wallet_topup:PAYMENT_COMPLETED:${transaction_reference}`,
@@ -739,7 +877,7 @@ serve(async (req) => {
         transaction_reference,
         ercas_reference: ercasRef,
         provider: 'ercaspay',
-        amount_ngn: amount,
+        amount_ngn: verifiedAmount,
         balance_after: newBalance,
         credited_via: 'normal',
       },
@@ -748,9 +886,9 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: true,
-        amount: amount,
+        amount: verifiedAmount,
         new_balance: newBalance,
-        message: `₦${amount.toLocaleString()} has been added to your wallet`,
+        message: `₦${verifiedAmount.toLocaleString()} has been added to your wallet`,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

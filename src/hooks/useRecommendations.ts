@@ -41,7 +41,6 @@ export function useRecommendations({
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
-    let timer: ReturnType<typeof setTimeout>
 
     async function load() {
       if (cancelled) return
@@ -87,7 +86,7 @@ export function useRecommendations({
     }
 
     // Defer so it never competes with the primary page queries
-    timer = setTimeout(load, delayMs)
+    const timer = setTimeout(load, delayMs)
 
     return () => {
       cancelled = true

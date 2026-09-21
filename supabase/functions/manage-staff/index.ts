@@ -1,6 +1,39 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 
+async function applyWalletTransaction(
+  admin: any,
+  params: {
+    userId: string
+    type: string
+    amount: number
+    reference: string
+    description: string
+    idempotencyKey: string
+    metadata?: Record<string, unknown>
+    createdBy?: string
+  },
+) {
+  const { data, error } = await admin.rpc('apply_wallet_transaction', {
+    p_user_id: params.userId,
+    p_type: params.type,
+    p_amount: params.amount,
+    p_reference: params.reference,
+    p_description: params.description,
+    p_idempotency_key: params.idempotencyKey,
+    p_metadata: params.metadata || {},
+    p_currency: 'NGN',
+    p_balance_type: 'wallet',
+    p_external_payment_id: null,
+    p_created_by: params.createdBy || null,
+  })
+
+  if (error) throw new Error(error.message || 'Wallet transaction failed')
+  const result = data as any
+  if (!result?.success) throw new Error(result?.error || 'Wallet transaction failed')
+  return result
+}
+
 // ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
 
 // ── smtp-client.ts ──
@@ -310,7 +343,7 @@ const ADMIN_EMAIL = 'wisdomthedev@gmail.com'
 const DEFAULT_DAISY_BASE = 'https://daisysms.io/stubs/handler_api.php'
 const SMS_TERMINAL_STATUSES = ['completed', 'cancelled', 'failed', 'expired', 'refunded']
 
-type SupabaseAdmin = ReturnType<typeof createClient>
+type SupabaseAdmin = any
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -419,7 +452,7 @@ function normalizeEmail(value: unknown) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : ''
 }
 
-async function countPromotionConsentedCustomers(admin: ReturnType<typeof createClient>) {
+async function countPromotionConsentedCustomers(admin: any) {
   const batchSize = 1000
   let offset = 0
   let total = 0
@@ -489,7 +522,7 @@ function isDepositTransaction(row: any) {
   ].some((token) => value === token || value.includes(token)))
 }
 
-async function requireStaffReadPermission(admin: ReturnType<typeof createClient>, user: any, permissionKey: string) {
+async function requireStaffReadPermission(admin: any, user: any, permissionKey: string) {
   const { data: profile, error: profileError } = await admin
     .from('profiles')
     .select('id, email, is_admin, is_staff')
@@ -512,7 +545,7 @@ async function requireStaffReadPermission(admin: ReturnType<typeof createClient>
   return profile
 }
 
-async function getCustomerProfileMap(admin: ReturnType<typeof createClient>, rows: any[]) {
+async function getCustomerProfileMap(admin: any, rows: any[]) {
   const userIds = [...new Set(rows.map((row) => row?.user_id).filter(Boolean))]
   const map = new Map<string, any>()
   for (let i = 0; i < userIds.length; i += 500) {
@@ -545,7 +578,7 @@ function staffHistoryRow(source: string, row: any, profile: any, amount: number,
   }
 }
 
-async function readPagedRows(admin: ReturnType<typeof createClient>, table: string, maxRows = 50000) {
+async function readPagedRows(admin: any, table: string, maxRows = 50000) {
   const pageSize = 1000
   const rows: any[] = []
 
@@ -564,7 +597,7 @@ async function readPagedRows(admin: ReturnType<typeof createClient>, table: stri
   return { rows, capped: rows.length >= maxRows, maxRows }
 }
 
-async function handleStaffDepositHistory(admin: ReturnType<typeof createClient>, user: any) {
+async function handleStaffDepositHistory(admin: any, user: any) {
   await requireStaffReadPermission(admin, user, 'tab_transactions')
   const { rows: data, capped, maxRows } = await readPagedRows(admin, 'transactions')
 
@@ -588,7 +621,7 @@ async function handleStaffDepositHistory(admin: ReturnType<typeof createClient>,
   })
 }
 
-async function handleStaffSalesHistory(admin: ReturnType<typeof createClient>, user: any) {
+async function handleStaffSalesHistory(admin: any, user: any) {
   await requireStaffReadPermission(admin, user, 'tab_sales')
   const cappedSources: string[] = []
   let cappedMaxRows = 0
@@ -625,7 +658,7 @@ async function handleStaffSalesHistory(admin: ReturnType<typeof createClient>, u
 
   const allRows = [...orders, ...smsOrders, ...cryptoRows, ...cryptoWithdrawalRows, ...billsRows, ...giftRows, ...socialRows]
   const profiles = await getCustomerProfileMap(admin, allRows)
-  const smmServiceById = new Map((smmServices || []).map((service: any) => [String(service.id), service]))
+  const smmServiceById = new Map<string, any>((smmServices || []).map((service: any) => [String(service.id), service]))
   const rows = [
     ...orders.filter((row) => isCompletedStatus(row.status) && profiles.has(row.user_id)).map((row) => {
       const details = row.account_details || {}
@@ -662,7 +695,7 @@ async function handleStaffSalesHistory(admin: ReturnType<typeof createClient>, u
   })
 }
 
-async function readLimitedRows(admin: ReturnType<typeof createClient>, table: string, limit = 8) {
+async function readLimitedRows(admin: any, table: string, limit = 8) {
   const { data, error } = await admin
     .from(table)
     .select('*')
@@ -674,7 +707,7 @@ async function readLimitedRows(admin: ReturnType<typeof createClient>, table: st
   return { rows: data || [], error: '' }
 }
 
-async function handleStaffRevenueOsSnapshot(admin: ReturnType<typeof createClient>, user: any) {
+async function handleStaffRevenueOsSnapshot(admin: any, user: any) {
   await requireStaffReadPermission(admin, user, 'tab_revenue_os')
 
   const settingKeys = [
@@ -743,7 +776,7 @@ async function daisyCancelNumber(activationId: string) {
   if (!res.ok) throw new Error(`DaisySMS cancel failed with HTTP ${res.status}`)
 }
 
-async function updateProductGroupStock(admin: ReturnType<typeof createClient>, productGroupId: string) {
+async function updateProductGroupStock(admin: any, productGroupId: string) {
   const { count, error } = await admin
     .from('individual_accounts')
     .select('*', { count: 'exact', head: true })
@@ -855,7 +888,7 @@ function normalizeStaffBulkRow(input: Record<string, any>) {
   return row
 }
 
-async function applyAccountPendingAction(admin: ReturnType<typeof createClient>, pendingAction: any) {
+async function applyAccountPendingAction(admin: any, pendingAction: any) {
   const action = pendingAction.action_type
   const d = pendingAction.action_data || {}
   const now = new Date().toISOString()
@@ -940,7 +973,7 @@ async function applyAccountPendingAction(admin: ReturnType<typeof createClient>,
   throw new Error('Unsupported account action type')
 }
 
-async function refundSmsOrderWallet(admin: ReturnType<typeof createClient>, order: any, reason: string) {
+async function refundSmsOrderWallet(admin: any, order: any, reason: string, metadata: Record<string, unknown> = {}) {
   const amount = Number(order?.price_ngn || 0)
   if (!order?.id || !order?.user_id || amount <= 0) return { refunded: true, amount: 0 }
 
@@ -955,64 +988,43 @@ async function refundSmsOrderWallet(admin: ReturnType<typeof createClient>, orde
     return { refunded: true, amount, reference: currentOrder.refund_reference, alreadyRefunded: true }
   }
 
-  const { data: existingTx } = await admin
-    .from('transactions')
-    .select('id, status')
-    .eq('reference', refundRef)
-    .maybeSingle()
-
-  if (existingTx?.status === 'completed') {
-    await admin
-      .from('sms_orders')
-      .update({ refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef })
-      .eq('id', order.id)
-      .is('refunded_at', null)
-    await recordSmsRefundRevenueEvents(admin, order, amount, refundRef, reason, true)
-    return { refunded: true, amount, reference: refundRef, alreadyRefunded: true }
-  }
-
-  const tx = existingTx || (await admin.from('transactions').insert({
-    user_id: order.user_id,
+  await applyWalletTransaction(admin, {
+    userId: order.user_id,
     type: 'refund',
     amount,
-    balance_after: 0,
-    description: reason,
     reference: refundRef,
-    status: 'pending',
-  }).select('id, status').single()).data
-  if (!tx) throw new Error('Refund transaction could not be created')
+    description: reason,
+    idempotencyKey: `staff:sms-refund:${order.id}`,
+    metadata: {
+      ...metadata,
+      source: 'manage-staff',
+      source_order_id: order.id,
+      source_order_table: 'sms_orders',
+      order_id: order.id,
+      original_reference: order.reference || null,
+    },
+  })
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const { data: profile } = await admin.from('profiles').select('wallet_balance').eq('id', order.user_id).single()
-    if (!profile) break
-    const currentBalance = Number(profile.wallet_balance || 0)
-    const nextBalance = currentBalance + amount
-    const { data: updated } = await admin
-      .from('profiles')
-      .update({ wallet_balance: nextBalance, updated_at: new Date().toISOString() })
-      .eq('id', order.user_id)
-      .eq('wallet_balance', currentBalance)
-      .select('wallet_balance')
-      .single()
-
-    if (updated) {
-      await admin.from('transactions').update({ status: 'completed', balance_after: nextBalance }).eq('id', tx.id)
-      await admin
-        .from('sms_orders')
-        .update({ refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef })
-        .eq('id', order.id)
-        .is('refunded_at', null)
-      await recordSmsRefundRevenueEvents(admin, order, amount, refundRef, reason)
-      return { refunded: true, amount, reference: refundRef }
-    }
-  }
-
-  throw new Error('Refund could not be credited')
+  await admin
+    .from('sms_orders')
+    .update({ refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef })
+    .eq('id', order.id)
+    .is('refunded_at', null)
+  await recordSmsRefundRevenueEvents(admin, order, amount, refundRef, reason)
+  return { refunded: true, amount, reference: refundRef }
 }
 
-async function applySmsPendingAction(admin: ReturnType<typeof createClient>, pendingAction: any) {
+async function applySmsPendingAction(admin: any, pendingAction: any) {
   const d = pendingAction.action_data || {}
   const now = new Date().toISOString()
+  const approvingAdminId = pendingAction.reviewed_by || pendingAction.admin_id || null
+  const approvalMetadata = {
+    approved_by: approvingAdminId,
+    staff_id: pendingAction.staff_id || null,
+    staff_email: pendingAction.staff_email || null,
+    pending_action_id: pendingAction.id || null,
+    pending_action_type: pendingAction.action_type || null,
+  }
 
   if (pendingAction.action_type === 'sms_update_product') {
     const serviceCode = String(d.service_code || '').trim()
@@ -1096,7 +1108,12 @@ async function applySmsPendingAction(admin: ReturnType<typeof createClient>, pen
       if (updateError) throw new Error(updateError.message)
     }
 
-    await refundSmsOrderWallet(admin, order, `Approved staff refund for cancelled SMS order: ${order.reference || order.id}`)
+    await refundSmsOrderWallet(
+      admin,
+      order,
+      `Approved staff refund for cancelled SMS order: ${order.reference || order.id}`,
+      approvalMetadata,
+    )
     return
   }
 
@@ -1117,7 +1134,12 @@ async function applySmsPendingAction(admin: ReturnType<typeof createClient>, pen
           try { await daisyCancelNumber(String(order.provider_request_id)) } catch { /* keep local cancellation moving */ }
         }
         await admin.from('sms_orders').update({ status: 'cancelled', cancelled_at: now }).eq('id', order.id)
-        await refundSmsOrderWallet(admin, order, `Approved staff auto-refund for stale SMS order: ${order.reference || order.id}`)
+        await refundSmsOrderWallet(
+          admin,
+          order,
+          `Approved staff auto-refund for stale SMS order: ${order.reference || order.id}`,
+          approvalMetadata,
+        )
         cancelled += 1
       } catch {
         // Skip individual failures so one stale order does not block the batch.
@@ -1219,7 +1241,7 @@ function sanitizeAllowedStaffSettingValue(permissionKey: string, key: string, ra
   return value
 }
 
-async function applyStaffAction(admin: ReturnType<typeof createClient>, pendingAction: any) {
+async function applyStaffAction(admin: any, pendingAction: any) {
   requireAllowedStaffAction(pendingAction)
   const permissionKey = String(pendingAction.permission_key || '').trim()
   const action = String(pendingAction.action_type || '')
@@ -1317,7 +1339,7 @@ async function applyStaffAction(admin: ReturnType<typeof createClient>, pendingA
     const subject = String(d.subject || '').trim()
     const message = String(d.message || '').trim()
     const recipients = Array.isArray(d.recipients)
-      ? Array.from(new Set(d.recipients.map(normalizeEmail).filter(Boolean)))
+      ? Array.from(new Set<string>(d.recipients.map(normalizeEmail).filter(Boolean)))
       : []
     if (!subject || !message || recipients.length === 0) throw new Error('Subject, message, and recipients are required')
 
@@ -1478,48 +1500,38 @@ async function applyStaffAction(admin: ReturnType<typeof createClient>, pendingA
     const currentBalance = Number(profile.wallet_balance) || 0
     const newBal = currentBalance + amount
     if (newBal < 0) throw new Error('Balance cannot go below zero')
-    const transactionType = amount > 0 ? 'staff_credit' : 'staff_debit'
-    const { data: transactionRow, error: txError } = await admin.from('transactions').insert({
-      user_id: userId,
+    const transactionType = amount > 0 ? 'admin_credit' : 'admin_debit'
+    const reference = `STAFF-ADJ-${crypto.randomUUID().slice(0, 8).toUpperCase()}`
+    const approvingAdminId = pendingAction.reviewed_by || pendingAction.admin_id || null
+    if (amount > 0 && !approvingAdminId) {
+      throw new Error('Admin approval is required before staff balance credits can become spendable')
+    }
+    const result = await applyWalletTransaction(admin, {
+      userId,
       type: transactionType,
       amount: Math.abs(amount),
-      status: 'pending',
-      balance_after: currentBalance,
-      description: `Staff adjustment by ${pendingAction.staff_email || pendingAction.staff_id}: ${reason}`,
-      reference: `STAFF-ADJ-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
-    }).select('id').single()
-    if (txError || !transactionRow) throw new Error(txError?.message || 'Could not create adjustment ledger entry')
-
-    const { error: updateError } = await admin
-      .from('profiles')
-      .update({ wallet_balance: newBal })
-      .eq('id', userId)
-      .eq('wallet_balance', currentBalance)
-    if (updateError) {
-      await admin.from('transactions').update({ status: 'failed' }).eq('id', transactionRow.id)
-      throw new Error(updateError.message)
-    }
-
-    const { error: completeError } = await admin
-      .from('transactions')
-      .update({ status: 'completed', balance_after: newBal })
-      .eq('id', transactionRow.id)
-    if (completeError) {
-      await admin
-        .from('profiles')
-        .update({ wallet_balance: currentBalance })
-        .eq('id', userId)
-        .eq('wallet_balance', newBal)
-      await admin.from('transactions').update({ status: 'failed' }).eq('id', transactionRow.id)
-      throw new Error(`Balance adjustment rolled back because the ledger could not be completed: ${completeError.message}`)
-    }
-    return { balance_after: newBal }
+      reference,
+      description: `Admin-approved staff adjustment by ${pendingAction.staff_email || pendingAction.staff_id}: ${reason}`,
+      idempotencyKey: `staff-adjust:${pendingAction.id || reference}`,
+      createdBy: approvingAdminId || pendingAction.staff_id || undefined,
+      metadata: {
+        source: 'manage-staff',
+        staff_id: pendingAction.staff_id || null,
+        staff_email: pendingAction.staff_email || null,
+        approved_by: approvingAdminId,
+        approval_type: 'staff_action_review',
+        approval_reference: pendingAction.id || reference,
+        reason,
+        requested_adjustment_amount: amount,
+      },
+    })
+    return { balance_after: Number(result.balance_after ?? newBal) }
   }
 
   throw new Error('Unsupported action type')
 }
 
-async function submitStaffAction(admin: ReturnType<typeof createClient>, user: any, body: Record<string, any>) {
+async function submitStaffAction(admin: any, user: any, body: Record<string, any>) {
   const permissionKey = String(body.permission_key || '').trim()
   const actionType = String(body.action_type || '').trim()
   const actionLabel = String(body.action_label || actionType).trim()
@@ -1556,6 +1568,10 @@ async function submitStaffAction(admin: ReturnType<typeof createClient>, user: a
     autoApprove = permission.auto_approve !== false
   }
 
+  if (!isAdmin && actionType === 'adjust_balance') {
+    autoApprove = false
+  }
+
   const pendingRow = {
     staff_id: user.id,
     staff_email: user.email,
@@ -1571,13 +1587,14 @@ async function submitStaffAction(admin: ReturnType<typeof createClient>, user: a
     return json({ success: true, queued: true, applied: false })
   }
 
-  const result = await applyStaffAction(admin, pendingRow)
-  const { error: auditError } = await admin.from('staff_pending_actions').insert({
+  const approvedPendingRow = {
     ...pendingRow,
     status: 'approved',
     reviewed_at: new Date().toISOString(),
     reviewed_by: user.id,
-  })
+  }
+  const result = await applyStaffAction(admin, approvedPendingRow)
+  const { error: auditError } = await admin.from('staff_pending_actions').insert(approvedPendingRow)
   if (auditError) console.error('staff action audit insert failed:', auditError.message)
 
   return json({ success: true, queued: false, applied: true, ...result })
@@ -1643,10 +1660,11 @@ serve(async (req) => {
     if (action === 'grant_staff' || action === 'revoke_staff') {
       const { user_id } = body
       if (!user_id) return json({ error: 'user_id required' }, 400)
-      const { error } = await admin
-        .from('profiles')
-        .update({ is_staff: action === 'grant_staff' })
-        .eq('id', user_id)
+      const { error } = await admin.rpc('set_staff_role', {
+        p_target_user_id: user_id,
+        p_is_staff: action === 'grant_staff',
+        p_actor_id: user.id,
+      })
       if (error) return json({ error: error.message }, 500)
       return json({ success: true })
     }

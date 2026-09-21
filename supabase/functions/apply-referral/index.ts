@@ -18,10 +18,6 @@ function json(body: unknown, status = 200) {
   })
 }
 
-function generateReferralCode(userId: string): string {
-  return userId.replace(/-/g, '').substring(0, 8).toUpperCase()
-}
-
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -56,49 +52,17 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     )
 
-    const ownCode = generateReferralCode(userId)
-    const update: Record<string, any> = { referral_code: ownCode }
-
-    if (referralCodeInput) {
-      const cleanCode = referralCodeInput.toUpperCase()
-
-      // Don't let someone refer themselves
-      if (cleanCode !== ownCode) {
-        // Only set referred_by if this profile doesn't already have one -
-        // this function could in theory be called more than once for the
-        // same user, and we don't want a second call to overwrite a
-        // legitimate earlier referral attribution.
-        const { data: existingProfile } = await supabaseAdmin
-          .from('profiles')
-          .select('referred_by')
-          .eq('id', userId)
-          .maybeSingle()
-
-        if (!existingProfile?.referred_by) {
-          const { data: referrer } = await supabaseAdmin
-            .from('profiles')
-            .select('id')
-            .eq('referral_code', cleanCode)
-            .maybeSingle()
-
-          if (referrer) {
-            update.referred_by = referrer.id
-          }
-        }
-      }
-    }
-
-    const { error: updateError } = await supabaseAdmin
-      .from('profiles')
-      .update(update)
-      .eq('id', userId)
+    const { data: result, error: updateError } = await supabaseAdmin.rpc('apply_profile_referral_attribution', {
+      p_user_id: userId,
+      p_referral_code_input: referralCodeInput || null,
+    })
 
     if (updateError) {
       console.error('apply-referral update error:', updateError)
       return json({ success: false, error: updateError.message }, 500)
     }
 
-    return json({ success: true, referralCode: ownCode, referredBy: update.referred_by ?? null })
+    return json(result || { success: true })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to apply referral'
     console.error('apply-referral error:', message)

@@ -33,7 +33,7 @@ export default function ReferralWithdrawal() {
           </div>
           <h2 className="text-xl font-bold text-gray-800">Coming Soon</h2>
           <p className="text-sm text-gray-600 leading-relaxed">
-            Bank withdrawals for referral earnings are not yet available. In the meantime, you can move your referral balance directly to your Naira wallet and use it to buy anything on TallyStore.
+            Referral balance movement is temporarily paused during wallet security review. You can still view referral activity; withdrawals will return after review.
           </p>
           <Button
             className="w-full mt-2"

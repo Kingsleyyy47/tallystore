@@ -73,12 +73,8 @@ serve(async (req) => {
     // what goes in the Authorization header below.
     const pocketfiToken =
       Deno.env.get('POCKETFI_PUBLIC_KEY') ||
-      Deno.env.get('POCKETFI_API_TOKEN') ||
-      Deno.env.get('VITE_POCKETFI_API_TOKEN') ||
-      Deno.env.get('VITE_POCKETFI_PUBLIC_KEY')
-    const pocketfiBusinessId =
-      Deno.env.get('POCKETFI_BUSINESS_ID') ||
-      Deno.env.get('VITE_POCKETFI_BUSINESS_ID')
+      Deno.env.get('POCKETFI_API_TOKEN')
+    const pocketfiBusinessId = Deno.env.get('POCKETFI_BUSINESS_ID')
     if (!pocketfiToken || !pocketfiBusinessId) {
       throw new Error('Bank transfer top-up is temporarily unavailable.')
     }
@@ -87,7 +83,6 @@ serve(async (req) => {
     // this function had the wrong default, which was part of why every call failed.
     const pocketfiBaseUrl =
       Deno.env.get('POCKETFI_BASE_URL') ||
-      Deno.env.get('VITE_POCKETFI_BASE_URL') ||
       'https://api.pocketfi.ng/api/v1'
 
     const supabaseAdmin = createClient(
@@ -190,15 +185,17 @@ serve(async (req) => {
     const accountName = String(bankEntry.accountName || `${first} ${last}`)
     const bankName = String(bankEntry.bankName || 'palmpay')
 
-    await supabaseAdmin
-      .from('profiles')
-      .update({
-        pocketfi_account_number: accountNumber,
-        pocketfi_account_name: accountName,
-        pocketfi_bank: bankName,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', user.id)
+    const { error: saveAccountError } = await supabaseAdmin.rpc('set_customer_pocketfi_account', {
+      p_user_id: user.id,
+      p_account_number: accountNumber,
+      p_account_name: accountName,
+      p_bank: bankName,
+    })
+
+    if (saveAccountError) {
+      console.error('Failed to save PocketFi account:', JSON.stringify(saveAccountError))
+      throw new Error('Bank account was created, but could not be saved. Contact support before creating another account.')
+    }
 
     return json({
       success: true,

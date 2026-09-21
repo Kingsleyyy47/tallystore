@@ -113,7 +113,7 @@ function GiftCardsEsimsInner() {
   const { formatPrice } = useCurrency();
 
   const [walletBalance, setWalletBalance] = useState<number>(0);
-  const paymentSource: 'wallet' = 'wallet';
+  const paymentSource = 'wallet' as const;
   const [loadingBalance, setLoadingBalance] = useState(true);
 
   const [searchQuery, setSearchQuery] = useState('');

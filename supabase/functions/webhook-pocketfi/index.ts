@@ -1,6 +1,42 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 
+async function applyWalletTransaction(
+  supabaseAdmin: any,
+  params: {
+    userId: string
+    type: string
+    amount: number
+    reference?: string
+    description?: string
+    idempotencyKey?: string
+    metadata?: Record<string, unknown>
+    balanceType?: 'wallet' | 'crypto' | 'referral'
+    externalPaymentId?: string
+  },
+) {
+  const { data, error } = await supabaseAdmin.rpc('apply_wallet_transaction', {
+    p_user_id: params.userId,
+    p_type: params.type,
+    p_amount: params.amount,
+    p_reference: params.reference || null,
+    p_description: params.description || null,
+    p_idempotency_key: params.idempotencyKey || null,
+    p_metadata: params.metadata || {},
+    p_currency: 'NGN',
+    p_balance_type: params.balanceType || 'wallet',
+    p_external_payment_id: params.externalPaymentId || null,
+    p_created_by: null,
+  })
+
+  if (error) throw new Error(error.message || 'Wallet transaction failed')
+
+  const result = data as any
+  if (!result?.success) throw new Error(result?.error || 'Wallet transaction failed')
+
+  return result
+}
+
 // ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
 
 // ── revenue-events.ts ──
@@ -302,7 +338,7 @@ async function verifyPocketFiWebhook(req: Request, rawBody: string) {
 }
 
 async function recordRevenueEvent(
-  supabaseAdmin: ReturnType<typeof createClient>,
+  supabaseAdmin: any,
   input: {
     eventType: RevenueEventType
     eventId: string
@@ -389,7 +425,7 @@ function extractStatus(payload: any): string {
 // deposit amount (admin-configurable in app_settings, default 5%).
 // Non-blocking: any failure must never affect the top-up that already completed.
 async function creditReferrerForTopup(
-  supabaseAdmin: ReturnType<typeof createClient>,
+  supabaseAdmin: any,
   userId: string,
   amount: number,
 ) {
@@ -432,20 +468,22 @@ async function creditReferrerForTopup(
     const commissionAmount = (amount * commissionPct) / 100
     if (commissionAmount <= 0) return
 
-    const { data: referrerProfile } = await supabaseAdmin
-      .from('profiles')
-      .select('referral_balance')
-      .eq('id', referrerId)
-      .single()
-
-    if (!referrerProfile) return
-
-    const newReferralBalance = (referrerProfile.referral_balance || 0) + commissionAmount
-
-    await supabaseAdmin
-      .from('profiles')
-      .update({ referral_balance: newReferralBalance })
-      .eq('id', referrerId)
+    await applyWalletTransaction(supabaseAdmin, {
+      userId: referrerId,
+      type: 'referral_credit',
+      amount: commissionAmount,
+      reference: `REF-${userId}-${depositCount}`,
+      description: `Referral commission from deposit #${depositCount}`,
+      idempotencyKey: `referral:${userId}:${depositCount}`,
+      balanceType: 'referral',
+      metadata: {
+        source: 'webhook-pocketfi',
+        referred_user_id: userId,
+        deposit_count: depositCount,
+        order_amount: amount,
+        commission_pct: commissionPct,
+      },
+    })
 
     await supabaseAdmin
       .from('referral_earnings')
@@ -499,14 +537,17 @@ serve(async (req) => {
       .insert({
         raw_payload: payload,
         matched_account_number: accountNumber || null,
+        verified_amount_ngn: Number.isFinite(amount) && amount > 0 ? amount : null,
+        verified_reference: reference || null,
+        verified_status: status || null,
       })
       .select('id')
       .single()
 
-    if (!accountNumber || !amount || !reference) {
+    if (!accountNumber || !Number.isFinite(amount) || amount <= 0 || !reference) {
       const message = !reference
         ? 'Missing transaction reference in PocketFi webhook payload. Payment logged for manual review and not credited.'
-        : 'Missing account number or amount in PocketFi webhook payload'
+        : 'Missing account number or valid positive amount in PocketFi webhook payload'
       console.error(message)
       if (logRow) {
         await supabase.from('pocketfi_webhook_logs').update({ error_message: message }).eq('id', logRow.id)
@@ -563,6 +604,23 @@ serve(async (req) => {
 
       if (!partnerResponse.ok) {
         const message = partnerResult?.error || partnerResult?.message || `Partner checkout confirmation failed: ${partnerResponse.status}`
+        if (partnerResponse.status === 503 && partnerResult?.code === 'PARTNER_API_PAUSED') {
+          console.error(message)
+          if (logRow) {
+            await supabase
+              .from('pocketfi_webhook_logs')
+              .update({
+                processed: false,
+                error_message: 'Partner payment received while Partner API is paused; manual review required.',
+              })
+              .eq('id', logRow.id)
+          }
+          return json({
+            success: false,
+            message: 'Partner payment received while Partner API is paused; manual review required.',
+            code: 'PARTNER_API_PAUSED',
+          })
+        }
         console.error(message)
         if (logRow) {
           await supabase.from('pocketfi_webhook_logs').update({ error_message: message }).eq('id', logRow.id)
@@ -589,7 +647,7 @@ serve(async (req) => {
 
     const { data: profile } = await supabase
       .from('profiles')
-      .select('id, wallet_balance, is_staff, is_admin')
+      .select('id, is_staff, is_admin')
       .eq('pocketfi_account_number', accountNumber)
       .maybeSingle()
 
@@ -613,82 +671,103 @@ serve(async (req) => {
 
     const userId = profile.id
 
+    if (logRow) {
+      await supabase
+        .from('pocketfi_webhook_logs')
+        .update({
+          matched_user_id: userId,
+          verified_amount_ngn: amount,
+          verified_reference: reference,
+          verified_status: status || 'success',
+        })
+        .eq('id', logRow.id)
+    }
+
     const { data: existingTransaction } = await supabase
       .from('transactions')
-      .select('id')
+      .select('id, user_id, amount, balance_after')
       .eq('reference', reference)
       .eq('type', 'topup')
       .maybeSingle()
 
     if (existingTransaction) {
-      console.log('PocketFi transaction already processed.')
-      return json({ message: 'Transaction already processed' })
-    }
-
-    const currentBalance = Number(profile.wallet_balance || 0)
-    const newBalance = currentBalance + amount
-
-    const { error: transactionError } = await supabase
-      .from('transactions')
-      .insert([{
-        user_id: userId,
-        type: 'topup',
-        amount,
-        status: 'completed',
-        balance_after: newBalance,
-        description: `Wallet top-up via PocketFi bank transfer (${accountNumber})`,
-        reference,
-      }])
-
-    if (transactionError) {
-      if (transactionError.code === '23505') {
-        console.log('PocketFi transaction insert conflict, already processed.')
-        return json({ message: 'Transaction already processed' })
+      const existingAmount = Math.abs(Number(existingTransaction.amount || 0))
+      if (existingTransaction.user_id !== userId || Math.round(existingAmount * 100) !== Math.round(amount * 100)) {
+        const message = 'PocketFi duplicate reference conflict: existing credit does not match webhook account or amount'
+        console.error(message)
+        if (logRow) {
+          await supabase
+            .from('pocketfi_webhook_logs')
+            .update({
+              processed: false,
+              matched_user_id: userId,
+              verified_amount_ngn: amount,
+              verified_reference: reference,
+              verified_status: status || 'success',
+              error_message: message,
+            })
+            .eq('id', logRow.id)
+        }
+        return json({ error: message, code: 'POCKETFI_REFERENCE_CONFLICT' }, 409)
       }
-      throw new Error(`Failed to record transaction: ${transactionError.message}`)
-    }
 
-    const { data: updatedProfile, error: balanceError } = await supabase
-      .from('profiles')
-      .update({
-        wallet_balance: newBalance,
-        updated_at: new Date().toISOString(),
+      console.log('PocketFi transaction already processed.')
+      if (logRow) {
+        await supabase
+          .from('pocketfi_webhook_logs')
+          .update({
+            processed: true,
+            matched_user_id: userId,
+            verified_amount_ngn: existingAmount,
+            verified_reference: reference,
+            verified_status: status || 'success',
+            error_message: 'Duplicate webhook for already credited PocketFi transaction.',
+          })
+          .eq('id', logRow.id)
+      }
+      return json({
+        success: true,
+        already_processed: true,
+        message: 'Transaction already processed',
+        data: {
+          user_id: userId,
+          amount: existingAmount,
+          new_balance: Number(existingTransaction.balance_after || 0),
+          reference,
+        },
       })
-      .eq('id', userId)
-      .eq('wallet_balance', currentBalance)
-      .select('wallet_balance')
-      .single()
-
-    let finalBalance = newBalance
-    if (balanceError || !updatedProfile) {
-      const { data: freshProfile } = await supabase
-        .from('profiles')
-        .select('wallet_balance')
-        .eq('id', userId)
-        .single()
-
-      if (!freshProfile) throw new Error(`Failed to update wallet: ${balanceError?.message || 'profile not found'}`)
-      finalBalance = Number(freshProfile.wallet_balance || 0) + amount
-      const { error: retryError } = await supabase
-        .from('profiles')
-        .update({
-          wallet_balance: finalBalance,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', userId)
-      if (retryError) throw new Error(`Failed to update wallet: ${retryError.message}`)
-
-      await supabase
-        .from('transactions')
-        .update({ balance_after: finalBalance })
-        .eq('reference', reference)
-        .eq('user_id', userId)
     }
+
+    const creditResult = await applyWalletTransaction(supabase, {
+      userId,
+      type: 'topup',
+      amount,
+      reference,
+      description: `Wallet top-up via PocketFi bank transfer (${accountNumber})`,
+      idempotencyKey: `pocketfi:${reference}`,
+      externalPaymentId: reference,
+      metadata: {
+        source: 'webhook-pocketfi',
+        provider: 'pocketfi',
+        account_number: accountNumber,
+        verified_amount_ngn: amount,
+        verified_reference: reference,
+        webhook_log_id: logRow?.id || null,
+      },
+    })
+
+    const finalBalance = Number(creditResult.balance_after ?? 0)
 
     if (logRow) {
       await supabase
         .from('pocketfi_webhook_logs')
-        .update({ processed: true, matched_user_id: userId })
+        .update({
+          processed: true,
+          matched_user_id: userId,
+          verified_amount_ngn: amount,
+          verified_reference: reference,
+          verified_status: status || 'success',
+        })
         .eq('id', logRow.id)
     }
 

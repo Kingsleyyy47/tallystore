@@ -1,0 +1,125 @@
+{
+  "probes": [
+    {
+      "name": "zero balance product purchase declines without freeze",
+      "functionName": "process-purchase",
+      "payload": {
+        "product_group_id": "OWNER_STAGING_PRODUCT_ID",
+        "quantity": 1,
+        "expected_amount_ngn": 4500,
+        "idempotency_key": "owner-zero-balance-denied-001"
+      },
+      "expectedPattern": "INSUFFICIENT_FUNDS|insufficient"
+    },
+    {
+      "name": "low balance product purchase declines without supplier dispatch",
+      "functionName": "process-purchase",
+      "payload": {
+        "product_group_id": "OWNER_STAGING_PRODUCT_ID",
+        "quantity": 2,
+        "expected_amount_ngn": 9000,
+        "idempotency_key": "owner-low-balance-denied-001"
+      },
+      "expectedPattern": "INSUFFICIENT_FUNDS|insufficient"
+    },
+    {
+      "name": "frozen customer cannot purchase with old token",
+      "functionName": "process-purchase",
+      "payload": {
+        "product_group_id": "OWNER_STAGING_PRODUCT_ID",
+        "quantity": 1,
+        "expected_amount_ngn": 4500,
+        "idempotency_key": "owner-frozen-denied-001"
+      },
+      "expectedPattern": "WALLET_NOT_ACTIVE|WALLET_FROZEN|suspended|frozen|review"
+    },
+    {
+      "name": "frozen customer cannot use SMM checkout",
+      "functionName": "smm-create-order",
+      "payload": {
+        "service_id": "OWNER_STAGING_SMM_SERVICE_ID",
+        "quantity": 100,
+        "link": "https://example.invalid/frozen-smoke",
+        "expected_price_ngn": 1200,
+        "idempotency_key": "owner-frozen-smm-denied-001"
+      },
+      "expectedPattern": "WALLET_NOT_ACTIVE|WALLET_FROZEN|suspended|frozen|review"
+    },
+    {
+      "name": "frozen customer cannot use SMS checkout",
+      "functionName": "smsbus",
+      "payload": {
+        "action": "create_otp",
+        "service_id": "OWNER_STAGING_SMS_SERVICE_ID",
+        "expected_price_ngn": 1200,
+        "idempotency_key": "owner-frozen-sms-denied-001"
+      },
+      "expectedPattern": "WALLET_NOT_ACTIVE|WALLET_FROZEN|suspended|frozen|review"
+    },
+    {
+      "name": "frozen customer cannot use Telegram checkout",
+      "functionName": "telegram-stars",
+      "payload": {
+        "action": "create_stars_order",
+        "username": "owner_frozen_smoke",
+        "recipient_hash": "owner-frozen-smoke-recipient",
+        "quantity": 50,
+        "idempotency_key": "owner-frozen-telegram-denied-001"
+      },
+      "expectedPattern": "WALLET_NOT_ACTIVE|WALLET_FROZEN|suspended|frozen|review"
+    },
+    {
+      "name": "frozen customer cannot use bills checkout",
+      "functionName": "purchase-bills",
+      "payload": {
+        "transaction_type": "airtime",
+        "amount": 100,
+        "service_provider": "MTN",
+        "phone": "08000000000",
+        "payment_source": "wallet",
+        "idempotency_key": "owner-frozen-bills-denied-001"
+      },
+      "expectedPattern": "BILLS_PAUSED|WALLET_NOT_ACTIVE|WALLET_FROZEN|suspended|frozen|review"
+    },
+    {
+      "name": "frozen customer cannot use Bitrefill checkout",
+      "functionName": "purchase-bitrefill",
+      "payload": {
+        "product_id": "OWNER_STAGING_BITREFILL_PRODUCT_ID",
+        "product_name": "Owner staging gift card",
+        "package_id": "OWNER_STAGING_BITREFILL_PACKAGE_ID",
+        "quantity": 1,
+        "expected_amount_ngn": 1000,
+        "payment_source": "wallet",
+        "idempotency_key": "owner-frozen-bitrefill-denied-001"
+      },
+      "expectedPattern": "BITREFILL_PAUSED|WALLET_NOT_ACTIVE|WALLET_FROZEN|suspended|frozen|review"
+    },
+    {
+      "name": "frozen customer cannot use withdrawal route",
+      "functionName": "create-withdrawal-request",
+      "payload": {
+        "amount": 100,
+        "bank_code": "OWNER_STAGING_BANK_CODE",
+        "bank_name": "Owner staging bank",
+        "account_number": "0000000000",
+        "account_name": "Owner Staging",
+        "source": "crypto"
+      },
+      "expectedPattern": "WITHDRAWALS_PAUSED|WALLET_NOT_ACTIVE|WALLET_FROZEN|suspended|frozen|review"
+    },
+    {
+      "name": "stale client balance cannot authorize checkout",
+      "functionName": "process-purchase",
+      "payload": {
+        "product_group_id": "OWNER_STAGING_PRODUCT_ID",
+        "quantity": 1,
+        "expected_amount_ngn": 4500,
+        "client_reported_balance": 1000000,
+        "cached_available_balance": 1000000,
+        "idempotency_key": "owner-stale-client-denied-001"
+      },
+      "expectedPattern": "INSUFFICIENT_FUNDS|WALLET_UNBACKED_FUNDS|insufficient|unbacked"
+    }
+  ]
+}

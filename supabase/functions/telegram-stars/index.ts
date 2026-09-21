@@ -1,7 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 
-type SupabaseAdmin = ReturnType<typeof createClient>
+type SupabaseAdmin = any
 
 const ISTAR_BASE = Deno.env.get('ISTAR_BASE_URL') || 'https://v1.fragmentapi.com/api/v1/partner'
 const ISTAR_API_KEY = Deno.env.get('ISTAR_API_KEY') || ''
@@ -16,6 +16,10 @@ function json(data: unknown, status = 200) {
     status,
     headers: { ...CORS, 'Content-Type': 'application/json' },
   })
+}
+
+function telegramOrdersEnabled() {
+  return String(Deno.env.get('TELEGRAM_ORDERS_ENABLED') || '').trim().toLowerCase() === 'true'
 }
 
 function istarHeaders() {
@@ -92,7 +96,25 @@ function getPurchaseGuardIp(req?: Request | null) {
 }
 
 function getPurchaseGuardUserAgent(req?: Request | null) {
-  return String(req?.headers.get('user-agent') || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 500)
+  return Array.from(String(req?.headers.get('user-agent') || '')).filter((char) => {
+    const code = char.charCodeAt(0)
+    return code >= 32 && code !== 127
+  }).join('').trim().slice(0, 500)
+}
+
+async function getWalletRequestForensics(req: Request, route: string) {
+  const userAgent = getPurchaseGuardUserAgent(req)
+  return {
+    request_id: req.headers.get('x-request-id') || req.headers.get('x-correlation-id') || crypto.randomUUID(),
+    route,
+    ip_address: getPurchaseGuardIp(req),
+    user_agent: userAgent || null,
+    user_agent_hash: userAgent ? await purchaseGuardSha256Hex(userAgent) : null,
+    device_fingerprint: req.headers.get('x-device-fingerprint') || req.headers.get('x-client-device-id') || null,
+    forwarded_for: req.headers.get('x-forwarded-for') || null,
+    cf_ray: req.headers.get('cf-ray') || null,
+    vercel_id: req.headers.get('x-vercel-id') || null,
+  }
 }
 
 async function assertFraudDeviceNotBanned(admin: SupabaseAdmin, req?: Request | null) {
@@ -246,57 +268,98 @@ function calcPremiumPriceNgn(months: number, cfg: { costs: Record<string, number
   return Math.ceil((cost * cfg.usdt_to_ngn + markup) / 10) * 10
 }
 
-// ── Wallet helpers ────────────────────────────────────────────────────────────
-async function deductWallet(admin: SupabaseAdmin, userId: string, amount: number, reference: string, description: string) {
-  for (let i = 0; i < 3; i++) {
-    const { data: p } = await admin.from('profiles').select('wallet_balance').eq('id', userId).single()
-    if (!p) throw new Error('User not found')
-    const balance = Number(p.wallet_balance || 0)
-    if (balance < amount) throw new Error(`Insufficient balance. You need ₦${amount.toLocaleString()} but have ₦${balance.toLocaleString()}.`)
-    const next = balance - amount
-    const { data: updated } = await admin.from('profiles')
-      .update({ wallet_balance: next, updated_at: new Date().toISOString() })
-      .eq('id', userId).eq('wallet_balance', balance).select('wallet_balance').single()
-    if (updated) {
-      await admin.from('transactions').insert({
-        user_id: userId, type: 'purchase', amount: -amount,
-        balance_after: next, description, reference, status: 'completed',
-      })
-      return next
-    }
+function normalizeIdempotencyKey(value: unknown) {
+  const key = typeof value === 'string' ? value.trim() : ''
+  if (!key || key.length < 10 || key.length > 160) {
+    throw new Error('Valid idempotency_key is required')
   }
-  throw new Error('Could not process payment. Please try again.')
+  return key
 }
 
-async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: string; reference: string; price_ngn: number }, reason: string) {
+// ── Wallet helpers ────────────────────────────────────────────────────────────
+async function applyWalletTransaction(
+  admin: SupabaseAdmin,
+  params: {
+    userId: string
+    type: string
+    amount: number
+    reference: string
+    description: string
+    idempotencyKey: string
+    metadata?: Record<string, unknown>
+  },
+) {
+  const { data, error } = await admin.rpc('apply_wallet_transaction', {
+    p_user_id: params.userId,
+    p_type: params.type,
+    p_amount: params.amount,
+    p_reference: params.reference,
+    p_description: params.description,
+    p_idempotency_key: params.idempotencyKey,
+    p_metadata: params.metadata || {},
+    p_currency: 'NGN',
+    p_balance_type: 'wallet',
+    p_external_payment_id: null,
+    p_created_by: null,
+  })
+
+  if (error) throw new Error(error.message || 'Wallet transaction failed')
+  const result = data as any
+  if (!result?.success) throw new Error(result?.error || 'Wallet transaction failed')
+  return result
+}
+
+async function deductWallet(admin: SupabaseAdmin, userId: string, amount: number, reference: string, description: string, metadata: Record<string, unknown> = {}) {
+  try {
+    const result = await applyWalletTransaction(admin, {
+      userId,
+      type: 'purchase',
+      amount,
+      reference,
+      description,
+      idempotencyKey: String(metadata.source_debit_idempotency_key || `telegram:purchase:${reference}`),
+      metadata: { source: 'telegram-stars', ...metadata },
+    })
+    return Number(result.balance_after ?? 0)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not process payment'
+    if (message.includes('insufficient_balance')) {
+      throw new Error(`Insufficient balance. You need ₦${amount.toLocaleString()}.`)
+    }
+    throw error
+  }
+}
+
+async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: string; reference: string; price_ngn: number; idempotency_key?: string | null }, reason: string, metadata: Record<string, unknown> = {}) {
   const amount = Number(order.price_ngn || 0)
   if (amount <= 0) return
   const refundRef = `REFUND-${order.reference}`
+  const originalDebitKey = order.idempotency_key
+    ? `telegram:purchase:${order.idempotency_key}`
+    : `telegram:purchase:${order.reference}`
   const { data: currentOrder } = await admin.from('telegram_orders').select('refunded_at').eq('id', order.id).maybeSingle()
   if (currentOrder?.refunded_at) return
-  const { data: existing } = await admin.from('transactions').select('id, status').eq('reference', refundRef).maybeSingle()
-  if (existing?.status === 'completed') return
-  const tx = existing || (await admin.from('transactions').insert({
-    user_id: order.user_id, type: 'refund', amount, balance_after: 0,
-    description: reason, reference: refundRef, status: 'pending',
-  }).select('id').single()).data
-  if (!tx) throw new Error('Refund transaction could not be created')
-  for (let i = 0; i < 3; i++) {
-    const { data: p } = await admin.from('profiles').select('wallet_balance').eq('id', order.user_id).single()
-    if (!p) break
-    const next = Number(p.wallet_balance || 0) + amount
-    const { data: updated } = await admin.from('profiles')
-      .update({ wallet_balance: next, updated_at: new Date().toISOString() })
-      .eq('id', order.user_id).eq('wallet_balance', p.wallet_balance).select('wallet_balance').single()
-    if (updated) {
-      await admin.from('transactions').update({ status: 'completed', balance_after: next }).eq('id', tx.id)
-      await admin.from('telegram_orders').update({
-        refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef,
-      }).eq('id', order.id).is('refunded_at', null)
-      return
-    }
-  }
-  throw new Error('Refund could not be credited. Please try again.')
+  await applyWalletTransaction(admin, {
+    userId: order.user_id,
+    type: 'refund',
+    amount,
+    reference: refundRef,
+    description: reason,
+    idempotencyKey: `telegram:refund:${order.id}`,
+    metadata: {
+      source: 'telegram-stars',
+      ...metadata,
+      source_order_id: order.id,
+      source_order_table: 'telegram_orders',
+      order_id: order.id,
+      original_reference: order.reference,
+      source_debit_idempotency_key: originalDebitKey,
+      original_purchase_idempotency_key: originalDebitKey,
+    },
+  })
+  await admin.from('telegram_orders').update({
+    refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef,
+  }).eq('id', order.id).is('refunded_at', null)
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -325,7 +388,8 @@ async function handleSearchRecipientStars(admin: SupabaseAdmin, userId: string, 
   const username = String(body.username || '').replace(/^@/, '').trim()
   const quantity = Number(body.quantity || 50)
   if (!username) throw new Error('username is required')
-  if (quantity < 50) throw new Error('Minimum 50 stars')
+  if (!Number.isInteger(quantity) || quantity < 50) throw new Error('Minimum 50 stars')
+  if (quantity > 1_000_000) throw new Error('Maximum 1,000,000 stars per order')
   const data = await istarGet(`/star/recipient/search?username=${encodeURIComponent(username)}&quantity=${quantity}`)
   return json({ success: true, data })
 }
@@ -341,13 +405,15 @@ async function handleSearchRecipientPremium(admin: SupabaseAdmin, userId: string
 
 async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request) {
   await assertPurchasingCustomer(admin, userId, req)
+  const walletRequestForensics = await getWalletRequestForensics(req, 'telegram-stars:create-stars-order')
+  const idempotencyKey = normalizeIdempotencyKey(body.idempotency_key)
 
   const username = String(body.username || '').replace(/^@/, '').trim()
   const recipientHash = String(body.recipient_hash || '')
   const recipientName = String(body.recipient_name || '')
-  const quantity = Math.round(Number(body.quantity || 0))
+  const quantity = Number(body.quantity || 0)
   if (!username || !recipientHash) throw new Error('username and recipient_hash are required')
-  if (quantity < 50) throw new Error('Minimum 50 stars')
+  if (!Number.isInteger(quantity) || quantity < 50) throw new Error('Minimum 50 stars')
   if (quantity > 1_000_000) throw new Error('Maximum 1,000,000 stars per order')
 
   // Calculate price server-side from config
@@ -355,17 +421,77 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
   const priceNgn = calculateStarPriceNgn(quantity, config)
   if (priceNgn <= 0) throw new Error('Star pricing is not configured. Please contact support.')
 
-  const reference = `TG-STARS-${userId.slice(0, 8)}-${Date.now()}`
-  await deductWallet(admin, userId, priceNgn, reference, `${quantity.toLocaleString()} Telegram Stars → @${username}`)
+  const { data: existingOrder } = await admin.from('telegram_orders')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('idempotency_key', idempotencyKey)
+    .maybeSingle()
 
+  if (existingOrder) {
+    const sameRequest =
+      String(existingOrder.order_type || '') === 'stars' &&
+      String(existingOrder.username || '') === username &&
+      String(existingOrder.recipient_hash || '') === recipientHash &&
+      Number(existingOrder.quantity || 0) === quantity &&
+      Number(existingOrder.price_ngn || 0) === priceNgn
+
+    if (!sameRequest) {
+      return json({
+        success: false,
+        error: 'This idempotency key was already used for a different Telegram Stars order request.',
+        code: 'IDEMPOTENCY_REQUEST_CONFLICT',
+      }, 409)
+    }
+
+    return json({ success: true, data: existingOrder, idempotency_hit: true })
+  }
+
+  const { data: orphanedPurchaseTx, error: orphanedPurchaseError } = await admin
+    .from('transactions')
+    .select('id, amount, status, balance_after, created_at')
+    .eq('user_id', userId)
+    .eq('idempotency_key', `telegram:purchase:${idempotencyKey}`)
+    .maybeSingle()
+
+  if (orphanedPurchaseError) {
+    throw new Error('Could not verify Telegram purchase idempotency state')
+  }
+
+  if (orphanedPurchaseTx) {
+    return json({
+      success: false,
+      error: 'This Telegram purchase attempt needs admin review before it can be retried.',
+      code: 'TELEGRAM_PURCHASE_LEDGER_ORPHANED',
+    }, 409)
+  }
+
+  const reference = `TG-STARS-${userId.slice(0, 8)}-${Date.now()}`
   const { data: order, error: orderErr } = await admin.from('telegram_orders').insert({
     user_id: userId, reference, order_type: 'stars',
     username, recipient_hash: recipientHash, recipient_name: recipientName,
     quantity, price_ngn: priceNgn, wallet_type: config.wallet_type, status: 'pending',
+    idempotency_key: idempotencyKey,
   }).select().single()
   if (orderErr || !order) {
-    await refundWallet(admin, { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: priceNgn }, 'Refund: order could not be created')
-    throw new Error('Failed to create order. You have been refunded.')
+    throw new Error('Failed to create order. Your wallet was not charged.')
+  }
+
+  try {
+    await deductWallet(admin, userId, priceNgn, reference, `${quantity.toLocaleString()} Telegram Stars -> @${username}`, {
+      request_forensics: walletRequestForensics,
+      order_type: 'stars',
+      source_order_id: order.id,
+      source_order_table: 'telegram_orders',
+      source_debit_idempotency_key: `telegram:purchase:${idempotencyKey}`,
+      idempotency_key: idempotencyKey,
+    })
+  } catch (err: any) {
+    await admin.from('telegram_orders').update({
+      status: 'failed',
+      error_message: err?.message || 'Wallet debit failed before supplier dispatch',
+      updated_at: new Date().toISOString(),
+    }).eq('id', order.id)
+    throw err
   }
 
   try {
@@ -387,7 +513,10 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
 
     return json({ success: true, data: { ...order, istar_order_id: istarOrder.order_id, status: 'processing' } })
   } catch (err: any) {
-    await refundWallet(admin, order, `Refund: iStar order failed — ${err.message}`)
+    await refundWallet(admin, order, `Refund: iStar order failed — ${err.message}`, {
+      request_forensics: walletRequestForensics,
+      order_type: 'stars',
+    })
     await admin.from('telegram_orders').update({ status: 'failed', error_message: err.message, updated_at: new Date().toISOString() }).eq('id', order.id)
     throw new Error(`Order failed: ${err.message}. You have been refunded.`)
   }
@@ -395,6 +524,8 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
 
 async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request) {
   await assertPurchasingCustomer(admin, userId, req)
+  const walletRequestForensics = await getWalletRequestForensics(req, 'telegram-stars:create-premium-order')
+  const idempotencyKey = normalizeIdempotencyKey(body.idempotency_key)
 
   const username = String(body.username || '').replace(/^@/, '').trim()
   const recipientHash = String(body.recipient_hash || '')
@@ -413,17 +544,81 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
   const chargeNgn = livePrice || product.price_ngn
   if (!chargeNgn || chargeNgn <= 0) throw new Error('This product has no price set. Contact support.')
   const walletType = String(walletSetting.data?.value || 'USDT').toUpperCase()
+
+  const { data: existingOrder } = await admin.from('telegram_orders')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('idempotency_key', idempotencyKey)
+    .maybeSingle()
+
+  if (existingOrder) {
+    const sameRequest =
+      String(existingOrder.order_type || '') === 'premium' &&
+      String(existingOrder.username || '') === username &&
+      String(existingOrder.recipient_hash || '') === recipientHash &&
+      Number(existingOrder.months || 0) === Number(product.months || 0) &&
+      Number(existingOrder.price_ngn || 0) === Number(chargeNgn || 0)
+
+    if (!sameRequest) {
+      return json({
+        success: false,
+        error: 'This idempotency key was already used for a different Telegram Premium order request.',
+        code: 'IDEMPOTENCY_REQUEST_CONFLICT',
+      }, 409)
+    }
+
+    return json({ success: true, data: existingOrder, idempotency_hit: true })
+  }
+
+  const { data: orphanedPurchaseTx, error: orphanedPurchaseError } = await admin
+    .from('transactions')
+    .select('id, amount, status, balance_after, created_at')
+    .eq('user_id', userId)
+    .eq('idempotency_key', `telegram:purchase:${idempotencyKey}`)
+    .maybeSingle()
+
+  if (orphanedPurchaseError) {
+    throw new Error('Could not verify Telegram purchase idempotency state')
+  }
+
+  if (orphanedPurchaseTx) {
+    return json({
+      success: false,
+      error: 'This Telegram purchase attempt needs admin review before it can be retried.',
+      code: 'TELEGRAM_PURCHASE_LEDGER_ORPHANED',
+    }, 409)
+  }
+
   const reference = `TG-PREMIUM-${userId.slice(0, 8)}-${Date.now()}`
-  await deductWallet(admin, userId, chargeNgn, reference, `${product.months}-Month Telegram Premium → @${username}`)
   const { data: order, error: orderErr } = await admin.from('telegram_orders').insert({
     user_id: userId, reference, order_type: 'premium',
     username, recipient_hash: recipientHash, recipient_name: recipientName,
     months: product.months, price_ngn: chargeNgn, wallet_type: walletType, status: 'pending',
+    idempotency_key: idempotencyKey,
   }).select().single()
   if (orderErr || !order) {
-    await refundWallet(admin, { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: chargeNgn }, 'Refund: order could not be created')
-    throw new Error('Failed to create order. You have been refunded.')
+    throw new Error('Failed to create order. Your wallet was not charged.')
   }
+
+  try {
+    await deductWallet(admin, userId, chargeNgn, reference, `${product.months}-Month Telegram Premium -> @${username}`, {
+      request_forensics: walletRequestForensics,
+      order_type: 'premium',
+      product_id: productId,
+      source_order_id: order.id,
+      source_order_table: 'telegram_orders',
+      source_debit_idempotency_key: `telegram:purchase:${idempotencyKey}`,
+      idempotency_key: idempotencyKey,
+    })
+  } catch (err: any) {
+    await admin.from('telegram_orders').update({
+      status: 'failed',
+      error_message: err?.message || 'Wallet debit failed before supplier dispatch',
+      updated_at: new Date().toISOString(),
+    }).eq('id', order.id)
+    throw err
+  }
+
   try {
     const istarOrder = await istarPost('/orders/premium', {
       username, recipient_hash: recipientHash, months: product.months, wallet_type: walletType,
@@ -447,7 +642,11 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
 
     return json({ success: true, data: { ...order, istar_order_id: istarOrder.order_id, status: 'processing' } })
   } catch (err: any) {
-    await refundWallet(admin, order, `Refund: iStar order failed — ${err.message}`)
+    await refundWallet(admin, order, `Refund: iStar order failed — ${err.message}`, {
+      request_forensics: walletRequestForensics,
+      order_type: 'premium',
+      product_id: productId,
+    })
     await admin.from('telegram_orders').update({ status: 'failed', error_message: err.message, updated_at: new Date().toISOString() }).eq('id', order.id)
     throw new Error(`Order failed: ${err.message}. You have been refunded.`)
   }
@@ -492,7 +691,7 @@ async function handleAdminGetOrders(admin: SupabaseAdmin, userId: string) {
   if (error) throw new Error(error.message)
   const rows = orders || []
   const userIds = [...new Set(rows.map((o: any) => o.user_id).filter(Boolean))]
-  let profileMap: Record<string, { email?: string; full_name?: string }> = {}
+  const profileMap: Record<string, { email?: string; full_name?: string }> = {}
   if (userIds.length > 0) {
     const { data: profiles } = await admin.from('profiles').select('id, email, full_name').in('id', userIds)
     for (const p of profiles || []) profileMap[p.id] = { email: p.email, full_name: p.full_name }
@@ -590,6 +789,13 @@ serve(async (req) => {
     const admin = await getAdminClient()
     const body: Record<string, unknown> = req.method === 'POST' ? await req.json().catch(() => ({})) : {}
     const action = String(body.action || '')
+    if ((action === 'create_stars_order' || action === 'create_premium_order') && !telegramOrdersEnabled()) {
+      return json({
+        success: false,
+        error: 'Telegram purchases are temporarily paused for wallet security review.',
+        code: 'TELEGRAM_ORDERS_PAUSED',
+      }, 503)
+    }
     const user = await getUser(req)
     switch (action) {
       case 'get_star_pricing':           return await handleGetStarPricing(admin)

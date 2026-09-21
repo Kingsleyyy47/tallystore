@@ -15,7 +15,10 @@ function json(body: Record<string, unknown>, status = 200) {
 }
 
 function cleanText(value: unknown, max = 500) {
-  return String(value || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, max)
+  return Array.from(String(value || '')).filter((char) => {
+    const code = char.charCodeAt(0)
+    return code >= 32 && code !== 127
+  }).join('').trim().slice(0, max)
 }
 
 function cleanGeoText(value: unknown, max = 120) {

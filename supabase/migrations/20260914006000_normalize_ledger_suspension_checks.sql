@@ -84,15 +84,6 @@ BEGIN
           updated_at = now()
       WHERE id = target_user_id
         AND COALESCE(account_suspended, false) = false;
-  ELSIF COALESCE(profile_row.account_suspended, false)
-        AND COALESCE(profile_row.suspension_reason, '') LIKE 'Auto-suspended:%' THEN
-    UPDATE public.profiles
-      SET account_suspended = false,
-          suspension_reason = NULL,
-          suspension_reinstated_at = now(),
-          reinstated_by = NULL,
-          updated_at = now()
-      WHERE id = target_user_id;
   END IF;
 
   RETURN jsonb_build_object(

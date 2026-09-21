@@ -75,7 +75,7 @@ const SERVICE_PROVIDERS = [
 export default function BillsPayment() {
   const [activeTab, setActiveTab] = useState<'airtime' | 'data'>('airtime');
   const [walletBalance, setWalletBalance] = useState<number>(0);
-  const paymentSource: 'wallet' = 'wallet';
+  const paymentSource = 'wallet' as const;
   const [provider, setProvider] = useState<string>('');
   const [phone, setPhone] = useState<string>('');
   const [amount, setAmount] = useState<string>('');

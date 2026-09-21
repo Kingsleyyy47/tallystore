@@ -536,7 +536,10 @@ function getPurchaseGuardIp(req?: Request | null) {
 }
 
 function getPurchaseGuardUserAgent(req?: Request | null) {
-  return String(req?.headers.get('user-agent') || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 500)
+  return Array.from(String(req?.headers.get('user-agent') || '')).filter((char) => {
+    const code = char.charCodeAt(0)
+    return code >= 32 && code !== 127
+  }).join('').trim().slice(0, 500)
 }
 
 async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
@@ -636,6 +639,20 @@ serve(async (req) => {
   }
 
   try {
+    if (String(Deno.env.get('CRYPTO_TOPUP_ENABLED') || '').trim().toLowerCase() !== 'true') {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          code: 'CRYPTO_TOPUP_PAUSED',
+          error: 'Crypto payments are temporarily disabled during wallet security review. Please fund your wallet by bank transfer.',
+        }),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 503,
+        }
+      );
+    }
+
     // Get user from auth header
     const authHeader = req.headers.get('Authorization');
     
@@ -719,19 +736,6 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
-
-    if (String(Deno.env.get('CRYPTO_TOPUP_ENABLED') || '').trim().toLowerCase() !== 'true') {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'Crypto payments are temporarily disabled. Please fund your wallet by bank transfer.',
-        }),
-        {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 403,
-        }
-      );
-    }
 
     await assertPurchasingCustomer(supabaseAdmin, user.id, req);
 

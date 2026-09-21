@@ -1,6 +1,40 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
+async function applyWalletTransaction(
+  supabaseAdmin: any,
+  params: {
+    userId: string
+    type: string
+    amount: number
+    reference: string
+    description: string
+    idempotencyKey: string
+    metadata?: Record<string, unknown>
+  },
+) {
+  const { data, error } = await supabaseAdmin.rpc('apply_wallet_transaction', {
+    p_user_id: params.userId,
+    p_type: params.type,
+    p_amount: params.amount,
+    p_reference: params.reference,
+    p_description: params.description,
+    p_idempotency_key: params.idempotencyKey,
+    p_metadata: params.metadata || {},
+    p_currency: 'NGN',
+    p_balance_type: 'wallet',
+    p_external_payment_id: null,
+    p_created_by: null,
+  })
+
+  if (error) throw new Error(error.message || 'Wallet transaction failed')
+
+  const result = data as any
+  if (!result?.success) throw new Error(result?.error || 'Wallet transaction failed')
+
+  return result
+}
+
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
   'SESSION_STARTED',
@@ -457,7 +491,25 @@ function getPurchaseGuardIp(req?: Request | null) {
 }
 
 function getPurchaseGuardUserAgent(req?: Request | null) {
-  return String(req?.headers.get('user-agent') || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 500)
+  return Array.from(String(req?.headers.get('user-agent') || '')).filter((char) => {
+    const code = char.charCodeAt(0)
+    return code >= 32 && code !== 127
+  }).join('').trim().slice(0, 500)
+}
+
+async function getWalletRequestForensics(req: Request, route: string) {
+  const userAgent = getPurchaseGuardUserAgent(req)
+  return {
+    request_id: req.headers.get('x-request-id') || req.headers.get('x-correlation-id') || crypto.randomUUID(),
+    route,
+    ip_address: getPurchaseGuardIp(req),
+    user_agent: userAgent || null,
+    user_agent_hash: userAgent ? await purchaseGuardSha256Hex(userAgent) : null,
+    device_fingerprint: req.headers.get('x-device-fingerprint') || req.headers.get('x-client-device-id') || null,
+    forwarded_for: req.headers.get('x-forwarded-for') || null,
+    cf_ray: req.headers.get('cf-ray') || null,
+    vercel_id: req.headers.get('x-vercel-id') || null,
+  }
 }
 
 async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
@@ -519,6 +571,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+function smmOrdersEnabled() {
+  return String(Deno.env.get('SMM_ORDERS_ENABLED') || '').trim().toLowerCase() === 'true'
+}
+
 /**
  * Generate unique order reference
  */
@@ -563,6 +619,20 @@ serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
+  }
+
+  if (!smmOrdersEnabled()) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: 'Social Boost ordering is temporarily paused for wallet security review.',
+        code: 'SMM_ORDERS_PAUSED',
+      }),
+      {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 503,
+      }
+    );
   }
 
   try {
@@ -613,6 +683,7 @@ serve(async (req) => {
       revenue_context,
     } = await req.json();
     const revenueContext = sanitizeRevenueRequestContext(revenue_context);
+    const walletRequestForensics = await getWalletRequestForensics(req, 'smm-create-order');
 
     // Validate required fields
     if (!service_id) {
@@ -632,22 +703,39 @@ serve(async (req) => {
     // Check for duplicate order (idempotency)
     const { data: existingOrder } = await supabaseAdmin
       .from('smm_orders')
-      .select('id, reference, status')
+      .select('id, reference, status, service_id, quantity, amount_ngn, link')
       .eq('user_id', user.id)
       .eq('idempotency_key', idempotency_key)
       .single();
 
-    if (existingOrder) {
-      console.log('Duplicate SMM order detected for idempotency key.');
+    // If a previous attempt debited the wallet but failed before creating the
+    // SMM order row, a retry must not replay that old debit into a fresh panel
+    // order. The prior failed attempt may already have been refunded.
+    const { data: orphanedPurchaseTx, error: orphanedPurchaseError } = await supabaseAdmin
+      .from('transactions')
+      .select('id, amount, status, balance_after, created_at')
+      .eq('user_id', user.id)
+      .eq('idempotency_key', `smm:purchase:${idempotency_key}`)
+      .maybeSingle();
+
+    if (orphanedPurchaseError) {
+      throw new Error('Could not verify SMM purchase idempotency state');
+    }
+
+    if (orphanedPurchaseTx && !existingOrder) {
+      console.error('Blocked orphaned SMM purchase ledger retry without matching order.', {
+        transaction_id: orphanedPurchaseTx.id,
+        idempotency_key,
+      });
       return new Response(
         JSON.stringify({
-          success: true,
-          message: 'Order already exists',
-          data: existingOrder,
+          success: false,
+          error: 'This SMM purchase attempt needs admin review before it can be retried.',
+          code: 'SMM_PURCHASE_LEDGER_ORPHANED',
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 200,
+          status: 409,
         }
       );
     }
@@ -711,6 +799,41 @@ serve(async (req) => {
       throw new Error(`Price changed from ₦${expectedPriceNgn.toLocaleString()} to ₦${totalAmount.toLocaleString()}. Please refresh and try again.`);
     }
 
+    if (existingOrder) {
+      const sameRequest =
+        String(existingOrder.service_id || '') === String(service.id) &&
+        Number(existingOrder.quantity || 0) === actualQuantity &&
+        Number(existingOrder.amount_ngn || 0) === totalAmount &&
+        String(existingOrder.link || '') === String(link || '');
+
+      if (!sameRequest) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'This idempotency key was already used for a different SMM order request.',
+            code: 'IDEMPOTENCY_REQUEST_CONFLICT',
+          }),
+          {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 409,
+          }
+        );
+      }
+
+      console.log('Duplicate SMM order detected for idempotency key.');
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: 'Order already exists',
+          data: existingOrder,
+        }),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 200,
+        }
+      );
+    }
+
     // Check for duplicate active order with same link (prevent "active order" panel errors)
     if (link) {
       const { data: activeOrders } = await supabaseAdmin
@@ -771,42 +894,25 @@ serve(async (req) => {
       },
     });
 
-    // Atomic wallet deduction with optimistic locking to prevent race conditions
-    // Read balance → check sufficient → deduct with WHERE matching original balance
-    const { data: profile, error: profileError } = await supabaseAdmin
-      .from('profiles')
-      .select('wallet_balance')
-      .eq('id', user.id)
-      .single();
+    const debitResult = await applyWalletTransaction(supabaseAdmin, {
+      userId: user.id,
+      type: 'purchase',
+      amount: totalAmount,
+      reference,
+      description: `SMM Order: ${service.name} (${actualQuantity} units)`,
+      idempotencyKey: `smm:purchase:${idempotency_key}`,
+      metadata: {
+        source: 'smm-create-order',
+        request_forensics: walletRequestForensics,
+        service_id: service.id,
+        service_external_id: service.external_id,
+        service_name: service.name,
+        platform: service.platform,
+        quantity: actualQuantity,
+      },
+    });
 
-    if (profileError || !profile) {
-      throw new Error('Failed to fetch user profile');
-    }
-
-    const currentBalance = parseFloat(profile.wallet_balance) || 0;
-
-    if (currentBalance < totalAmount) {
-      throw new Error(`Insufficient balance. Required: ₦${totalAmount.toLocaleString()}, Available: ₦${currentBalance.toLocaleString()}`);
-    }
-
-    const newBalance = currentBalance - totalAmount;
-
-    // Optimistic locking: only update if balance hasn't changed since we read it
-    // This prevents race conditions from concurrent orders
-    const { data: updateResult, error: balanceError } = await supabaseAdmin
-      .from('profiles')
-      .update({
-        wallet_balance: newBalance,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', user.id)
-      .eq('wallet_balance', currentBalance)
-      .select('wallet_balance')
-      .single();
-
-    if (balanceError || !updateResult) {
-      throw new Error('Balance changed during transaction. Please try again.');
-    }
+    const newBalance = Number(debitResult.balance_after ?? 0);
 
     // Create order record (pending) - service_name not in table, only service_id FK
     const orderData = {
@@ -828,14 +934,23 @@ serve(async (req) => {
       .single();
 
     if (orderError) {
-      // Rollback balance deduction
-      await supabaseAdmin
-        .from('profiles')
-        .update({
-          wallet_balance: currentBalance,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', user.id);
+      await applyWalletTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'refund',
+        amount: totalAmount,
+        reference: `REFUND-${reference}`,
+        description: `Auto-refund for failed SMM local order: ${service.name} (${actualQuantity} units)`,
+        idempotencyKey: `smm:refund:local-order:${idempotency_key}`,
+        metadata: {
+          source: 'smm-create-order',
+          request_forensics: walletRequestForensics,
+          reason: 'local_order_create_failed',
+          original_reference: reference,
+          source_debit_transaction_id: debitResult?.transaction?.id || null,
+          source_debit_idempotency_key: `smm:purchase:${idempotency_key}`,
+          service_id: service.id,
+        },
+      });
 
       throw new Error(`Failed to create order: ${orderError.message}`);
     }
@@ -867,7 +982,10 @@ serve(async (req) => {
       // - SEO: link, keywords
       // - Web Traffic: link, quantity
       
-      const orderParams: Record<string, any> = {
+      const orderParams: {
+        service: number;
+        [key: string]: any;
+      } = {
         service: service.external_id,
       };
       
@@ -917,28 +1035,35 @@ serve(async (req) => {
         panelError = panelResponse.error;
       }
     } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
       console.error('Panel API error while creating SMM order.');
-      panelError = err.message || 'Failed to place order with panel';
+      panelError = errorMessage || 'Failed to place order with panel';
     }
 
     // If panel order failed, auto-refund the user immediately
     if (panelError) {
-      // Refund wallet balance
-      const { data: currentProfile } = await supabaseAdmin
-        .from('profiles')
-        .select('wallet_balance')
-        .eq('id', user.id)
-        .single();
+      const refundResult = await applyWalletTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'refund',
+        amount: totalAmount,
+        reference: `REFUND-${reference}`,
+        description: `Auto-refund for failed SMM order: ${service.name} (${actualQuantity} units)`,
+        idempotencyKey: `smm:refund:${order.id}`,
+        metadata: {
+          source: 'smm-create-order',
+          request_forensics: walletRequestForensics,
+          reason: 'panel_order_failed',
+          order_id: order.id,
+          source_order_id: order.id,
+          source_order_table: 'smm_orders',
+          original_reference: reference,
+          source_debit_transaction_id: debitResult?.transaction?.id || null,
+          source_debit_idempotency_key: `smm:purchase:${idempotency_key}`,
+          panel_error: panelError,
+        },
+      });
 
-      const refundedBalance = (parseFloat(currentProfile?.wallet_balance) || 0) + totalAmount;
-
-      await supabaseAdmin
-        .from('profiles')
-        .update({
-          wallet_balance: refundedBalance,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', user.id);
+      const refundedBalance = Number(refundResult.balance_after ?? 0);
 
       // Mark order as failed
       await supabaseAdmin
@@ -949,28 +1074,6 @@ serve(async (req) => {
           updated_at: new Date().toISOString(),
         })
         .eq('id', order.id);
-
-      // Log the failed purchase transaction
-      await supabaseAdmin.from('transactions').insert({
-        user_id: user.id,
-        type: 'purchase',
-        amount: -totalAmount,
-        balance_after: newBalance,
-        description: `SMM Order Failed: ${service.name} (${actualQuantity} units) - ${panelError}`,
-        reference: reference,
-        status: 'failed',
-      });
-
-      // Log the automatic refund transaction
-      await supabaseAdmin.from('transactions').insert({
-        user_id: user.id,
-        type: 'refund',
-        amount: totalAmount,
-        balance_after: refundedBalance,
-        description: `Auto-refund for failed SMM order: ${service.name} (${actualQuantity} units)`,
-        reference: `REFUND-${reference}`,
-        status: 'completed',
-      });
 
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
@@ -1007,17 +1110,6 @@ serve(async (req) => {
 
       throw new Error(`Order failed: ${panelError}. Your balance of ₦${totalAmount.toLocaleString()} has been automatically refunded.`);
     }
-
-    // Log successful transaction
-    await supabaseAdmin.from('transactions').insert({
-      user_id: user.id,
-      type: 'purchase',
-      amount: -totalAmount,
-      balance_after: newBalance,
-      description: `SMM Order: ${service.name} (${actualQuantity} units)`,
-      reference: reference,
-      status: 'completed',
-    });
 
     await recordRevenueEvent(supabaseAdmin, {
       eventType: 'PAYMENT_COMPLETED',
@@ -1079,15 +1171,16 @@ serve(async (req) => {
       }
     );
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('SMM Create Order Error:', error);
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message || 'An unexpected error occurred',
+        error: errorMessage,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: error.message === 'Unauthorized' ? 401 : 400,
+        status: errorMessage === 'Unauthorized' ? 401 : 400,
       }
     );
   }

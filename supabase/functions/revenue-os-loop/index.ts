@@ -301,7 +301,7 @@ async function evaluateStrategies(): Promise<void> {
         promoted_at:     decision.action === 'promote'   ? now : null,
         rolled_back_at:  decision.action === 'rollback'  ? now : null,
         rollback_reason: decision.action === 'rollback'  ? decision.reason : null,
-      }).onConflict ? undefined : undefined // insert only, ignore conflict
+      })
     }
   }
 }
@@ -377,10 +377,14 @@ async function updatePurchaseSequences(): Promise<void> {
 
   // product_relationship_stats has a uuid PK — use text keys as pseudo-IDs
   // Upsert on the unique constraint
-  await supabase
-    .from('product_relationship_stats')
-    .upsert(rows, { onConflict: 'source_product_id,target_product_id,relationship_type,surface,time_bucket,context_key' })
-    .then(() => {}).catch((e) => console.warn('[loop] product_relationship_stats upsert:', e?.message))
+  try {
+    await supabase
+      .from('product_relationship_stats')
+      .upsert(rows, { onConflict: 'source_product_id,target_product_id,relationship_type,surface,time_bucket,context_key' })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.warn('[loop] product_relationship_stats upsert:', message)
+  }
 }
 
 // ── 4. Detect & persist opportunities ────────────────────────────────────────

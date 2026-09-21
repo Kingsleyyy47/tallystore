@@ -35,6 +35,11 @@ import { cn } from '@/lib/utils'
 import { trackRevenueEvent } from '@/lib/revenue-os'
 import { RecommendationStrip } from '@/components/RecommendationCard'
 import { useRecommendations } from '@/hooks/useRecommendations'
+import {
+  getTransactionSignedAmount,
+  getWalletTransactionTitle,
+  isDebitTransactionType,
+} from '@/lib/walletTransactions'
 
 const INSTALL_PROMPT_STORAGE_KEY = 'pwa-install-prompt-dismissed'
 
@@ -333,19 +338,20 @@ export default function Dashboard() {
 
   const recentActivity = useMemo<ActivityItem[]>(() => {
     const transactionActivity = transactions.map((transaction) => {
-      const isTopup = transaction.type === 'topup' || Number(transaction.amount) > 0
-      const amount = Number(transaction.amount || 0)
+      const amount = getTransactionSignedAmount(transaction)
+      const isCredit = amount > 0
+      const isDebit = amount < 0
 
       return {
         id: `tx-${transaction.id}`,
-        title: isTopup ? 'Wallet Top-up' : transaction.description || 'Purchase',
+        title: getWalletTransactionTitle(transaction),
         meta: `${formatCompactDate(transaction.created_at)}${
           transaction.reference ? ` - ${transaction.reference.slice(0, 12)}` : ''
         }`,
         amount,
         status: transaction.status || 'completed',
         createdAt: transaction.created_at,
-        tone: isTopup ? 'credit' : 'debit',
+        tone: isCredit ? 'credit' : isDebit || isDebitTransactionType(transaction.type) ? 'debit' : 'neutral',
       } satisfies ActivityItem
     })
 
@@ -645,7 +651,7 @@ export default function Dashboard() {
                                       item.tone === 'credit' ? 'text-emerald-600' : 'text-slate-950 dark:text-foreground',
                                     )}
                                   >
-                                    {item.tone === 'credit' ? '+' : '-'}
+                                    {item.tone === 'credit' ? '+' : item.tone === 'debit' ? '-' : ''}
                                     {formatPrice(Math.abs(item.amount))}
                                   </p>
                                   <p className="text-[11px] capitalize text-slate-400">{item.status}</p>

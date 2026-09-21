@@ -34,8 +34,15 @@ import { useCurrency } from '@/contexts/CurrencyContext'
 import { useToast } from '@/hooks/use-toast'
 import { getUserTransactions } from '@/lib/supabase'
 import { trackRevenueEvent } from '@/lib/revenue-os'
+import {
+  classifyWalletTransaction,
+  getTransactionSignedAmount,
+  getWalletTransactionTitle,
+  isDepositTransactionType,
+  type WalletTransactionKind,
+} from '@/lib/walletTransactions'
 
-type WalletTab = 'all' | 'funding' | 'purchase' | 'withdrawal'
+type WalletTab = 'all' | WalletTransactionKind
 
 const quickAmounts = [5000, 10000, 20000, 50000, 100000]
 
@@ -44,21 +51,8 @@ const walletTabs: Array<[WalletTab, string]> = [
   ['funding', 'Funding'],
   ['purchase', 'Purchases'],
   ['withdrawal', 'Withdrawals'],
+  ['restoration', 'Refunds'],
 ]
-
-const classifyTransaction = (transaction: any): WalletTab => {
-  const type = String(transaction.type || '').toLowerCase()
-  if (type.includes('withdraw')) return 'withdrawal'
-  if (type.includes('purchase') || type.includes('order') || Number(transaction.amount) < 0) return 'purchase'
-  return 'funding'
-}
-
-const getTransactionTitle = (transaction: any) => {
-  const kind = classifyTransaction(transaction)
-  if (kind === 'funding') return 'Added funds'
-  if (kind === 'withdrawal') return 'Withdrawal'
-  return 'Purchase'
-}
 
 const getStatusIcon = (status: string) => {
   switch (status) {
@@ -158,7 +152,7 @@ export default function WalletPage() {
   const totalTopups = useMemo(
     () =>
       transactions
-        .filter((transaction) => classifyTransaction(transaction) === 'funding' && ['completed', 'success'].includes(String(transaction.status).toLowerCase()))
+        .filter((transaction) => isDepositTransactionType(transaction.type) && ['completed', 'success'].includes(String(transaction.status).toLowerCase()))
         .reduce((sum, transaction) => sum + Math.abs(Number(transaction.amount) || 0), 0),
     [transactions],
   )
@@ -166,7 +160,7 @@ export default function WalletPage() {
   const pendingBalance = useMemo(
     () =>
       transactions
-        .filter((transaction) => classifyTransaction(transaction) === 'funding' && ['pending', 'processing'].includes(String(transaction.status).toLowerCase()))
+        .filter((transaction) => isDepositTransactionType(transaction.type) && ['pending', 'processing'].includes(String(transaction.status).toLowerCase()))
         .reduce((sum, transaction) => sum + Math.abs(Number(transaction.amount) || 0), 0),
     [transactions],
   )
@@ -174,14 +168,14 @@ export default function WalletPage() {
   const totalSpent = useMemo(
     () =>
       transactions
-        .filter((transaction) => classifyTransaction(transaction) === 'purchase' && ['completed', 'success'].includes(String(transaction.status).toLowerCase()))
+        .filter((transaction) => classifyWalletTransaction(transaction) === 'purchase' && ['completed', 'success'].includes(String(transaction.status).toLowerCase()))
         .reduce((sum, transaction) => sum + Math.abs(Number(transaction.amount) || 0), 0),
     [transactions],
   )
 
   const filteredTransactions = useMemo(() => {
     if (activeTab === 'all') return transactions
-    return transactions.filter((transaction) => classifyTransaction(transaction) === activeTab)
+    return transactions.filter((transaction) => classifyWalletTransaction(transaction) === activeTab)
   }, [activeTab, transactions])
 
   const handleDownload = () => {
@@ -200,8 +194,8 @@ export default function WalletPage() {
     const rows = [
       ['Transaction', 'Type', 'Amount', 'Status', 'Reference', 'Date'],
       ...transactions.map((transaction) => [
-        getTransactionTitle(transaction),
-        classifyTransaction(transaction),
+        getWalletTransactionTitle(transaction),
+        classifyWalletTransaction(transaction),
         String(transaction.amount ?? 0),
         String(transaction.status || ''),
         String(transaction.reference || transaction.ercas_reference || transaction.id || ''),
@@ -472,9 +466,10 @@ export default function WalletPage() {
                       </tr>
                     ) : (
                       filteredTransactions.slice(0, 12).map((transaction) => {
-                        const kind = classifyTransaction(transaction)
-                        const amount = Math.abs(Number(transaction.amount) || 0)
-                        const isCredit = kind === 'funding'
+                        const kind = classifyWalletTransaction(transaction)
+                        const signedAmount = getTransactionSignedAmount(transaction)
+                        const amount = Math.abs(signedAmount)
+                        const isCredit = signedAmount > 0
                         return (
                           <tr key={transaction.id} className="border-b border-slate-200/70 last:border-b-0 dark:border-white/10">
                             <td className="px-4 py-4">
@@ -483,7 +478,7 @@ export default function WalletPage() {
                                   {isCredit ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
                                 </span>
                                 <span>
-                                  <strong className="block text-slate-950 dark:text-white">{getTransactionTitle(transaction)}</strong>
+                                  <strong className="block text-slate-950 dark:text-white">{getWalletTransactionTitle(transaction)}</strong>
                                   <small className="mt-1 block text-slate-500 dark:text-slate-400">
                                     Ref: {transaction.reference || transaction.ercas_reference || String(transaction.id).slice(0, 10)}
                                   </small>
@@ -520,9 +515,10 @@ export default function WalletPage() {
                   <div className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">No wallet transactions found.</div>
                 ) : (
                   filteredTransactions.slice(0, 8).map((transaction) => {
-                    const kind = classifyTransaction(transaction)
-                    const amount = Math.abs(Number(transaction.amount) || 0)
-                    const isCredit = kind === 'funding'
+                    const kind = classifyWalletTransaction(transaction)
+                    const signedAmount = getTransactionSignedAmount(transaction)
+                    const amount = Math.abs(signedAmount)
+                    const isCredit = signedAmount > 0
                     return (
                       <div key={transaction.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/[0.035]">
                         <div className="flex items-start justify-between gap-3">
@@ -531,7 +527,7 @@ export default function WalletPage() {
                               {isCredit ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
                             </span>
                             <div>
-                              <strong className="block text-sm">{getTransactionTitle(transaction)}</strong>
+                              <strong className="block text-sm">{getWalletTransactionTitle(transaction)}</strong>
                               <span className="mt-1 flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
                                 <Calendar className="h-3 w-3" />
                                 {formatDateTime(transaction.created_at)}

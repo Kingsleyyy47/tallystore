@@ -198,7 +198,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 }
 
-type SupabaseAdmin = ReturnType<typeof createClient>
+type SupabaseAdmin = any
 
 type ProductGroup = {
   id: string
@@ -1100,17 +1100,12 @@ function buildOperationalFindings(input: {
   const hasDaisy = Boolean(Deno.env.get('DAISYSMS_API_KEY'))
   const hasPocketFi = Boolean(
     (Deno.env.get('POCKETFI_PUBLIC_KEY') ||
-      Deno.env.get('POCKETFI_API_TOKEN') ||
-      Deno.env.get('VITE_POCKETFI_API_TOKEN') ||
-      Deno.env.get('VITE_POCKETFI_PUBLIC_KEY')) &&
-    (Deno.env.get('POCKETFI_BUSINESS_ID') ||
-      Deno.env.get('VITE_POCKETFI_BUSINESS_ID')),
+      Deno.env.get('POCKETFI_API_TOKEN')) &&
+    Deno.env.get('POCKETFI_BUSINESS_ID'),
   )
   const hasErcas = Boolean(
     Deno.env.get('ERCASPAY_SECRET_KEY') ||
-    Deno.env.get('ERCAS_SECRET_KEY') ||
-    Deno.env.get('VITE_ERCASPAY_SECRET_KEY') ||
-    Deno.env.get('VITE_ERCAS_SECRET_KEY'),
+    Deno.env.get('ERCAS_SECRET_KEY'),
   )
 
   if (hasNowPayments && !Deno.env.get('NOWPAYMENTS_IPN_SECRET')) {
@@ -1152,7 +1147,7 @@ function buildOperationalFindings(input: {
       severity: 'warning',
       status: 'failed',
       scope: 'wallet_topup',
-      message: 'Ercas secret is missing. Set ERCASPAY_SECRET_KEY, ERCAS_SECRET_KEY, VITE_ERCASPAY_SECRET_KEY, or VITE_ERCAS_SECRET_KEY so wallet top-ups and recovery checks can run.',
+      message: 'Ercas secret is missing. Set ERCASPAY_SECRET_KEY or ERCAS_SECRET_KEY so wallet top-ups and recovery checks can run.',
       evidence: { ercaspay_secret_configured: false },
     })
   }

@@ -424,19 +424,22 @@ serve(async (req) => {
     );
 
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Failed to fetch data plans';
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    const errorName = error instanceof Error ? error.name : 'Error';
     console.error('Error fetching data plans:', error);
     
     // Log detailed error for server-side debugging only
     console.error('Detailed error:', JSON.stringify({
-      message: error.message,
-      stack: error.stack,
-      name: error.name,
+      message: errorMessage,
+      stack: errorStack,
+      name: errorName,
     }));
     
     return new Response(
       JSON.stringify({ 
         success: false, 
-        error: error.message || 'Failed to fetch data plans',
+        error: errorMessage,
         // Don't expose stack traces to client
       }),
       { 

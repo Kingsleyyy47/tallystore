@@ -212,7 +212,7 @@ function generatePaymentReference() {
 }
 
 async function recordRevenueEvent(
-  supabaseAdmin: ReturnType<typeof createClient>,
+  supabaseAdmin: any,
   input: {
     eventType: RevenueEventType
     eventId: string
@@ -308,9 +308,7 @@ serve(async (req) => {
 
     const ercasSecretKey =
       Deno.env.get('ERCASPAY_SECRET_KEY') ||
-      Deno.env.get('ERCAS_SECRET_KEY') ||
-      Deno.env.get('VITE_ERCASPAY_SECRET_KEY') ||
-      Deno.env.get('VITE_ERCAS_SECRET_KEY')
+      Deno.env.get('ERCAS_SECRET_KEY')
     if (!ercasSecretKey) {
       throw new Error('Payments are temporarily unavailable.')
     }
@@ -407,7 +405,7 @@ serve(async (req) => {
       throw new Error('Payment service returned an incomplete checkout response.')
     }
 
-    await supabaseAdmin
+    const { error: pendingPaymentError } = await supabaseAdmin
       .from('pending_payments')
       .insert({
         user_id: user.id,
@@ -416,6 +414,25 @@ serve(async (req) => {
         amount,
         status: 'pending',
       })
+
+    if (pendingPaymentError) {
+      await recordRevenueEvent(supabaseAdmin, {
+        eventType: 'PAYMENT_FAILED',
+        eventId: `wallet_topup:PAYMENT_FAILED:${transactionReference}:pending_evidence`,
+        userId: user.id,
+        surface: 'wallet_topup',
+        revenueContext,
+        metadata: {
+          transaction_reference: transactionReference,
+          ercas_reference: paymentReference,
+          amount_ngn: amount,
+          provider: 'ercaspay',
+          failure_stage: 'pending_payment_evidence_create',
+          error: pendingPaymentError.message,
+        },
+      })
+      throw new Error('Could not create trusted payment evidence. Please try again before paying.')
+    }
 
     await recordRevenueEvent(supabaseAdmin, {
       eventType: 'PAYMENT_STARTED',

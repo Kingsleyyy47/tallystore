@@ -167,7 +167,7 @@ function formatDisplayPrice(valueNgn: number, displayCurrency: DisplayCurrency, 
   return `₦${amount.toLocaleString("en-NG", { maximumFractionDigits: 0 })}`;
 }
 
-async function resolveNgnUsdRate(supabaseAdmin: ReturnType<typeof createClient> | null) {
+async function resolveNgnUsdRate(supabaseAdmin: any | null) {
   if (!supabaseAdmin) return null;
   try {
     const { rate } = await getNgnUsdRate(supabaseAdmin);
@@ -598,7 +598,7 @@ function clarificationReply(intent: Intent, messages: ChatMessage[], latest: str
   ], messages, latest);
 }
 
-async function loadAppSetting(supabase: ReturnType<typeof createClient>, key: string, fallback: string) {
+async function loadAppSetting(supabase: any, key: string, fallback: string) {
   const { data } = await supabase.from("app_settings").select("value").eq("key", key).maybeSingle();
   return data?.value || fallback;
 }

@@ -3,23 +3,20 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Gift, Users, Wallet, Copy, Loader2, ArrowDownToLine, Banknote } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { Gift, Users, Wallet, Copy, Loader2, Clock, Banknote } from 'lucide-react'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
-import { getReferralStats, withdrawReferralBalance } from '@/lib/supabase'
+import { getReferralStats } from '@/lib/supabase'
 import { trackRevenueEvent } from '@/lib/revenue-os'
 import { useCurrency } from '@/contexts/CurrencyContext'
 
 export default function ReferralsPage() {
-  const { user, refreshWalletBalance, showBalances } = useAuth()
+  const { user, showBalances } = useAuth()
   const { formatPrice } = useCurrency()
   const { toast } = useToast()
-  const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
-  const [withdrawing, setWithdrawing] = useState(false)
   const [stats, setStats] = useState<{
     referralCode: string | null
     referralBalance: number
@@ -80,51 +77,6 @@ export default function ReferralsPage() {
     toast({ title: 'Copied!', description: `${label} copied to clipboard` })
   }
 
-  const handleWithdraw = async () => {
-    if (!user?.id) return
-    setWithdrawing(true)
-    trackRevenueEvent({
-      eventType: 'OFFER_ACCEPTED',
-      userId: user.id,
-      surface: 'referral_move_to_wallet_attempt',
-      metadata: {
-        amount_ngn: stats.referralBalance,
-      },
-    })
-    try {
-      const result = await withdrawReferralBalance(user.id)
-      if (result.success) {
-        toast({
-          title: 'Moved to wallet',
-          description: showBalances
-            ? `${formatPrice(result.amount || 0)} moved to your wallet balance`
-            : 'Your wallet balance has been updated',
-        })
-        await refreshWalletBalance()
-        await loadStats()
-        trackRevenueEvent({
-          eventType: 'OFFER_ACCEPTED',
-          userId: user.id,
-          surface: 'referral_move_to_wallet_completed',
-          metadata: {
-            amount_ngn: result.amount || stats.referralBalance,
-            commerce_source: 'referral_reward',
-          },
-        })
-      } else {
-        toast({
-          title: 'Could not withdraw',
-          description: result.error || 'Please try again',
-          variant: 'destructive',
-        })
-      }
-    } catch (error) {
-      toast({ title: 'Error', description: 'Failed to withdraw referral balance', variant: 'destructive' })
-    } finally {
-      setWithdrawing(false)
-    }
-  }
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
       <Navbar />
@@ -179,16 +131,14 @@ export default function ReferralsPage() {
                 <CardContent className="pt-6 flex flex-col gap-2">
                   <Button
                     className="w-full"
-                    onClick={handleWithdraw}
-                    disabled={withdrawing || stats.referralBalance <= 0}
+                    disabled
                   >
-                    {withdrawing ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <ArrowDownToLine className="h-4 w-4 mr-2" />
-                    )}
-                    Move to Wallet
+                    <Clock className="h-4 w-4 mr-2" />
+                    Wallet Move Paused
                   </Button>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Referral balance movement is paused during wallet security review.
+                  </p>
                   <Button
                     className="w-full"
                     variant="outline"

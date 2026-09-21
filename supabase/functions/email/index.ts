@@ -137,7 +137,7 @@ function isValidEmail(value: unknown): value is string {
 }
 
 async function listPromotionConsentedEmails(
-  admin: ReturnType<typeof createClient>,
+  admin: any,
   options: { offset?: number; limit?: number; sampleLimit?: number } = {},
 ) {
   const offset = Math.max(0, Math.round(Number(options.offset || 0)));
@@ -454,15 +454,17 @@ async function handleProcessBroadcast() {
           }));
 
           // Append to error_log array
-          await admin.rpc("append_jsonb_array", {
-            table_name: "broadcast_jobs",
-            row_id: job.id,
-            column_name: "error_log",
-            new_elements: JSON.stringify(errorEntries),
-          }).catch(() => {
+          try {
+            await admin.rpc("append_jsonb_array", {
+              table_name: "broadcast_jobs",
+              row_id: job.id,
+              column_name: "error_log",
+              new_elements: JSON.stringify(errorEntries),
+            });
+          } catch {
             // Fallback: overwrite error_log if RPC doesn't exist
             // This is acceptable — we'll just track the latest batch errors
-          });
+          }
         }
       }
 

@@ -53,6 +53,10 @@ async function invokeTg<T = any>(action: string, body: Record<string, unknown> =
   return data.data as T
 }
 
+function createTelegramIdempotencyKey(kind: 'stars' | 'premium') {
+  return `telegram-${kind}-${Date.now()}-${crypto.randomUUID()}`
+}
+
 function calcStarPrice(quantity: number, pricing: StarPricing): number {
   if (!pricing || pricing.cost_per_star_usdt <= 0) return 0
   const base = pricing.cost_per_star_usdt * quantity * pricing.usdt_to_ngn
@@ -133,6 +137,7 @@ function StarsTab({ pricing, onOrderCreated, isStaff }: { pricing: StarPricing |
         recipient_hash: recipient.recipient,
         recipient_name: recipient.name,
         quantity: activeQty,
+        idempotency_key: createTelegramIdempotencyKey('stars'),
       })
       toast({ title: '⭐ Order placed!', description: `${activeQty.toLocaleString()} stars on their way to @${username.replace(/^@/, '')}` })
       setUsername('')
@@ -281,6 +286,7 @@ function PremiumTab({ products, onOrderCreated, isStaff }: { products: PremiumPr
         recipient_hash: recipient.recipient,
         recipient_name: recipient.name,
         product_id: selectedProduct.id,
+        idempotency_key: createTelegramIdempotencyKey('premium'),
       })
       toast({ title: '👑 Order placed!', description: `${selectedProduct.months}-month Telegram Premium gifted to @${username.replace(/^@/, '')}` })
       setUsername('')

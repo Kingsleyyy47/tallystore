@@ -220,7 +220,25 @@ function getPurchaseGuardIp(req?: Request | null) {
 }
 
 function getPurchaseGuardUserAgent(req?: Request | null) {
-  return String(req?.headers.get('user-agent') || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 500)
+  return Array.from(String(req?.headers.get('user-agent') || '')).filter((char) => {
+    const code = char.charCodeAt(0)
+    return code >= 32 && code !== 127
+  }).join('').trim().slice(0, 500)
+}
+
+async function getWalletRequestForensics(req: Request, route: string) {
+  const userAgent = getPurchaseGuardUserAgent(req)
+  return {
+    request_id: req.headers.get('x-request-id') || req.headers.get('x-correlation-id') || crypto.randomUUID(),
+    route,
+    ip_address: getPurchaseGuardIp(req),
+    user_agent: userAgent || null,
+    user_agent_hash: userAgent ? await purchaseGuardSha256Hex(userAgent) : null,
+    device_fingerprint: req.headers.get('x-device-fingerprint') || req.headers.get('x-client-device-id') || null,
+    forwarded_for: req.headers.get('x-forwarded-for') || null,
+    cf_ray: req.headers.get('cf-ray') || null,
+    vercel_id: req.headers.get('x-vercel-id') || null,
+  }
 }
 
 async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
@@ -301,7 +319,7 @@ async function getSmsExchangeRate(admin: SupabaseAdmin): Promise<{ rate: number;
   }
 
   const liveRate = await getUsdToNgnRate()
-  if (liveRate > 0) return { rate: liveRate, source: 'live' }
+  if (liveRate != null && liveRate > 0) return { rate: liveRate, source: 'live' }
   throw new Error('SMS pricing is temporarily unavailable. Set ngn_usd_rate in app settings or try again when live rates recover.')
 }
 
@@ -683,7 +701,7 @@ function friendlyError(error: unknown): string {
   return error instanceof Error ? error.message : 'Unexpected SMS error'
 }
 
-type SupabaseAdmin = ReturnType<typeof createClient>
+type SupabaseAdmin = any
 
 async function recordRevenueEvent(
   admin: SupabaseAdmin,
@@ -996,19 +1014,60 @@ async function buildSmsCatalog(admin: SupabaseAdmin, userId?: string | null) {
   return { products, diagnostics, exchangeRate, exchangeRateSource, globalMarginNgn, roundAutoPricesToNearestTen }
 }
 
-async function debitWallet(admin: SupabaseAdmin, userId: string, amount: number) {
-  for (let i = 0; i < 3; i++) {
-    const { data: p } = await admin.from('profiles').select('wallet_balance').eq('id', userId).single()
-    if (!p) throw new Error('Failed to fetch wallet balance')
-    const prev = Number(p.wallet_balance || 0)
-    if (prev < amount) throw new Error(`Insufficient wallet balance. Required: ₦${amount.toLocaleString()}, Available: ₦${prev.toLocaleString()}`)
-    const next = prev - amount
-    const { data: updated } = await admin.from('profiles')
-      .update({ wallet_balance: next, updated_at: new Date().toISOString() })
-      .eq('id', userId).eq('wallet_balance', prev).select('wallet_balance').single()
-    if (updated) return { prev, next }
+async function applyWalletTransaction(
+  admin: SupabaseAdmin,
+  params: {
+    userId: string
+    type: string
+    amount: number
+    reference: string
+    description: string
+    idempotencyKey: string
+    metadata?: Record<string, unknown>
+  },
+) {
+  const { data, error } = await admin.rpc('apply_wallet_transaction', {
+    p_user_id: params.userId,
+    p_type: params.type,
+    p_amount: params.amount,
+    p_reference: params.reference,
+    p_description: params.description,
+    p_idempotency_key: params.idempotencyKey,
+    p_metadata: params.metadata || {},
+    p_currency: 'NGN',
+    p_balance_type: 'wallet',
+    p_external_payment_id: null,
+    p_created_by: null,
+  })
+
+  if (error) throw new Error(error.message || 'Wallet transaction failed')
+  const result = data as any
+  if (!result?.success) throw new Error(result?.error || 'Wallet transaction failed')
+  return result
+}
+
+async function debitWallet(admin: SupabaseAdmin, userId: string, amount: number, reference: string, description: string, idempotencyKey: string, metadata?: Record<string, unknown>) {
+  try {
+    const result = await applyWalletTransaction(admin, {
+      userId,
+      type: 'purchase',
+      amount,
+      reference,
+      description,
+      idempotencyKey,
+      metadata,
+    })
+    return {
+      prev: Number(result.balance_before ?? 0),
+      next: Number(result.balance_after ?? 0),
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Wallet debit failed'
+    if (message.includes('insufficient_balance')) {
+      throw new Error(`Insufficient wallet balance. Required: ₦${amount.toLocaleString()}`)
+    }
+    throw error
   }
-  throw new Error('Wallet balance changed during purchase. Please try again.')
 }
 
 async function recordSmsRefundRevenueEvents(
@@ -1046,7 +1105,7 @@ async function recordSmsRefundRevenueEvents(
   })
 }
 
-async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: string; reference: string; price_ngn: number; service_id?: string | null }, reason: string) {
+async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: string; reference: string; price_ngn: number; service_id?: string | null }, reason: string, metadata: Record<string, unknown> = {}) {
   const amount = Number(order.price_ngn || 0)
   if (amount <= 0) return { refunded: true, amount: 0 }
   const refundRef = `REFUND-${order.reference}`
@@ -1061,45 +1120,34 @@ async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: 
     return { refunded: true, amount, reference: currentOrder.refund_reference, alreadyRefunded: true }
   }
 
-  const { data: existing } = await admin.from('transactions').select('id, status').eq('reference', refundRef).maybeSingle()
-  if (existing?.status === 'completed') {
-    await admin.from('sms_orders')
-      .update({ refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef })
-      .eq('id', order.id)
-      .is('refunded_at', null)
-    await recordSmsRefundRevenueEvents(admin, order, amount, refundRef, reason, true)
-    return { refunded: true, amount, reference: refundRef, alreadyRefunded: true }
-  }
+  await applyWalletTransaction(admin, {
+    userId: order.user_id,
+    type: 'refund',
+    amount,
+    reference: refundRef,
+    description: reason,
+    idempotencyKey: `sms:refund:${refundRef}`,
+    metadata: {
+      source: 'smsbus',
+      ...metadata,
+      source_order_id: order.id,
+      source_order_table: 'sms_orders',
+      order_id: order.id,
+      original_reference: order.reference,
+      service_id: order.service_id || null,
+    },
+  })
 
-  const tx = existing || (await admin.from('transactions').insert({
-    user_id: order.user_id, type: 'refund', amount, balance_after: 0,
-    description: reason, reference: refundRef, status: 'pending',
-  }).select('id, status').single()).data
-  if (!tx) throw new Error('Refund transaction could not be created. Please try again.')
-
-  for (let i = 0; i < 3; i++) {
-    const { data: p } = await admin.from('profiles').select('wallet_balance').eq('id', order.user_id).single()
-    if (!p) break
-    const next = Number(p.wallet_balance || 0) + amount
-    const { data: updated } = await admin.from('profiles')
-      .update({ wallet_balance: next, updated_at: new Date().toISOString() })
-      .eq('id', order.user_id).eq('wallet_balance', p.wallet_balance).select('wallet_balance').single()
-    if (updated) {
-      await admin.from('transactions').update({ status: 'completed', balance_after: next }).eq('id', tx.id)
-      await admin.from('sms_orders').update({ refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef }).eq('id', order.id).is('refunded_at', null)
-      await recordSmsRefundRevenueEvents(admin, order, amount, refundRef, reason)
-      return { refunded: true, amount, reference: refundRef }
-    }
-  }
-
-  throw new Error('Refund could not be credited. Please try again.')
+  await admin.from('sms_orders')
+    .update({ refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef })
+    .eq('id', order.id)
+    .is('refunded_at', null)
+  await recordSmsRefundRevenueEvents(admin, order, amount, refundRef, reason)
+  return { refunded: true, amount, reference: refundRef }
 }
 
 async function recordPurchase(admin: SupabaseAdmin, userId: string, reference: string, amount: number, balanceAfter: number, description: string) {
-  await admin.from('transactions').insert({
-    user_id: userId, type: 'purchase', amount: -amount,
-    balance_after: balanceAfter, description, reference, status: 'completed',
-  })
+  // Purchase ledger rows are created by apply_wallet_transaction().
 }
 
 function publicSmsOrder(order: any) {
@@ -1126,6 +1174,10 @@ function publicSmsOrder(order: any) {
     completed_at: order.completed_at,
     cancelled_at: order.cancelled_at,
   }
+}
+
+function smsOtpOrdersEnabled() {
+  return String(Deno.env.get('SMS_OTP_ENABLED') || '').trim().toLowerCase() === 'true'
 }
 
 async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, order: any) {
@@ -1417,7 +1469,7 @@ async function handleOrders(admin: SupabaseAdmin, userId: string) {
   if (!key) return json({ success: true, data: orders.map(publicSmsOrder) })
 
   const reconciled = await Promise.all(
-    orders.map((order) => reconcileOtpOrderStatus(admin, key, order).catch((err) => {
+    orders.map((order: any) => reconcileOtpOrderStatus(admin, key, order).catch((err) => {
       console.warn('Failed to reconcile SMS order:', err instanceof Error ? err.message : 'Unknown error')
       return order
     })),
@@ -1436,9 +1488,35 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
   const idempotencyKey = String(body.idempotency_key || '')
   if (!idempotencyKey || idempotencyKey.length < 10) throw new Error('Valid idempotency_key is required')
   const revenueContext = sanitizeRevenueRequestContext(body.revenue_context)
+  const walletRequestForensics = await getWalletRequestForensics(req, 'smsbus:create-otp')
 
   const { data: existing } = await admin.from('sms_orders').select('*').eq('user_id', userId).eq('idempotency_key', idempotencyKey).maybeSingle()
-  if (existing) return json({ success: true, data: publicSmsOrder(existing), idempotency_hit: true })
+
+  // If a previous attempt debited the wallet but failed before creating the
+  // SMS order row, do not replay that old debit into a fresh DaisySMS number.
+  // A rollback refund may already have been issued.
+  const { data: orphanedPurchaseTx, error: orphanedPurchaseError } = await admin
+    .from('transactions')
+    .select('id, amount, status, balance_after, created_at')
+    .eq('user_id', userId)
+    .eq('idempotency_key', `sms:purchase:${idempotencyKey}`)
+    .maybeSingle()
+
+  if (orphanedPurchaseError) {
+    throw new Error('Could not verify SMS purchase idempotency state')
+  }
+
+  if (orphanedPurchaseTx && !existing) {
+    console.error('Blocked orphaned SMS purchase ledger retry without matching order.', {
+      transaction_id: orphanedPurchaseTx.id,
+      idempotency_key: idempotencyKey,
+    })
+    return json({
+      success: false,
+      error: 'This SMS purchase attempt needs admin review before it can be retried.',
+      code: 'SMS_PURCHASE_LEDGER_ORPHANED',
+    }, 409)
+  }
 
   const { products, exchangeRate, globalMarginNgn, roundAutoPricesToNearestTen } = await buildSmsCatalog(admin)
   const svc = products.find(s => s.service_code === serviceCode)
@@ -1451,6 +1529,23 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
   }
   if (expectedPriceNgn !== estimatedPriceNgn) {
     throw new Error(`Price changed from NGN ${expectedPriceNgn.toLocaleString()} to NGN ${estimatedPriceNgn.toLocaleString()}. Please refresh and try again.`)
+  }
+
+  if (existing) {
+    const sameRequest =
+      String(existing.service_id || '') === serviceCode &&
+      Number(existing.price_ngn || 0) === estimatedPriceNgn &&
+      String(existing.order_type || '') === 'otp'
+
+    if (!sameRequest) {
+      return json({
+        success: false,
+        error: 'This idempotency key was already used for a different SMS order request.',
+        code: 'IDEMPOTENCY_REQUEST_CONFLICT',
+      }, 409)
+    }
+
+    return json({ success: true, data: publicSmsOrder(existing), idempotency_hit: true })
   }
 
   await recordRevenueEvent(admin, {
@@ -1485,13 +1580,52 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
   const priceNgn = estimatedPriceNgn
   const reference = generateReference('SMS')
   let debit: { prev: number; next: number } | null = null
+  let order: any = null
   let number: { activationId: string; phoneNumber: string; priceUsd?: number } | null = null
 
   try {
-    const { data: profile } = await admin.from('profiles').select('wallet_balance').eq('id', userId).single()
-    if (!profile || Number(profile.wallet_balance || 0) < estimatedPriceNgn) {
-      throw new Error(`Insufficient wallet balance. Required: ₦${estimatedPriceNgn.toLocaleString()}`)
+    debit = await debitWallet(
+      admin,
+      userId,
+      priceNgn,
+      reference,
+      `SMS OTP: ${svc.service_name}`,
+      `sms:purchase:${idempotencyKey}`,
+      {
+        source: 'smsbus',
+        request_forensics: walletRequestForensics,
+        service_code: serviceCode,
+        service_name: svc.service_name,
+        expected_price_ngn: expectedPriceNgn,
+        charged_price_ngn: priceNgn,
+      },
+    )
+
+    const initialProviderCostNgn = svc.provider_cost_usd * exchangeRate
+    const { data: pendingOrder, error: pendingOrderErr } = await admin.from('sms_orders').insert({
+      user_id: userId, reference, idempotency_key: idempotencyKey, order_type: 'otp',
+      service_id: serviceCode, service_name: svc.service_name,
+      country_id: DAISY_COUNTRY, country_code: 'us',
+      provider_cost_usd: svc.provider_cost_usd,
+      margin_usd: Math.max(0, (priceNgn - initialProviderCostNgn) / exchangeRate),
+      total_cost_usd: priceNgn / exchangeRate,
+      exchange_rate: exchangeRate, price_ngn: priceNgn,
+      status: 'pending',
+      expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+      provider_payload: {
+        service: svc,
+        displayed_price_ngn: estimatedPriceNgn,
+        expected_price_ngn: expectedPriceNgn,
+        charged_price_ngn: priceNgn,
+        pricing_mode: svc.pricing_mode,
+        pending_provider_allocation: true,
+      },
+    }).select().single()
+
+    if (pendingOrderErr || !pendingOrder) {
+      throw new Error(`Failed to create SMS order before provider allocation: ${pendingOrderErr?.message}`)
     }
+    order = pendingOrder
 
     const maxProviderPriceUsd = Math.max(
       svc.provider_cost_usd * 1.25,
@@ -1509,18 +1643,12 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     const marginUsd = Math.max(0, (priceNgn - effectivePricing.providerCostNgn) / exchangeRate)
     const marginNgn = Math.max(0, priceNgn - effectivePricing.providerCostNgn)
     const totalUsd = priceNgn / exchangeRate
-
-    debit = await debitWallet(admin, userId, priceNgn)
-    const { data: order, error: orderErr } = await admin.from('sms_orders').insert({
-      user_id: userId, reference, idempotency_key: idempotencyKey, order_type: 'otp',
+    const { data: activeOrder, error: orderErr } = await admin.from('sms_orders').update({
       provider_request_id: number.activationId,
-      service_id: serviceCode, service_name: svc.service_name,
-      country_id: DAISY_COUNTRY, country_code: 'us',
       phone_number: `+${number.phoneNumber}`, raw_phone_number: number.phoneNumber,
       provider_cost_usd: effectiveProviderUsd, margin_usd: marginUsd,
       total_cost_usd: totalUsd, exchange_rate: exchangeRate, price_ngn: priceNgn,
       status: 'active',
-      expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
       provider_payload: {
         activation_id: number.activationId,
         service: svc,
@@ -1534,9 +1662,10 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
         pricing_mode: effectivePricing.pricingMode,
         round_to_nearest_10: roundAutoPricesToNearestTen === true,
       },
-    }).select().single()
-    if (orderErr || !order) throw new Error(`Failed to create order: ${orderErr?.message}`)
-    await recordPurchase(admin, userId, reference, priceNgn, debit.next, `SMS OTP: ${svc.service_name}`)
+      updated_at: new Date().toISOString(),
+    }).eq('id', order.id).select().single()
+    if (orderErr || !activeOrder) throw new Error(`Failed to activate SMS order: ${orderErr?.message}`)
+    order = activeOrder
     await recordRevenueEvent(admin, {
       eventType: 'PAYMENT_COMPLETED',
       eventId: `sms:PAYMENT_COMPLETED:${idempotencyKey}`,
@@ -1575,7 +1704,24 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     if (number?.activationId) {
       try { await daisyCancelNumber(key, number.activationId) } catch { /* ignore */ }
     }
-    if (debit) await refundWallet(admin, { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: priceNgn }, `Auto-refund for failed SMS order: ${svc.service_name}`)
+    if (order?.id) {
+      await admin.from('sms_orders').update({
+        status: 'failed',
+        error_message: err instanceof Error ? err.message : 'Unknown SMS purchase error',
+        updated_at: new Date().toISOString(),
+      }).eq('id', order.id)
+    }
+    if (debit) {
+      await refundWallet(
+        admin,
+        order?.id ? order : { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: priceNgn, service_id: serviceCode },
+        `Auto-refund for failed SMS order: ${svc.service_name}`,
+        {
+          request_forensics: walletRequestForensics,
+          reason: 'create_otp_failed',
+        },
+      )
+    }
     await recordRevenueEvent(admin, {
       eventType: 'PAYMENT_FAILED',
       eventId: `sms:PAYMENT_FAILED:${idempotencyKey}`,
@@ -1980,9 +2126,16 @@ serve(async (req) => {
   }
 
   try {
-    const { user, admin } = await requireAuth(req)
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
     const action = String(body.action || '')
+    if (action === 'create_otp' && !smsOtpOrdersEnabled()) {
+      return json({
+        success: false,
+        error: 'SMS OTP purchases are temporarily paused for wallet security review.',
+        code: 'SMS_OTP_PAUSED',
+      }, 503)
+    }
+    const { user, admin } = await requireAuth(req)
 
     switch (action) {
       case 'health':       return await handleHealth()

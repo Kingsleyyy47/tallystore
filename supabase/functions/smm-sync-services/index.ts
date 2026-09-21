@@ -450,15 +450,16 @@ serve(async (req) => {
       }
     );
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('SMM Sync Services Error:', error);
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message || 'An unexpected error occurred',
+        error: errorMessage,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: error.message === 'Unauthorized' || error.message === 'Admin access required' ? 401 : 500,
+        status: errorMessage === 'Unauthorized' || errorMessage === 'Admin access required' ? 401 : 500,
       }
     );
   }

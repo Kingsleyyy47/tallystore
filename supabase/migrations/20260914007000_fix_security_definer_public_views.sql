@@ -82,7 +82,7 @@ begin
 end $$;
 
 insert into public.referral_lookup (id, referral_code, referred_by, updated_at)
-select id, referral_code, referred_by, now()
+select id, referral_code, referred_by::text, now()
 from public.profiles
 on conflict (id) do update set
   referral_code = excluded.referral_code,
@@ -116,7 +116,7 @@ set search_path = public
 as $$
 begin
   insert into public.referral_lookup (id, referral_code, referred_by, updated_at)
-  values (new.id, new.referral_code, new.referred_by, now())
+  values (new.id, new.referral_code, new.referred_by::text, now())
   on conflict (id) do update set
     referral_code = excluded.referral_code,
     referred_by = excluded.referred_by,

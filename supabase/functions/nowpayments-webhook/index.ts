@@ -308,12 +308,13 @@ function validateProviderFinishedPayment(existingTransaction: any, payload: any,
 }
 
 function cryptoAutoCreditEnabled() {
-  return String(Deno.env.get('CRYPTO_AUTO_CREDIT_ENABLED') || '').trim().toLowerCase() === 'true';
+  // Incident containment: crypto payment evidence may be recorded, but it must
+  // not become spendable automatically while wallet provenance is under review.
+  return false;
 }
 
 function cryptoAutoCreditDelayMinutes() {
-  const configured = Number(Deno.env.get('CRYPTO_AUTO_CREDIT_DELAY_MINUTES') || MIN_AUTO_CREDIT_DELAY_MINUTES);
-  return Math.max(MIN_AUTO_CREDIT_DELAY_MINUTES, Number.isFinite(configured) ? configured : MIN_AUTO_CREDIT_DELAY_MINUTES);
+  return MIN_AUTO_CREDIT_DELAY_MINUTES;
 }
 
 function providerPaymentAgeMinutes(providerPayment: any) {
@@ -730,56 +731,31 @@ serve(async (req) => {
                 console.log('Crypto webhook credit blocked because another process won the credit lock.');
                 shouldCreditUser = false;
               } else {
-                // NOW it's safe to credit the balance
-                const creditAmount = parseFloat(existingTransaction.naira_amount);
-                
-                const { data: userData, error: userError } = await supabaseAdmin
-                  .from('profiles')
-                  .select('crypto_balance')
-                  .eq('id', existingTransaction.user_id)
-                  .single();
+                shouldCreditUser = false;
+                await supabaseAdmin
+                  .from('crypto_transactions')
+                  .update({
+                    credited_at: null,
+                    status: 'blocked_review',
+                    provider_payload: {
+                      ...(existingTransaction.provider_payload || {}),
+                      blocked_reason: 'crypto_balance_auto_credit_disabled',
+                      blocked_at: new Date().toISOString(),
+                    },
+                  })
+                  .eq('id', existingTransaction.id);
 
-                if (userError) {
-                  console.error('Failed to fetch user:', userError);
-                } else {
-                  const currentBalance = parseFloat(userData.crypto_balance || '0');
-                  const newBalance = currentBalance + creditAmount;
-
-                  const { error: balanceError } = await supabaseAdmin
-                    .from('profiles')
-                    .update({ crypto_balance: newBalance })
-                    .eq('id', existingTransaction.user_id);
-
-                  if (balanceError) {
-                    console.error(`❌ Balance update failed:`, balanceError);
-                    // Rollback credited_at since we couldn't credit
-                    await supabaseAdmin
-                      .from('crypto_transactions')
-                      .update({ credited_at: null })
-                      .eq('id', existingTransaction.id);
-                  } else {
-                    await recordRevenueEvent(supabaseAdmin, {
-                      eventType: 'PAYMENT_COMPLETED',
-                      eventId: `crypto:PAYMENT_COMPLETED:${eventKey}`,
-                      userId: existingTransaction.user_id,
-                      surface: 'crypto',
-                      metadata: completedMetadata(newBalance),
-                    });
-                    await recordRevenueEvent(supabaseAdmin, {
-                      eventType: 'PRODUCT_PURCHASED',
-                      eventId: `crypto:PRODUCT_PURCHASED:${eventKey}`,
-                      userId: existingTransaction.user_id,
-                      surface: 'crypto',
-                      metadata: {
-                        ...completedMetadata(newBalance),
-                        product_name: `${existingTransaction.crypto_type || 'Crypto'} sell deposit`,
-                        quantity: 1,
-                        price_per_unit: creditAmount,
-                        commerce_source: 'crypto',
-                      },
-                    });
-                  }
-                }
+                await recordRevenueEvent(supabaseAdmin, {
+                  eventType: 'PAYMENT_FAILED',
+                  eventId: `crypto:PAYMENT_BLOCKED:${eventKey}`,
+                  userId: existingTransaction.user_id,
+                  surface: 'crypto',
+                  metadata: {
+                    ...completedMetadata(),
+                    blocked_reason: 'crypto_balance_auto_credit_disabled',
+                    provider: 'nowpayments',
+                  },
+                });
               }
             }
           }

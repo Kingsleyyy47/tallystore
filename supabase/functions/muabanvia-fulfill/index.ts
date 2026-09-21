@@ -103,7 +103,30 @@ serve(async (req) => {
       return json({ success: false, error: 'Method not allowed' }, 405)
     }
 
-    await getAuthenticatedUser(req)
+    if (String(Deno.env.get('LIVE_ACCOUNT_FULFILLMENT_ENABLED') || '').trim().toLowerCase() !== 'true') {
+      return json({
+        success: false,
+        code: 'LIVE_ACCOUNT_FULFILLMENT_PAUSED',
+        error: 'Live account fulfillment is temporarily disabled during wallet security review.',
+      }, 503)
+    }
+
+    const user = await getAuthenticatedUser(req)
+
+    const supabaseAdmin = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+    )
+
+    const { data: adminProfile } = await supabaseAdmin
+      .from('profiles')
+      .select('is_admin')
+      .eq('id', user.id)
+      .single()
+
+    if (!adminProfile?.is_admin) {
+      return json({ success: false, error: 'Admin access required' }, 403)
+    }
 
     const body = await req.json().catch(() => ({})) as Record<string, any>
     const muabanviaProductId = String(body.muabanviaProductId || '')

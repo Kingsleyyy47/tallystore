@@ -16,6 +16,32 @@ function isAuthorizedCron(req: Request) {
   return Boolean(cronSecret && providedSecret === cronSecret);
 }
 
+async function claimPendingPaymentForRecovery(
+  supabase: any,
+  payment: { id: string; check_count?: number | null },
+) {
+  const nextCheckCount = Number(payment.check_count || 0) + 1;
+  let query = supabase
+    .from('pending_payments')
+    .update({
+      last_check_at: new Date().toISOString(),
+      check_count: nextCheckCount,
+    })
+    .eq('id', payment.id)
+    .eq('status', 'pending');
+
+  query = payment.check_count == null
+    ? query.is('check_count', null)
+    : query.eq('check_count', payment.check_count);
+
+  const { data, error } = await query
+    .select('id, check_count')
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -84,14 +110,13 @@ serve(async (req) => {
       try {
         console.log('[CHECK-PENDING] Checking pending payment.');
 
-        // Update last_check_at and increment check_count
-        await supabase
-          .from('pending_payments')
-          .update({
-            last_check_at: new Date().toISOString(),
-            check_count: (payment.check_count || 0) + 1
-          })
-          .eq('id', payment.id);
+        // Optimistically claim this row so overlapping cron runs do not make
+        // duplicate provider verification calls for the same pending payment.
+        const claim = await claimPendingPaymentForRecovery(supabase, payment);
+        if (!claim?.id) {
+          console.log('[CHECK-PENDING] Pending payment was already claimed by another recovery run.');
+          continue;
+        }
 
         // Check if payment is too old (>48 hours) - mark as expired
         const paymentAge = Date.now() - new Date(payment.created_at).getTime();

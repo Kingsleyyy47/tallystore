@@ -71,6 +71,14 @@ serve(async (req) => {
       return json({ success: false, error: 'Method not allowed' }, 405)
     }
 
+    if (String(Deno.env.get('MANUAL_RESTOCK_ENABLED') || '').trim().toLowerCase() !== 'true') {
+      return json({
+        success: false,
+        code: 'MANUAL_RESTOCK_PAUSED',
+        error: 'Manual restock is temporarily disabled during wallet security review.',
+      }, 503)
+    }
+
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) {
       return json({ success: false, error: 'Missing authorization header' }, 401)

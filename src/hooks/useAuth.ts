@@ -71,9 +71,8 @@ export function useAuth() {
           .insert([
             {
               id: data.user.id,
-              username,
-              wallet_balance: 0,
-              is_admin: false,
+              email,
+              full_name: username,
             }
           ])
 

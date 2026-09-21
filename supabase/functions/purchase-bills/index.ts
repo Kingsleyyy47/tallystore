@@ -544,7 +544,25 @@ function getPurchaseGuardIp(req?: Request | null) {
 }
 
 function getPurchaseGuardUserAgent(req?: Request | null) {
-  return String(req?.headers.get('user-agent') || '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 500)
+  return Array.from(String(req?.headers.get('user-agent') || '')).filter((char) => {
+    const code = char.charCodeAt(0)
+    return code >= 32 && code !== 127
+  }).join('').trim().slice(0, 500)
+}
+
+async function getWalletRequestForensics(req: Request, route: string) {
+  const userAgent = getPurchaseGuardUserAgent(req)
+  return {
+    request_id: req.headers.get('x-request-id') || req.headers.get('x-correlation-id') || crypto.randomUUID(),
+    route,
+    ip_address: getPurchaseGuardIp(req),
+    user_agent: userAgent || null,
+    user_agent_hash: userAgent ? await purchaseGuardSha256Hex(userAgent) : null,
+    device_fingerprint: req.headers.get('x-device-fingerprint') || req.headers.get('x-client-device-id') || null,
+    forwarded_for: req.headers.get('x-forwarded-for') || null,
+    cf_ray: req.headers.get('cf-ray') || null,
+    vercel_id: req.headers.get('x-vercel-id') || null,
+  }
 }
 
 async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
@@ -606,17 +624,36 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Thresholds for balance alerts (in NGN)
-const LOW_BALANCE_THRESHOLD = 50000;
-const CRITICAL_BALANCE_THRESHOLD = 10000;
+async function applyWalletTransaction(
+  supabaseAdmin: any,
+  params: {
+    userId: string;
+    type: string;
+    amount: number;
+    reference?: string;
+    description?: string;
+    idempotencyKey?: string;
+    metadata?: Record<string, unknown>;
+  },
+) {
+  const { data, error } = await supabaseAdmin.rpc('apply_wallet_transaction', {
+    p_user_id: params.userId,
+    p_type: params.type,
+    p_amount: params.amount,
+    p_reference: params.reference || null,
+    p_description: params.description || null,
+    p_idempotency_key: params.idempotencyKey || null,
+    p_metadata: params.metadata || {},
+    p_currency: 'NGN',
+    p_balance_type: 'wallet',
+    p_external_payment_id: null,
+    p_created_by: null,
+  });
 
-interface BalanceCheckResult {
-  hasBalance: boolean;
-  currentBalance: number;
-  requestedAmount: number;
-  shortfall: number;
-  isLowBalance: boolean;
-  isCriticalBalance: boolean;
+  if (error) throw new Error(error.message || 'Wallet transaction failed');
+  const result = data as any;
+  if (!result?.success) throw new Error(result?.error || 'Wallet transaction failed');
+  return result;
 }
 
 /**
@@ -688,70 +725,6 @@ async function recordRevenueEvent(
   }
 }
 
-async function refundBalance(
-  supabaseAdmin: any,
-  userId: string,
-  balanceColumn: string,
-  amount: number,
-) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const { data: currentUserData } = await supabaseAdmin
-      .from('profiles')
-      .select(balanceColumn)
-      .eq('id', userId)
-      .single();
-
-    const currentBal = parseFloat(currentUserData?.[balanceColumn] || '0');
-    const refundedBalance = currentBal + amount;
-
-    const { data: refundData } = await supabaseAdmin
-      .from('profiles')
-      .update({ [balanceColumn]: refundedBalance })
-      .eq('id', userId)
-      .eq(balanceColumn, currentBal)
-      .select()
-      .single();
-
-    if (refundData) {
-      return refundedBalance;
-    }
-
-    await new Promise(r => setTimeout(r, 100 * (attempt + 1)));
-  }
-
-  throw new Error('Refund could not be credited. Please contact support.');
-}
-
-async function recordWalletLedgerTransaction(
-  supabaseAdmin: any,
-  input: {
-    userId: string;
-    type: 'purchase' | 'refund';
-    amount: number;
-    balanceAfter: number;
-    description: string;
-    reference: string;
-    status: 'completed' | 'pending' | 'failed';
-    paymentSource: string;
-  },
-) {
-  if (input.paymentSource !== 'wallet') return;
-
-  const { error } = await supabaseAdmin.from('transactions').insert({
-    user_id: input.userId,
-    type: input.type,
-    amount: input.amount,
-    balance_after: input.balanceAfter,
-    description: input.description,
-    reference: input.reference,
-    status: input.status,
-  });
-
-  if (error) {
-    console.error('Failed to record bills wallet ledger transaction:', error.message);
-  }
-}
-
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -759,9 +732,20 @@ serve(async (req) => {
   }
 
   try {
-    // Kill switch - can disable all bill purchases instantly via env var
-    if (Deno.env.get('BILLS_ENABLED') === 'false') {
-      throw new Error('Bills payment is temporarily disabled for maintenance. Please try again later.');
+    // Fail closed during wallet security review. Re-enable only after this
+    // route is migrated to the wallet authorization engine end to end.
+    if (String(Deno.env.get('BILLS_ENABLED') || '').trim().toLowerCase() !== 'true') {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          code: 'BILLS_PAUSED',
+          error: 'Bills payment is temporarily disabled during wallet security review.',
+        }),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 503,
+        },
+      );
     }
 
     // Get user from auth header
@@ -799,6 +783,7 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
     await assertPurchasingCustomer(supabaseAdmin, user.id, req);
+    const walletRequestForensics = await getWalletRequestForensics(req, 'purchase-bills');
 
     // Parse request body - includes payment_source and idempotency_key
     const { transaction_type, amount, service_provider, phone, data_plan_code, payment_source = 'wallet', idempotency_key, revenue_context } = await req.json();
@@ -906,26 +891,6 @@ serve(async (req) => {
       }
     }
 
-    // Determine which balance column to use
-    const balanceColumn = payment_source === 'wallet' ? 'wallet_balance' : 'crypto_balance';
-    const balanceDisplayName = payment_source === 'wallet' ? 'TallyStore' : 'Crypto';
-
-    // Check user's balance (dynamic column)
-    const { data: userData, error: userFetchError } = await supabaseClient
-      .from('profiles')
-      .select(balanceColumn)
-      .eq('id', user.id)
-      .single();
-
-    if (userFetchError) {
-      throw new Error('Failed to fetch user balance');
-    }
-
-    const currentBalance = parseFloat(userData?.[balanceColumn] || '0');
-    if (currentBalance < purchaseAmount) {
-      throw new Error(`Insufficient ${balanceDisplayName} balance. Available: ₦${currentBalance.toLocaleString()}, Required: ₦${purchaseAmount.toLocaleString()}`);
-    }
-
     // Check SageCloud balance
     const sageCloudBalance = await sageCloudClient.getBalanceAmount();
     const balanceCheck: BalanceCheckResult = {
@@ -1018,62 +983,39 @@ serve(async (req) => {
       throw new Error(`Failed to create transaction record: ${dbError.message}`);
     }
 
-    // Deduct from user's balance with optimistic locking (dynamic column)
-    let balanceDeducted = false;
-    let actualCurrentBalance = currentBalance;
-    
-    for (let attempt = 0; attempt < 5 && !balanceDeducted; attempt++) {
-      // Re-fetch balance to ensure we have latest value (use admin client)
-      const { data: freshUserData } = await supabaseAdmin
-        .from('profiles')
-        .select(balanceColumn)
-        .eq('id', user.id)
-        .single();
-      
-      actualCurrentBalance = parseFloat(freshUserData?.[balanceColumn] || '0');
-      
-      // Re-check balance is sufficient
-      if (actualCurrentBalance < purchaseAmount) {
-        // Rollback transaction record
-        await supabaseAdmin
-          .from('bills_transactions')
-          .delete()
-          .eq('id', billRecord.id);
-        throw new Error(`Insufficient ${balanceDisplayName} balance. Available: ₦${actualCurrentBalance.toLocaleString()}, Required: ₦${purchaseAmount.toLocaleString()}`);
-      }
-      
-      // Optimistic lock: only update if balance matches what we read (use admin client)
-      const { data: updateData, error: balanceError } = await supabaseAdmin
-        .from('profiles')
-        .update({ [balanceColumn]: actualCurrentBalance - purchaseAmount })
-        .eq('id', user.id)
-        .eq(balanceColumn, actualCurrentBalance)
-        .select()
-        .single();
-
-      if (balanceError) {
-        console.warn(`⚠️ Balance deduction conflict on attempt ${attempt + 1}, retrying...`);
-        await new Promise(r => setTimeout(r, 100 * (attempt + 1)));
-        continue;
-      }
-
-      if (updateData) {
-        balanceDeducted = true;
-      } else {
-        console.warn(`🔁 No rows updated on attempt ${attempt + 1}, retrying...`);
-        await new Promise(r => setTimeout(r, 100 * (attempt + 1)));
-      }
-    }
-    
-    if (!balanceDeducted) {
-      // Rollback transaction record
+    let debitResult: any;
+    try {
+      debitResult = await applyWalletTransaction(supabaseAdmin, {
+        userId: user.id,
+        type: 'purchase',
+        amount: purchaseAmount,
+        reference,
+        description: `${transaction_type === 'airtime' ? 'Airtime' : 'Data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
+        idempotencyKey: `bills:purchase:${idempotency_key}`,
+        metadata: {
+          source: 'purchase-bills',
+          source_order_id: billRecord.id,
+          source_order_table: 'bills_transactions',
+          transaction_id: billRecord.id,
+          transaction_type,
+          service_provider: normalizedProvider,
+          beneficiary_phone: normalizedPhone,
+          service_code: data_plan_code || null,
+          request_forensics: walletRequestForensics,
+        },
+      });
+    } catch (debitError: unknown) {
+      const errorMessage = debitError instanceof Error ? debitError.message : 'Wallet debit failed before provider dispatch';
       await supabaseAdmin
         .from('bills_transactions')
-        .delete()
+        .update({
+          status: 'failed',
+          sagecloud_response: JSON.stringify({ error: errorMessage, stage: 'wallet_debit' }),
+        })
         .eq('id', billRecord.id);
-      throw new Error('Failed to deduct balance after multiple attempts. Please try again.');
+      throw debitError;
     }
-    const balanceAfterDeduction = actualCurrentBalance - purchaseAmount;
+    void debitResult;
 
     // Process purchase via SageCloud
     let purchaseResponse;
@@ -1124,27 +1066,26 @@ serve(async (req) => {
         .eq('id', billRecord.id);
 
       if (finalStatus === 'failed') {
-        const refundedBalance = await refundBalance(supabaseAdmin, user.id, balanceColumn, purchaseAmount);
-        await recordWalletLedgerTransaction(supabaseAdmin, {
-          userId: user.id,
-          type: 'purchase',
-          amount: -purchaseAmount,
-          balanceAfter: balanceAfterDeduction,
-          description: `Failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
-          reference,
-          status: 'failed',
-          paymentSource: payment_source,
-        });
-        await recordWalletLedgerTransaction(supabaseAdmin, {
+        const refundResult = await applyWalletTransaction(supabaseAdmin, {
           userId: user.id,
           type: 'refund',
           amount: purchaseAmount,
-          balanceAfter: refundedBalance,
           description: `Auto-refund for failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
           reference: `REFUND-${reference}`,
-          status: 'completed',
-          paymentSource: payment_source,
+          idempotencyKey: `bills:refund:${billRecord.id}:provider-returned-failed`,
+          metadata: {
+            source: 'purchase-bills',
+            source_order_id: billRecord.id,
+            source_order_table: 'bills_transactions',
+            transaction_id: billRecord.id,
+            original_reference: reference,
+            source_debit_transaction_id: debitResult?.transaction?.id || null,
+            source_debit_idempotency_key: `bills:purchase:${idempotency_key}`,
+            reason: 'provider_returned_failed',
+            request_forensics: walletRequestForensics,
+          },
         });
+        const refundedBalance = Number(refundResult.balance_after ?? 0);
         await recordRevenueEvent(supabaseAdmin, {
           eventType: 'PAYMENT_FAILED',
           eventId: `bills:PAYMENT_FAILED:${idempotency_key}`,
@@ -1227,17 +1168,6 @@ serve(async (req) => {
           provider_reference: purchaseResponse.reference || reference,
         },
       });
-      await recordWalletLedgerTransaction(supabaseAdmin, {
-        userId: user.id,
-        type: 'purchase',
-        amount: -purchaseAmount,
-        balanceAfter: balanceAfterDeduction,
-        description: `${transaction_type === 'airtime' ? 'Airtime' : 'Data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
-        reference,
-        status: finalStatus === 'successful' ? 'completed' : 'pending',
-        paymentSource: payment_source,
-      });
-
     } catch (purchaseError: unknown) {
       console.error('SageCloud purchase failed:', purchaseError instanceof Error ? purchaseError.message : 'Unknown purchase error');
       const errorMessage = purchaseError instanceof Error ? purchaseError.message : 'Unknown purchase error';
@@ -1251,28 +1181,28 @@ serve(async (req) => {
         })
         .eq('id', billRecord.id);
 
-      const refundedBalance = await refundBalance(supabaseAdmin, user.id, balanceColumn, purchaseAmount);
-      console.log('Bills purchase refunded after provider failure.');
-      await recordWalletLedgerTransaction(supabaseAdmin, {
-        userId: user.id,
-        type: 'purchase',
-        amount: -purchaseAmount,
-        balanceAfter: balanceAfterDeduction,
-        description: `Failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone} - ${errorMessage}`,
-        reference,
-        status: 'failed',
-        paymentSource: payment_source,
-      });
-      await recordWalletLedgerTransaction(supabaseAdmin, {
+      const refundResult = await applyWalletTransaction(supabaseAdmin, {
         userId: user.id,
         type: 'refund',
         amount: purchaseAmount,
-        balanceAfter: refundedBalance,
         description: `Auto-refund for failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
         reference: `REFUND-${reference}`,
-        status: 'completed',
-        paymentSource: payment_source,
+        idempotencyKey: `bills:refund:${billRecord.id}:provider-error`,
+        metadata: {
+          source: 'purchase-bills',
+          source_order_id: billRecord.id,
+          source_order_table: 'bills_transactions',
+          transaction_id: billRecord.id,
+          original_reference: reference,
+          source_debit_transaction_id: debitResult?.transaction?.id || null,
+          source_debit_idempotency_key: `bills:purchase:${idempotency_key}`,
+          reason: 'provider_purchase_error',
+          error: errorMessage,
+          request_forensics: walletRequestForensics,
+        },
       });
+      const refundedBalance = Number(refundResult.balance_after ?? 0);
+      console.log('Bills purchase refunded after provider failure.');
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
         eventId: `bills:PAYMENT_FAILED:${idempotency_key}`,

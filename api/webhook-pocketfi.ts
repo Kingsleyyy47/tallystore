@@ -11,14 +11,10 @@
 const SUPABASE_PROJECT_URL = 'https://dssvvswvqnxanyzfhixf.supabase.co'
 const POCKETFI_EDGE_URL = `${SUPABASE_PROJECT_URL}/functions/v1/webhook-pocketfi`
 
-function pickWebhookSecret() {
-  return (
-    process.env.POCKETFI_WEBHOOK_SECRET ||
-    process.env.POCKETFI_SECRET_KEY ||
-    process.env.POCKETFI_SECRET_API_KEY ||
-    process.env.VITE_POCKETFI_SECRET_KEY ||
-    ''
-  )
+export const config = {
+  api: {
+    bodyParser: false,
+  },
 }
 
 function copyHeader(req: any, name: string) {
@@ -26,13 +22,29 @@ function copyHeader(req: any, name: string) {
   return Array.isArray(value) ? value[0] : value
 }
 
+async function readRawBody(req: any): Promise<string> {
+  if (typeof req.body === 'string') return req.body
+  if (Buffer.isBuffer(req.body)) return req.body.toString('utf8')
+
+  const chunks: Buffer[] = []
+  try {
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    }
+  } catch {
+    // Some serverless adapters still provide req.body instead of a stream.
+  }
+
+  if (chunks.length > 0) return Buffer.concat(chunks).toString('utf8')
+  return req.body ? JSON.stringify(req.body) : ''
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  const body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {})
-  const secret = pickWebhookSecret()
+  const body = await readRawBody(req)
   const requestUrl = new URL(req.url || '/api/webhook-pocketfi', 'https://tallystore.org')
   const upstreamUrl = `${POCKETFI_EDGE_URL}${requestUrl.search}`
 
@@ -54,8 +66,18 @@ export default async function handler(req: any, res: any) {
     if (value) headers[name] = String(value)
   }
 
-  if (secret && !headers.authorization && !headers['x-pocketfi-webhook-secret']) {
-    headers['x-pocketfi-webhook-secret'] = secret
+  const hasVerificationHeader = Boolean(
+    headers.authorization ||
+      headers['pocketfi-signature'] ||
+      headers['http_pocketfi_signature'] ||
+      headers['x-pocketfi-signature'] ||
+      headers['x-webhook-signature'] ||
+      headers['x-pocketfi-webhook-secret'] ||
+      headers['x-webhook-secret'],
+  )
+
+  if (!hasVerificationHeader) {
+    return res.status(401).json({ error: 'Missing PocketFi webhook verification header' })
   }
 
   try {

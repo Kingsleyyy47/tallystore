@@ -25,6 +25,10 @@ ALTER TABLE public.transactions
     )
   );
 
+-- The legacy database may contain this function with a different return type.
+-- PostgreSQL cannot change a function return type with CREATE OR REPLACE.
+DROP FUNCTION IF EXISTS public.transfer_crypto_to_wallet(uuid, numeric);
+
 CREATE OR REPLACE FUNCTION public.transfer_crypto_to_wallet(
   p_user_id uuid,
   p_amount numeric
@@ -201,15 +205,6 @@ BEGIN
           updated_at = now()
       WHERE id = target_user_id
         AND COALESCE(account_suspended, false) = false;
-  ELSIF COALESCE(profile_row.account_suspended, false)
-        AND COALESCE(profile_row.suspension_reason, '') LIKE 'Auto-suspended:%' THEN
-    UPDATE public.profiles
-      SET account_suspended = false,
-          suspension_reason = NULL,
-          suspension_reinstated_at = now(),
-          reinstated_by = NULL,
-          updated_at = now()
-      WHERE id = target_user_id;
   END IF;
 
   RETURN jsonb_build_object(

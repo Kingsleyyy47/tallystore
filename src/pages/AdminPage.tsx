@@ -82,6 +82,7 @@ import {
   getUserOrdersAdmin,
   adminAdjustBalance,
   adminRecordLedgerCredit,
+  adminRecordChargeback,
   adminSuspendUser,
   adminUnsuspendUser,
   getAppSetting,
@@ -156,6 +157,18 @@ const ADMIN_TABS = [
 ] as const
 
 type AdminTabValue = (typeof ADMIN_TABS)[number]['value']
+
+const PARTNER_API_INCIDENT_PAUSED = true
+const PARTNER_SECTIONS = [
+  { key: 'products', label: 'Products' },
+  { key: 'sms', label: 'SMS' },
+  { key: 'social_boost', label: 'Social Boost' },
+  { key: 'bills_airtime', label: 'Bills & Airtime' },
+  { key: 'giftcards', label: 'Gift Cards' },
+  { key: 'crypto', label: 'Crypto' },
+  { key: 'telegram_stars', label: 'Telegram' },
+] as const
+const PARTNER_SCOPES = ['catalogue:read', 'orders:create', 'orders:read', 'wallet:read'] as const
 
 const EXPLICIT_PRODUCT_RELATIONSHIP_TYPES = [
   'COMPATIBLE_WITH',
@@ -372,6 +385,8 @@ type FraudReviewRow = {
   trustedCredits: number
   completedSpend: number
   completedRefunds: number
+  eligibleRefunds: number
+  trustedAvailable: number
   netSpend: number
   exposure: number
   spendRatio: number | null
@@ -392,12 +407,31 @@ type FraudReviewRow = {
 
 const DORMANT_EMAIL_STORAGE_KEY = 'tallystore:dormant-customer-email-cohort:v1'
 const DORMANT_EMAIL_SETTING_KEY = 'sales_dormant_customer_email_cohort'
+const ADMIN_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time'
+
+function parseAdminDate(value?: string | null): Date | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function formatAdminAbsoluteDateTime(value?: string | null): string {
+  const parsed = parseAdminDate(value)
+  if (!parsed) return 'Unknown'
+  return `${format(parsed, 'PP p')} (${ADMIN_TIME_ZONE})`
+}
+
+function formatAdminDateWithRelative(value?: string | null): string {
+  const parsed = parseAdminDate(value)
+  if (!parsed) return 'Unknown'
+  return `${formatAdminAbsoluteDateTime(value)} · ${formatDistanceToNow(parsed, { addSuffix: true })}`
+}
 
 function isDepositTransaction(tx: { type?: string | null; amount?: number | null }) {
   const type = String(tx.type || '').toLowerCase()
   const amount = Number(tx.amount || 0)
   if (amount <= 0) return false
-  return ['topup', 'top_up', 'top-up', 'wallet_topup', 'deposit', 'wallet_deposit', 'credit', 'admin_credit', 'staff_credit'].includes(type)
+  return ['topup', 'top_up', 'top-up', 'wallet_topup', 'deposit', 'wallet_deposit', 'admin_credit'].includes(type)
 }
 
 function isCompletedDeposit(status?: string | null) {
@@ -408,42 +442,94 @@ function normalizeLedgerText(value?: unknown) {
   return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
 }
 
-function isTrustedCreditTransaction(tx: any) {
+function isBalanceNeutralAdminRepair(tx: any) {
+  const metadata = tx.metadata && typeof tx.metadata === 'object' ? tx.metadata : {}
+  const balanceBefore = Number(tx.balance_before || 0)
+  const balanceAfter = Number(tx.balance_after || 0)
+  return (
+    String(metadata.source || '') === 'admin-ledger-repair' ||
+    String(metadata.balance_unchanged || '').toLowerCase() === 'true' ||
+    String(metadata.requires_owner_evidence || '').toLowerCase() === 'true' ||
+    balanceAfter <= balanceBefore
+  )
+}
+
+function toLedgerCents(value: unknown) {
+  return Math.round(Number(value || 0) * 100)
+}
+
+function isVerifiedGatewayCreditTransaction(
+  tx: any,
+  pendingEvidenceByUser: Map<string, any[]> = new Map(),
+  pocketfiLogsById: Map<string, any> = new Map(),
+) {
   const type = normalizeLedgerText(tx.type)
-  const description = String(tx.description || '').toLowerCase()
   const amount = Number(tx.amount || 0)
-  if (amount <= 0) return false
+  const userId = String(tx.user_id || '')
+  const externalPaymentId = String(tx.external_payment_id || '').trim()
+  const reference = String(tx.reference || '').trim()
+  const metadata = tx.metadata && typeof tx.metadata === 'object' ? tx.metadata : {}
+  const provider = String(metadata.provider || '').toLowerCase()
+  const verifiedAmount = Number(metadata.verified_amount_ngn || 0)
 
-  if (['refund', 'purchase_refund', 'auto_refund'].includes(type)) return false
-
-  if ([
+  if (![
     'topup',
     'top_up',
     'wallet_topup',
     'wallet_deposit',
     'deposit',
-    'credit',
-    'admin_credit',
-    'staff_credit',
-    'referral_withdrawal',
-    'crypto_credit',
-  ].includes(type)) {
-    return true
+  ].includes(type)) return false
+  if (!externalPaymentId || amount <= 0 || toLedgerCents(verifiedAmount) !== toLedgerCents(amount)) return false
+
+  if (['ercaspay', 'ercas'].includes(provider)) {
+    const localRefs = [reference, externalPaymentId].filter(Boolean)
+    const paymentRows = pendingEvidenceByUser.get(userId) || []
+    return paymentRows.some((payment: any) => {
+      const paymentRefs = [
+        String(payment.transaction_reference || '').trim(),
+        String(payment.ercas_reference || '').trim(),
+      ].filter(Boolean)
+      return String(payment.status || 'pending').toLowerCase() === 'credited' &&
+        toLedgerCents(payment.amount) === toLedgerCents(amount) &&
+        localRefs.some((localRef) => paymentRefs.includes(localRef))
+    })
   }
 
-  return [
-    'wallet top-up',
-    'wallet topup',
-    'wallet deposit',
-    'bank transfer',
-    'pocketfi',
-    'ercas',
-    'admin adjustment',
-    'staff adjustment',
-    'add funds',
-    'credited',
-    'deposit',
-  ].some((needle) => description.includes(needle))
+  if (provider === 'pocketfi') {
+    const webhookLogId = String(metadata.webhook_log_id || '').trim()
+    const webhookLog = webhookLogId ? pocketfiLogsById.get(webhookLogId) : null
+    return Boolean(
+      webhookLog &&
+      String(webhookLog.matched_user_id || '') === userId &&
+      Boolean(webhookLog.processed) === true &&
+      toLedgerCents(webhookLog.verified_amount_ngn) === toLedgerCents(amount) &&
+      [reference, externalPaymentId].filter(Boolean).includes(String(webhookLog.verified_reference || '').trim()),
+    )
+  }
+
+  return false
+}
+
+function isTrustedCreditTransaction(
+  tx: any,
+  adminActorIds: Set<string> = new Set(),
+  pendingEvidenceByUser: Map<string, any[]> = new Map(),
+  pocketfiLogsById: Map<string, any> = new Map(),
+) {
+  const type = normalizeLedgerText(tx.type)
+  const amount = Number(tx.amount || 0)
+  const createdBy = String(tx.created_by || '').trim()
+  const hasApprovingAdminActor = Boolean(createdBy && adminActorIds.has(createdBy))
+  if (amount <= 0) return false
+
+  if (['refund', 'purchase_refund', 'auto_refund'].includes(type)) return false
+  if (isVerifiedGatewayCreditTransaction(tx, pendingEvidenceByUser, pocketfiLogsById)) return true
+
+  if (type === 'admin_credit') {
+    return hasApprovingAdminActor && !isBalanceNeutralAdminRepair(tx)
+  }
+
+  return false
 }
 
 function isTrustedCryptoCreditTransaction(tx: any) {
@@ -458,12 +544,112 @@ function isTrustedCryptoCreditTransaction(tx: any) {
 
 function isWalletSpendTransaction(tx: any) {
   const type = normalizeLedgerText(tx.type)
-  return type === 'purchase'
+  return [
+    'purchase',
+    'admin_debit',
+    'staff_debit',
+    'debit',
+    'withdrawal',
+    'chargeback',
+    'correction_debit',
+  ].includes(type)
 }
 
 function isWalletRefundTransaction(tx: any) {
   const type = normalizeLedgerText(tx.type)
   return ['refund', 'purchase_refund', 'auto_refund'].includes(type)
+}
+
+function getTransactionMetadata(tx: any) {
+  return tx?.metadata && typeof tx.metadata === 'object' ? tx.metadata : {}
+}
+
+function getWalletDebitEvidenceId(tx: any) {
+  return String(tx?.id || tx?.transaction_id || tx?.idempotency_key || '').trim()
+}
+
+function getTrustedPrincipalDebitAmount(tx: any, metadata: any) {
+  if (String(metadata.trusted_principal_authorized || '').toLowerCase() !== 'true') return 0
+  const trustedAmount = Number(metadata.trusted_principal_debit_amount || 0)
+  if (!Number.isFinite(trustedAmount) || trustedAmount <= 0) return 0
+  return Math.min(Math.abs(Number(tx.amount || 0)), trustedAmount)
+}
+
+function getTrustedDebitEvidence(tx: any) {
+  if (!isWalletSpendTransaction(tx)) return null
+  const metadata = getTransactionMetadata(tx)
+  const trustedDebitAmount = getTrustedPrincipalDebitAmount(tx, metadata)
+  if (trustedDebitAmount <= 0) return null
+
+  const debitId = getWalletDebitEvidenceId(tx)
+  if (!debitId) return null
+
+  return {
+    id: debitId,
+    amount: trustedDebitAmount,
+    idempotencyKey: String(tx.idempotency_key || '').trim(),
+    reference: String(tx.reference || '').trim(),
+    sourceOrderTable: String(metadata.source_order_table || '').trim(),
+    sourceOrderIds: [
+      metadata.source_order_id,
+      metadata.order_id,
+      metadata.transaction_id,
+    ].map((value) => String(value || '').trim()).filter(Boolean),
+  }
+}
+
+function findLinkedTrustedDebit(refund: any, trustedDebits: Map<string, NonNullable<ReturnType<typeof getTrustedDebitEvidence>>>) {
+  const metadata = getTransactionMetadata(refund)
+  const directId = String(metadata.source_debit_transaction_id || '').trim()
+  if (directId && trustedDebits.has(directId)) return trustedDebits.get(directId) || null
+
+  const sourceKey = String(metadata.source_debit_idempotency_key || metadata.original_purchase_idempotency_key || '').trim()
+  if (sourceKey) {
+    return Array.from(trustedDebits.values()).find((debit) => debit.idempotencyKey && debit.idempotencyKey === sourceKey) || null
+  }
+
+  const sourceOrderId = String(metadata.source_order_id || metadata.order_id || metadata.transaction_id || '').trim()
+  const sourceOrderTable = String(metadata.source_order_table || '').trim()
+  if (sourceOrderId) {
+    return Array.from(trustedDebits.values()).find((debit) => {
+      if (sourceOrderTable && debit.sourceOrderTable && debit.sourceOrderTable !== sourceOrderTable) return false
+      return debit.sourceOrderIds.includes(sourceOrderId)
+    }) || null
+  }
+
+  const originalReference = String(metadata.original_reference || '').trim()
+  if (originalReference) {
+    return Array.from(trustedDebits.values()).find((debit) => debit.reference && debit.reference === originalReference) || null
+  }
+
+  return null
+}
+
+function getWalletTransactionDisplayAmount(tx: any) {
+  const amount = Number(tx.amount || 0)
+  const absoluteAmount = Math.abs(amount)
+  const type = normalizeLedgerText(tx.type)
+
+  if (isWalletSpendTransaction(tx)) return -absoluteAmount
+  if (isWalletRefundTransaction(tx)) return absoluteAmount
+
+  if ([
+    'topup',
+    'top_up',
+    'wallet_topup',
+    'wallet_deposit',
+    'deposit',
+    'credit',
+    'admin_credit',
+    'staff_credit',
+    'promotion_credit',
+    'correction_credit',
+    'referral_withdrawal',
+  ].includes(type)) {
+    return absoluteAmount
+  }
+
+  return amount
 }
 
 function formatAdminNaira(value?: number | null) {
@@ -685,12 +871,15 @@ export default function AdminPage() {
   const [adjustBalanceOpen, setAdjustBalanceOpen] = useState(false)
   const [adjustmentAmount, setAdjustmentAmount] = useState('')
   const [adjustmentReason, setAdjustmentReason] = useState('')
-  const [adjustmentType, setAdjustmentType] = useState<'add' | 'subtract'>('add')
+  const [adjustmentReference, setAdjustmentReference] = useState('')
+  const [adjustmentType, setAdjustmentType] = useState<'add' | 'subtract' | 'chargeback'>('add')
   const [ledgerOnlyCredit, setLedgerOnlyCredit] = useState(false)
   const [userTransactions, setUserTransactions] = useState<any[]>([])
   const [userOrders, setUserOrders] = useState<any[]>([])
+  const [userSecurityEvents, setUserSecurityEvents] = useState<any[]>([])
   const [showAllUserTransactions, setShowAllUserTransactions] = useState(false)
   const [showAllUserOrders, setShowAllUserOrders] = useState(false)
+  const [showAllUserSecurityEvents, setShowAllUserSecurityEvents] = useState(false)
   const [isAdjusting, setIsAdjusting] = useState(false)
   const [isSuspendingUser, setIsSuspendingUser] = useState(false)
   const [isUnsuspendingUser, setIsUnsuspendingUser] = useState(false)
@@ -880,16 +1069,6 @@ export default function AdminPage() {
   const [smsRoundToNearestTen, setSmsRoundToNearestTen] = useState(false)
 
   // Private reseller / partner API
-  const PARTNER_SECTIONS = [
-    { key: 'products', label: 'Products' },
-    { key: 'sms', label: 'SMS' },
-    { key: 'social_boost', label: 'Social Boost' },
-    { key: 'bills_airtime', label: 'Bills & Airtime' },
-    { key: 'giftcards', label: 'Gift Cards' },
-    { key: 'crypto', label: 'Crypto' },
-    { key: 'telegram_stars', label: 'Telegram' },
-  ] as const
-  const PARTNER_SCOPES = ['catalogue:read', 'orders:create', 'orders:read', 'wallet:read'] as const
   const [apiPartners, setApiPartners] = useState<ApiPartner[]>([])
   const [apiPartnerOrders, setApiPartnerOrders] = useState<ApiPartnerOrder[]>([])
   const [apiPartnerLogs, setApiPartnerLogs] = useState<ApiPartnerLog[]>([])
@@ -999,6 +1178,10 @@ export default function AdminPage() {
   }, [invokePartnerAdmin, toast])
 
   const createApiPartner = useCallback(async () => {
+    if (PARTNER_API_INCIDENT_PAUSED) {
+      toast({ title: 'Partner API paused', description: 'Partner creation is locked during the wallet security review.', variant: 'destructive' })
+      return
+    }
     if (!newApiPartner.name.trim()) {
       toast({ title: 'Partner name required', variant: 'destructive' })
       return
@@ -1023,9 +1206,13 @@ export default function AdminPage() {
     } finally {
       setApiPartnerSaving(null)
     }
-  }, [PARTNER_SECTIONS, invokePartnerAdmin, loadApiPartners, newApiPartner, toast])
+  }, [invokePartnerAdmin, loadApiPartners, newApiPartner, toast])
 
   const updateApiPartner = useCallback(async (partnerId: string, updates: Record<string, unknown>) => {
+    if (PARTNER_API_INCIDENT_PAUSED) {
+      toast({ title: 'Partner API paused', description: 'Partner updates are locked during the wallet security review.', variant: 'destructive' })
+      return
+    }
     setApiPartnerSaving(partnerId)
     try {
       await invokePartnerAdmin({ action: 'admin_update_partner', partner_id: partnerId, ...updates })
@@ -1039,6 +1226,10 @@ export default function AdminPage() {
   }, [invokePartnerAdmin, loadApiPartners, toast])
 
   const startApiPartnerEdit = useCallback((partner: ApiPartner) => {
+    if (PARTNER_API_INCIDENT_PAUSED) {
+      toast({ title: 'Partner API paused', description: 'Partner editing is locked during the wallet security review.', variant: 'destructive' })
+      return
+    }
     setApiPartnerEditDrafts(prev => ({
       ...prev,
       [partner.id]: {
@@ -1049,7 +1240,7 @@ export default function AdminPage() {
           : PARTNER_SECTIONS.map((section) => section.key),
       },
     }))
-  }, [PARTNER_SECTIONS])
+  }, [toast])
 
   const cancelApiPartnerEdit = useCallback((partnerId: string) => {
     setApiPartnerEditDrafts(prev => {
@@ -1060,6 +1251,10 @@ export default function AdminPage() {
   }, [])
 
   const saveApiPartnerEdit = useCallback(async (partnerId: string) => {
+    if (PARTNER_API_INCIDENT_PAUSED) {
+      toast({ title: 'Partner API paused', description: 'Partner updates are locked during the wallet security review.', variant: 'destructive' })
+      return
+    }
     const draft = apiPartnerEditDrafts[partnerId]
     if (!draft?.name.trim()) {
       toast({ title: 'Partner name required', variant: 'destructive' })
@@ -1090,6 +1285,10 @@ export default function AdminPage() {
   }, [apiPartnerEditDrafts, cancelApiPartnerEdit, invokePartnerAdmin, loadApiPartners, toast])
 
   const generateApiPartnerKey = useCallback(async (partnerId: string) => {
+    if (PARTNER_API_INCIDENT_PAUSED) {
+      toast({ title: 'Partner API paused', description: 'Key generation is locked during the wallet security review.', variant: 'destructive' })
+      return
+    }
     setApiPartnerSaving(`key-${partnerId}`)
     try {
       const data = await invokePartnerAdmin<{ success: boolean; data: ApiPartnerKey & { api_key: string; webhook_secret?: string } }>({
@@ -1109,9 +1308,13 @@ export default function AdminPage() {
     } finally {
       setApiPartnerSaving(null)
     }
-  }, [PARTNER_SCOPES, invokePartnerAdmin, loadApiPartners, toast])
+  }, [invokePartnerAdmin, loadApiPartners, toast])
 
   const revokeApiPartnerKey = useCallback(async (keyId: string) => {
+    if (PARTNER_API_INCIDENT_PAUSED) {
+      toast({ title: 'Partner API paused', description: 'Key changes are locked during the wallet security review.', variant: 'destructive' })
+      return
+    }
     setApiPartnerSaving(`revoke-${keyId}`)
     try {
       await invokePartnerAdmin({ action: 'admin_revoke_key', key_id: keyId })
@@ -1891,7 +2094,7 @@ export default function AdminPage() {
     } finally {
       setSmmServicesLoading(false)
     }
-  }, [])
+  }, [toast])
 
   const handleToggleSmmService = async (id: number, currentlyActive: boolean) => {
     setSmmTogglingId(id)
@@ -2398,7 +2601,7 @@ export default function AdminPage() {
   useEffect(() => {
     loadAllData()
     loadBroadcastJobs()
-  }, [])
+  }, [loadBroadcastJobs])
 
   useEffect(() => {
     try {
@@ -2703,20 +2906,33 @@ export default function AdminPage() {
     }
 
     try {
-      const [profileRows, transactionRows, cryptoTransactionRows, siteVisitRows] = await Promise.all([
+      const [profileRows, transactionRows, cryptoTransactionRows, siteVisitRows, pendingPaymentRows, pocketfiWebhookLogRows] = await Promise.all([
         readRows('profiles', 50000),
         readRows('transactions', 500000),
         readRows('crypto_transactions', 200000).catch(() => []),
         readRows('site_visits', 100000).catch(() => []),
+        readRows('pending_payments', 200000).catch(() => []),
+        readRows('pocketfi_webhook_logs', 200000).catch(() => []),
       ])
 
       const completedStatuses = new Set(['completed', 'success', 'successful', 'credited', 'complete', 'paid', 'finished'])
+      const adminActorIds = new Set(
+        profileRows
+          .filter((profile: any) => profile?.is_admin === true)
+          .map((profile: any) => String(profile.id || ''))
+          .filter(Boolean),
+      )
 
       const ledgerByUser = new Map<string, {
         trustedCredits: number
         completedSpend: number
         completedRefunds: number
+        eligibleRefunds: number
+        linkedEligibleRefunds: number
+        trustedAvailable: number
         duplicateTopupReferences: Set<string>
+        trustedDebits: Map<string, NonNullable<ReturnType<typeof getTrustedDebitEvidence>>>
+        completedRefundRows: any[]
       }>()
       const ipByUser = new Map<string, {
         lastIpAddress: string | null
@@ -2727,6 +2943,22 @@ export default function AdminPage() {
         ipAddresses: Set<string>
       }>()
       const topupRefs = new Map<string, { count: number; userIds: Set<string> }>()
+      const pendingEvidenceByUser = new Map<string, any[]>()
+      const pocketfiLogsById = new Map<string, any>()
+
+      for (const payment of pendingPaymentRows) {
+        const userId = String(payment.user_id || '')
+        if (!userId) continue
+        const rows = pendingEvidenceByUser.get(userId) || []
+        rows.push(payment)
+        pendingEvidenceByUser.set(userId, rows)
+      }
+
+      for (const log of pocketfiWebhookLogRows) {
+        const id = String(log.id || '')
+        if (!id) continue
+        pocketfiLogsById.set(id, log)
+      }
 
       const ensureLedger = (userId: string) => {
         const existing = ledgerByUser.get(userId)
@@ -2735,7 +2967,12 @@ export default function AdminPage() {
           trustedCredits: 0,
           completedSpend: 0,
           completedRefunds: 0,
+          eligibleRefunds: 0,
+          linkedEligibleRefunds: 0,
+          trustedAvailable: 0,
           duplicateTopupReferences: new Set<string>(),
+          trustedDebits: new Map<string, NonNullable<ReturnType<typeof getTrustedDebitEvidence>>>(),
+          completedRefundRows: [],
         }
         ledgerByUser.set(userId, next)
         return next
@@ -2775,7 +3012,7 @@ export default function AdminPage() {
         const amount = Number(tx.amount || 0)
         const ledger = ensureLedger(userId)
 
-        if (isTrustedCreditTransaction(tx)) {
+        if (isTrustedCreditTransaction(tx, adminActorIds, pendingEvidenceByUser, pocketfiLogsById)) {
           ledger.trustedCredits += amount
           const reference = String(tx.reference || '').trim()
           const type = normalizeLedgerText(tx.type)
@@ -2787,15 +3024,20 @@ export default function AdminPage() {
           }
         } else if (isWalletSpendTransaction(tx)) {
           ledger.completedSpend += Math.abs(amount)
+          const trustedDebit = getTrustedDebitEvidence(tx)
+          if (trustedDebit) ledger.trustedDebits.set(trustedDebit.id, trustedDebit)
         } else if (isWalletRefundTransaction(tx) && amount > 0) {
           ledger.completedRefunds += amount
+          ledger.completedRefundRows.push(tx)
         }
       }
 
       for (const tx of cryptoTransactionRows) {
         const userId = String(tx.user_id || '')
         if (!userId || !isTrustedCryptoCreditTransaction(tx)) continue
-        ensureLedger(userId).trustedCredits += Number(tx.naira_amount || tx.amount || 0)
+        // Crypto credits are quarantined during the wallet incident review and
+        // should not mask uncovered wallet spend.
+        ensureLedger(userId)
       }
 
       for (const [reference, info] of topupRefs) {
@@ -2805,6 +3047,26 @@ export default function AdminPage() {
         }
       }
 
+      for (const ledger of ledgerByUser.values()) {
+        const refundedByOriginal = new Map<string, number>()
+
+        for (const refund of ledger.completedRefundRows) {
+          const original = findLinkedTrustedDebit(refund, ledger.trustedDebits)
+          if (!original) continue
+
+          const alreadyRefunded = refundedByOriginal.get(original.id) || 0
+          const refundableRemaining = Math.max(original.amount - alreadyRefunded, 0)
+          const eligibleAmount = Math.min(Number(refund.amount || 0), refundableRemaining)
+          refundedByOriginal.set(original.id, alreadyRefunded + eligibleAmount)
+        }
+
+        ledger.linkedEligibleRefunds = Array.from(refundedByOriginal.values()).reduce((sum, amount) => sum + amount, 0)
+        const trustedDebitCapacity = Math.min(ledger.completedSpend, ledger.trustedCredits)
+        ledger.eligibleRefunds = Math.min(ledger.linkedEligibleRefunds, trustedDebitCapacity)
+        const trustedConsumedSpend = Math.max(trustedDebitCapacity - ledger.eligibleRefunds, 0)
+        ledger.trustedAvailable = Math.max(ledger.trustedCredits - trustedConsumedSpend, 0)
+      }
+
       const rows: FraudReviewRow[] = []
       for (const profile of profileRows) {
         if (profile.is_admin || profile.is_staff) continue
@@ -2812,24 +3074,32 @@ export default function AdminPage() {
         const userId = String(profile.id || '')
         if (!userId) continue
         const ledger = ensureLedger(userId)
-        const netSpend = Math.max(ledger.completedSpend - ledger.completedRefunds, 0)
-        const exposure = netSpend - ledger.trustedCredits
+        const trustedDebitCapacity = Math.min(ledger.completedSpend, ledger.trustedCredits)
+        const eligibleRefunds = ledger.eligibleRefunds
+        const trustedConsumedSpend = Math.max(trustedDebitCapacity - eligibleRefunds, 0)
+        const trustedAvailable = ledger.trustedAvailable
+        const netSpend = Math.max(ledger.completedSpend - eligibleRefunds, 0)
+        const spendExposure = Math.max(netSpend - ledger.trustedCredits, 0)
+        const displayedBalanceExposure = Math.max(Number(profile.wallet_balance || 0) - trustedAvailable, 0)
+        const exposure = Math.max(spendExposure, displayedBalanceExposure)
         const spendRatio = ledger.trustedCredits > 0 ? netSpend / ledger.trustedCredits : netSpend > 0 ? null : 0
         const duplicateTopupReferences = Array.from(ledger.duplicateTopupReferences)
         const suspended = profile.account_suspended === true
-
         let reviewType: FraudReviewRow['reviewType'] | null = null
         let reason = ''
 
         if (suspended && exposure <= 1) {
           reviewType = 'review_unblock'
-          reason = 'Suspended, but trusted credits now cover completed spend. Review for possible unblock.'
+          reason = 'Suspended, but trusted principal now covers consumed spend and displayed wallet balance. Review for possible unblock.'
         } else if (suspended) {
           reviewType = 'suspended_risk'
           reason = profile.suspension_reason || `Suspended with ${formatAdminNaira(Math.max(exposure, 0))} uncovered spend.`
-        } else if (exposure > 1) {
+        } else if (displayedBalanceExposure > 1) {
           reviewType = 'overspent'
-          reason = `Completed spend exceeds trusted credits by ${formatAdminNaira(exposure)}.`
+          reason = `Displayed wallet balance exceeds trusted available funds by ${formatAdminNaira(displayedBalanceExposure)}.`
+        } else if (spendExposure > 1) {
+          reviewType = 'overspent'
+          reason = `Completed spend exceeds trusted principal by ${formatAdminNaira(spendExposure)}.`
         } else if (duplicateTopupReferences.length > 0) {
           reviewType = 'duplicate_deposit'
           reason = `Duplicate completed top-up reference detected: ${duplicateTopupReferences.slice(0, 2).join(', ')}`
@@ -2853,6 +3123,8 @@ export default function AdminPage() {
           trustedCredits: ledger.trustedCredits,
           completedSpend: ledger.completedSpend,
           completedRefunds: ledger.completedRefunds,
+          eligibleRefunds,
+          trustedAvailable,
           netSpend,
           exposure,
           spendRatio,
@@ -4154,7 +4426,7 @@ export default function AdminPage() {
       recentInsights: croInsightRows.slice(0, 6),
       recentDecisions: recentDecisionGroups,
     }
-  }, [croActionPlanRows, croDecisionRows, croDriftRows, croEvaluationRows, croExperimentRows, croInsightRows, croLifecycleActionRows, croModelRows.length, croOpportunityRows, croRelationshipRows, croSimulationRows, discountCodes, productGroups, promotionMaxDiscountPct, promotionMonthlyBudgetNgn, revenueFeatureRows, revenueForecastRows, revenueQualityRows, salesOrders])
+  }, [croActionPlanRows, croDecisionRows, croDriftRows, croEvaluationRows, croExperimentRows, croInsightRows, croLifecycleActionRows, croModelRows.length, croOpportunityRows, croRelationshipRows, croSimulationRows, discountCodes, productGroups, promotionMaxDiscountPct, promotionMonthlyBudgetNgn, revenueEvents, revenueFeatureRows, revenueForecastRows, revenueQualityRows, salesOrders])
 
   if (loading) {
     return (
@@ -4199,7 +4471,7 @@ export default function AdminPage() {
     if (!userSearchQuery.trim()) {
       toast({
         title: "Search required",
-        description: "Please enter an email or name to search",
+        description: "Please enter an email, name, user ID, or account number to search",
         variant: "destructive"
       })
       return
@@ -4229,9 +4501,10 @@ export default function AdminPage() {
     try {
       setShowAllUserTransactions(false)
       setShowAllUserOrders(false)
-      
+      setShowAllUserSecurityEvents(false)
+
       // Load user transactions, orders, and latest server-captured visit evidence.
-      const [transactions, cryptoTransactions, orders, latestVisitResult] = await Promise.all([
+      const [transactions, cryptoTransactions, orders, latestVisitResult, securityEventsResult] = await Promise.all([
         getUserTransactions(user.id),
         supabase
           .from('crypto_transactions' as any)
@@ -4247,6 +4520,13 @@ export default function AdminPage() {
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .limit(25)
+          .then(({ data, error }) => error ? { data: [], error } : { data: data || [], error: null }),
+        supabase
+          .from('wallet_security_events' as any)
+          .select('id, created_at, event_type, severity, source, route, db_function, request_id, idempotency_key, operation_reference, ip_address, user_agent, device_fingerprint, financial_snapshot, result, denial_code, metadata')
+          .or(`profile_id.eq.${user.id},wallet_user_id.eq.${user.id}`)
+          .order('created_at', { ascending: false })
+          .limit(100)
           .then(({ data, error }) => error ? { data: [], error } : { data: data || [], error: null })
       ])
 
@@ -4257,7 +4537,7 @@ export default function AdminPage() {
         ...(Array.isArray(user.fraud_ip_addresses) ? user.fraud_ip_addresses : []),
         ...visits.map((visit: any) => String(visit.ip_address || '').trim()).filter(Boolean),
       ])).slice(0, 8)
-      
+
       setSelectedUser({
         ...user,
         fraud_last_ip_address: user.fraud_last_ip_address || latestServerVisit?.ip_address || '',
@@ -4286,6 +4566,7 @@ export default function AdminPage() {
       }))
       setUserTransactions([...transactions, ...cryptoLedgerRows].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()))
       setUserOrders(orders)
+      setUserSecurityEvents(securityEventsResult.data || [])
       setViewUserOpen(true)
     } catch (error: any) {
       toast({
@@ -4309,6 +4590,7 @@ export default function AdminPage() {
     setSelectedUser(user)
     setAdjustmentAmount('')
     setAdjustmentReason('')
+    setAdjustmentReference('')
     setAdjustmentType('add')
     setLedgerOnlyCredit(false)
     setAdjustBalanceOpen(true)
@@ -4357,7 +4639,16 @@ export default function AdminPage() {
     if (ledgerOnlyCredit && adjustmentType !== 'add') {
       toast({
         title: 'Credit repair only',
-        description: 'Ledger repair records missing credits only. Use normal deduct funds to debit a balance.',
+        description: 'Ledger repair records missing credits only. Use deduct funds or record chargeback to debit a balance.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (adjustmentType === 'chargeback' && adjustmentReference.trim().length < 3) {
+      toast({
+        title: 'Chargeback reference required',
+        description: 'Enter the payment, dispute, or provider reversal reference for duplicate protection.',
         variant: 'destructive',
       })
       return
@@ -4385,11 +4676,41 @@ export default function AdminPage() {
           setAdjustBalanceOpen(false)
           setAdjustmentAmount('')
           setAdjustmentReason('')
+          setAdjustmentReference('')
           setLedgerOnlyCredit(false)
           return
         }
       }
-      
+
+      if (adjustmentType === 'chargeback') {
+        const result = await adminRecordChargeback(selectedUser.id, amount, cleanReason, adjustmentReference.trim())
+
+        if (result.success) {
+          if (result.transaction) {
+            setUserTransactions(prev => [result.transaction, ...prev])
+          }
+
+          setUsers(prev => prev.map(u =>
+            u.id === selectedUser.id
+              ? { ...u, wallet_balance: result.newBalance ?? u.wallet_balance, account_suspended: true }
+              : u
+          ))
+
+          toast({
+            title: 'Chargeback recorded',
+            description: `Recorded ₦${amount.toLocaleString()} reversal and placed the account into review.`,
+          })
+
+          setAdjustBalanceOpen(false)
+          setAdjustmentAmount('')
+          setAdjustmentReason('')
+          setAdjustmentReference('')
+          setLedgerOnlyCredit(false)
+          setSelectedUser(null)
+          return
+        }
+      }
+
       const result = await adminAdjustBalance(
         selectedUser.id,
         adjustment,
@@ -4414,6 +4735,7 @@ export default function AdminPage() {
         setAdjustBalanceOpen(false)
         setAdjustmentAmount('')
         setAdjustmentReason('')
+        setAdjustmentReference('')
         setLedgerOnlyCredit(false)
         setSelectedUser(null)
       }
@@ -4702,6 +5024,40 @@ export default function AdminPage() {
         selectedUser.fraud_last_user_agent || '',
         selectedUser.suspension_reason || '',
       ],
+      ...userSecurityEvents.map((event) => [
+        'security_event',
+        selectedUser.id,
+        selectedUser.email,
+        selectedUser.full_name || '',
+        Number(selectedUser.wallet_balance || 0),
+        accountStatus,
+        event.id || '',
+        formatCustomerCsvDate(event.created_at),
+        event.event_type || '',
+        event.result || event.severity || '',
+        [
+          event.denial_code ? `Denial: ${event.denial_code}` : '',
+          event.db_function ? `DB: ${event.db_function}` : '',
+          event.route ? `Route: ${event.route}` : '',
+          event.operation_reference ? `Ref: ${event.operation_reference}` : '',
+        ].filter(Boolean).join(' | '),
+        '',
+        event.request_id || event.idempotency_key || event.operation_reference || '',
+        '',
+        '',
+        '',
+        event.ip_address || selectedUser.fraud_last_ip_address || '',
+        Array.isArray(selectedUser.fraud_ip_addresses) ? selectedUser.fraud_ip_addresses.join(' | ') : '',
+        formatCustomerCsvDate(selectedUser.fraud_last_ip_seen_at),
+        selectedUser.fraud_last_ip_location || '',
+        selectedUser.fraud_last_ip_isp || '',
+        selectedUser.fraud_device_label || '',
+        selectedUser.fraud_device_type || '',
+        selectedUser.fraud_device_os || '',
+        selectedUser.fraud_device_browser || '',
+        event.user_agent || selectedUser.fraud_last_user_agent || '',
+        selectedUser.suspension_reason || '',
+      ]),
       ...userTransactions.map((tx) => [
         'transaction',
         selectedUser.id,
@@ -4768,7 +5124,7 @@ export default function AdminPage() {
     )
     toast({
       title: 'User history CSV downloaded',
-      description: `${userTransactions.length.toLocaleString()} transaction(s) and ${userOrders.length.toLocaleString()} order(s) exported.`,
+      description: `${userTransactions.length.toLocaleString()} transaction(s), ${userOrders.length.toLocaleString()} order(s), and ${userSecurityEvents.length.toLocaleString()} security event(s) exported.`,
     })
   }
 
@@ -6486,9 +6842,9 @@ export default function AdminPage() {
                   <Label>Action</Label>
                   <Select
                     value={adjustmentType}
-                    onValueChange={(value: 'add' | 'subtract') => {
+                    onValueChange={(value: 'add' | 'subtract' | 'chargeback') => {
                       setAdjustmentType(value)
-                      if (value === 'subtract') setLedgerOnlyCredit(false)
+                      if (value !== 'add') setLedgerOnlyCredit(false)
                     }}
                   >
                     <SelectTrigger>
@@ -6497,6 +6853,7 @@ export default function AdminPage() {
                     <SelectContent>
                       <SelectItem value="add">Add Funds (Credit)</SelectItem>
                       <SelectItem value="subtract">Deduct Funds (Debit)</SelectItem>
+                      <SelectItem value="chargeback">Record Chargeback</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -6529,11 +6886,22 @@ export default function AdminPage() {
                   />
                 </div>
 
+                {adjustmentType === 'chargeback' && (
+                  <div className="space-y-2">
+                    <Label>Chargeback Reference</Label>
+                    <Input
+                      placeholder="Payment, dispute, or provider reversal reference"
+                      value={adjustmentReference}
+                      onChange={(e) => setAdjustmentReference(e.target.value)}
+                    />
+                  </div>
+                )}
+
                 {/* Reason Textarea */}
                 <div className="space-y-2">
                   <Label>Reason (Required)</Label>
                   <Textarea
-                    placeholder="e.g., Fix, Refund for order #123, Manual top-up..."
+                    placeholder={adjustmentType === 'chargeback' ? 'e.g., Provider payment reversal reference and evidence...' : 'e.g., Fix, Refund for order #123, Manual top-up...'}
                     value={adjustmentReason}
                     onChange={(e) => setAdjustmentReason(e.target.value)}
                     rows={3}
@@ -6554,6 +6922,11 @@ export default function AdminPage() {
                       <p className="font-bold border-t pt-1 mt-1">
                         {ledgerOnlyCredit ? `Balance stays: ₦${(selectedUser?.wallet_balance || 0).toLocaleString()}` : `New Balance: ₦${calculateNewBalance()}`}
                       </p>
+                      {adjustmentType === 'chargeback' && (
+                        <p className="text-xs text-red-600">
+                          Records a chargeback through the wallet engine and suspends this customer for wallet review.
+                        </p>
+                      )}
                       {ledgerOnlyCredit && (
                         <p className="text-xs text-muted-foreground">
                           A completed admin_credit transaction will be recorded for history and fraud review only.
@@ -6565,18 +6938,18 @@ export default function AdminPage() {
               </div>
 
               <DialogFooter>
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
                   onClick={() => setAdjustBalanceOpen(false)}
                   disabled={isAdjusting}
                 >
                   Cancel
                 </Button>
-                <Button 
-                  onClick={handleSubmitAdjustment} 
-                  disabled={!adjustmentAmount || adjustmentReason.trim().length < 3 || isAdjusting}
+                <Button
+                  onClick={handleSubmitAdjustment}
+                  disabled={!adjustmentAmount || adjustmentReason.trim().length < 3 || (adjustmentType === 'chargeback' && adjustmentReference.trim().length < 3) || isAdjusting}
                 >
-                  {isAdjusting ? 'Processing...' : ledgerOnlyCredit ? 'Record Credit History' : (adjustmentType === 'add' ? 'Add Funds' : 'Deduct Funds')}
+                  {isAdjusting ? 'Processing...' : ledgerOnlyCredit ? 'Record Credit History' : adjustmentType === 'chargeback' ? 'Record Chargeback' : (adjustmentType === 'add' ? 'Add Funds' : 'Deduct Funds')}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -6590,6 +6963,7 @@ export default function AdminPage() {
               if (!open) {
                 setShowAllUserTransactions(false)
                 setShowAllUserOrders(false)
+                setShowAllUserSecurityEvents(false)
               }
             }}
           >
@@ -6669,7 +7043,7 @@ export default function AdminPage() {
                           </p>
                           {selectedUser.suspended_at && (
                             <p className="mt-1 text-xs text-muted-foreground">
-                              Suspended {formatDistanceToNow(new Date(selectedUser.suspended_at), { addSuffix: true })}
+                              Suspended {formatAdminDateWithRelative(selectedUser.suspended_at)}
                             </p>
                           )}
                         </div>
@@ -6680,7 +7054,7 @@ export default function AdminPage() {
                       </div>
                       <div>
                         <p className="text-sm text-muted-foreground">Joined Date</p>
-                        <p>{selectedUser?.created_at && format(new Date(selectedUser.created_at), 'PPP')}</p>
+                        <p>{formatAdminDateWithRelative(selectedUser?.created_at)}</p>
                       </div>
                       {selectedUser?.fraud_last_ip_address && (
                         <div className="sm:col-span-2 rounded-lg border p-3">
@@ -6702,7 +7076,7 @@ export default function AdminPage() {
                           )}
                           {selectedUser.fraud_last_ip_seen_at && (
                             <p className="text-xs text-muted-foreground">
-                              Last seen {formatDistanceToNow(new Date(selectedUser.fraud_last_ip_seen_at), { addSuffix: true })}
+                              Last seen {formatAdminDateWithRelative(selectedUser.fraud_last_ip_seen_at)}
                             </p>
                           )}
                           {selectedUser.fraud_last_user_agent && (
@@ -6721,6 +7095,91 @@ export default function AdminPage() {
                   </CardContent>
                 </Card>
 
+                {/* Security Events Card */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg flex items-center justify-between">
+                      <span>Security Events</span>
+                      <Badge variant="outline">{userSecurityEvents.length} total</Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {userSecurityEvents.length === 0 ? (
+                      <p className="text-center text-muted-foreground py-4">No security events found</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {(showAllUserSecurityEvents ? userSecurityEvents : userSecurityEvents.slice(0, 5)).map((event) => {
+                          const snapshot = event.financial_snapshot && typeof event.financial_snapshot === 'object'
+                            ? event.financial_snapshot
+                            : {}
+                          const metadata = event.metadata && typeof event.metadata === 'object'
+                            ? event.metadata
+                            : {}
+                          return (
+                            <div key={event.id} className="rounded-lg border p-3">
+                              <div className="mb-2 flex flex-wrap items-center gap-2">
+                                <Badge variant={event.severity === 'critical' ? 'destructive' : 'outline'}>
+                                  {event.event_type || 'security_event'}
+                                </Badge>
+                                {event.denial_code && (
+                                  <Badge variant="secondary">{event.denial_code}</Badge>
+                                )}
+                                <span className="text-sm text-muted-foreground">
+                                  {event.created_at ? formatAdminDateWithRelative(event.created_at) : 'Unknown time'}
+                                </span>
+                              </div>
+                              <div className="grid gap-2 text-sm sm:grid-cols-2">
+                                <div>
+                                  <p className="text-muted-foreground">Result</p>
+                                  <p className="font-medium">{event.result || event.severity || 'recorded'}</p>
+                                </div>
+                                <div>
+                                  <p className="text-muted-foreground">Source</p>
+                                  <p className="font-medium">{event.route || event.db_function || event.source || 'Unknown'}</p>
+                                </div>
+                                {(event.request_id || event.idempotency_key || event.operation_reference) && (
+                                  <div className="sm:col-span-2">
+                                    <p className="text-muted-foreground">Reference</p>
+                                    <p className="break-all font-mono text-xs">
+                                      {event.request_id || event.idempotency_key || event.operation_reference}
+                                    </p>
+                                  </div>
+                                )}
+                                {(snapshot.suspension_reason || metadata.reason) && (
+                                  <div className="sm:col-span-2">
+                                    <p className="text-muted-foreground">Reason</p>
+                                    <p className="text-sm">{snapshot.suspension_reason || metadata.reason}</p>
+                                  </div>
+                                )}
+                                {(event.ip_address || event.device_fingerprint || event.user_agent) && (
+                                  <div className="sm:col-span-2">
+                                    <p className="text-muted-foreground">Device/IP evidence</p>
+                                    {event.ip_address && <p className="font-mono text-xs">{event.ip_address}</p>}
+                                    {event.device_fingerprint && <p className="font-mono text-xs">{event.device_fingerprint}</p>}
+                                    {event.user_agent && <p className="break-all font-mono text-[11px] text-muted-foreground">{event.user_agent}</p>}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                        {userSecurityEvents.length > 5 && (
+                          <div className="pt-2 text-center">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setShowAllUserSecurityEvents(prev => !prev)}
+                            >
+                              {showAllUserSecurityEvents ? 'Show less' : `See all ${userSecurityEvents.length} security events`}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
                 {/* Recent Transactions Card */}
                 <Card>
                   <CardHeader>
@@ -6735,9 +7194,10 @@ export default function AdminPage() {
                     ) : (
                       <div className="space-y-2">
                         {(showAllUserTransactions ? userTransactions : userTransactions.slice(0, 5)).map((tx) => {
-                          const isCredit = isTrustedCreditTransaction(tx) || isWalletRefundTransaction(tx)
-                          const isSpend = isWalletSpendTransaction(tx)
-                          const displayAmount = Math.abs(Number(tx.amount || 0))
+                          const signedAmount = getWalletTransactionDisplayAmount(tx)
+                          const isCredit = signedAmount > 0
+                          const isSpend = signedAmount < 0
+                          const displayAmount = Math.abs(signedAmount)
 
                           return (
                             <div key={tx.id} className="flex items-center justify-between p-3 border rounded-lg">
@@ -6801,7 +7261,7 @@ export default function AdminPage() {
                             <p className="text-2xl font-bold">₦{calculateTotalSpent(userOrders)}</p>
                           </div>
                         </div>
-                        
+
                         <div className="space-y-2">
                           {(showAllUserOrders ? userOrders : userOrders.slice(0, 5)).map((order) => (
                             <div key={order.id} className="flex items-center justify-between p-3 border rounded-lg">
@@ -7840,7 +8300,7 @@ export default function AdminPage() {
                   <div className="flex gap-2">
                     <Input
                       type="text"
-                      placeholder="Search by email or name..."
+                      placeholder="Search by email, name, user ID, or account number..."
                       value={userSearchQuery}
                       onChange={(e) => setUserSearchQuery(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSearchUsers()}
@@ -7862,7 +8322,7 @@ export default function AdminPage() {
                       <Search className="h-16 w-16 mx-auto mb-4 text-muted-foreground opacity-50" />
                       <h3 className="text-lg font-semibold mb-2">Search for Users</h3>
                       <p className="text-muted-foreground mb-4">
-                        Enter an email address or name in the search box above to find users
+                        Enter an email, name, user ID, or account number in the search box above to find users
                       </p>
                       <div className="inline-flex items-center gap-2 text-sm text-muted-foreground bg-muted px-4 py-2 rounded-lg">
                         <kbd className="px-2 py-1 bg-background border rounded text-xs">Enter</kbd>
@@ -8099,7 +8559,7 @@ export default function AdminPage() {
                                   <p className="text-xs text-muted-foreground">{row.fullName || row.userId}</p>
                                   {row.suspendedAt && (
                                     <p className="text-xs text-muted-foreground">
-                                      Suspended {formatDistanceToNow(new Date(row.suspendedAt), { addSuffix: true })}
+                                      Suspended {formatAdminDateWithRelative(row.suspendedAt)}
                                     </p>
                                   )}
                                 </div>
@@ -8117,7 +8577,13 @@ export default function AdminPage() {
                               </TableCell>
                               <TableCell>
                                 <div className="min-w-[180px] text-sm">
-                                  <p>Credits: {formatAdminNaira(row.trustedCredits)}</p>
+                                  <p>Trusted principal: {formatAdminNaira(row.trustedCredits)}</p>
+                                  {row.completedRefunds > 0 && (
+                                    <p className="text-xs text-emerald-600">
+                                      Eligible refund restore: {formatAdminNaira(row.eligibleRefunds)} / {formatAdminNaira(row.completedRefunds)}
+                                    </p>
+                                  )}
+                                  <p>Trusted available: {formatAdminNaira(row.trustedAvailable)}</p>
                                   <p>Spend: {formatAdminNaira(row.netSpend)}</p>
                                   <p className={row.exposure > 1 ? 'font-semibold text-destructive' : 'text-muted-foreground'}>
                                     Gap: {formatAdminNaira(Math.max(row.exposure, 0))}
@@ -8146,7 +8612,7 @@ export default function AdminPage() {
                                       </p>
                                       {row.lastIpSeenAt && (
                                         <p className="text-xs text-muted-foreground">
-                                          Seen {formatDistanceToNow(new Date(row.lastIpSeenAt), { addSuffix: true })}
+                                          Seen {formatAdminDateWithRelative(row.lastIpSeenAt)}
                                         </p>
                                       )}
                                       {row.ipAddresses.length > 1 && (
@@ -10013,6 +10479,20 @@ export default function AdminPage() {
                 title="API Partners"
                 description="Private reseller access for trusted websites. Full keys are generated once and stored hashed."
               >
+                {PARTNER_API_INCIDENT_PAUSED && (
+                  <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-red-950 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-100">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                      <div>
+                        <p className="text-sm font-black">Partner API paused</p>
+                        <p className="mt-1 text-xs opacity-80">
+                          Catalogue, checkout, order creation, key generation, partner edits, and partner balance changes are locked while the wallet security review is unresolved. Existing records remain visible for audit.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {generatedApiCredentials && (
                   <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100">
                     <div className="space-y-4">
@@ -10085,11 +10565,11 @@ export default function AdminPage() {
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="space-y-1">
                           <Label>Name</Label>
-                          <Input value={newApiPartner.name} onChange={(event) => setNewApiPartner(prev => ({ ...prev, name: event.target.value }))} placeholder="Partner website" />
+                          <Input value={newApiPartner.name} onChange={(event) => setNewApiPartner(prev => ({ ...prev, name: event.target.value }))} placeholder="Partner website" disabled={PARTNER_API_INCIDENT_PAUSED} />
                         </div>
                         <div className="space-y-1">
                           <Label>Webhook URL</Label>
-                          <Input value={newApiPartner.webhook_url} onChange={(event) => setNewApiPartner(prev => ({ ...prev, webhook_url: event.target.value }))} placeholder="https://partner.com/webhook" />
+                          <Input value={newApiPartner.webhook_url} onChange={(event) => setNewApiPartner(prev => ({ ...prev, webhook_url: event.target.value }))} placeholder="https://partner.com/webhook" disabled={PARTNER_API_INCIDENT_PAUSED} />
                         </div>
                       </div>
 
@@ -10100,6 +10580,7 @@ export default function AdminPage() {
                             <label key={section.key} className="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold">
                               <Checkbox
                                 checked={newApiPartner.allowed_sections.includes(section.key)}
+                                disabled={PARTNER_API_INCIDENT_PAUSED}
                                 onCheckedChange={(checked) => setNewApiPartner(prev => ({
                                   ...prev,
                                   allowed_sections: checked
@@ -10113,9 +10594,9 @@ export default function AdminPage() {
                         </div>
                       </div>
 
-                      <Button type="button" onClick={createApiPartner} disabled={apiPartnerSaving === 'create'} className="w-full">
+                      <Button type="button" onClick={createApiPartner} disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === 'create'} className="w-full">
                         {apiPartnerSaving === 'create' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-                        Create partner
+                        {PARTNER_API_INCIDENT_PAUSED ? 'Partner API paused' : 'Create partner'}
                       </Button>
                     </CardContent>
                   </Card>
@@ -10154,6 +10635,7 @@ export default function AdminPage() {
                                             [partner.id]: { ...editDraft, name: event.target.value },
                                           }))}
                                           placeholder="Partner website"
+                                          disabled={PARTNER_API_INCIDENT_PAUSED}
                                         />
                                       </div>
                                       <div className="space-y-1">
@@ -10165,6 +10647,7 @@ export default function AdminPage() {
                                             [partner.id]: { ...editDraft, webhook_url: event.target.value },
                                           }))}
                                           placeholder="https://partner.com/webhook"
+                                          disabled={PARTNER_API_INCIDENT_PAUSED}
                                         />
                                       </div>
                                     </div>
@@ -10175,6 +10658,7 @@ export default function AdminPage() {
                                           <label key={section.key} className="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold">
                                             <Checkbox
                                               checked={editDraft.allowed_sections.includes(section.key)}
+                                              disabled={PARTNER_API_INCIDENT_PAUSED}
                                               onCheckedChange={(checked) => setApiPartnerEditDrafts(prev => ({
                                                 ...prev,
                                                 [partner.id]: {
@@ -10217,7 +10701,7 @@ export default function AdminPage() {
                               <div className="flex flex-wrap gap-2">
                                 {editDraft ? (
                                   <>
-                                    <Button size="sm" onClick={() => saveApiPartnerEdit(partner.id)} disabled={apiPartnerSaving === partner.id}>
+                                    <Button size="sm" onClick={() => saveApiPartnerEdit(partner.id)} disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === partner.id}>
                                       {apiPartnerSaving === partner.id ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : <CheckCircle2 className="mr-2 h-3 w-3" />}
                                       Save
                                     </Button>
@@ -10228,14 +10712,14 @@ export default function AdminPage() {
                                   </>
                                 ) : (
                                   <>
-                                    <Button size="sm" variant="outline" onClick={() => startApiPartnerEdit(partner)} disabled={Boolean(apiPartnerSaving)}>
+                                    <Button size="sm" variant="outline" onClick={() => startApiPartnerEdit(partner)} disabled={PARTNER_API_INCIDENT_PAUSED || Boolean(apiPartnerSaving)}>
                                       <Edit className="mr-2 h-3 w-3" />
                                       Edit
                                     </Button>
-                                    <Button size="sm" variant="outline" onClick={() => updateApiPartner(partner.id, { is_active: !partner.is_active })} disabled={apiPartnerSaving === partner.id}>
+                                    <Button size="sm" variant="outline" onClick={() => updateApiPartner(partner.id, { is_active: !partner.is_active })} disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === partner.id}>
                                       {partner.is_active ? 'Pause' : 'Enable'}
                                     </Button>
-                                    <Button size="sm" onClick={() => generateApiPartnerKey(partner.id)} disabled={apiPartnerSaving === `key-${partner.id}`}>
+                                    <Button size="sm" onClick={() => generateApiPartnerKey(partner.id)} disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === `key-${partner.id}`}>
                                       {apiPartnerSaving === `key-${partner.id}` ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
                                       Generate API key + secret
                                     </Button>
@@ -10254,7 +10738,7 @@ export default function AdminPage() {
                                     {key.revoked_at ? (
                                       <Badge variant="secondary">Revoked</Badge>
                                     ) : (
-                                      <Button size="sm" variant="destructive" onClick={() => revokeApiPartnerKey(key.id)} disabled={apiPartnerSaving === `revoke-${key.id}`}>
+                                      <Button size="sm" variant="destructive" onClick={() => revokeApiPartnerKey(key.id)} disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === `revoke-${key.id}`}>
                                         Revoke
                                       </Button>
                                     )}

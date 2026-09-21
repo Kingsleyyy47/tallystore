@@ -15,6 +15,8 @@ interface AuthContextType {
   isStaff: boolean
   walletBalance: number
   walletLoading: boolean
+  accountSuspended: boolean
+  suspensionReason: string | null
   refreshWalletBalance: () => Promise<void>
   showBalances: boolean
   toggleBalanceVisibility: () => void
@@ -37,6 +39,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isStaff, setIsStaff] = useState(false)
   const [walletBalance, setWalletBalance] = useState(0)
   const [walletLoading, setWalletLoading] = useState(true)
+  const [accountSuspended, setAccountSuspended] = useState(false)
+  const [suspensionReason, setSuspensionReason] = useState<string | null>(null)
   const [showBalances, setShowBalances] = useState(() => {
     if (typeof window === 'undefined') return true
     return localStorage.getItem('show_balances') !== 'false'
@@ -60,7 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // handler if the timeout fires before the DB responds.
       const profilePromise = supabase
         .from('profiles')
-        .select('is_staff, wallet_balance')
+        .select('is_staff, wallet_balance, account_suspended, suspension_reason')
         .eq('id', userId)
         .single()
 
@@ -76,6 +80,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsStaff(false)
         writeInternalRevenueUserFlag(isWisdomAdmin)
         setWalletBalance(0)
+        setAccountSuspended(false)
+        setSuspensionReason(null)
 
         // The original query is still in-flight. When it lands, update state
         // and re-navigate staff/admin who were wrongly sent to /dashboard.
@@ -86,6 +92,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setIsStaff(nextIsStaff)
             writeInternalRevenueUserFlag(isWisdomAdmin || nextIsStaff)
             setWalletBalance(bgData.wallet_balance || 0)
+            setAccountSuspended(Boolean(bgData.account_suspended))
+            setSuspensionReason(bgData.suspension_reason || null)
             // Re-route if ProtectedRoute sent them to the wrong page
             if (nextIsStaff && window.location.pathname === '/dashboard') {
               window.location.replace('/staff-admin')
@@ -103,6 +111,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsStaff(nextIsStaff)
       writeInternalRevenueUserFlag(isWisdomAdmin || nextIsStaff)
       setWalletBalance(data?.wallet_balance || 0)
+      setAccountSuspended(Boolean(data?.account_suspended))
+      setSuspensionReason(data?.suspension_reason || null)
       return { isAdmin: isWisdomAdmin, isStaff: nextIsStaff }
     } catch (error) {
       console.error('Error checking admin status:', error)
@@ -110,6 +120,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsStaff(false)
       writeInternalRevenueUserFlag(isWisdomAdmin)
       setWalletBalance(0)
+      setAccountSuspended(false)
+      setSuspensionReason(null)
       return { isAdmin: isWisdomAdmin, isStaff: false }
     } finally {
       setWalletLoading(false)
@@ -138,6 +150,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsAdmin(false)
         setIsStaff(false)
         setWalletBalance(0)
+        setAccountSuspended(false)
+        setSuspensionReason(null)
         setWalletLoading(false)
         writeInternalRevenueUserFlag(false)
       }
@@ -177,9 +191,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           filter: `id=eq.${user.id}`,
         },
         (payload) => {
-          const newBalance = (payload.new as { wallet_balance?: number }).wallet_balance
+          const nextProfile = payload.new as {
+            wallet_balance?: number
+            account_suspended?: boolean
+            suspension_reason?: string | null
+          }
+          const newBalance = nextProfile.wallet_balance
           if (typeof newBalance === 'number') {
             setWalletBalance(newBalance)
+          }
+          if (typeof nextProfile.account_suspended === 'boolean') {
+            setAccountSuspended(nextProfile.account_suspended)
+          }
+          if ('suspension_reason' in nextProfile) {
+            setSuspensionReason(nextProfile.suspension_reason || null)
           }
         }
       )
@@ -298,6 +323,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut()
     setIsAdmin(false)
     setIsStaff(false)
+    setAccountSuspended(false)
+    setSuspensionReason(null)
   }
 
   const resendConfirmation = async (email: string) => {
@@ -340,6 +367,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isStaff,
     walletBalance,
     walletLoading,
+    accountSuspended,
+    suspensionReason,
     refreshWalletBalance,
     showBalances,
     toggleBalanceVisibility,

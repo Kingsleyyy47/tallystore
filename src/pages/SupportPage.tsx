@@ -2,7 +2,7 @@ import { useCallback, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Clock, HelpCircle, ShieldCheck, ReceiptText } from 'lucide-react'
+import { Clock, HelpCircle, ShieldAlert, ShieldCheck, ReceiptText } from 'lucide-react'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import WalletBalanceWidget from '@/components/WalletBalanceWidget'
@@ -52,7 +52,7 @@ const faqItems = [
 ]
 
 export default function SupportPage() {
-  const { user } = useAuth()
+  const { user, accountSuspended, suspensionReason } = useAuth()
   const support = useSupportSettings()
   const hasWhatsApp = Boolean(support.whatsappUrl)
   const hasTelegram = Boolean(support.telegramUrl)
@@ -135,6 +135,19 @@ export default function SupportPage() {
             </div>
           )}
         </div>
+
+        {accountSuspended && (
+          <Alert className="mb-8 border-amber-500 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">
+            <ShieldAlert className="h-5 w-5 text-amber-600 dark:text-amber-300" />
+            <AlertDescription className="pl-2">
+              <span className="font-semibold">Purchasing is currently paused on this account.</span>
+              <span className="block text-sm">
+                You can still use this page, review your order history, and send support your account email, order IDs, and payment references.
+                {suspensionReason ? ` Reason: ${suspensionReason}` : ''}
+              </span>
+            </AlertDescription>
+          </Alert>
+        )}
 
         {hasAny && (
           <Card className="mb-10 max-w-full overflow-hidden border-emerald-200">

@@ -52,7 +52,7 @@ function json(body: unknown, status = 200) {
 // Pulls a numeric setting out of app_settings, falling back to a default if
 // it's missing or not a valid number. Lets these be tuned without redeploying.
 async function getNumericSetting(
-  supabaseAdmin: ReturnType<typeof createClient>,
+  supabaseAdmin: any,
   key: string,
   fallback: number,
 ): Promise<number> {
@@ -158,6 +158,14 @@ serve(async (req) => {
   const providedSecret = req.headers.get('x-cron-secret')
   if (!expectedSecret || providedSecret !== expectedSecret) {
     return json({ success: false, error: 'Unauthorized' }, 401)
+  }
+
+  if (String(Deno.env.get('AUTO_RESTOCK_ENABLED') || '').trim().toLowerCase() !== 'true') {
+    return json({
+      success: false,
+      code: 'AUTO_RESTOCK_PAUSED',
+      error: 'Auto-restock is temporarily disabled during wallet security review.',
+    }, 503)
   }
 
   const supabaseAdmin = createClient(
