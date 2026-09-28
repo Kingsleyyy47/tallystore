@@ -9,6 +9,7 @@ import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { useCurrency } from '@/contexts/CurrencyContext'
 import { trackRevenueEvent } from '@/lib/revenue-os'
+import { getPaymentStorageItem, removePaymentStorageItem, setPaymentStorageItem } from '@/lib/paymentStorage'
 
 export default function PaymentCallbackPage() {
   const [searchParams] = useSearchParams()
@@ -79,14 +80,13 @@ export default function PaymentCallbackPage() {
         // Refresh wallet balance in the auth context
         await refreshWalletBalance()
         
-        // Clean up pending topup from localStorage
-        localStorage.removeItem('pending_topup')
+        removePaymentStorageItem('pending_topup')
         
         // Mark as processed to prevent duplicate polling
-        const processedTxs = JSON.parse(localStorage.getItem('processed_transactions') || '[]')
+        const processedTxs = JSON.parse(getPaymentStorageItem('processed_transactions') || '[]')
         if (!processedTxs.includes(transactionReference)) {
           processedTxs.push(transactionReference)
-          localStorage.setItem('processed_transactions', JSON.stringify(processedTxs))
+          setPaymentStorageItem('processed_transactions', JSON.stringify(processedTxs))
         }
         
         // Notify other components
@@ -105,7 +105,7 @@ export default function PaymentCallbackPage() {
           eventType: 'OFFER_DISMISSED',
           userId: user?.id || null,
           surface: 'payment_callback_failed',
-          metadata: { reason: result.error || 'verification_failed' },
+          metadata: { reason: 'verification_failed' },
         })
         setPaymentData({ reference: transactionReference, error: result.error })
       }
@@ -116,7 +116,7 @@ export default function PaymentCallbackPage() {
         eventType: 'OFFER_DISMISSED',
         userId: user?.id || null,
         surface: 'payment_callback_error',
-        metadata: { reason: error instanceof Error ? error.message : 'unexpected_error' },
+        metadata: { reason: 'unexpected_error' },
       })
     }
   }

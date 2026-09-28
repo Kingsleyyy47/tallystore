@@ -18,7 +18,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
-import HomepageLiveActivity from '@/components/HomepageLiveActivity'
 import ProductTemplateCard from '@/components/ProductTemplateCard'
 import CategorySidebar from '@/components/CategorySidebar'
 import CategoryLogo from '@/components/CategoryLogo'
@@ -982,7 +981,6 @@ export default function ProductsPage() {
         </section>
       </main>
 
-      <HomepageLiveActivity />
       <Footer />
     </div>
   )

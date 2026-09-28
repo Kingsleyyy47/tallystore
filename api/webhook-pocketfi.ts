@@ -46,7 +46,9 @@ export default async function handler(req: any, res: any) {
 
   const body = await readRawBody(req)
   const requestUrl = new URL(req.url || '/api/webhook-pocketfi', 'https://tallystore.org')
-  const upstreamUrl = `${POCKETFI_EDGE_URL}${requestUrl.search}`
+  if (requestUrl.searchParams.has('token')) {
+    return res.status(400).json({ error: 'Webhook secrets must be sent in headers' })
+  }
 
   const headers: Record<string, string> = {
     Accept: 'application/json',
@@ -81,21 +83,21 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const upstream = await fetch(upstreamUrl, {
+    const upstream = await fetch(POCKETFI_EDGE_URL, {
       method: 'POST',
       headers,
       body,
     })
-    const text = await upstream.text()
-
     res.status(upstream.status)
+    if (!upstream.ok) {
+      return res.json({ error: 'PocketFi webhook verification or processing failed' })
+    }
+
+    const text = await upstream.text()
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
     return res.send(text)
-  } catch (error) {
-    console.error('PocketFi webhook bridge failed:', error instanceof Error ? error.message : 'Unknown error')
-    return res.status(502).json({
-      error: 'PocketFi webhook bridge failed',
-      message: error instanceof Error ? error.message : 'Unknown error',
-    })
+  } catch {
+    console.error('PocketFi webhook bridge failed')
+    return res.status(502).json({ error: 'PocketFi webhook bridge unavailable' })
   }
 }

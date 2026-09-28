@@ -512,7 +512,7 @@ async function getWalletRequestForensics(req: Request, route: string) {
   }
 }
 
-async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
+async function assertFraudDeviceNotBanned(admin: any, userId: string, req?: Request | null) {
   const ipAddress = getPurchaseGuardIp(req)
   const userAgent = getPurchaseGuardUserAgent(req)
   const userAgentHash = userAgent ? await purchaseGuardSha256Hex(userAgent) : null
@@ -522,6 +522,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('ip_address', ipAddress)
       .limit(1)
 
@@ -535,6 +536,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('user_agent_hash', userAgentHash)
       .limit(1)
 
@@ -544,10 +546,10 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
   }
 }
 
-export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null) {
+export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null, amountNgn?: number) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin, account_suspended, wallet_review_required')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -559,11 +561,24 @@ export async function assertPurchasingCustomer(admin: any, userId: string, req?:
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
   }
 
-  if (profile?.account_suspended || profile?.wallet_review_required) {
+  if (profile?.account_suspended) {
     throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
   }
 
-  await assertFraudDeviceNotBanned(admin, req)
+  const { data: truth, error: truthError } = await admin.rpc('wallet_financial_truth_internal', { p_user_id: userId })
+  const spendable = Number(truth?.confirmed_spendable)
+  if (truthError || !truth || typeof truth.spending_blocked !== 'boolean' ||
+      truth.confirmed_spendable == null || !Number.isFinite(spendable) || spendable < 0) {
+    throw new Error('Could not verify wallet funds for purchase')
+  }
+  if (truth.spending_blocked) {
+    throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
+  }
+  if (amountNgn !== undefined && (!Number.isFinite(amountNgn) || amountNgn <= 0 || spendable < amountNgn)) {
+    throw new Error('Insufficient verified funds for purchase')
+  }
+
+  await assertFraudDeviceNotBanned(admin, userId, req)
 }
 
 const corsHeaders = {
@@ -799,6 +814,8 @@ serve(async (req) => {
       throw new Error(`Price changed from ₦${expectedPriceNgn.toLocaleString()} to ₦${totalAmount.toLocaleString()}. Please refresh and try again.`);
     }
 
+    await assertPurchasingCustomer(supabaseAdmin, user.id, req, totalAmount);
+
     if (existingOrder) {
       const sameRequest =
         String(existingOrder.service_id || '') === String(service.id) &&
@@ -821,6 +838,27 @@ serve(async (req) => {
       }
 
       console.log('Duplicate SMM order detected for idempotency key.');
+      if (existingOrder.status === 'outcome_unknown') {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            code: 'SMM_SUPPLIER_OUTCOME_UNKNOWN',
+            error: 'Order outcome is under review. Do not place it again; funds remain committed until resolved.',
+            data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'outcome_unknown' },
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 },
+        );
+      }
+      if (existingOrder.status === 'failed') {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'This order failed previously. Check its refund status before placing another order.',
+            data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'failed' },
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 },
+        );
+      }
       return new Response(
         JSON.stringify({
           success: true,
@@ -834,6 +872,26 @@ serve(async (req) => {
       );
     }
 
+    const { data: unresolvedOrders, error: unresolvedOrdersError } = await supabaseAdmin
+      .from('smm_orders')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('status', 'outcome_unknown')
+      .limit(1);
+    if (unresolvedOrdersError) {
+      throw new Error('Could not verify unresolved SMM orders');
+    }
+    if (unresolvedOrders && unresolvedOrders.length > 0) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          code: 'SMM_SUPPLIER_OUTCOME_UNKNOWN',
+          error: 'A previous order outcome is under review. New Social Boost orders are paused for this wallet.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 },
+      );
+    }
+
     // Check for duplicate active order with same link (prevent "active order" panel errors)
     if (link) {
       const { data: activeOrders } = await supabaseAdmin
@@ -842,7 +900,7 @@ serve(async (req) => {
         .eq('user_id', user.id)
         .eq('service_id', service.id)
         .eq('link', link)
-        .in('status', ['pending', 'processing', 'in_progress'])
+        .in('status', ['pending', 'processing', 'in_progress', 'outcome_unknown'])
         .limit(1);
 
       if (activeOrders && activeOrders.length > 0) {
@@ -1022,7 +1080,7 @@ serve(async (req) => {
         panelOrderId = panelResponse.order;
 
         // Update order with panel order ID
-        await supabaseAdmin
+        const { error: panelOrderSaveError } = await supabaseAdmin
           .from('smm_orders')
           .update({
             external_order_id: panelOrderId,
@@ -1031,8 +1089,13 @@ serve(async (req) => {
             updated_at: new Date().toISOString(),
           })
           .eq('id', order.id);
+        if (panelOrderSaveError) {
+          throw new Error('SMM_PANEL_ORDER_RECORD_UNAVAILABLE');
+        }
       } else if (panelResponse.error) {
         panelError = panelResponse.error;
+      } else {
+        panelError = 'SMM_PANEL_RESPONSE_UNRECOGNIZED';
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1040,75 +1103,36 @@ serve(async (req) => {
       panelError = errorMessage || 'Failed to place order with panel';
     }
 
-    // If panel order failed, auto-refund the user immediately
+    // A missing order ID or provider error does not prove non-delivery. Keep
+    // the debit until panel lookup or manual review establishes the outcome.
     if (panelError) {
-      const refundResult = await applyWalletTransaction(supabaseAdmin, {
-        userId: user.id,
-        type: 'refund',
-        amount: totalAmount,
-        reference: `REFUND-${reference}`,
-        description: `Auto-refund for failed SMM order: ${service.name} (${actualQuantity} units)`,
-        idempotencyKey: `smm:refund:${order.id}`,
-        metadata: {
-          source: 'smm-create-order',
-          request_forensics: walletRequestForensics,
-          reason: 'panel_order_failed',
-          order_id: order.id,
-          source_order_id: order.id,
-          source_order_table: 'smm_orders',
-          original_reference: reference,
-          source_debit_transaction_id: debitResult?.transaction?.id || null,
-          source_debit_idempotency_key: `smm:purchase:${idempotency_key}`,
-          panel_error: panelError,
-        },
-      });
-
-      const refundedBalance = Number(refundResult.balance_after ?? 0);
-
-      // Mark order as failed
-      await supabaseAdmin
+      const { error: unknownSaveError } = await supabaseAdmin
         .from('smm_orders')
         .update({
-          status: 'failed',
-          panel_response: { error: panelError },
+          status: 'outcome_unknown',
+          external_order_id: panelOrderId,
+          panel_response: { outcome: 'unknown' },
           updated_at: new Date().toISOString(),
         })
         .eq('id', order.id);
-
-      await recordRevenueEvent(supabaseAdmin, {
-        eventType: 'PAYMENT_FAILED',
-        eventId: `smm:PAYMENT_FAILED:${eventKey}`,
-        userId: user.id,
-        surface: 'social_boost',
-        revenueContext,
-        metadata: {
-          order_id: order.id,
-          reference,
-          service_id: service.id,
-          service_external_id: service.external_id,
-          service_name: service.name,
-          platform: service.platform,
-          amount_ngn: totalAmount,
-          quantity: actualQuantity,
-          error: panelError,
-        },
+      if (unknownSaveError) {
+        console.error('Could not persist uncertain SMM supplier outcome:', unknownSaveError);
+      }
+      console.error('SMM supplier outcome requires review:', {
+        order_id: order.id,
+        reference,
+        panel_order_id: panelOrderId,
+        reason: panelError,
       });
-      await recordRevenueEvent(supabaseAdmin, {
-        eventType: 'PRODUCT_PURCHASE_REVERSED',
-        eventId: `smm:PRODUCT_PURCHASE_REVERSED:${eventKey}`,
-        userId: user.id,
-        surface: 'social_boost',
-        revenueContext,
-        metadata: {
-          order_id: order.id,
-          reference,
-          refund_reference: `REFUND-${reference}`,
-          amount_ngn: totalAmount,
-          reason: 'panel_order_failed',
-        },
-      });
-
-      throw new Error(`Order failed: ${panelError}. Your balance of ₦${totalAmount.toLocaleString()} has been automatically refunded.`);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          code: 'SMM_SUPPLIER_OUTCOME_UNKNOWN',
+          error: 'Order outcome is under review. Do not place it again; funds remain committed until resolved.',
+          data: { order_id: order.id, reference, status: 'outcome_unknown' },
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 },
+      );
     }
 
     await recordRevenueEvent(supabaseAdmin, {
@@ -1173,14 +1197,35 @@ serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('SMM Create Order Error:', error);
+    const knownCustomerErrors = new Set([
+      'service_id is required',
+      'Valid idempotency_key is required',
+      'Service not found or inactive',
+      'Quantity must be a whole number',
+      'Current displayed price is required. Please refresh and try again.',
+      'Insufficient verified funds for purchase',
+      'Purchasing is paused while this wallet is under security review. Please contact support.',
+      'Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.',
+      'This device or network has been blocked from purchasing. Please contact support.',
+    ]);
+    const publicError = errorMessage === 'Unauthorized' || errorMessage === 'Missing authorization header'
+      ? 'Unauthorized'
+      : knownCustomerErrors.has(errorMessage) ? errorMessage
+      : /^Minimum quantity is \d+$/.test(errorMessage) || /^Maximum quantity is \d+$/.test(errorMessage)
+        ? errorMessage
+        : errorMessage.startsWith('Price changed from ')
+          ? 'Price changed. Please refresh and try again.'
+          : errorMessage.startsWith('You already have an active order for this link')
+            ? 'You already have an active order for this link. Check its status before placing another.'
+            : 'Could not place this order. Check its status before trying again.';
     return new Response(
       JSON.stringify({
         success: false,
-        error: errorMessage,
+        error: publicError,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: errorMessage === 'Unauthorized' ? 401 : 400,
+        status: publicError === 'Unauthorized' ? 401 : 400,
       }
     );
   }

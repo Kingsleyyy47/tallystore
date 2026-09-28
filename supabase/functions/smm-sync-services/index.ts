@@ -337,11 +337,11 @@ serve(async (req) => {
     // Check if user is admin
     const { data: profile, error: profileError } = await supabaseClient
       .from('profiles')
-      .select('is_admin')
+      .select('is_admin, account_suspended')
       .eq('id', user.id)
       .single();
 
-    if (profileError || !profile?.is_admin) {
+    if (profileError || !profile?.is_admin || profile.account_suspended === true) {
       throw new Error('Admin access required');
     }
 

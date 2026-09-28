@@ -247,23 +247,28 @@ function cleanCustomerName(value: unknown) {
   return cleaned || 'Tally Store Customer'
 }
 
-function normalizeRedirectUrl(value: unknown, originHeader: string | null) {
-  const fallbackOrigin = originHeader && /^https?:\/\//i.test(originHeader)
-    ? originHeader
-    : 'https://tallystore.org'
-  const fallback = `${fallbackOrigin.replace(/\/$/, '')}/wallet`
-
-  if (typeof value !== 'string' || !value) return fallback
-
-  try {
-    const url = new URL(value)
-    const fallbackUrl = new URL(fallback)
-    if (url.origin !== fallbackUrl.origin) return fallback
-    return url.toString()
-  } catch {
-    return fallback
+function walletRedirectUrl() {
+  const configuredOrigin = Deno.env.get('TALLYSTORE_SITE_ORIGIN') || 'https://tallystore.org'
+  const url = new URL(configuredOrigin)
+  if (url.protocol !== 'https:' || url.username || url.password ||
+      url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('Payment redirect configuration unavailable.')
   }
+  return new URL('/wallet', url).toString()
 }
+
+const clientErrors = new Set([
+  'Missing authorization header',
+  'Unauthorized',
+  'Please enter an amount of at least NGN 100.',
+  'Maximum top-up amount is NGN 1,000,000.',
+  'Payments are temporarily unavailable.',
+  'Could not load account profile.',
+  'Wallet top-ups are only available to customer accounts.',
+  'Payment redirect configuration unavailable.',
+  'Payment service returned an incomplete checkout response.',
+  'Could not create trusted payment evidence. Please try again before paying.',
+])
 
 async function getAuthenticatedUser(req: Request) {
   const authHeader = req.headers.get('Authorization')
@@ -334,12 +339,12 @@ serve(async (req) => {
     }
 
     // ── Kill-switch: admin can disable Ercas Pay via app_settings ──
-    const { data: ercasSetting } = await supabaseAdmin
+    const { data: ercasSetting, error: ercasSettingError } = await supabaseAdmin
       .from('app_settings')
       .select('value')
       .eq('key', 'ercas_enabled')
       .single()
-    if (ercasSetting?.value === 'false') {
+    if (ercasSettingError || ercasSetting?.value !== 'true') {
       return json(
         { success: false, message: 'Card payments are temporarily unavailable. Please use bank transfer instead.', error: 'ercas_disabled' },
         400,
@@ -353,12 +358,11 @@ serve(async (req) => {
       customerName: cleanCustomerName(body.customerName),
       customerEmail: user.email,
       customerPhoneNumber: String(body.customerPhoneNumber || ''),
-      redirectUrl: normalizeRedirectUrl(body.redirectUrl, req.headers.get('Origin')),
-      description: String(body.description || 'Wallet Top-up'),
+      redirectUrl: walletRedirectUrl(),
+      description: 'Wallet Top-up',
       currency: 'NGN',
       feeBearer: 'merchant',
       metadata: {
-        ...(typeof body.metadata === 'object' && body.metadata ? body.metadata : {}),
         source: 'tally-store-wallet-topup',
         user_id: user.id,
         userId: user.id,
@@ -379,7 +383,7 @@ serve(async (req) => {
 
     const result = await response.json().catch(() => null) as Record<string, any> | null
     if (!response.ok || !result?.requestSuccessful) {
-      const message = result?.responseMessage || result?.errorMessage || 'Unable to start payment. Please try again.'
+      const message = 'Unable to start payment. Please try again.'
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
         eventId: `wallet_topup:PAYMENT_FAILED:${transactionData.paymentReference}`,
@@ -390,7 +394,7 @@ serve(async (req) => {
           amount_ngn: amount,
           provider: 'ercaspay',
           failure_stage: 'checkout_create',
-          error: message,
+          provider_http_status: response.status,
         },
       })
       return json({ success: false, message, error: message }, 400)
@@ -459,9 +463,12 @@ serve(async (req) => {
       },
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to initiate payment'
+    const internalMessage = error instanceof Error ? error.message : 'Unknown failure'
+    const message = clientErrors.has(internalMessage)
+      ? internalMessage
+      : 'Wallet top-up is temporarily unavailable. Please try again.'
     const status = message === 'Unauthorized' || message === 'Missing authorization header' ? 401 : 400
-    console.error('Create wallet top-up error:', message)
+    console.error('Create wallet top-up error:', internalMessage)
     return json({ success: false, message, error: message }, status)
   }
 })

@@ -618,6 +618,16 @@ serve(async (req) => {
           // Skip if status hasn't changed
           if (newStatus === order.status) continue;
 
+          const panelCharge = panelData.charge == null || String(panelData.charge).trim() === ''
+            ? NaN : Number(panelData.charge);
+          const panelRemains = panelData.remains == null || String(panelData.remains).trim() === ''
+            ? NaN : Number(panelData.remains);
+          if ((newStatus === 'cancelled' && (!Number.isFinite(panelCharge) || panelCharge < 0)) ||
+              (newStatus === 'partial' && (!Number.isInteger(panelRemains) || panelRemains < 1 || panelRemains > order.quantity))) {
+            console.warn('SMM refund evidence incomplete; leaving order active for retry.');
+            continue;
+          }
+
           const isTerminal = newStatus === 'completed' || newStatus === 'partial' || newStatus === 'cancelled' || newStatus === 'failed';
 
           // Update order in database
@@ -638,20 +648,11 @@ serve(async (req) => {
             updateData.completed_at = new Date().toISOString();
           }
 
-          await supabaseAdmin
-            .from('smm_orders')
-            .update(updateData)
-            .eq('id', order.id);
-
-          totalUpdated++;
-          console.log(`SMM order status changed: ${order.status} -> ${newStatus}`);
-
           // Handle auto-refund for cancelled/partial/failed orders
           let refundAmount = 0;
           let refundMessage = '';
 
           if (newStatus === 'cancelled') {
-            const panelCharge = parseFloat(panelData.charge || '0');
             if (panelCharge === 0) {
               // Full refund — panel charged nothing
               refundAmount = parseFloat(order.amount_ngn) || 0;
@@ -659,7 +660,7 @@ serve(async (req) => {
             }
           } else if (newStatus === 'partial') {
             // Partial refund based on undelivered quantity
-            const totalRemains = parseInt(panelData.remains || '0');
+            const totalRemains = panelRemains;
             if (totalRemains > 0 && order.quantity > 0) {
               const undeliveredRatio = totalRemains / order.quantity;
               refundAmount = Math.floor(parseFloat(order.amount_ngn) * undeliveredRatio);
@@ -702,6 +703,14 @@ serve(async (req) => {
               console.log(`Auto-refunded SMM order after ${newStatus} status.`);
             }
           }
+
+          const { error: updateError } = await supabaseAdmin
+            .from('smm_orders')
+            .update(updateData)
+            .eq('id', order.id);
+          if (updateError) throw new Error(`Could not update SMM order: ${updateError.message}`);
+          totalUpdated++;
+          console.log(`SMM order status changed: ${order.status} -> ${newStatus}`);
 
           if (['cancelled', 'failed', 'partial'].includes(newStatus)) {
             await recordRevenueEvent(supabaseAdmin, {

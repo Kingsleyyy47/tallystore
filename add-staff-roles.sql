@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS staff_pending_actions (
   action_type TEXT NOT NULL,
   action_label TEXT NOT NULL,
   action_data JSONB NOT NULL DEFAULT '{}',
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','failed')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   reviewed_at TIMESTAMPTZ,
   reviewed_by UUID REFERENCES auth.users(id)
@@ -55,12 +55,28 @@ CREATE INDEX IF NOT EXISTS idx_staff_pending_status ON staff_pending_actions(sta
 
 ALTER TABLE staff_pending_actions ENABLE ROW LEVEL SECURITY;
 
--- Staff can insert their own pending actions and read their own history
+-- Only the manage-staff Edge Function may create pending actions. A browser
+-- insert would bypass the server-side permission and action checks.
 DROP POLICY IF EXISTS "Staff can insert own pending actions" ON staff_pending_actions;
-CREATE POLICY "Staff can insert own pending actions"
-ON staff_pending_actions FOR INSERT
-TO authenticated
-WITH CHECK (staff_id = auth.uid());
+
+REVOKE ALL ON TABLE staff_pending_actions FROM PUBLIC, anon, authenticated;
+DO $restrict_staff_queue_columns$
+DECLARE v_column text;
+BEGIN
+  FOR v_column IN
+    SELECT a.attname FROM pg_catalog.pg_attribute a
+    WHERE a.attrelid = 'public.staff_pending_actions'::regclass
+      AND a.attnum > 0 AND NOT a.attisdropped
+  LOOP
+    EXECUTE format(
+      'REVOKE SELECT (%I), INSERT (%I), UPDATE (%I), REFERENCES (%I) ON TABLE public.staff_pending_actions FROM PUBLIC, anon, authenticated',
+      v_column, v_column, v_column, v_column
+    );
+  END LOOP;
+END;
+$restrict_staff_queue_columns$;
+GRANT SELECT ON TABLE staff_pending_actions TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON TABLE staff_pending_actions TO service_role;
 
 DROP POLICY IF EXISTS "Staff can read own pending actions" ON staff_pending_actions;
 CREATE POLICY "Staff can read own pending actions"

@@ -58,14 +58,13 @@ serve(async (req) => {
     })
 
     if (updateError) {
-      console.error('apply-referral update error:', updateError)
-      return json({ success: false, error: updateError.message }, 500)
+      console.error('apply-referral update failed:', updateError.code || 'database_error')
+      return json({ success: false, error: 'Referral is temporarily unavailable.' }, 503)
     }
 
     return json(result || { success: true })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to apply referral'
-    console.error('apply-referral error:', message)
-    return json({ success: false, error: message }, 500)
+    console.error('apply-referral request failed:', error instanceof Error ? error.name : 'unknown_error')
+    return json({ success: false, error: 'Referral is temporarily unavailable.' }, 503)
   }
 })

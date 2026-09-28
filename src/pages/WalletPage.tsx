@@ -38,6 +38,7 @@ import {
   classifyWalletTransaction,
   getTransactionSignedAmount,
   getWalletTransactionTitle,
+  isBalanceNeutralLedgerEvidence,
   isDepositTransactionType,
   type WalletTransactionKind,
 } from '@/lib/walletTransactions'
@@ -192,11 +193,12 @@ export default function WalletPage() {
     })
 
     const rows = [
-      ['Transaction', 'Type', 'Amount', 'Status', 'Reference', 'Date'],
+      ['Transaction', 'Type', 'Recorded amount', 'Wallet effect', 'Status', 'Reference', 'Date'],
       ...transactions.map((transaction) => [
         getWalletTransactionTitle(transaction),
-        classifyWalletTransaction(transaction),
+        isBalanceNeutralLedgerEvidence(transaction) ? 'evidence' : classifyWalletTransaction(transaction),
         String(transaction.amount ?? 0),
+        String(getTransactionSignedAmount(transaction)),
         String(transaction.status || ''),
         String(transaction.reference || transaction.ercas_reference || transaction.id || ''),
         formatDateTime(transaction.created_at),
@@ -467,6 +469,7 @@ export default function WalletPage() {
                     ) : (
                       filteredTransactions.slice(0, 12).map((transaction) => {
                         const kind = classifyWalletTransaction(transaction)
+                        const isEvidenceOnly = isBalanceNeutralLedgerEvidence(transaction)
                         const signedAmount = getTransactionSignedAmount(transaction)
                         const amount = Math.abs(signedAmount)
                         const isCredit = signedAmount > 0
@@ -475,10 +478,11 @@ export default function WalletPage() {
                             <td className="px-4 py-4">
                               <div className="flex items-center gap-3">
                                 <span className="grid h-10 w-10 place-items-center rounded-lg bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300">
-                                  {isCredit ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
+                                  {isEvidenceOnly ? <Receipt className="h-4 w-4" /> : isCredit ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
                                 </span>
                                 <span>
                                   <strong className="block text-slate-950 dark:text-white">{getWalletTransactionTitle(transaction)}</strong>
+                                  {isEvidenceOnly && <small className="mt-1 block text-slate-500 dark:text-slate-400">No wallet balance change</small>}
                                   <small className="mt-1 block text-slate-500 dark:text-slate-400">
                                     Ref: {transaction.reference || transaction.ercas_reference || String(transaction.id).slice(0, 10)}
                                   </small>
@@ -486,10 +490,10 @@ export default function WalletPage() {
                               </div>
                             </td>
                             <td className="px-4 py-4">
-                              <Badge variant="outline" className="capitalize">{kind}</Badge>
+                              <Badge variant="outline" className="capitalize">{isEvidenceOnly ? 'evidence' : kind}</Badge>
                             </td>
-                            <td className={`px-4 py-4 font-black ${isCredit ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                              {isCredit ? '+' : '-'}{formatPrice(amount)}
+                            <td className={`px-4 py-4 font-black ${isEvidenceOnly ? 'text-slate-500 dark:text-slate-400' : isCredit ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                              {isEvidenceOnly ? '' : isCredit ? '+' : '-'}{formatPrice(amount)}
                             </td>
                             <td className="px-4 py-4">
                               <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-black capitalize ${getStatusBadgeClass(String(transaction.status).toLowerCase())}`}>
@@ -516,6 +520,7 @@ export default function WalletPage() {
                 ) : (
                   filteredTransactions.slice(0, 8).map((transaction) => {
                     const kind = classifyWalletTransaction(transaction)
+                    const isEvidenceOnly = isBalanceNeutralLedgerEvidence(transaction)
                     const signedAmount = getTransactionSignedAmount(transaction)
                     const amount = Math.abs(signedAmount)
                     const isCredit = signedAmount > 0
@@ -524,22 +529,23 @@ export default function WalletPage() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-start gap-3">
                             <span className="grid h-10 w-10 place-items-center rounded-lg bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300">
-                              {isCredit ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
+                              {isEvidenceOnly ? <Receipt className="h-4 w-4" /> : isCredit ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
                             </span>
                             <div>
                               <strong className="block text-sm">{getWalletTransactionTitle(transaction)}</strong>
+                              {isEvidenceOnly && <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">No wallet balance change</span>}
                               <span className="mt-1 flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
                                 <Calendar className="h-3 w-3" />
                                 {formatDateTime(transaction.created_at)}
                               </span>
                             </div>
                           </div>
-                          <span className={`text-sm font-black ${isCredit ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                            {isCredit ? '+' : '-'}{formatPrice(amount)}
+                          <span className={`text-sm font-black ${isEvidenceOnly ? 'text-slate-500 dark:text-slate-400' : isCredit ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                            {isEvidenceOnly ? '' : isCredit ? '+' : '-'}{formatPrice(amount)}
                           </span>
                         </div>
                         <div className="mt-3 flex items-center justify-between gap-2">
-                          <Badge variant="outline" className="capitalize">{kind}</Badge>
+                          <Badge variant="outline" className="capitalize">{isEvidenceOnly ? 'evidence' : kind}</Badge>
                           <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-black capitalize ${getStatusBadgeClass(String(transaction.status).toLowerCase())}`}>
                             {getStatusIcon(String(transaction.status).toLowerCase())}
                             {transaction.status || 'unknown'}

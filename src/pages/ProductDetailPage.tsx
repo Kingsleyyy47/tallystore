@@ -22,7 +22,7 @@ import {
   getRecentlyRestockedProductGroupIds,
   getTopSellingProductGroupIds,
   getUserPurchaseHistory,
-  type IndividualAccount,
+  type PublicAccount,
   type ProductGroup,
   type Category
 } from '@/lib/supabase'
@@ -51,7 +51,7 @@ export default function ProductDetailPage() {
   const { formatPrice } = useCurrency()
   
   // State for real data
-  const [account, setAccount] = useState<IndividualAccount | null>(null)
+  const [account, setAccount] = useState<PublicAccount | null>(null)
   const [productGroup, setProductGroup] = useState<ProductGroup | null>(null)
   const [category, setCategory] = useState<Category | null>(null)
   const [allProductGroups, setAllProductGroups] = useState<ProductGroup[]>([])
@@ -528,7 +528,7 @@ export default function ProductDetailPage() {
               <span>/</span>
             </>
           )}
-          <span className="text-foreground">@{account.username}</span>
+          <span className="text-foreground">{productGroup.name}</span>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
@@ -539,7 +539,7 @@ export default function ProductDetailPage() {
                 <div className="aspect-square bg-gradient-to-br from-primary/10 to-secondary/10 flex items-center justify-center">
                   <div className="text-center p-8">
                     <CategoryLogo name={category?.name || productGroup.name} className="mx-auto mb-5 h-20 w-20" iconClassName="h-16 w-16" />
-                    <h3 className="text-xl font-semibold">@{account.username}</h3>
+                    <h3 className="text-xl font-semibold">{productGroup.name}</h3>
                     <p className="text-muted-foreground">{category?.name} Account</p>
                   </div>
                 </div>
@@ -555,8 +555,7 @@ export default function ProductDetailPage() {
                 <Badge variant="outline" className="text-green-600">Available</Badge>
               </div>
               
-              <h1 className="text-3xl font-bold mb-2">@{account.username}</h1>
-              <p className="text-lg text-muted-foreground mb-4">{productGroup.name}</p>
+              <h1 className="text-3xl font-bold mb-2">{productGroup.name}</h1>
               
               {productGroup.description && (
                 <p className="text-muted-foreground">{productGroup.description}</p>

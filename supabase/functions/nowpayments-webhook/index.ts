@@ -1,5 +1,10 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import {
+  matchesNowPaymentsIdentity,
+  shouldIgnoreStaleNowPaymentsStatus,
+  validateTerminalNowPaymentsStatus,
+} from '../_shared/nowpayments-identity.mjs';
 
 // ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
 
@@ -260,8 +265,7 @@ async function fetchNowPaymentsStatus(paymentId: string, apiKey: string) {
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`NOWPayments status check failed: ${response.status} ${errorText}`);
+    throw new Error(`NOWPayments status check failed with HTTP ${response.status}`);
   }
 
   return response.json();
@@ -276,7 +280,7 @@ function validateProviderFinishedPayment(existingTransaction: any, payload: any,
   const providerStatus = normalizeComparable(providerPayment.payment_status);
   const expectedCurrency = normalizeComparable(existingTransaction.outcome_currency || existingTransaction.crypto_type);
   const providerCurrency = normalizeComparable(providerPayment.pay_currency);
-  const expectedPayAmount = toFiniteNumber(existingTransaction.outcome_amount || providerPayment.pay_amount || payload.pay_amount);
+  const expectedPayAmount = toFiniteNumber(existingTransaction.outcome_amount);
   const providerPaidAmount = toFiniteNumber(providerPayment.actually_paid || providerPayment.pay_amount);
   const amountTolerance = Math.max(expectedPayAmount * 0.005, 0.00000001);
 
@@ -294,6 +298,10 @@ function validateProviderFinishedPayment(existingTransaction: any, payload: any,
 
   if (providerStatus !== 'finished') {
     return { ok: false, reason: `provider_status_${providerStatus || 'missing'}` };
+  }
+
+  if (!(expectedPayAmount > 0)) {
+    return { ok: false, reason: 'saved_payment_amount_missing' };
   }
 
   if (expectedCurrency && providerCurrency && expectedCurrency !== providerCurrency) {
@@ -419,8 +427,6 @@ serve(async (req) => {
       order_id,
       order_description,
       purchase_id,
-      outcome_amount,
-      outcome_currency,
       payin_hash,
       payout_hash,
       payin_extra_id,
@@ -436,19 +442,82 @@ serve(async (req) => {
       type,
     } = payload;
 
-    // Find transaction by payment_id or order_id
-    const { data: existingTransaction, error: findError } = await supabaseAdmin
-      .from('crypto_transactions')
-      .select('*')
-      .or(`nowpayments_payment_id.eq.${payment_id},payment_reference.eq.${order_id}`)
-      .single();
-
-    if (findError || !existingTransaction) {
-      console.error('NowPayments webhook transaction not found.');
-      // Still return 200 to acknowledge webhook (prevent retries)
+    const providerPaymentId = String(payment_id ?? '').trim();
+    const { data: matchingTransactions, error: findError } = providerPaymentId
+      ? await supabaseAdmin.from('crypto_transactions').select('*')
+        .eq('nowpayments_payment_id', providerPaymentId).limit(2)
+      : { data: [], error: null };
+    if (findError) {
+      console.error('NowPayments webhook payment lookup failed');
       return new Response(
-        JSON.stringify({ success: true, message: 'Transaction not found, webhook acknowledged' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+        JSON.stringify({ success: false, error: 'Payment verification is temporarily unavailable' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 503 },
+      );
+    }
+    const existingTransaction = matchingTransactions?.length === 1 ? matchingTransactions[0] : null;
+    if (!existingTransaction || !matchesNowPaymentsIdentity(existingTransaction, payment_id, order_id)) {
+      const reason = matchingTransactions?.length > 1 ? 'duplicate_provider_payment_id'
+        : existingTransaction ? 'provider_order_reference_mismatch' : 'payment_id_not_found';
+      const { error: auditError } = await supabaseAdmin.from('wallet_security_events').insert({
+        event_type: 'CRYPTO_IPN_IDENTITY_REVIEW',
+        severity: 'warning',
+        profile_id: existingTransaction?.user_id ?? null,
+        wallet_user_id: existingTransaction?.user_id ?? null,
+        source: 'nowpayments',
+        route: 'nowpayments-webhook',
+        operation_reference: String(order_id ?? '').slice(0, 150),
+        evidence: {
+          payment_id: providerPaymentId.slice(0, 100),
+          payment_status: String(payment_status ?? '').slice(0, 60),
+          signed_notification: true,
+        },
+        result: 'review_required',
+        denial_code: reason,
+      });
+      if (auditError) {
+        console.error('Could not retain unmatched NOWPayments notification');
+        return new Response(
+          JSON.stringify({ success: false, error: 'Payment verification is temporarily unavailable' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 503 },
+        );
+      }
+      return new Response(
+        JSON.stringify({ success: true, status: 'review_required' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
+      );
+    }
+
+    if (shouldIgnoreStaleNowPaymentsStatus(existingTransaction.status, payment_status)) {
+      return new Response(
+        JSON.stringify({ success: true, status: existingTransaction.status, ignored_stale_event: true }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
+      );
+    }
+
+    const reportedStatus = String(payment_status ?? '').trim().toLowerCase();
+    if (!['waiting', 'confirming', 'confirmed', 'sending', 'finished', 'partially_paid', 'failed', 'refunded', 'expired'].includes(reportedStatus)) {
+      const { error: auditError } = await supabaseAdmin.from('wallet_security_events').insert({
+        event_type: 'CRYPTO_IPN_UNSUPPORTED_STATUS_REVIEW',
+        severity: 'warning',
+        profile_id: existingTransaction.user_id,
+        wallet_user_id: existingTransaction.user_id,
+        source: 'nowpayments',
+        route: 'nowpayments-webhook',
+        operation_reference: String(order_id ?? '').slice(0, 150),
+        evidence: { payment_id: providerPaymentId.slice(0, 100), reported_status: reportedStatus.slice(0, 60) },
+        result: 'review_required',
+        denial_code: 'unsupported_provider_status',
+      });
+      if (auditError) {
+        console.error('Could not retain unsupported NOWPayments status');
+        return new Response(
+          JSON.stringify({ success: false, error: 'Payment verification is temporarily unavailable' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 503 },
+        );
+      }
+      return new Response(
+        JSON.stringify({ success: true, status: 'review_required' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
       );
     }
 
@@ -456,7 +525,7 @@ serve(async (req) => {
     let transactionStatus = existingTransaction.status;
     let shouldCreditUser = false;
 
-    switch (payment_status) {
+    switch (reportedStatus) {
       case 'waiting':
         transactionStatus = 'pending';
         break;
@@ -484,12 +553,11 @@ serve(async (req) => {
       case 'expired':
         transactionStatus = 'expired';
         break;
-      default:
-        transactionStatus = payment_status;
     }
 
+    const terminalStatus = ['failed', 'refunded', 'expired'].includes(transactionStatus);
     let verifiedProviderPayment: any = null;
-    if (shouldCreditUser) {
+    if (shouldCreditUser || terminalStatus) {
       const nowpaymentsApiKey = Deno.env.get('NOWPAYMENTS_API_KEY');
       if (!nowpaymentsApiKey) {
         console.error('❌ NOWPAYMENTS_API_KEY is not configured - refusing to credit crypto webhook');
@@ -502,29 +570,75 @@ serve(async (req) => {
       try {
         verifiedProviderPayment = await fetchNowPaymentsStatus(String(payment_id || ''), nowpaymentsApiKey);
       } catch (statusError) {
-        console.error('❌ Could not verify payment with NOWPayments before crediting:', statusError instanceof Error ? statusError.message : statusError);
+        console.error('Could not verify crypto payment status with NOWPayments');
         return new Response(
           JSON.stringify({ error: 'Provider status verification failed' }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 503 }
         );
       }
 
-      const providerValidation = validateProviderFinishedPayment(existingTransaction, payload, verifiedProviderPayment);
-      if (!providerValidation.ok) {
-        console.error(`❌ Crypto webhook refused credit: ${providerValidation.reason}`);
-        await supabaseAdmin
-          .from('crypto_transactions')
-          .update({
-            status: 'verification_failed',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', existingTransaction.id)
-          .is('credited_at', null);
-
-        return new Response(
-          JSON.stringify({ error: 'Provider payment verification failed', reason: providerValidation.reason }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 }
-        );
+      if (shouldCreditUser) {
+        const providerValidation = validateProviderFinishedPayment(existingTransaction, payload, verifiedProviderPayment);
+        if (!providerValidation.ok) {
+          const { error: auditError } = await supabaseAdmin.from('wallet_security_events').insert({
+            event_type: 'CRYPTO_IPN_FINISHED_REVIEW',
+            severity: 'warning',
+            profile_id: existingTransaction.user_id,
+            wallet_user_id: existingTransaction.user_id,
+            source: 'nowpayments',
+            route: 'nowpayments-webhook',
+            operation_reference: String(order_id ?? '').slice(0, 150),
+            evidence: {
+              payment_id: providerPaymentId.slice(0, 100),
+              reported_status: String(payment_status ?? '').slice(0, 60),
+              provider_status: String(verifiedProviderPayment?.payment_status ?? '').slice(0, 60),
+            },
+            result: 'review_required',
+            denial_code: providerValidation.reason,
+          });
+          if (auditError) {
+            console.error('Could not retain NOWPayments finished-payment conflict');
+            return new Response(
+              JSON.stringify({ success: false, error: 'Payment verification is temporarily unavailable' }),
+              { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 503 },
+            );
+          }
+          return new Response(
+            JSON.stringify({ success: true, status: 'review_required' }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
+          );
+        }
+      } else {
+        const terminalValidation = validateTerminalNowPaymentsStatus(existingTransaction, payload, verifiedProviderPayment);
+        if (!terminalValidation.ok) {
+          const { error: auditError } = await supabaseAdmin.from('wallet_security_events').insert({
+            event_type: 'CRYPTO_IPN_TERMINAL_REVIEW',
+            severity: 'warning',
+            profile_id: existingTransaction.user_id,
+            wallet_user_id: existingTransaction.user_id,
+            source: 'nowpayments',
+            route: 'nowpayments-webhook',
+            operation_reference: String(order_id ?? '').slice(0, 150),
+            evidence: {
+              payment_id: providerPaymentId.slice(0, 100),
+              reported_status: String(payment_status ?? '').slice(0, 60),
+              provider_status: String(verifiedProviderPayment?.payment_status ?? '').slice(0, 60),
+            },
+            result: 'review_required',
+            denial_code: terminalValidation.reason,
+          });
+          if (auditError) {
+            console.error('Could not retain NOWPayments terminal conflict');
+            return new Response(
+              JSON.stringify({ success: false, error: 'Payment verification is temporarily unavailable' }),
+              { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 503 },
+            );
+          }
+          return new Response(
+            JSON.stringify({ success: true, status: 'review_required' }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
+          );
+        }
       }
     }
 
@@ -533,8 +647,6 @@ serve(async (req) => {
       : (actually_paid || 0);
     const verifiedPayAmount = verifiedProviderPayment?.pay_amount || pay_amount;
     const verifiedPayCurrency = verifiedProviderPayment?.pay_currency || pay_currency;
-    const verifiedOutcomeAmount = verifiedProviderPayment?.outcome_amount || outcome_amount;
-    const verifiedOutcomeCurrency = verifiedProviderPayment?.outcome_currency || outcome_currency;
     const verifiedPayAddress = verifiedProviderPayment?.pay_address || pay_address;
     const verifiedPayinExtraId = verifiedProviderPayment?.payin_extra_id || payin_extra_id;
     const autoCreditEnabled = cryptoAutoCreditEnabled();
@@ -547,7 +659,7 @@ serve(async (req) => {
         ? `provider_finished_but_waiting_${autoCreditDelayMinutes}_minute_safety_delay`
         : 'crypto_auto_credit_disabled_manual_review_required';
 
-      const { error: holdUpdateError } = await supabaseAdmin
+      const { data: heldTransaction, error: holdUpdateError } = await supabaseAdmin
         .from('crypto_transactions')
         .update({
           status: heldStatus,
@@ -555,8 +667,6 @@ serve(async (req) => {
           nowpayments_payin_extra_id: verifiedPayinExtraId,
           nowpayments_amount_received: verifiedActuallyPaid || verifiedPayAmount,
           actually_paid: verifiedActuallyPaid || 0,
-          outcome_amount: verifiedPayAmount || verifiedOutcomeAmount,
-          outcome_currency: verifiedPayCurrency || verifiedOutcomeCurrency,
           payout_hash: payout_hash,
           payment_extra_ids: payment_extra_ids ? payment_extra_ids : null,
           parent_payment_id: parent_payment_id,
@@ -564,11 +674,22 @@ serve(async (req) => {
           updated_at: new Date().toISOString(),
         })
         .eq('id', existingTransaction.id)
-        .is('credited_at', null);
+        .eq('nowpayments_payment_id', providerPaymentId)
+        .eq('payment_reference', String(order_id ?? ''))
+        .eq('status', existingTransaction.status)
+        .is('credited_at', null)
+        .select('id')
+        .maybeSingle();
 
       if (holdUpdateError) {
         console.error('Failed to hold verified crypto transaction:', holdUpdateError);
         throw holdUpdateError;
+      }
+      if (!heldTransaction?.id) {
+        return new Response(
+          JSON.stringify({ success: true, status: 'state_changed', ignored_stale_event: true }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
+        );
       }
 
       await recordRevenueEvent(supabaseAdmin, {
@@ -614,7 +735,7 @@ serve(async (req) => {
     }
 
     // Update transaction with webhook data
-    const { error: updateError } = await supabaseAdmin
+    const { data: updatedTransaction, error: updateError } = await supabaseAdmin
       .from('crypto_transactions')
       .update({
         status: transactionStatus,
@@ -622,18 +743,27 @@ serve(async (req) => {
         nowpayments_payin_extra_id: verifiedPayinExtraId,
         nowpayments_amount_received: verifiedActuallyPaid || verifiedPayAmount,
         actually_paid: verifiedActuallyPaid || 0,
-        outcome_amount: verifiedPayAmount || verifiedOutcomeAmount,
-        outcome_currency: verifiedPayCurrency || verifiedOutcomeCurrency,
         payout_hash: payout_hash,
         payment_extra_ids: payment_extra_ids ? payment_extra_ids : null,
         parent_payment_id: parent_payment_id,
         origin_type: origin_type,
       })
-      .eq('id', existingTransaction.id);
+      .eq('id', existingTransaction.id)
+      .eq('nowpayments_payment_id', providerPaymentId)
+      .eq('payment_reference', String(order_id ?? ''))
+      .eq('status', existingTransaction.status)
+      .select('id')
+      .maybeSingle();
 
     if (updateError) {
       console.error('Failed to update transaction:', updateError);
       throw updateError;
+    }
+    if (!updatedTransaction?.id) {
+      return new Response(
+        JSON.stringify({ success: true, status: 'state_changed', ignored_stale_event: true }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
+      );
     }
 
     // Credit user's crypto balance only when NOWPayments marks the payment
@@ -828,18 +958,17 @@ serve(async (req) => {
       }
     );
   } catch (error: unknown) {
-    console.error('Error in nowpayments-webhook:', error instanceof Error ? error.message : 'Unknown error');
-    const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('NOWPayments webhook processing failed');
     
-    // Still return 200 to prevent webhook retries
+    // Do not acknowledge a processing failure as a completed event.
     return new Response(
       JSON.stringify({
         success: false,
-        error: errorMessage,
+        error: 'Webhook processing failed',
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 200,
+        status: 503,
       }
     );
   }

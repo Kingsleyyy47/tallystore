@@ -10,7 +10,6 @@ import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
 import { trackRevenueEvent } from '@/lib/revenue-os'
 
-const ADMIN_EMAIL = 'wisdomthedev@gmail.com'
 
 function GoogleIcon() {
   return (
@@ -72,21 +71,18 @@ export default function LoginPage() {
         trackRevenueEvent({
           eventType: 'OFFER_ACCEPTED',
           surface: 'login_email_success',
-          metadata: {
-            destination: email.trim().toLowerCase() === ADMIN_EMAIL ? 'admin' : 'dashboard',
-          },
         })
         toast({
           title: "Welcome back!",
           description: "You have been logged in successfully"
         })
         
-        navigate(email.trim().toLowerCase() === ADMIN_EMAIL ? '/admin' : '/dashboard')
+        navigate('/dashboard')
       } else {
         trackRevenueEvent({
           eventType: 'OFFER_DISMISSED',
           surface: 'login_email_failed',
-          metadata: { reason: result.error || 'invalid_credentials' },
+          metadata: { reason: 'invalid_credentials' },
         })
         toast({
           title: "Login failed",
@@ -98,7 +94,7 @@ export default function LoginPage() {
       trackRevenueEvent({
         eventType: 'OFFER_DISMISSED',
         surface: 'login_email_error',
-        metadata: { reason: error instanceof Error ? error.message : 'unexpected_error' },
+        metadata: { reason: 'unexpected_error' },
       })
       toast({
         title: "Login error",
@@ -124,7 +120,7 @@ export default function LoginPage() {
         trackRevenueEvent({
           eventType: 'OFFER_DISMISSED',
           surface: 'login_google_failed',
-          metadata: { reason: result.error || 'google_sign_in_failed' },
+          metadata: { reason: 'google_sign_in_failed' },
         })
         toast({
           title: "Google sign in failed",

@@ -17,7 +17,7 @@ import {
   computeDiscountedTotal,
   previewDiscountCode,
   DISCOUNTS_ENABLED,
-  type IndividualAccount,
+  type PublicAccount,
   type PurchasedAccountCredentials,
   type ProductGroup,
 } from '@/lib/supabase'
@@ -83,7 +83,7 @@ export default function CheckoutPage() {
   // Get data from navigation state - supports both single and bulk purchases
   const { accountId, productGroup: navigationProductGroup, category, quantity = 1, isBulkPurchase = false, croAssignment = null } = location.state || {}
   
-  const [account, setAccount] = useState<IndividualAccount | null>(null)
+  const [account, setAccount] = useState<PublicAccount | null>(null)
   const [checkoutProductGroup, setCheckoutProductGroup] = useState<ProductGroup | null>(null)
   const [loading, setLoading] = useState(true)
   const [purchasing, setPurchasing] = useState(false)
@@ -512,7 +512,7 @@ export default function CheckoutPage() {
                 </div>
                 <CardTitle className="truncate text-xl font-black sm:text-2xl">{productGroup.name}</CardTitle>
                 <p className="mt-1 truncate text-sm text-muted-foreground">
-                  {productGroup.description || (isBulk ? `${quantity} accounts` : account?.username ? `@${account.username}` : 'Instant account delivery')}
+                  {productGroup.description || (isBulk ? `${quantity} accounts` : 'Instant account delivery')}
                 </p>
               </div>
               <div className="shrink-0 text-right">

@@ -194,7 +194,7 @@ export default function CryptoHistory() {
       trackRevenueEvent({
         eventType: 'OFFER_DISMISSED',
         surface: silent ? 'crypto_history_refresh_failed' : 'crypto_history_load_failed',
-        metadata: { reason: error?.message || 'history_load_failed' },
+        metadata: { reason: 'history_load_failed' },
       });
       if (!silent) {
         toast({

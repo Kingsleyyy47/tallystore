@@ -1,3 +1,9 @@
+import { readFileSync } from 'node:fs'
+import { ngnMinorUnits } from '../supabase/functions/_shared/ngn-amount.mjs'
+import { sameBillsRequest } from '../supabase/functions/_shared/bills-idempotency.mjs'
+import { sameBitrefillRequest } from '../supabase/functions/_shared/bitrefill-idempotency.mjs'
+import { canonicalCryptoAmount, sameCryptoTopupRequest } from '../supabase/functions/_shared/crypto-topup-request.mjs'
+
 const MAX_NAIRA = 1_000_000_000
 const VALID_BALANCE_TYPES = new Set(['wallet', 'crypto', 'referral'])
 const CREDIT_TYPES = new Set([
@@ -136,6 +142,89 @@ assert(dbConstraintAllowsBalance(-2500.25), 'DB balance constraint should allow 
 assert(!dbConstraintAllowsBalance(10.001), 'DB balance constraint allowed over-precise balance')
 assert(!dbConstraintAllowsBalance(1_000_000_000.01), 'DB balance constraint allowed oversized balance')
 
+const billsSource = readFileSync(new URL('../supabase/functions/purchase-bills/index.ts', import.meta.url), 'utf8')
+const existingBill = {
+  transaction_type: 'data', amount: '1000.00', service_provider: 'MTN',
+  service_code: 'PLAN-1', beneficiary_phone: '08012345678', payment_source: 'wallet',
+}
+assert(sameBillsRequest(existingBill, { ...existingBill, amount: 1000 }),
+  'same bills request should be a safe idempotent retry')
+for (const changed of [
+  { amount: 999.5 }, { transaction_type: 'airtime' }, { service_provider: 'GLO' },
+  { service_code: 'PLAN-2' }, { beneficiary_phone: '08012345679' },
+  { payment_source: 'crypto' },
+]) {
+  assert(!sameBillsRequest(existingBill, { ...existingBill, ...changed }),
+    `changed bills request was accepted as a retry: ${JSON.stringify(changed)}`)
+}
+assert(billsSource.includes('const clientAmountMinor = ngnMinorUnits(amount);'), 'bills route must parse client amount exactly')
+assert(billsSource.includes('if (!sameBillsRequest(existingTransaction, {'),
+  'bills route must compare retries with the stored purchase terms')
+assert(billsSource.includes('status: 409'), 'bills route must conflict on mismatched idempotency reuse')
+assert(billsSource.includes('const liveAmountMinor = ngnMinorUnits(livePlan?.price);'), 'bills route must parse provider plan price exactly')
+assert(billsSource.includes('if (clientAmountMinor !== liveAmountMinor)'), 'bills route must require exact provider-price match')
+assert(billsSource.includes('purchaseAmount = liveAmountMinor / 100;'), 'bills debit must derive from matched provider price')
+assert(!billsSource.includes('Math.round(purchaseAmount)') && !billsSource.includes('parseFloat(amount)'),
+  'bills route must not round or loosely parse a browser amount')
+assert(ngnMinorUnits('1000.00') === ngnMinorUnits(1000), 'equivalent NGN values should match in minor units')
+for (const value of [999.5, 1000.5, '1000garbage', '1000.000', '1e3']) {
+  assert(ngnMinorUnits(value) !== ngnMinorUnits(1000), `bills price mismatch ${String(value)} was accepted`)
+}
+
+const bitrefillSource = readFileSync(new URL('../supabase/functions/purchase-bitrefill/index.ts', import.meta.url), 'utf8')
+const existingGiftOrder = {
+  product_id: 'GIFT-1', product_name: 'Gift Card', package_id: null,
+  quantity: 2, recipient_phone: null, amount_ngn: 4500, amount_original: 20,
+  payment_source: 'wallet',
+}
+const giftRequest = {
+  product_id: 'GIFT-1', product_name: 'Gift Card', package_id: null,
+  quantity: 2, recipient_phone: null, expected_amount_ngn: '4500.00',
+  value: '10.00', payment_source: 'wallet',
+}
+assert(sameBitrefillRequest(existingGiftOrder, giftRequest), 'same gift-card request should be a safe retry')
+for (const changed of [
+  { product_id: 'GIFT-2' }, { product_name: 'Other' }, { package_id: 'PKG-2' },
+  { quantity: 3 }, { recipient_phone: '08012345678' }, { expected_amount_ngn: 4501 },
+  { value: '11.00' }, { value: '10garbage' }, { payment_source: 'crypto' },
+]) {
+  assert(!sameBitrefillRequest(existingGiftOrder, { ...giftRequest, ...changed }),
+    `changed gift-card request was accepted as a retry: ${JSON.stringify(changed)}`)
+}
+assert(bitrefillSource.includes('if (!sameBitrefillRequest(existingOrder, {'),
+  'gift-card route must compare retries with stored order terms')
+assert(bitrefillSource.includes('const denominationMinor = ngnMinorUnits(value);'),
+  'gift-card flexible denominations must be parsed exactly')
+assert(!bitrefillSource.includes('parseFloat(value)'), 'gift-card route must not loosely parse denominations')
+
+const cryptoSource = readFileSync(new URL('../supabase/functions/create-crypto-sell-order/index.ts', import.meta.url), 'utf8')
+assert(canonicalCryptoAmount('0.02500') === '0.025', 'crypto decimal canonicalization changed the amount')
+for (const value of ['0', '-1', '1garbage', '1e3', '0.0000000000000000001']) {
+  assert(canonicalCryptoAmount(value) === null, `invalid crypto amount ${value} was accepted`)
+}
+const existingCrypto = {
+  crypto_type: 'BTC', crypto_amount: '0.02500000', nowpayments_network: 'bitcoin',
+  transaction_type: 'sell', payment_provider: 'nowpayments',
+}
+assert(sameCryptoTopupRequest(existingCrypto, { crypto_type: 'btc', crypto_amount: 0.025 }),
+  'same crypto top-up must be a safe retry even when the provider supplied a network')
+for (const changed of [
+  { crypto_type: 'ETH' }, { crypto_amount: '0.026' }, { network: 'other-network' },
+  { crypto_amount: '0.025junk' },
+]) {
+  assert(!sameCryptoTopupRequest(existingCrypto, { crypto_type: 'BTC', crypto_amount: 0.025, ...changed }),
+    `changed crypto top-up was accepted as a retry: ${JSON.stringify(changed)}`)
+}
+assert(!sameCryptoTopupRequest({ ...existingCrypto, transaction_type: 'buy' },
+  { crypto_type: 'BTC', crypto_amount: 0.025 }), 'other crypto transaction type was accepted')
+assert(cryptoSource.includes('crypto-topup:${supabaseUrl}:${user.id}:${safeIdempotencyKey}'),
+  'new crypto references must bind project and authenticated user')
+assert(cryptoSource.includes(".in('payment_reference', [orderReference, legacyReference])"),
+  'crypto retries must recognize legacy references without creating another provider order')
+assert(cryptoSource.includes('if (!sameCryptoTopupRequest(existingPayment, {'),
+  'crypto retries must bind the requested payment terms')
+assert(!cryptoSource.includes('parseFloat(crypto_amount)'), 'crypto amount must not be loosely parsed')
+
 console.log(JSON.stringify({
   ok: true,
   scenarios: [
@@ -145,5 +234,9 @@ console.log(JSON.stringify({
     'currency codes must be uppercase alphabetic 3 to 8 characters',
     'debit rows are signed internally from positive input',
     'database-style constraints allow debt balances but reject invalid money precision and currency',
+    'data-plan purchases compare exact provider and client minor units before charging the server price',
+    'bills idempotency keys reject changes to price, product, recipient, provider, or payment source',
+    'gift-card idempotency keys reject changed order terms and malformed flexible denominations',
+    'crypto top-up retries bind project, user, currency, amount, and requested network while recognizing legacy references',
   ],
 }, null, 2))

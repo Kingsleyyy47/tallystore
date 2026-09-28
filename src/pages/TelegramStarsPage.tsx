@@ -15,13 +15,11 @@ import { useRecommendations } from '@/hooks/useRecommendations'
 import { format } from 'date-fns'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type MarkupTier = { min_qty: number; max_qty: number | null; markup_ngn: number }
-
 type StarPricing = {
-  cost_per_star_usdt: number
-  markup_tiers: MarkupTier[]
-  usdt_to_ngn: number
+  preset_prices: Record<string, number>
 }
+
+type StarQuote = { quantity: number; price_ngn: number }
 
 type PremiumProduct = {
   id: string
@@ -55,15 +53,6 @@ async function invokeTg<T = any>(action: string, body: Record<string, unknown> =
 
 function createTelegramIdempotencyKey(kind: 'stars' | 'premium') {
   return `telegram-${kind}-${Date.now()}-${crypto.randomUUID()}`
-}
-
-function calcStarPrice(quantity: number, pricing: StarPricing): number {
-  if (!pricing || pricing.cost_per_star_usdt <= 0) return 0
-  const base = pricing.cost_per_star_usdt * quantity * pricing.usdt_to_ngn
-  const tier = pricing.markup_tiers.find(t =>
-    quantity >= t.min_qty && (t.max_qty === null || quantity <= t.max_qty)
-  )
-  return Math.ceil((base + (tier ? tier.markup_ngn : 0)) / 10) * 10
 }
 
 function statusBadge(status: TelegramOrder['status']) {
@@ -105,13 +94,31 @@ function StarsTab({ pricing, onOrderCreated, isStaff }: { pricing: StarPricing |
   const [searching, setSearching] = useState(false)
   const [recipient, setRecipient] = useState<RecipientInfo | null>(null)
   const [buying, setBuying] = useState(false)
+  const [customQuote, setCustomQuote] = useState<StarQuote | null>(null)
+  const [quoteUnavailable, setQuoteUnavailable] = useState(false)
 
-  const activeQty = selectedQty === 'custom' ? Math.round(Number(customQty) || 0) : selectedQty
-  const price = pricing && activeQty >= 50 ? calcStarPrice(activeQty, pricing) : 0
-  const priceReady = pricing && activeQty >= 50 && price > 0
+  const activeQty = selectedQty === 'custom' ? Number(customQty) : selectedQty
+  const validQty = Number.isSafeInteger(activeQty) && activeQty >= 50 && activeQty <= 1_000_000
+  const price = selectedQty === 'custom'
+    ? customQuote?.quantity === activeQty ? customQuote.price_ngn : 0
+    : pricing?.preset_prices[String(activeQty)] || 0
+  const priceReady = validQty && price > 0
+
+  useEffect(() => {
+    setCustomQuote(null)
+    setQuoteUnavailable(false)
+    if (selectedQty !== 'custom' || !validQty) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void invokeTg<StarQuote>('quote_stars', { quantity: activeQty })
+        .then((quote) => { if (!cancelled) setCustomQuote(quote) })
+        .catch(() => { if (!cancelled) setQuoteUnavailable(true) })
+    }, 300)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [selectedQty, activeQty, validQty])
 
   const searchRecipient = async () => {
-    if (!username.trim() || activeQty < 50) return
+    if (!username.trim() || !validQty) return
     setSearching(true)
     setRecipient(null)
     try {
@@ -129,7 +136,7 @@ function StarsTab({ pricing, onOrderCreated, isStaff }: { pricing: StarPricing |
 
   const buy = async () => {
     if (isStaff) { toast({ title: 'Staff accounts cannot make purchases', variant: 'destructive' }); return }
-    if (!recipient || activeQty < 50 || !price) return
+    if (!recipient || !priceReady) return
     setBuying(true)
     try {
       await invokeTg('create_stars_order', {
@@ -159,11 +166,11 @@ function StarsTab({ pricing, onOrderCreated, isStaff }: { pricing: StarPricing |
         <label className="mb-2 block text-sm font-medium">Select Amount</label>
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
           {STAR_PRESETS.map(qty => {
-            const p = pricing ? calcStarPrice(qty, pricing) : null
+            const p = pricing?.preset_prices[String(qty)]
             return (
               <button
                 key={qty}
-                onClick={() => setSelectedQty(qty)}
+                onClick={() => { setSelectedQty(qty); setRecipient(null) }}
                 className={`rounded-xl border p-2.5 text-center transition-all ${
                   selectedQty === qty
                     ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/30 ring-2 ring-purple-400'
@@ -179,7 +186,7 @@ function StarsTab({ pricing, onOrderCreated, isStaff }: { pricing: StarPricing |
             )
           })}
           <button
-            onClick={() => setSelectedQty('custom')}
+            onClick={() => { setSelectedQty('custom'); setRecipient(null) }}
             className={`rounded-xl border p-2.5 text-center transition-all ${
               selectedQty === 'custom'
                 ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/30 ring-2 ring-purple-400'
@@ -199,17 +206,14 @@ function StarsTab({ pricing, onOrderCreated, isStaff }: { pricing: StarPricing |
               max={1000000}
               placeholder="Enter quantity (min 50)"
               value={customQty}
-              onChange={e => setCustomQty(e.target.value)}
+              onChange={e => { setCustomQty(e.target.value); setRecipient(null) }}
             />
-            {pricing && activeQty >= 50 && (
+            {priceReady && (
               <p className="text-sm text-muted-foreground">
-                Price: <span className="font-semibold text-foreground">₦{calcStarPrice(activeQty, pricing).toLocaleString()}</span>
-                {(() => {
-                  const tier = pricing.markup_tiers.find(t => activeQty >= t.min_qty && (t.max_qty === null || activeQty <= t.max_qty))
-                  return tier ? <span className="text-xs ml-1">(incl. ₦{tier.markup_ngn.toLocaleString()} markup)</span> : null
-                })()}
+                Price: <span className="font-semibold text-foreground">₦{price.toLocaleString()}</span>
               </p>
             )}
+            {quoteUnavailable && <p className="text-xs text-red-500">Price unavailable. Please try again.</p>}
             {activeQty > 0 && activeQty < 50 && <p className="text-xs text-red-500">Minimum is 50 stars</p>}
           </div>
         )}
@@ -226,7 +230,7 @@ function StarsTab({ pricing, onOrderCreated, isStaff }: { pricing: StarPricing |
             onKeyDown={e => e.key === 'Enter' && searchRecipient()}
             className="flex-1"
           />
-          <Button variant="outline" onClick={searchRecipient} disabled={searching || !username.trim() || activeQty < 50}>
+          <Button variant="outline" onClick={searchRecipient} disabled={searching || !username.trim() || !validQty}>
             {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
           </Button>
         </div>
@@ -430,7 +434,7 @@ export default function TelegramStarsPage() {
     } finally {
       setLoadingConfig(false)
     }
-  }, [])
+  }, [toast])
 
   const loadOrders = useCallback(async () => {
     setOrdersLoading(true)
@@ -452,11 +456,20 @@ export default function TelegramStarsPage() {
         toast({ title: '✅ Delivered!' })
         window.dispatchEvent(new Event('transactionAdded'))
       } else if (updated.status === 'failed') {
-        toast({ title: 'Order failed', description: updated.error_message || 'You have been refunded.', variant: 'destructive' })
+        toast({
+          title: 'Order failed',
+          description: updated.refunded_at ? 'Refund recorded.' : 'Refund status requires review.',
+          variant: 'destructive',
+        })
         window.dispatchEvent(new Event('transactionAdded'))
       }
     } catch (err: any) {
-      toast({ title: 'Could not check status', description: err.message, variant: 'destructive' })
+      const reviewRequired = String(err?.message || '').includes('supplier reported failure')
+      toast({
+        title: reviewRequired ? 'Order needs review' : 'Could not check status',
+        description: err.message,
+        variant: 'destructive',
+      })
     }
   }
 

@@ -241,7 +241,7 @@ async function getWalletRequestForensics(req: Request, route: string) {
   }
 }
 
-async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
+async function assertFraudDeviceNotBanned(admin: any, userId: string, req?: Request | null) {
   const ipAddress = getPurchaseGuardIp(req)
   const userAgent = getPurchaseGuardUserAgent(req)
   const userAgentHash = userAgent ? await purchaseGuardSha256Hex(userAgent) : null
@@ -251,6 +251,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('ip_address', ipAddress)
       .limit(1)
 
@@ -264,6 +265,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('user_agent_hash', userAgentHash)
       .limit(1)
 
@@ -273,10 +275,10 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
   }
 }
 
-export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null) {
+export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null, amountNgn?: number) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin, account_suspended, wallet_review_required')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -288,11 +290,24 @@ export async function assertPurchasingCustomer(admin: any, userId: string, req?:
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
   }
 
-  if (profile?.account_suspended || profile?.wallet_review_required) {
+  if (profile?.account_suspended) {
     throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
   }
 
-  await assertFraudDeviceNotBanned(admin, req)
+  const { data: truth, error: truthError } = await admin.rpc('wallet_financial_truth_internal', { p_user_id: userId })
+  const spendable = Number(truth?.confirmed_spendable)
+  if (truthError || !truth || typeof truth.spending_blocked !== 'boolean' ||
+      truth.confirmed_spendable == null || !Number.isFinite(spendable) || spendable < 0) {
+    throw new Error('Could not verify wallet funds for purchase')
+  }
+  if (truth.spending_blocked) {
+    throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
+  }
+  if (amountNgn !== undefined && (!Number.isFinite(amountNgn) || amountNgn <= 0 || spendable < amountNgn)) {
+    throw new Error('Insufficient verified funds for purchase')
+  }
+
+  await assertFraudDeviceNotBanned(admin, userId, req)
 }
 
 // ── Inlined: forex-rates ──────────────────────────────────────────────────────
@@ -671,12 +686,10 @@ function verifyDaisyWebhook(req: Request) {
     return false
   }
 
-  const url = new URL(req.url)
   const bearer = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '').trim()
   const supplied = (
     req.headers.get('x-daisysms-webhook-secret') ||
     req.headers.get('x-webhook-secret') ||
-    url.searchParams.get('token') ||
     bearer ||
     ''
   ).trim()
@@ -696,9 +709,34 @@ function friendlyError(error: unknown): string {
       BAD_KEY: 'SMS service is temporarily unavailable.',
       NO_ACTIVATION: 'This SMS order was not found.',
     }
-    return map[error.code] || error.message
+    return map[error.code] || 'SMS service is temporarily unavailable.'
   }
-  return error instanceof Error ? error.message : 'Unexpected SMS error'
+  const message = error instanceof Error ? error.message : ''
+  const customerErrors = new Set([
+    'Missing authorization header', 'Unauthorized', 'Admin access required',
+    'SMS product permission required', 'SMS product changes require approval',
+    'Staff permission required', 'This staff action requires approval',
+    'This device or network has been blocked from purchasing. Please contact support.',
+    'Purchasing is paused while this wallet is under security review. Please contact support.',
+    'Insufficient verified funds for purchase',
+    'Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.',
+    'service_code is required', 'is_enabled is required',
+    'Enter a valid markup amount', 'round_to_nearest_10 is required',
+    'service_id is required', 'Valid idempotency_key is required',
+    'Service not available',
+    'Current displayed price is required. Please refresh and try again.',
+    'Service price changed before purchase. Please refresh and try again.',
+    'SMS order not found', 'Order is missing activation ID',
+    'order_id is required', 'Unknown SMS action',
+  ])
+  if (customerErrors.has(message)) return message
+  if (message.startsWith('Price changed from NGN ')) {
+    return 'Service price changed. Please refresh and try again.'
+  }
+  if (message.startsWith('Insufficient wallet balance. Required: ₦')) {
+    return 'Insufficient verified funds for purchase'
+  }
+  return 'SMS request is temporarily unavailable.'
 }
 
 type SupabaseAdmin = any
@@ -788,13 +826,13 @@ async function requireAuth(req: Request) {
 }
 
 async function requireAdminUser(admin: SupabaseAdmin, userId: string) {
-  const { data, error } = await admin.from('profiles').select('is_admin').eq('id', userId).single()
-  if (error || !data?.is_admin) throw new Error('Admin access required')
+  const { data, error } = await admin.from('profiles').select('is_admin, account_suspended').eq('id', userId).single()
+  if (error || !data?.is_admin || data.account_suspended === true) throw new Error('Admin access required')
 }
 
 async function requireSmsProductAccess(admin: SupabaseAdmin, userId: string, requireAutoApprove = false) {
-  const { data: profile, error } = await admin.from('profiles').select('is_admin, is_staff').eq('id', userId).single()
-  if (error || !profile) throw new Error('Admin access required')
+  const { data: profile, error } = await admin.from('profiles').select('is_admin, is_staff, account_suspended').eq('id', userId).single()
+  if (error || !profile || profile.account_suspended === true) throw new Error('Admin access required')
   if (profile.is_admin) return
   if (!profile.is_staff) throw new Error('Admin access required')
 
@@ -812,8 +850,8 @@ async function requireSmsProductAccess(admin: SupabaseAdmin, userId: string, req
 }
 
 async function requireStaffPermission(admin: SupabaseAdmin, userId: string, permissionKey: string, requireAutoApprove = false) {
-  const { data: profile, error } = await admin.from('profiles').select('is_admin, is_staff').eq('id', userId).single()
-  if (error || !profile) throw new Error('Admin access required')
+  const { data: profile, error } = await admin.from('profiles').select('is_admin, is_staff, account_suspended').eq('id', userId).single()
+  if (error || !profile || profile.account_suspended === true) throw new Error('Admin access required')
   if (profile.is_admin) return
   if (!profile.is_staff) throw new Error('Admin access required')
 
@@ -1176,6 +1214,12 @@ function publicSmsOrder(order: any) {
   }
 }
 
+function adminSmsOrderSummary(order: any) {
+  if (!order) return order
+  const { messages: _messages, ...summary } = publicSmsOrder(order)
+  return { ...summary, has_code: Array.isArray(order.messages) && order.messages.length > 0 }
+}
+
 function smsOtpOrdersEnabled() {
   return String(Deno.env.get('SMS_OTP_ENABLED') || '').trim().toLowerCase() === 'true'
 }
@@ -1189,31 +1233,7 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
   try {
     result = await daisyGetStatus(apiKey, activationId)
   } catch (e: any) {
-    // NO_ACTIVATION means DaisySMS purged this order — treat as cancelled and refund
-    if (e?.code === 'NO_ACTIVATION') {
-      const { data: updated } = await admin
-        .from('sms_orders')
-        .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
-        .eq('id', order.id)
-        .select()
-        .single()
-      const nextOrder = updated || { ...order, status: 'cancelled', cancelled_at: new Date().toISOString() }
-      await recordRevenueEvent(admin, {
-        eventType: 'SMS_ORDER_CANCELLED',
-        eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
-        userId: order.user_id,
-        surface: 'sms',
-        metadata: {
-          order_id: order.id,
-          reference: order.reference,
-          service_code: order.service_id,
-          reason: 'provider_no_activation',
-        },
-      })
-      await refundWallet(admin, nextOrder, `Auto-refund for expired SMS order: ${order.reference}`)
-      const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-      return refunded || nextOrder
-    }
+    if (e?.code === 'NO_ACTIVATION') return order
     throw e
   }
 
@@ -1222,34 +1242,17 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
       .from('sms_orders')
       .update({ status: 'waiting' })
       .eq('id', order.id)
+      .in('status', ['pending', 'active', 'waiting'])
+      .is('refunded_at', null)
       .select()
-      .single()
-    return updated || { ...order, status: 'waiting' }
+      .maybeSingle()
+    if (updated) return updated
+    const { data: current } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
+    return current || order
   }
 
   if (result.status === 'cancelled') {
-    const { data: updated } = await admin
-      .from('sms_orders')
-      .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
-      .eq('id', order.id)
-      .select()
-      .single()
-    const nextOrder = updated || { ...order, status: 'cancelled', cancelled_at: new Date().toISOString() }
-    await recordRevenueEvent(admin, {
-      eventType: 'SMS_ORDER_CANCELLED',
-      eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
-      userId: order.user_id,
-      surface: 'sms',
-      metadata: {
-        order_id: order.id,
-        reference: order.reference,
-        service_code: order.service_id,
-        reason: 'provider_cancelled',
-      },
-    })
-    await refundWallet(admin, nextOrder, `Auto-refund for cancelled SMS order: ${order.reference}`)
-    const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-    return refunded || nextOrder
+    return await cancelSmsOrderAndRefund(admin, order, 'provider_cancelled', `Auto-refund for cancelled SMS order: ${order.reference}`)
   }
 
   if (result.status === 'ok') {
@@ -1260,7 +1263,12 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
       status: 'completed',
       messages: nextMessages,
       completed_at: new Date().toISOString(),
-    }).eq('id', order.id).select().single()
+    }).eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+      .is('refunded_at', null).select().maybeSingle()
+    if (!updated) {
+      const { data: current } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
+      return current || order
+    }
     await recordRevenueEvent(admin, {
       eventType: 'SMS_ORDER_COMPLETED',
       eventId: `sms:SMS_ORDER_COMPLETED:${order.id}`,
@@ -1274,7 +1282,7 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
       },
     })
     try { await daisyMarkDone(apiKey, activationId) } catch { /* ignore */ }
-    return updated || { ...order, status: 'completed', messages: nextMessages }
+    return updated
   }
 
   return order
@@ -1288,14 +1296,19 @@ async function cancelSmsOrderAndRefund(
   surface = 'sms',
   actorUserId?: string | null,
 ) {
+  if (Array.isArray(order.messages) && order.messages.length > 0) {
+    throw new Error('SMS code already received; cancellation requires review')
+  }
   const cancelledAt = new Date().toISOString()
-  const { data: updated } = await admin
+  const { data: updated, error: cancelError } = await admin
     .from('sms_orders')
     .update({ status: 'cancelled', cancelled_at: order.cancelled_at || cancelledAt })
     .eq('id', order.id)
+    .in('status', ['pending', 'active', 'waiting'])
+    .is('refunded_at', null)
     .select()
-    .single()
-  const nextOrder = updated || { ...order, status: 'cancelled', cancelled_at: order.cancelled_at || cancelledAt }
+    .maybeSingle()
+  if (cancelError || !updated) throw new Error('SMS order changed during cancellation; manual review required')
 
   await recordRevenueEvent(admin, {
     eventType: 'SMS_ORDER_CANCELLED',
@@ -1311,9 +1324,9 @@ async function cancelSmsOrderAndRefund(
     },
   })
 
-  await refundWallet(admin, nextOrder, refundDescription)
+  await refundWallet(admin, updated, refundDescription)
   const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-  return refunded || nextOrder
+  return refunded || updated
 }
 
 // ── Action handlers ───────────────────────────────────────────────────────────
@@ -1531,6 +1544,8 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     throw new Error(`Price changed from NGN ${expectedPriceNgn.toLocaleString()} to NGN ${estimatedPriceNgn.toLocaleString()}. Please refresh and try again.`)
   }
 
+  await assertPurchasingCustomer(admin, userId, req, estimatedPriceNgn)
+
   if (existing) {
     const sameRequest =
       String(existing.service_id || '') === serviceCode &&
@@ -1582,6 +1597,8 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
   let debit: { prev: number; next: number } | null = null
   let order: any = null
   let number: { activationId: string; phoneNumber: string; priceUsd?: number } | null = null
+  let providerRequestStarted = false
+  let providerCancellationConfirmed = false
 
   try {
     debit = await debitWallet(
@@ -1632,12 +1649,11 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
       svc.provider_cost_usd + 0.05,
       estimatedPriceNgn / exchangeRate,
     )
+    providerRequestStarted = true
     number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd)
     const effectiveProviderUsd = number.priceUsd ?? svc.provider_cost_usd
     const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true)
     if (effectivePricing.providerCostNgn > estimatedPriceNgn) {
-      try { await daisyCancelNumber(key, number.activationId) } catch { /* ignore */ }
-      number = null
       throw new Error('Service price changed before purchase. Please refresh and try again.')
     }
     const marginUsd = Math.max(0, (priceNgn - effectivePricing.providerCostNgn) / exchangeRate)
@@ -1702,16 +1718,24 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     return json({ success: true, data: publicSmsOrder(order), new_balance: debit.next })
   } catch (err) {
     if (number?.activationId) {
-      try { await daisyCancelNumber(key, number.activationId) } catch { /* ignore */ }
+      try {
+        providerCancellationConfirmed = (await daisyCancelNumber(key, number.activationId)).cancelled
+      } catch { /* keep the debit until the provider outcome is established */ }
     }
+    const definitiveAllocationDecline = err instanceof DaisySmsError && [
+      'NO_NUMBERS', 'MAX_PRICE_EXCEEDED', 'NO_MONEY', 'TOO_MANY_ACTIVE_RENTALS', 'BAD_KEY',
+    ].includes(err.code)
+    let safeToRefund = !providerRequestStarted || definitiveAllocationDecline || providerCancellationConfirmed
     if (order?.id) {
-      await admin.from('sms_orders').update({
-        status: 'failed',
-        error_message: err instanceof Error ? err.message : 'Unknown SMS purchase error',
+      const { data: failedOrder, error: failedOrderError } = await admin.from('sms_orders').update({
+        status: safeToRefund ? 'failed' : 'pending',
+        error_message: safeToRefund ? friendlyError(err) : 'Provider outcome requires review.',
         updated_at: new Date().toISOString(),
-      }).eq('id', order.id)
+      }).eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+        .is('refunded_at', null).select('id').maybeSingle()
+      if (failedOrderError || !failedOrder) safeToRefund = false
     }
-    if (debit) {
+    if (debit && safeToRefund) {
       await refundWallet(
         admin,
         order?.id ? order : { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: priceNgn, service_id: serviceCode },
@@ -1721,6 +1745,9 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
           reason: 'create_otp_failed',
         },
       )
+    }
+    if (!safeToRefund) {
+      return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED', data: publicSmsOrder(order) }, 202)
     }
     await recordRevenueEvent(admin, {
       eventType: 'PAYMENT_FAILED',
@@ -1734,7 +1761,7 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
         service_name: svc.service_name,
         amount_ngn: priceNgn,
         idempotency_key: idempotencyKey,
-        error: err instanceof Error ? err.message : 'Unknown SMS purchase error',
+        error: friendlyError(err),
       },
     })
     throw err
@@ -1746,11 +1773,6 @@ async function handleCheckOtp(admin: SupabaseAdmin, userId: string, body: Record
   const { data: order, error } = await admin.from('sms_orders').select('*').eq('id', String(body.order_id || '')).eq('user_id', userId).single()
   if (error || !order) throw new Error('SMS order not found')
   if (TERMINAL_STATUSES.includes(order.status)) {
-    if (order.status === 'cancelled' && !order.refunded_at) {
-      await refundWallet(admin, order, `Refund for cancelled SMS order: ${order.reference}`)
-      const { data: refreshed } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-      return json({ success: true, data: publicSmsOrder(refreshed || order) })
-    }
     return json({ success: true, data: publicSmsOrder(order) })
   }
 
@@ -1762,38 +1784,22 @@ async function handleCheckOtp(admin: SupabaseAdmin, userId: string, body: Record
     result = await daisyGetStatus(key, activationId)
   } catch (error: any) {
     if (error?.code === 'NO_ACTIVATION') {
-      const refunded = await cancelSmsOrderAndRefund(
-        admin,
-        order,
-        'check_status_no_activation',
-        `Auto-refund for expired SMS order: ${order.reference}`,
-      )
-      return json({ success: true, data: publicSmsOrder(refunded) })
+      return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED', data: publicSmsOrder(order) }, 202)
     }
     throw error
   }
 
   if (result.status === 'waiting') {
-    await admin.from('sms_orders').update({ status: 'waiting' }).eq('id', order.id)
-    return json({ success: true, data: publicSmsOrder({ ...order, status: 'waiting' }), waiting: true })
+    const { data: updated } = await admin.from('sms_orders').update({ status: 'waiting' })
+      .eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+      .is('refunded_at', null).select().maybeSingle()
+    if (updated) return json({ success: true, data: publicSmsOrder(updated), waiting: true })
+    const { data: current } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
+    return json({ success: true, data: publicSmsOrder(current || order) })
   }
   if (result.status === 'cancelled') {
-    await admin.from('sms_orders').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', order.id)
-    await recordRevenueEvent(admin, {
-      eventType: 'SMS_ORDER_CANCELLED',
-      eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
-      userId: order.user_id,
-      surface: 'sms',
-      metadata: {
-        order_id: order.id,
-        reference: order.reference,
-        service_code: order.service_id,
-        reason: 'check_status_cancelled',
-      },
-    })
-    await refundWallet(admin, order, `Auto-refund for cancelled SMS order: ${order.reference}`)
-    const { data: refreshed } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-    return json({ success: true, data: publicSmsOrder(refreshed || { ...order, status: 'cancelled' }) })
+    const cancelled = await cancelSmsOrderAndRefund(admin, order, 'check_status_cancelled', `Auto-refund for cancelled SMS order: ${order.reference}`)
+    return json({ success: true, data: publicSmsOrder(cancelled) })
   }
   if (result.status === 'ok') {
     const messages = Array.isArray(order.messages) ? order.messages : []
@@ -1801,7 +1807,12 @@ async function handleCheckOtp(admin: SupabaseAdmin, userId: string, body: Record
     const nextMessages = messages.some((m: any) => m.code === result.code) ? messages : [...messages, newMsg]
     const { data: updated } = await admin.from('sms_orders').update({
       status: 'completed', messages: nextMessages, completed_at: new Date().toISOString(),
-    }).eq('id', order.id).select().single()
+    }).eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+      .is('refunded_at', null).select().maybeSingle()
+    if (!updated) {
+      const { data: current } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
+      return json({ success: true, data: publicSmsOrder(current || order) })
+    }
     await recordRevenueEvent(admin, {
       eventType: 'SMS_ORDER_COMPLETED',
       eventId: `sms:SMS_ORDER_COMPLETED:${order.id}`,
@@ -1825,24 +1836,13 @@ async function handleCancelOtp(admin: SupabaseAdmin, userId: string, body: Recor
   const { data: order, error } = await admin.from('sms_orders').select('*').eq('id', String(body.order_id || '')).eq('user_id', userId).single()
   if (error || !order) throw new Error('SMS order not found')
   if (TERMINAL_STATUSES.includes(order.status)) {
-    if (order.status === 'cancelled' && !order.refunded_at) {
-      await refundWallet(admin, order, `Refund for cancelled SMS order: ${order.reference}`)
-      const { data: refreshed } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-      return json({ success: true, data: publicSmsOrder(refreshed || order), already_final: true })
-    }
     return json({ success: true, data: publicSmsOrder(order), already_final: true })
   }
   if (!order.provider_request_id) throw new Error('Order is missing activation ID')
 
   const cancelResult = await daisyCancelNumber(key, order.provider_request_id)
   if (cancelResult.response === 'NO_ACTIVATION') {
-    const refunded = await cancelSmsOrderAndRefund(
-      admin,
-      order,
-      'customer_cancelled_no_activation',
-      `Refund for expired SMS order: ${order.reference}`,
-    )
-    return json({ success: true, data: publicSmsOrder(refunded) })
+    return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED', data: publicSmsOrder(order) }, 202)
   }
 
   if (!cancelResult.cancelled) {
@@ -1854,22 +1854,8 @@ async function handleCancelOtp(admin: SupabaseAdmin, userId: string, body: Recor
     throw new Error(reason)
   }
 
-  const { data: updated } = await admin.from('sms_orders').update({ status: 'cancelled', cancelled_at: new Date().toISOString() }).eq('id', order.id).select().single()
-  await recordRevenueEvent(admin, {
-    eventType: 'SMS_ORDER_CANCELLED',
-    eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
-    userId: order.user_id,
-    surface: 'sms',
-    metadata: {
-      order_id: order.id,
-      reference: order.reference,
-      service_code: order.service_id,
-      reason: 'customer_cancelled',
-    },
-  })
-  await refundWallet(admin, order, `Refund for cancelled SMS order: ${order.reference}`)
-  const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
-  return json({ success: true, data: publicSmsOrder(refunded || updated) })
+  const cancelled = await cancelSmsOrderAndRefund(admin, order, 'customer_cancelled', `Refund for cancelled SMS order: ${order.reference}`)
+  return json({ success: true, data: publicSmsOrder(cancelled) })
 }
 
 // ── Admin: fetch all SMS orders across all users ──────────────────────────────
@@ -1901,7 +1887,11 @@ async function handleAdminSmsOrders(admin: SupabaseAdmin, userId: string) {
     })
     .map((o: any) => {
       const profile = profileMap[o.user_id]
-      return { ...o, profiles: profile ? { email: profile.email, full_name: profile.full_name } : null }
+      return {
+        ...adminSmsOrderSummary(o),
+        user_id: o.user_id,
+        profiles: profile ? { email: profile.email, full_name: profile.full_name } : null,
+      }
     })
   return json({ success: true, data })
 }
@@ -1915,44 +1905,17 @@ async function handleAdminCancelSmsOrder(admin: SupabaseAdmin, userId: string, b
   const { data: order, error } = await admin.from('sms_orders').select('*').eq('id', orderId).single()
   if (error || !order) throw new Error('SMS order not found')
   if (TERMINAL_STATUSES.includes(order.status)) {
-    // Already terminal — make sure refund exists
-    if (order.status === 'cancelled' && !order.refunded_at) {
-      await refundWallet(admin, order, `Admin refund for cancelled SMS order: ${order.reference}`)
-    }
-    const { data: refreshed } = await admin.from('sms_orders').select('*').eq('id', orderId).single()
-    return json({ success: true, data: refreshed || order, already_final: true })
+    return json({ success: true, data: adminSmsOrderSummary(order), already_final: true, review_required: order.status === 'cancelled' && !order.refunded_at })
   }
 
-  // Try to cancel on DaisySMS — but don't block if it fails (order may be purged)
   const key = getDaisyKey()
-  if (key && order.provider_request_id) {
-    try {
-      await daisyCancelNumber(key, order.provider_request_id)
-    } catch { /* ignore — we still cancel on our side */ }
+  if (!order.provider_request_id || (Array.isArray(order.messages) && order.messages.length > 0)) {
+    return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED' }, 202)
   }
-
-  const { data: updated } = await admin
-    .from('sms_orders')
-    .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
-    .eq('id', orderId)
-    .select()
-    .single()
-  await recordRevenueEvent(admin, {
-    eventType: 'SMS_ORDER_CANCELLED',
-    eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
-    userId: order.user_id,
-    surface: 'sms_admin',
-    metadata: {
-      order_id: order.id,
-      reference: order.reference,
-      service_code: order.service_id,
-      reason: 'admin_cancelled',
-      admin_user_id: userId,
-    },
-  })
-  await refundWallet(admin, order, `Admin refund for cancelled SMS order: ${order.reference}`)
-  const { data: refunded } = await admin.from('sms_orders').select('*').eq('id', orderId).single()
-  return json({ success: true, data: refunded || updated })
+  const cancellation = await daisyCancelNumber(key, order.provider_request_id)
+  if (!cancellation.cancelled) return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED' }, 202)
+  const cancelled = await cancelSmsOrderAndRefund(admin, order, 'admin_cancelled', `Admin refund for cancelled SMS order: ${order.reference}`, 'sms_admin', userId)
+  return json({ success: true, data: adminSmsOrderSummary(cancelled) })
 }
 
 // ── Admin: auto-cancel all orders pending 5+ minutes with no code ─────────────
@@ -1972,27 +1935,10 @@ async function handleAdminAutoCancelStale(admin: SupabaseAdmin, userId: string) 
   const cancelled: string[] = []
   await Promise.all(orders.map(async (order: any) => {
     try {
-      if (key && order.provider_request_id) {
-        try { await daisyCancelNumber(key, order.provider_request_id) } catch { /* ignore */ }
-      }
-      await admin.from('sms_orders').update({
-        status: 'cancelled',
-        cancelled_at: new Date().toISOString(),
-      }).eq('id', order.id)
-      await recordRevenueEvent(admin, {
-        eventType: 'SMS_ORDER_CANCELLED',
-        eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
-        userId: order.user_id,
-        surface: 'sms_admin',
-        metadata: {
-          order_id: order.id,
-          reference: order.reference,
-          service_code: order.service_id,
-          reason: 'admin_auto_cancel_stale',
-          admin_user_id: userId,
-        },
-      })
-      await refundWallet(admin, order, `Auto-refund for stale SMS order: ${order.reference}`)
+      if (!key || !order.provider_request_id) return
+      const cancellation = await daisyCancelNumber(key, order.provider_request_id)
+      if (!cancellation.cancelled) return
+      await cancelSmsOrderAndRefund(admin, order, 'admin_auto_cancel_stale', `Auto-refund for stale SMS order: ${order.reference}`, 'sms_admin', userId)
       cancelled.push(order.reference)
     } catch { /* skip individual failures */ }
   }))
@@ -2022,50 +1968,11 @@ async function handleSyncCancelled(admin: SupabaseAdmin, userId: string) {
     try {
       const daisyStatus = await daisyGetStatus(key, order.provider_request_id)
       if (daisyStatus.status === 'cancelled') {
-        await admin.from('sms_orders').update({
-          status: 'cancelled',
-          cancelled_at: new Date().toISOString(),
-        }).eq('id', order.id)
-        await recordRevenueEvent(admin, {
-          eventType: 'SMS_ORDER_CANCELLED',
-          eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
-          userId: order.user_id,
-          surface: 'sms',
-          metadata: {
-            order_id: order.id,
-            reference: order.reference,
-            service_code: order.service_id,
-            reason: 'sync_cancelled',
-          },
-        })
-        await refundWallet(admin, order, `Refund for cancelled SMS order: ${order.reference}`)
+        await cancelSmsOrderAndRefund(admin, order, 'sync_cancelled', `Refund for cancelled SMS order: ${order.reference}`)
         cancelledRefs.push(order.reference)
       }
-    } catch (e: any) {
-      // NO_ACTIVATION means DaisySMS purged this order — treat as cancelled and refund
-      if (e?.code === 'NO_ACTIVATION') {
-        try {
-          await admin.from('sms_orders').update({
-            status: 'cancelled',
-            cancelled_at: new Date().toISOString(),
-          }).eq('id', order.id)
-          await recordRevenueEvent(admin, {
-            eventType: 'SMS_ORDER_CANCELLED',
-            eventId: `sms:SMS_ORDER_CANCELLED:${order.id}`,
-            userId: order.user_id,
-            surface: 'sms',
-            metadata: {
-              order_id: order.id,
-              reference: order.reference,
-              service_code: order.service_id,
-              reason: 'sync_no_activation',
-            },
-          })
-          await refundWallet(admin, order, `Refund for expired SMS order: ${order.reference}`)
-          cancelledRefs.push(order.reference)
-        } catch (_) { /* ignore */ }
-      }
-      // All other errors: skip silently — don't block the whole sync
+    } catch {
+      // An unknown provider outcome, including NO_ACTIVATION, needs review.
     }
   }))
 
@@ -2095,9 +2002,12 @@ async function handleDaisyWebhook(req: Request) {
   const newMsg = { content: payload.text, code, received_at: payload.receivedAt || new Date().toISOString() }
   const nextMessages = messages.some((m: any) => m.code === code) ? messages : [...messages, newMsg]
 
-  await admin.from('sms_orders').update({
+  const { data: completed, error: completionError } = await admin.from('sms_orders').update({
     status: 'completed', messages: nextMessages, completed_at: new Date().toISOString(),
-  }).eq('id', order.id)
+  }).eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+    .is('refunded_at', null).select('id').maybeSingle()
+  if (completionError) throw completionError
+  if (!completed) return new Response('ok', { status: 200 })
   await recordRevenueEvent(admin, {
     eventType: 'SMS_ORDER_COMPLETED',
     eventId: `sms:SMS_ORDER_COMPLETED:${order.id}`,

@@ -253,18 +253,10 @@ function GiftCardsEsimsInner() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const { data, error } = await supabase
-        .from('bitrefill_orders')
-        .select(`
-          id, reference, product_name, quantity, amount_ngn, payment_source,
-          status, redemption_code, redemption_link, redemption_pin, created_at
-        `)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(10);
+      const { data, error } = await supabase.rpc('get_my_bitrefill_order_history' as any);
 
       if (error) throw error;
-      setOrders(data || []);
+      setOrders((data || []) as Order[]);
     } catch (error) {
       console.error('Error fetching order history:', error);
     } finally {
@@ -795,7 +787,7 @@ function GiftCardsEsimsInner() {
                             <p className="font-semibold text-foreground">
                               {formatPrice(order.amount_ngn)} x{order.quantity}
                             </p>
-                            {order.redemption_code && (
+                            {order.status === 'successful' && order.redemption_code && (
                               <div className="flex items-center gap-1.5 mt-1">
                                 <code className="bg-muted px-1.5 py-0.5 rounded text-xs">{order.redemption_code}</code>
                                 <button onClick={() => copyCode(order.redemption_code!)}>
@@ -803,7 +795,7 @@ function GiftCardsEsimsInner() {
                                 </button>
                               </div>
                             )}
-                            {order.redemption_link && (
+                            {order.status === 'successful' && order.redemption_link && (
                               <a href={order.redemption_link} target="_blank" rel="noopener noreferrer" className="text-primary underline text-xs">
                                 Open redemption link
                               </a>

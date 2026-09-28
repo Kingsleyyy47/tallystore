@@ -38,10 +38,7 @@ type CatalogProduct = {
   stock_count: number;
   availability_status?: string | null;
   is_sellable?: boolean | null;
-  auto_fulfill_enabled?: boolean | null;
-  muabanvia_product_id?: string | null;
-  shopclone_product_id?: string | null;
-  shopviaclone_product_id?: string | null;
+  is_active?: boolean | null;
   category_id?: string | null;
   categories?: { name?: string | null } | null;
 };
@@ -373,22 +370,20 @@ function scoreTextRelevance(message: string, product: CatalogProduct) {
 }
 
 function canAutoFulfill(product: CatalogProduct) {
-  return Boolean(
-    product.auto_fulfill_enabled &&
-      (product.muabanvia_product_id ||
-        product.shopclone_product_id ||
-        product.shopviaclone_product_id),
-  );
+  return Deno.env.get("LIVE_ACCOUNT_FULFILLMENT_ENABLED") === "true" &&
+    product.is_sellable !== false &&
+    String(product.availability_status || "").toUpperCase() === "UNLIMITED";
 }
 
 function isLiveSellableProduct(product: CatalogProduct) {
   const price = Number(product.price);
   const explicitSellable = product.is_sellable;
   const availabilityStatus = String(product.availability_status || "").toUpperCase();
-  const statusSellable = ["AVAILABLE", "LOW_STOCK", "PREORDER", "BACKORDER", "UNLIMITED"].includes(availabilityStatus);
+  const statusSellable = ["AVAILABLE", "LOW_STOCK", "PREORDER", "BACKORDER"].includes(availabilityStatus) ||
+    (availabilityStatus === "UNLIMITED" && canAutoFulfill(product));
   const statusBlocked = ["UNAVAILABLE", "PAUSED"].includes(availabilityStatus);
   const blocked = explicitSellable === false || statusBlocked;
-  return Number.isFinite(price) &&
+  return product.is_active !== false && Number.isFinite(price) &&
     price > 0 &&
     !blocked &&
     (statusSellable || Number(product.stock_count || 0) > 0 || canAutoFulfill(product));
@@ -920,7 +915,7 @@ serve(async (req) => {
       loadAppSetting(supabaseAdmin, "cro_maintenance_freeze_reason", ""),
       supabase
         .from("product_groups")
-        .select("*,categories(name)")
+        .select("id,category_id,name,description,price,stock_count,availability_status,is_sellable,is_active,categories(name)")
         .eq("is_active", true)
         .gt("price", 0)
         .order("stock_count", { ascending: false })
@@ -1029,11 +1024,11 @@ serve(async (req) => {
       productCards: buildProductCards(scored, accountMap),
       templateId: `product:${intent}:${responsePlan}:${scored.length}`,
     });
-  } catch (error: any) {
-    console.error("Deterministic chatbot error:", error);
+  } catch {
+    console.error("Deterministic chatbot request failed.");
     return json({
       success: false,
-      error: error?.message || "Something went wrong",
+      error: "Chat is temporarily unavailable.",
       reply: "I could not check live stock right now. Please use the product page or contact support.",
     }, 500);
   }

@@ -38,7 +38,8 @@ BEGIN
       RAISE EXCEPTION 'Could not rewrite cascading auth.users foreign key %.% constraint %',
         fk.table_schema,
         fk.table_name,
-        fk.constraint_name;
+        fk.constraint_name
+        USING DETAIL = constraint_def;
     END IF;
 
     EXECUTE format(

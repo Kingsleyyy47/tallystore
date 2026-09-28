@@ -185,15 +185,15 @@ serve(async (req) => {
         attribution: cleanAttribution(body.attribution),
         traffic_quality: cleanTrafficQuality(body.traffic_quality || body.trafficQuality),
         ip_address: ipAddress,
-        ip_source: ipAddress ? 'edge' : 'unknown',
+        ip_source: 'unknown',
         ...geo,
       })
 
-    if (error) throw new Error(error.message)
+    if (error) throw new Error('Site visit insert failed')
 
     return json({ success: true, ip_captured: Boolean(ipAddress) })
   } catch (error) {
-    console.error('record-site-visit failed:', error)
-    return json({ success: false, error: error instanceof Error ? error.message : 'Failed to record visit' }, 400)
+    console.error('record-site-visit failed')
+    return json({ success: false, error: 'Visit recording unavailable' }, 503)
   }
 })

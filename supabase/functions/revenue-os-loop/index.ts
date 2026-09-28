@@ -8,6 +8,7 @@
 //   5. Log each run to cro_attribution_closures
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { isAuthorizedRevenueLoopRequest } from './auth.mjs'
 
 const SUPABASE_URL    = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -515,9 +516,11 @@ async function runOpportunityDetectors(): Promise<void> {
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 Deno.serve(async (req: Request) => {
-  // Allow both scheduled cron invocations and manual POST triggers
-  if (req.method !== 'POST' && req.method !== 'GET') {
+  if (req.method !== 'POST') {
     return new Response('method not allowed', { status: 405 })
+  }
+  if (!isAuthorizedRevenueLoopRequest(req, SERVICE_ROLE_KEY)) {
+    return new Response('Unauthorized', { status: 401 })
   }
 
   const runAt = new Date().toISOString()
@@ -568,7 +571,7 @@ Deno.serve(async (req: Request) => {
     )
   } catch (err: any) {
     console.error('[revenue-os-loop] fatal error:', err?.message)
-    return new Response(JSON.stringify({ ok: false, error: err?.message }), {
+    return new Response(JSON.stringify({ ok: false, error: 'Revenue loop failed' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     })

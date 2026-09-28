@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { ngnMinorUnits } from '../_shared/ngn-amount.mjs'
 
 async function applyWalletTransaction(
   supabaseAdmin: any,
@@ -309,12 +310,10 @@ async function verifyPocketFiWebhook(req: Request, rawBody: string) {
     return false
   }
 
-  const url = new URL(req.url)
   const bearer = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '').trim()
   const sharedSecret = (
     req.headers.get('x-pocketfi-webhook-secret') ||
     req.headers.get('x-webhook-secret') ||
-    url.searchParams.get('token') ||
     bearer ||
     ''
   ).trim()
@@ -383,8 +382,8 @@ function extractAccountNumber(payload: any): string | undefined {
   return value ? String(value) : undefined
 }
 
-function extractAmount(payload: any): number {
-  const value = firstDefined(
+function extractAmount(payload: any): unknown {
+  return firstDefined(
     payload.order?.amount,
     payload.order?.settlement_amount,
     payload.data?.order?.amount,
@@ -393,24 +392,20 @@ function extractAmount(payload: any): number {
     payload.data?.amount,
     payload.transaction?.amount,
   )
-  return Number(value || 0)
 }
 
 function extractReference(payload: any): string | undefined {
   const value = firstDefined(
     payload.transaction?.reference,
-    payload.transaction?.id,
     payload.data?.transaction?.reference,
-    payload.data?.transaction?.id,
     payload.reference,
     payload.transaction_reference,
     payload.transactionReference,
     payload.data?.reference,
     payload.data?.transaction_reference,
-    payload.sessionId,
-    payload.id,
   )
-  return value ? String(value) : undefined
+  const reference = String(value ?? '').trim()
+  return reference || undefined
 }
 
 function extractStatus(payload: any): string {
@@ -526,13 +521,15 @@ serve(async (req) => {
 
     const payload = rawBody ? JSON.parse(rawBody) as Record<string, any> : {}
     const accountNumber = extractAccountNumber(payload)
-    const amount = extractAmount(payload)
+    const rawAmount = extractAmount(payload)
+    const amountMinor = ngnMinorUnits(rawAmount)
+    const amount = amountMinor === null ? Number.NaN : amountMinor / 100
     const reference = extractReference(payload)
     const status = extractStatus(payload)
 
     console.log('PocketFi webhook received.')
 
-    const { data: logRow } = await supabase
+    const { data: logRow, error: logError } = await supabase
       .from('pocketfi_webhook_logs')
       .insert({
         raw_payload: payload,
@@ -544,7 +541,12 @@ serve(async (req) => {
       .select('id')
       .single()
 
-    if (!accountNumber || !Number.isFinite(amount) || amount <= 0 || !reference) {
+    if (logError || !logRow?.id) {
+      console.error('PocketFi webhook evidence could not be recorded')
+      return json({ error: 'PocketFi processing unavailable' }, 503)
+    }
+
+    if (!accountNumber || amountMinor === null || !reference) {
       const message = !reference
         ? 'Missing transaction reference in PocketFi webhook payload. Payment logged for manual review and not credited.'
         : 'Missing account number or valid positive amount in PocketFi webhook payload'
@@ -555,7 +557,11 @@ serve(async (req) => {
       return json({ message: 'Payload could not be parsed, logged for review' })
     }
 
-    const isSuccess = status === '' || status.includes('success') || status === 'completed' || status === 'paid' || status === 'credit'
+    // PocketFi's confirmed inward-transfer payload has no status field. For
+    // status-less events, require its transfer-specific order and reference.
+    const statuslessTransfer = status === '' && payload.order && payload.transaction?.reference
+    const isSuccess = Boolean(statuslessTransfer) ||
+      /^(?:success|successful|completed|paid|credit|(?:transfer|payment|collection)[._-](?:success|successful|completed|paid))$/.test(status)
     if (!isSuccess) {
       console.log('Ignoring non-successful PocketFi event:', status)
       return json({ message: 'Event ignored' })
@@ -573,7 +579,7 @@ serve(async (req) => {
       if (logRow) {
         await supabase.from('pocketfi_webhook_logs').update({ error_message: message }).eq('id', logRow.id)
       }
-      return json({ error: message }, 500)
+      return json({ error: 'PocketFi processing unavailable' }, 500)
     }
 
     if (partnerCustomer) {
@@ -625,7 +631,7 @@ serve(async (req) => {
         if (logRow) {
           await supabase.from('pocketfi_webhook_logs').update({ error_message: message }).eq('id', logRow.id)
         }
-        return json({ error: message }, 500)
+        return json({ error: 'PocketFi processing unavailable' }, 500)
       }
 
       if (logRow) {
@@ -641,7 +647,6 @@ serve(async (req) => {
       return json({
         success: Boolean(partnerResult?.success),
         message: partnerResult?.success ? 'Partner payment processed successfully' : 'Partner payment received but needs review',
-        data: partnerResult,
       })
     }
 
@@ -671,28 +676,33 @@ serve(async (req) => {
 
     const userId = profile.id
 
-    if (logRow) {
-      await supabase
-        .from('pocketfi_webhook_logs')
-        .update({
-          matched_user_id: userId,
-          verified_amount_ngn: amount,
-          verified_reference: reference,
-          verified_status: status || 'success',
-        })
-        .eq('id', logRow.id)
+    const { data: matchedLog, error: matchError } = await supabase
+      .from('pocketfi_webhook_logs')
+      .update({
+        matched_user_id: userId,
+        verified_amount_ngn: amount,
+        verified_reference: reference,
+        verified_status: status || 'success',
+      })
+      .eq('id', logRow.id)
+      .eq('processed', false)
+      .select('id')
+      .single()
+    if (matchError || !matchedLog?.id) {
+      console.error('PocketFi webhook evidence could not be linked to wallet')
+      return json({ error: 'PocketFi processing unavailable' }, 503)
     }
 
     const { data: existingTransaction } = await supabase
       .from('transactions')
-      .select('id, user_id, amount, balance_after')
+      .select('id, user_id, amount')
       .eq('reference', reference)
       .eq('type', 'topup')
       .maybeSingle()
 
     if (existingTransaction) {
-      const existingAmount = Math.abs(Number(existingTransaction.amount || 0))
-      if (existingTransaction.user_id !== userId || Math.round(existingAmount * 100) !== Math.round(amount * 100)) {
+      const existingAmountMinor = ngnMinorUnits(existingTransaction.amount)
+      if (existingTransaction.user_id !== userId || existingAmountMinor !== amountMinor) {
         const message = 'PocketFi duplicate reference conflict: existing credit does not match webhook account or amount'
         console.error(message)
         if (logRow) {
@@ -708,9 +718,10 @@ serve(async (req) => {
             })
             .eq('id', logRow.id)
         }
-        return json({ error: message, code: 'POCKETFI_REFERENCE_CONFLICT' }, 409)
+        return json({ error: 'PocketFi payment reference conflict', code: 'POCKETFI_REFERENCE_CONFLICT' }, 409)
       }
 
+      const existingAmount = existingAmountMinor / 100
       console.log('PocketFi transaction already processed.')
       if (logRow) {
         await supabase
@@ -729,12 +740,6 @@ serve(async (req) => {
         success: true,
         already_processed: true,
         message: 'Transaction already processed',
-        data: {
-          user_id: userId,
-          amount: existingAmount,
-          new_balance: Number(existingTransaction.balance_after || 0),
-          reference,
-        },
       })
     }
 
@@ -752,7 +757,7 @@ serve(async (req) => {
         account_number: accountNumber,
         verified_amount_ngn: amount,
         verified_reference: reference,
-        webhook_log_id: logRow?.id || null,
+        webhook_log_id: matchedLog.id,
       },
     })
 
@@ -792,13 +797,11 @@ serve(async (req) => {
     return json({
       success: true,
       message: 'Payment processed successfully',
-      data: { user_id: userId, amount, new_balance: finalBalance, reference },
     })
   } catch (error) {
     console.error('PocketFi webhook processing error:', error instanceof Error ? error.message : 'Unknown error')
     return json({
       error: 'Internal server error',
-      message: error instanceof Error ? error.message : 'Unknown error',
     }, 500)
   }
 })

@@ -43,6 +43,8 @@ credential may use a `VITE_` prefix.
 | `SUPABASE_URL` | Supabase Edge Functions, owner tools. | Server-side/project URL. |
 | `SUPABASE_ANON_KEY` | Supabase Edge Functions that need user auth context. | Server-side in functions; public key but not a funding authority. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Edge Functions and owner read-only reconciliation. | Server-only; never browser; rotate if exposed. |
+| `TALLYSTORE_OWNER_USER_ID` | `admin-adjust-balance` and `manage-staff`. | Server-only reviewed `auth.users.id`; both owner-only functions fail closed if unset and also require current `profiles.is_admin`. Configure before deployment; do not use a `VITE_` variable. |
+| `EMAIL_BROADCAST_CRON_SECRET` | Email broadcast worker scheduler. | Server-only; the worker rejects anonymous cron calls. |
 | `SUPABASE_DB_URL` | Staging DB test runner. | Owner-controlled staging/local only. |
 | `DATABASE_URL` | Staging DB test runner fallback. | Owner-controlled staging/local only. |
 | `TALLYSTORE_DB_TEST_ENV` | DB test runner guard. | Must be `staging` or local owner-controlled value, not production. |
@@ -82,6 +84,7 @@ credential may use a `VITE_` prefix.
 | `ERCASPAY_MODE` | Ercas verification mode. | Must match production/test mode. |
 | `ERCAS_MODE` | Ercas verification mode fallback. | Must match production/test mode. |
 | `ERCAS_BASE_URL` | Ercas API endpoint placeholder. | Server-side endpoint config only; do not expose with `VITE_`. |
+| `TALLYSTORE_SITE_ORIGIN` | Ercas checkout redirect origin. | Server-controlled HTTPS storefront origin; set staging separately, default production `https://tallystore.org`. Never derive it from request headers. |
 | `POCKETFI_PUBLIC_KEY` | PocketFi account setup API bearer token. | Server-only despite provider naming. |
 | `POCKETFI_API_TOKEN` | PocketFi account setup API bearer token fallback. | Server-only. |
 | `POCKETFI_BUSINESS_ID` | PocketFi business/account setup. | Server-only provider config. |
@@ -169,3 +172,25 @@ notes:
 
 Rotate any value that was exposed in a public file, chat, browser bundle,
 screenshare, or provider dashboard screenshot.
+
+## Historical Repository Exposure (2026-09-24)
+
+The local leak guard inspected the reachable Git-history `.env` blob without
+printing values. It found non-placeholder values under these names:
+
+```text
+VITE_ERCASPAY_API_KEY
+VITE_ERCASPAY_SECRET_KEY
+VITE_POCKETFI_API_TOKEN
+POCKETFI_SECRET_KEY
+MUABANVIA_API_KEY
+```
+
+Treat any still-active value under those names as compromised. The owner must
+rotate/revoke it in the relevant Ercas, PocketFi, or supplier account, update
+server-only deployment secrets, remove obsolete `VITE_` provider variables
+from Vercel build configuration, redeploy, and verify callbacks and supplier
+access with replacement credentials. Deleting `.env` from the current commit
+does not remove it from already cloned or published history. The guard found
+none of those historical values in the current local browser build; this does
+not establish what older deployed bundles exposed.

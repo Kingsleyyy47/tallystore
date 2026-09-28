@@ -263,7 +263,6 @@ const URL_PATTERNS: Record<string, RegExp> = {
 
 interface SmmService {
   id: number;
-  external_id: number;
   name: string;
   category: string;
   platform: string;
@@ -376,7 +375,7 @@ export default function SocialBoostPage() {
       let dbQuery = supabase
         .from('smm_services')
         .select(`
-          id, external_id, name, category, platform, service_type,
+          id, name, category, platform, service_type,
           price_ngn, min_quantity, max_quantity,
           has_refill, has_cancel, is_active
         `)
@@ -511,7 +510,6 @@ export default function SocialBoostPage() {
         eventId: `PRODUCT_IMPRESSION:${day}:${actorKey}:social_boost:${selectedPlatform}:${debouncedSearch.trim().toLowerCase() || 'browse'}:${service.id}`,
         metadata: {
           service_id: service.id,
-          external_id: service.external_id,
           service_name: service.name,
           platform: service.platform,
           category: service.category,
@@ -579,7 +577,6 @@ export default function SocialBoostPage() {
       eventId: `PRODUCT_CLICKED:${crypto.randomUUID()}:social_boost:${service.id}`,
       metadata: {
         service_id: service.id,
-        external_id: service.external_id,
         service_name: service.name,
         platform: service.platform,
         category: service.category,
@@ -628,7 +625,6 @@ export default function SocialBoostPage() {
       metadata: {
         provider: 'wallet',
         service_id: selectedService.id,
-        external_id: selectedService.external_id,
         service_name: selectedService.name,
         platform: selectedService.platform,
         category: selectedService.category,
@@ -675,7 +671,7 @@ export default function SocialBoostPage() {
     if (blockStaffPurchase(isStaff, isAdmin, toast)) return;
     const idempotencyKey = `smm-${selectedService.id}-${Date.now()}-${crypto.randomUUID()}`;
     
-    // Build payload - use service_id (internal DB ID) not external_id
+    // Purchase by the internal catalog ID; supplier identity stays server-side.
     const payload: Record<string, unknown> = {
       service_id: selectedService.id, // Internal DB ID
       expected_price_ngn: calculateTotal(),
@@ -741,7 +737,11 @@ export default function SocialBoostPage() {
         throw new Error(errorMessage);
       }
       
-      if (data?.success) {
+      if (data?.code === 'SMM_SUPPLIER_OUTCOME_UNKNOWN') {
+        await Promise.all([fetchOrders(), refreshWalletBalance()]);
+        setActiveTab('history');
+        toast({ title: 'Order under review', description: data.error });
+      } else if (data?.success) {
         toast({ title: 'Order Placed! 🎉', description: `Order #${data.data?.reference || data.orderId} submitted.` });
         setSelectedService(null); setLink(''); setQuantity(''); setSearchQuery('');
         setComments(''); setUsernames(''); setUsername(''); setHashtags('');

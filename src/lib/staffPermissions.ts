@@ -42,6 +42,16 @@ export interface StaffPermission {
 
 export type PermissionMap = Record<PermissionKey, StaffPermission>
 
+export type StaffCustomerSearchRow = {
+  id: string
+  email: string | null
+  full_name: string | null
+  wallet_balance: number
+  is_staff: boolean
+  is_admin: boolean
+  created_at: string
+}
+
 // ── DB helpers ─────────────────────────────────────────────────────────────
 
 /** Fetch all permissions for the currently logged-in staff user. */
@@ -57,6 +67,27 @@ export async function getMyStaffPermissions(): Promise<PermissionMap> {
     map[row.permission_key as PermissionKey] = row as StaffPermission
   }
   return map
+}
+
+export async function searchStaffCustomers(query: string): Promise<StaffCustomerSearchRow[]> {
+  const { data, error } = await supabase.functions.invoke('manage-staff', {
+    body: { action: 'staff_customer_search', query: query.trim() },
+  })
+  if (error) {
+    let message = error.message || 'Customer search unavailable'
+    const context = (error as any)?.context
+    if (context && typeof context.json === 'function') {
+      try {
+        const body = await context.clone().json()
+        message = body?.error || message
+      } catch {
+        // Keep the transport error if the response is not JSON.
+      }
+    }
+    throw new Error(message)
+  }
+  if (!Array.isArray(data?.users)) throw new Error('Customer search unavailable')
+  return data.users as StaffCustomerSearchRow[]
 }
 
 /** Submit an action for super-admin approval. */

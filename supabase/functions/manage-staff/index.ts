@@ -339,7 +339,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const ADMIN_EMAIL = 'wisdomthedev@gmail.com'
 const DEFAULT_DAISY_BASE = 'https://daisysms.io/stubs/handler_api.php'
 const SMS_TERMINAL_STATUSES = ['completed', 'cancelled', 'failed', 'expired', 'refunded']
 
@@ -525,13 +524,13 @@ function isDepositTransaction(row: any) {
 async function requireStaffReadPermission(admin: any, user: any, permissionKey: string) {
   const { data: profile, error: profileError } = await admin
     .from('profiles')
-    .select('id, email, is_admin, is_staff')
+    .select('id, email, is_admin, is_staff, account_suspended')
     .eq('id', user.id)
     .single()
   if (profileError || !profile) throw new HttpError('Profile not found', 404)
+  if (profile.account_suspended === true) throw new HttpError('Account suspended', 403)
 
-  const isSuperAdmin = user.email?.toLowerCase() === ADMIN_EMAIL
-  if (isSuperAdmin || profile.is_admin === true) return profile
+  if (profile.is_admin === true) return profile
   if (profile.is_staff !== true) throw new HttpError('Forbidden - staff only', 403)
 
   const { data: permission, error: permissionError } = await admin
@@ -543,6 +542,49 @@ async function requireStaffReadPermission(admin: any, user: any, permissionKey: 
   if (permissionError) throw new Error(permissionError.message)
   if (!permission?.is_enabled) throw new HttpError('Permission is not enabled', 403)
   return profile
+}
+
+async function handleStaffCustomerSearch(admin: any, user: any, body: Record<string, unknown>) {
+  await requireStaffReadPermission(admin, user, 'tab_users')
+  const query = typeof body.query === 'string' ? body.query.trim() : ''
+  if (query.length < 3 || query.length > 120) {
+    return json({ error: 'Search requires 3 to 120 characters' }, 400)
+  }
+
+  const columns = 'id,email,full_name,wallet_balance,is_staff,is_admin,created_at'
+  const customerQuery = () => admin.from('profiles').select(columns)
+    .eq('is_staff', false).eq('is_admin', false)
+  const escaped = query.replace(/[\\%_]/g, '\\$&')
+  const searches = [
+    customerQuery().ilike('email', `%${escaped}%`).limit(50),
+    customerQuery().ilike('full_name', `%${escaped}%`).limit(50),
+    customerQuery().eq('pocketfi_account_number', query).limit(50),
+  ]
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(query)) {
+    searches.push(customerQuery().eq('id', query).limit(1))
+  }
+
+  const results = await Promise.all(searches)
+  if (results.some((result) => result.error)) throw new Error('Customer search unavailable')
+  const byId = new Map<string, Record<string, unknown>>()
+  for (const result of results) {
+    for (const row of result.data || []) {
+      if (row?.id && row.is_staff !== true && row.is_admin !== true) {
+        byId.set(row.id, {
+          id: row.id,
+          email: row.email || null,
+          full_name: row.full_name || null,
+          wallet_balance: Number(row.wallet_balance || 0),
+          is_staff: false,
+          is_admin: false,
+          created_at: row.created_at,
+        })
+      }
+    }
+  }
+  return json({ users: [...byId.values()]
+    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    .slice(0, 50) })
 }
 
 async function getCustomerProfileMap(admin: any, rows: any[]) {
@@ -672,7 +714,7 @@ async function handleStaffSalesHistory(admin: any, user: any) {
       staffHistoryRow('Crypto', row, profiles.get(row.user_id), Number(row.naira_amount || row.amount || 0), `${row.crypto_type || 'Crypto'} ${row.transaction_type || 'sale'}`, row.crypto_amount ? `${row.crypto_amount} ${row.crypto_type || ''}` : ''),
     ),
     ...cryptoWithdrawalRows.filter((row) => isCompletedStatus(row.status) && profiles.has(row.user_id)).map((row) =>
-      staffHistoryRow('Crypto', row, profiles.get(row.user_id), Number(row.amount || 0), `Withdrawal to ${row.bank_name || 'bank'}`, [row.account_name, row.account_number].filter(Boolean).join(' • ')),
+      staffHistoryRow('Crypto', row, profiles.get(row.user_id), Number(row.amount || 0), `Withdrawal to ${row.bank_name || 'bank'}`),
     ),
     ...billsRows.filter((row) => isCompletedStatus(row.status) && profiles.has(row.user_id)).map((row) =>
       staffHistoryRow('Bills', row, profiles.get(row.user_id), Number(row.amount || 0), row.transaction_type || 'Bill payment', row.service_provider || row.phone || ''),
@@ -702,7 +744,8 @@ async function readLimitedRows(admin: any, table: string, limit = 8) {
     .order('created_at', { ascending: false })
     .limit(limit)
   if (error) {
-    return { rows: [], error: error.message }
+    console.error('Staff revenue snapshot failed:', error)
+    return { rows: [], error: 'Snapshot data unavailable' }
   }
   return { rows: data || [], error: '' }
 }
@@ -766,7 +809,7 @@ async function handleStaffRevenueOsSnapshot(admin: any, user: any) {
 
 async function daisyCancelNumber(activationId: string) {
   const apiKey = Deno.env.get('DAISYSMS_API_KEY') || ''
-  if (!apiKey || !activationId) return
+  if (!apiKey || !activationId) throw new Error('SMS cancellation requires provider credentials and activation ID')
   const url = new URL(Deno.env.get('DAISYSMS_BASE_URL') || DEFAULT_DAISY_BASE)
   url.searchParams.set('api_key', apiKey)
   url.searchParams.set('action', 'setStatus')
@@ -774,6 +817,9 @@ async function daisyCancelNumber(activationId: string) {
   url.searchParams.set('status', '8')
   const res = await fetch(url.toString())
   if (!res.ok) throw new Error(`DaisySMS cancel failed with HTTP ${res.status}`)
+  if ((await res.text()).trim() !== 'ACCESS_CANCEL') {
+    throw new Error('DaisySMS did not confirm cancellation; manual outcome review required')
+  }
 }
 
 async function updateProductGroupStock(admin: any, productGroupId: string) {
@@ -1097,16 +1143,23 @@ async function applySmsPendingAction(admin: any, pendingAction: any) {
     const { data: order, error } = await admin.from('sms_orders').select('*').eq('id', orderId).single()
     if (error || !order) throw new Error(error?.message || 'SMS order not found')
 
-    if (!SMS_TERMINAL_STATUSES.includes(String(order.status || '').toLowerCase())) {
-      if (order.provider_request_id) {
-        try { await daisyCancelNumber(String(order.provider_request_id)) } catch { /* keep local cancellation moving */ }
-      }
-      const { error: updateError } = await admin
+    if (order.refunded_at) return
+    if (SMS_TERMINAL_STATUSES.includes(String(order.status || '').toLowerCase())) {
+      throw new Error('Terminal SMS order requires manual refund review')
+    }
+    if (Array.isArray(order.messages) && order.messages.length > 0) {
+      throw new Error('SMS code already received; cancellation requires review')
+    }
+    await daisyCancelNumber(String(order.provider_request_id || ''))
+    const { data: cancelled, error: updateError } = await admin
         .from('sms_orders')
         .update({ status: 'cancelled', cancelled_at: now })
         .eq('id', order.id)
-      if (updateError) throw new Error(updateError.message)
-    }
+        .in('status', ['pending', 'active', 'waiting'])
+        .is('refunded_at', null)
+        .select('id')
+        .maybeSingle()
+    if (updateError || !cancelled) throw new Error(updateError?.message || 'SMS order changed during cancellation; review required')
 
     await refundSmsOrderWallet(
       admin,
@@ -1130,10 +1183,12 @@ async function applySmsPendingAction(admin: any, pendingAction: any) {
     for (const order of staleOrders || []) {
       if (order.messages && Array.isArray(order.messages) && order.messages.length > 0) continue
       try {
-        if (order.provider_request_id) {
-          try { await daisyCancelNumber(String(order.provider_request_id)) } catch { /* keep local cancellation moving */ }
-        }
-        await admin.from('sms_orders').update({ status: 'cancelled', cancelled_at: now }).eq('id', order.id)
+        await daisyCancelNumber(String(order.provider_request_id || ''))
+        const { data: cancelledOrder, error: cancelError } = await admin.from('sms_orders')
+          .update({ status: 'cancelled', cancelled_at: now }).eq('id', order.id)
+          .in('status', ['pending', 'active', 'waiting']).is('refunded_at', null)
+          .select('id').maybeSingle()
+        if (cancelError || !cancelledOrder) continue
         await refundSmsOrderWallet(
           admin,
           order,
@@ -1531,6 +1586,27 @@ async function applyStaffAction(admin: any, pendingAction: any) {
   throw new Error('Unsupported action type')
 }
 
+async function assertQueuedStaffPermission(admin: any, pendingAction: any) {
+  requireAllowedStaffAction(pendingAction)
+  const { data: profile, error: profileError } = await admin
+    .from('profiles')
+    .select('is_staff, is_admin, account_suspended')
+    .eq('id', pendingAction.staff_id)
+    .maybeSingle()
+  if (profileError || !profile || profile.is_staff !== true || profile.is_admin === true || profile.account_suspended === true) {
+    throw new Error('Queued action requester is not a current staff member')
+  }
+  const { data: permission, error: permissionError } = await admin
+    .from('staff_permissions')
+    .select('is_enabled')
+    .eq('user_id', pendingAction.staff_id)
+    .eq('permission_key', pendingAction.permission_key)
+    .maybeSingle()
+  if (permissionError || permission?.is_enabled !== true) {
+    throw new Error('Queued action permission is no longer enabled')
+  }
+}
+
 async function submitStaffAction(admin: any, user: any, body: Record<string, any>) {
   const permissionKey = String(body.permission_key || '').trim()
   const actionType = String(body.action_type || '').trim()
@@ -1546,13 +1622,13 @@ async function submitStaffAction(admin: any, user: any, body: Record<string, any
 
   const { data: profile, error: profileError } = await admin
     .from('profiles')
-    .select('id, email, is_admin, is_staff')
+    .select('id, email, is_admin, is_staff, account_suspended')
     .eq('id', user.id)
     .single()
   if (profileError || !profile) return json({ error: 'Profile not found' }, 403)
+  if (profile.account_suspended === true) return json({ error: 'Account suspended' }, 403)
 
-  const isSuperAdmin = user.email?.toLowerCase() === ADMIN_EMAIL
-  const isAdmin = isSuperAdmin || profile.is_admin === true
+  const isAdmin = profile.is_admin === true
   if (!isAdmin && profile.is_staff !== true) return json({ error: 'Forbidden — staff only' }, 403)
 
   let autoApprove = true
@@ -1563,7 +1639,7 @@ async function submitStaffAction(admin: any, user: any, body: Record<string, any
       .eq('user_id', user.id)
       .eq('permission_key', permissionKey)
       .maybeSingle()
-    if (permissionError) return json({ error: permissionError.message }, 500)
+    if (permissionError) return json({ error: 'Could not check staff permission' }, 500)
     if (!permission?.is_enabled) return json({ error: 'Permission is not enabled' }, 403)
     autoApprove = permission.auto_approve !== false
   }
@@ -1583,7 +1659,7 @@ async function submitStaffAction(admin: any, user: any, body: Record<string, any
 
   if (!autoApprove) {
     const { error } = await admin.from('staff_pending_actions').insert(pendingRow)
-    if (error) return json({ error: error.message }, 500)
+    if (error) return json({ error: 'Could not queue staff action' }, 500)
     return json({ success: true, queued: true, applied: false })
   }
 
@@ -1593,11 +1669,23 @@ async function submitStaffAction(admin: any, user: any, body: Record<string, any
     reviewed_at: new Date().toISOString(),
     reviewed_by: user.id,
   }
-  const result = await applyStaffAction(admin, approvedPendingRow)
-  const { error: auditError } = await admin.from('staff_pending_actions').insert(approvedPendingRow)
-  if (auditError) console.error('staff action audit insert failed:', auditError.message)
+  const { data: auditRow, error: auditError } = await admin
+    .from('staff_pending_actions')
+    .insert(approvedPendingRow)
+    .select('id')
+    .single()
+  if (auditError || !auditRow?.id) return json({ error: 'Could not record approved action' }, 503)
 
-  return json({ success: true, queued: false, applied: true, ...result })
+  try {
+    const result = await applyStaffAction(admin, { ...approvedPendingRow, id: auditRow.id })
+    return json({ success: true, queued: false, applied: true, ...result })
+  } catch (error) {
+    const { error: markFailedError } = await admin.from('staff_pending_actions')
+      .update({ status: 'failed' })
+      .eq('id', auditRow.id)
+    if (markFailedError) console.error('Could not mark failed staff action')
+    throw error
+  }
 }
 
 serve(async (req) => {
@@ -1640,8 +1728,18 @@ serve(async (req) => {
       return await handleStaffRevenueOsSnapshot(admin, user)
     }
 
-    // Remaining staff-management operations are super-admin only.
-    if (user.email?.toLowerCase() !== ADMIN_EMAIL) {
+    if (action === 'staff_customer_search') {
+      return await handleStaffCustomerSearch(admin, user, body)
+    }
+
+    // Remaining staff-management operations require the current admin role.
+    const { data: ownerProfile, error: ownerProfileError } = await admin
+      .from('profiles')
+      .select('is_admin, account_suspended')
+      .eq('id', user.id)
+      .single()
+    const ownerUserId = Deno.env.get('TALLYSTORE_OWNER_USER_ID')?.trim()
+    if (!ownerUserId || ownerProfileError || ownerProfile?.is_admin !== true || ownerProfile?.account_suspended === true || user.id !== ownerUserId) {
       return json({ error: 'Forbidden — admin only' }, 403)
     }
 
@@ -1652,7 +1750,7 @@ serve(async (req) => {
         .select('id, email, is_staff, wallet_balance')
         .eq('is_staff', true)
         .order('email')
-      if (error) return json({ error: error.message }, 500)
+      if (error) return json({ error: 'Could not list staff' }, 500)
       return json({ users: data || [] })
     }
 
@@ -1665,7 +1763,7 @@ serve(async (req) => {
         p_is_staff: action === 'grant_staff',
         p_actor_id: user.id,
       })
-      if (error) return json({ error: error.message }, 500)
+      if (error) return json({ error: 'Could not change staff role' }, 500)
       return json({ success: true })
     }
 
@@ -1677,7 +1775,7 @@ serve(async (req) => {
         .from('staff_permissions')
         .select('permission_key, is_enabled, auto_approve')
         .eq('user_id', user_id)
-      if (error) return json({ error: error.message }, 500)
+      if (error) return json({ error: 'Could not list staff permissions' }, 500)
       return json({ permissions: data || [] })
     }
 
@@ -1691,7 +1789,7 @@ serve(async (req) => {
           { user_id, permission_key, is_enabled: !!is_enabled, auto_approve: auto_approve !== false },
           { onConflict: 'user_id,permission_key' }
         )
-      if (error) return json({ error: error.message }, 500)
+      if (error) return json({ error: 'Could not change staff permission' }, 500)
       return json({ success: true })
     }
 
@@ -1702,7 +1800,7 @@ serve(async (req) => {
         .select('*')
         .eq('status', 'pending')
         .order('created_at', { ascending: false })
-      if (error) return json({ error: error.message }, 500)
+      if (error) return json({ error: 'Could not list pending actions' }, 500)
       return json({ actions: data || [] })
     }
 
@@ -1720,16 +1818,18 @@ serve(async (req) => {
           .select('*')
           .maybeSingle()
 
-        if (claimError) return json({ error: claimError.message }, 500)
+        if (claimError) return json({ error: 'Could not claim pending action' }, 500)
         if (!pendingAction?.id) return json({ error: 'Pending action not found or already reviewed' }, 409)
 
         try {
+          await assertQueuedStaffPermission(admin, pendingAction)
           await applyStaffAction(admin, pendingAction)
         } catch (err) {
-          await admin
+          const { error: markFailedError } = await admin
             .from('staff_pending_actions')
             .update({ status: 'failed' })
             .eq('id', action_id)
+          if (markFailedError) console.error('Could not mark failed staff action')
           throw err
         }
       } else {
@@ -1741,7 +1841,7 @@ serve(async (req) => {
           .select('id')
           .maybeSingle()
 
-        if (reviewError) return json({ error: reviewError.message }, 500)
+        if (reviewError) return json({ error: 'Could not review pending action' }, 500)
         if (!reviewed?.id) return json({ error: 'Pending action not found or already reviewed' }, 409)
       }
 
@@ -1753,6 +1853,6 @@ serve(async (req) => {
     const msg = err instanceof Error ? err.message : 'Internal error'
     const status = err instanceof HttpError ? err.status : 500
     console.error('manage-staff error:', msg)
-    return json({ error: msg }, status)
+    return json({ error: err instanceof HttpError ? msg : 'Staff request failed' }, status)
   }
 })

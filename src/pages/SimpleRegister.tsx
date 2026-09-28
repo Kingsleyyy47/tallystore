@@ -107,7 +107,7 @@ export default function RegisterPage() {
           eventType: 'OFFER_DISMISSED',
           surface: 'register_failed',
           metadata: {
-            reason: result.error || 'registration_failed',
+            reason: 'registration_failed',
             has_referral_code: Boolean(referralCode.trim()),
           },
         })

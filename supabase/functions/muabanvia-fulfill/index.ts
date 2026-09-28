@@ -1,13 +1,9 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 
-// MuaBanVia auto-fulfillment edge function.
-// Called from processBulkPurchase (src/lib/supabase.ts) when the pre-stocked
-// individual_accounts inventory for a product group runs out but that product group
-// has auto_fulfill_enabled + a muabanvia_product_id configured. Buys the shortfall
-// live from MuaBanVia and returns account credentials in the same shape as a
-// pre-stocked IndividualAccount row, so the caller can insert them and complete
-// the order exactly as if they'd been in stock all along.
+// Paused, admin-only supplier purchase endpoint. No customer checkout path may
+// call this directly: it has no order-bound wallet authorization or dispatch
+// record. Keep the live flag off until a separately reviewed workflow exists.
 //
 // CONFIRMED real MuaBanVia API (from their own docs, https://muabanvia.org/api/buy_product):
 //   POST https://muabanvia.org/api/buy_product
@@ -120,23 +116,23 @@ serve(async (req) => {
 
     const { data: adminProfile } = await supabaseAdmin
       .from('profiles')
-      .select('is_admin')
+      .select('is_admin, account_suspended')
       .eq('id', user.id)
       .single()
 
-    if (!adminProfile?.is_admin) {
+    if (!adminProfile?.is_admin || adminProfile.account_suspended === true) {
       return json({ success: false, error: 'Admin access required' }, 403)
     }
 
     const body = await req.json().catch(() => ({})) as Record<string, any>
     const muabanviaProductId = String(body.muabanviaProductId || '')
-    const quantity = Math.trunc(Number(body.quantity || 0))
+    const quantity = Number(body.quantity)
 
     if (!muabanviaProductId) {
-      throw new Error('Missing muabanviaProductId')
+      return json({ success: false, error: 'Product ID is required.' }, 400)
     }
-    if (!quantity || quantity < 1) {
-      throw new Error('Invalid quantity')
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 20) {
+      return json({ success: false, error: 'Quantity must be between 1 and 20.' }, 400)
     }
 
     const apiKey = Deno.env.get('MUABANVIA_API_KEY')
@@ -164,8 +160,7 @@ serve(async (req) => {
 
     const result = await response.json().catch(() => null) as Record<string, any> | null
     if (!response.ok || result?.status !== 'success') {
-      const message = result?.msg || result?.message || result?.error || 'MuaBanVia could not fulfill this order.'
-      return json({ success: false, message, error: message }, 400)
+      return json({ success: false, error: 'Supplier fulfillment is temporarily unavailable.' }, 502)
     }
 
     const rawAccounts = result?.data ?? null
@@ -186,8 +181,10 @@ serve(async (req) => {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to fulfill order via MuaBanVia'
-    const status = message === 'Unauthorized' || message === 'Missing authorization header' ? 401 : 400
-    console.error('MuaBanVia fulfillment error:', message)
-    return json({ success: false, message, error: message }, status)
+    const unauthorized = message === 'Unauthorized' || message === 'Missing authorization header'
+    return json({
+      success: false,
+      error: unauthorized ? 'Unauthorized' : 'Supplier fulfillment is temporarily unavailable.',
+    }, unauthorized ? 401 : 502)
   }
 })

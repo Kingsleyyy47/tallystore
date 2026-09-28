@@ -3,6 +3,9 @@ export type WalletTransactionKind = 'funding' | 'purchase' | 'withdrawal' | 'res
 export type WalletTransactionLike = {
   type?: unknown
   amount?: unknown
+  balance_before?: unknown
+  balance_after?: unknown
+  metadata?: unknown
 }
 
 export const normalizeTransactionType = (value?: unknown) =>
@@ -53,7 +56,24 @@ export const isDepositTransactionType = (value?: unknown) =>
 export const isRefundTransactionType = (value?: unknown) =>
   refundTransactionTypes.has(normalizeTransactionType(value))
 
+export const isBalanceNeutralLedgerEvidence = (transaction: WalletTransactionLike) => {
+  const type = String(transaction.type || '').toLowerCase()
+  const metadata = transaction.metadata
+  if ((type !== 'admin_credit' && type !== 'correction_credit') ||
+      !metadata || typeof metadata !== 'object' || Array.isArray(metadata) ||
+      transaction.balance_before == null || transaction.balance_after == null ||
+      !Number.isFinite(Number(transaction.balance_before)) ||
+      !Number.isFinite(Number(transaction.balance_after))) return false
+  const markers = metadata as Record<string, unknown>
+  return Number(transaction.amount) > 0 &&
+    Number(transaction.balance_before) === Number(transaction.balance_after) &&
+    markers.source === 'admin-ledger-repair' &&
+    String(markers.balance_unchanged) === 'true' &&
+    String(markers.requires_owner_evidence) === 'true'
+}
+
 export const getTransactionSignedAmount = (transaction: WalletTransactionLike) => {
+  if (isBalanceNeutralLedgerEvidence(transaction)) return 0
   const amount = Number(transaction.amount || 0)
   const absoluteAmount = Math.abs(amount)
   const type = normalizeTransactionType(transaction.type)
@@ -79,6 +99,7 @@ export const classifyWalletTransaction = (transaction: WalletTransactionLike): W
 }
 
 export const getWalletTransactionTitle = (transaction: WalletTransactionLike) => {
+  if (isBalanceNeutralLedgerEvidence(transaction)) return 'Ledger repair (no balance change)'
   const kind = classifyWalletTransaction(transaction)
   const type = normalizeTransactionType(transaction.type)
   if (isDepositTransactionType(type)) return 'Wallet top-up'

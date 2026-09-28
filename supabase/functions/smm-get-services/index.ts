@@ -64,7 +64,7 @@ serve(async (req) => {
     let query = supabaseAdmin
       .from('smm_services')
       .select(`
-        id, external_id, name, category, platform, service_type,
+        id, name, category, platform, service_type,
         price_ngn, min_quantity, max_quantity,
         has_refill, has_cancel, is_active
       `)
@@ -117,16 +117,18 @@ serve(async (req) => {
       }
     );
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
+    const errorMessage = error instanceof Error ? error.message : '';
     console.error('SMM Get Services Error:', error);
     return new Response(
       JSON.stringify({
         success: false,
-        error: errorMessage,
+        error: errorMessage === 'Unauthorized' || errorMessage === 'Missing authorization header'
+          ? 'Unauthorized'
+          : 'Service catalog temporarily unavailable',
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: errorMessage === 'Unauthorized' ? 401 : 500,
+        status: errorMessage === 'Unauthorized' || errorMessage === 'Missing authorization header' ? 401 : 500,
       }
     );
   }

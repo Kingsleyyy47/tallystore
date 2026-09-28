@@ -211,7 +211,6 @@ export default function WebServicesPage() {
         has_description: Boolean(formData.description.trim()),
       },
     })
-    console.log('Form submitted:', formData)
     setSubmitSuccess(true)
     setShowForm(false)
   }

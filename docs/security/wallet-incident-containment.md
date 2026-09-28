@@ -1,5 +1,11 @@
 # Wallet Incident Containment
 
+> Policy update (24 September 2026): The automatic suspension on any displayed
+> excess described below is superseded by `financial-truth-contract.md`.
+> Confirmed spendable controls purchases; positive excess is quarantined
+> without erasing legitimate backed funds. Staging and owner deployment
+> verification are still pending.
+
 Prepared: 2026-09-19
 
 This document is a sanitized implementation record. Do not add customer emails,
@@ -86,7 +92,7 @@ operational summary.
 | Live account suppliers | Checkout supplier fallback is hard-paused. Direct supplier fulfillment remains default-paused and must not be re-enabled until purchase authorization is migrated to reserve/authorize backed funds before any paid provider call. |
 | SMS | New OTP purchases are default-paused unless `SMS_OTP_ENABLED=true`, returning `503 SMS_OTP_PAUSED` before auth, wallet debit, local order creation, or Daisy allocation. If later reopened, wallet-engine debit happens before Daisy number acquisition; a pending local `sms_orders` row is created before the provider call; orphaned purchase-ledger retries are blocked before any new Daisy number is acquired; failures mark the local order failed, cancel/release the provider number where possible, and refund through wallet engine. |
 | SMM/social boost | New SMM orders are default-paused unless `SMM_ORDERS_ENABLED=true`, returning `503 SMM_ORDERS_PAUSED` before auth, wallet debit, local order creation, or panel dispatch. If later reopened, it uses wallet engine for purchase/refunds and blocks orphaned purchase-ledger retries before any panel provider call. |
-| Telegram/iStar | New Stars/Premium orders are default-paused unless `TELEGRAM_ORDERS_ENABLED=true`, returning `503 TELEGRAM_ORDERS_PAUSED` before auth, wallet debit, local order creation, or iStar dispatch. If later reopened, it creates the local order before wallet debit, retains debit-failed local orders as `failed` evidence instead of deleting them, uses wallet engine for purchase/refunds, and requires raw-body HMAC verification with a configured iStar webhook secret on the Vercel webhook. |
+| Telegram/iStar | New Stars/Premium orders are default-paused unless `TELEGRAM_ORDERS_ENABLED=true`, returning `503 TELEGRAM_ORDERS_PAUSED` before auth, wallet debit, local order creation, or iStar dispatch. If later reopened, it creates the local order before wallet debit and retains debit-failed local orders as evidence. The signed iStar webhook conditionally records terminal status before an eligible wallet-engine refund; customer polling cannot refund a supplier failure, and admin cancellation requires manual outcome review. Real provider and database concurrency proof is still pending. |
 | Bills and gift cards | Wallet-engine debit/refund is implemented; debit-denied local records are retained as failed `wallet_debit` evidence; still default paused until provider outcome/idempotency tests are run. |
 | Withdrawals | Wallet-engine debit/refund is implemented; debit-denied withdrawal rows are retained as failed `wallet_debit` evidence, and returned provider failures and thrown provider errors both refund through the wallet engine with original reference, debit transaction id, debit idempotency key, and `crypto_withdrawals` source-order provenance. Still default paused until provider outcome/idempotency tests are run. |
 | Crypto top-up, referral withdrawal, partner API | Default paused pending full route-by-route migration and verification. |

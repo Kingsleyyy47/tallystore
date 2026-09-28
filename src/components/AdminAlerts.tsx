@@ -71,10 +71,7 @@ export default function AdminAlerts() {
     try {
       const { error } = await supabase
         .from('admin_alerts')
-        .update({ 
-          acknowledged: true, 
-          acknowledged_at: new Date().toISOString() 
-        })
+        .update({ acknowledged: true })
         .eq('id', alertId);
 
       if (error) throw error;
@@ -82,7 +79,7 @@ export default function AdminAlerts() {
       setAlerts(prev => 
         prev.map(a => 
           a.id === alertId 
-            ? { ...a, acknowledged: true, acknowledged_at: new Date().toISOString() } 
+            ? { ...a, acknowledged: true }
             : a
         )
       );

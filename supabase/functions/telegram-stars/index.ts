@@ -18,6 +18,33 @@ function json(data: unknown, status = 200) {
   })
 }
 
+function publicTelegramOrder(order: any) {
+  if (!order) return order
+  return {
+    id: order.id,
+    reference: order.reference,
+    order_type: order.order_type,
+    username: order.username,
+    quantity: order.quantity,
+    months: order.months,
+    price_ngn: order.price_ngn,
+    status: order.status,
+    error_message: order.status === 'failed' ? 'Order failed. Contact support for details.' : null,
+    refunded_at: order.refunded_at,
+    created_at: order.created_at,
+    completed_at: order.completed_at,
+  }
+}
+
+function publicTelegramRecipient(recipient: any) {
+  return {
+    recipient: recipient?.recipient,
+    name: recipient?.name,
+    photo: recipient?.photo,
+    myself: recipient?.myself === true,
+  }
+}
+
 function telegramOrdersEnabled() {
   return String(Deno.env.get('TELEGRAM_ORDERS_ENABLED') || '').trim().toLowerCase() === 'true'
 }
@@ -29,7 +56,7 @@ function istarHeaders() {
 async function istarGet(path: string) {
   const res = await fetch(`${ISTAR_BASE}${path}`, { headers: istarHeaders() })
   const data = await res.json()
-  if (!res.ok) throw new Error(data?.message || data?.error || `iStar error ${res.status}`)
+  if (!res.ok) throw new Error('Supplier request failed')
   return data
 }
 
@@ -40,7 +67,7 @@ async function istarPost(path: string, body: unknown, idempotencyKey: string) {
     body: JSON.stringify(body),
   })
   const data = await res.json()
-  if (!res.ok) throw new Error(data?.message || data?.error || `iStar error ${res.status}`)
+  if (!res.ok) throw new Error('Supplier request failed')
   return data
 }
 
@@ -66,8 +93,8 @@ async function getUser(req: Request) {
 }
 
 async function requireAdmin(admin: SupabaseAdmin, userId: string) {
-  const { data } = await admin.from('profiles').select('is_admin').eq('id', userId).single()
-  if (!data?.is_admin) throw new Error('Admin access required')
+  const { data } = await admin.from('profiles').select('is_admin, account_suspended').eq('id', userId).single()
+  if (!data?.is_admin || data.account_suspended === true) throw new Error('Admin access required')
 }
 
 async function purchaseGuardSha256Hex(value: string) {
@@ -117,7 +144,7 @@ async function getWalletRequestForensics(req: Request, route: string) {
   }
 }
 
-async function assertFraudDeviceNotBanned(admin: SupabaseAdmin, req?: Request | null) {
+async function assertFraudDeviceNotBanned(admin: SupabaseAdmin, userId: string, req?: Request | null) {
   const ipAddress = getPurchaseGuardIp(req)
   const userAgent = getPurchaseGuardUserAgent(req)
   const userAgentHash = userAgent ? await purchaseGuardSha256Hex(userAgent) : null
@@ -127,6 +154,7 @@ async function assertFraudDeviceNotBanned(admin: SupabaseAdmin, req?: Request | 
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('ip_address', ipAddress)
       .limit(1)
 
@@ -140,6 +168,7 @@ async function assertFraudDeviceNotBanned(admin: SupabaseAdmin, req?: Request | 
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('user_agent_hash', userAgentHash)
       .limit(1)
 
@@ -149,10 +178,10 @@ async function assertFraudDeviceNotBanned(admin: SupabaseAdmin, req?: Request | 
   }
 }
 
-async function assertPurchasingCustomer(admin: SupabaseAdmin, userId: string, req?: Request | null) {
+async function assertPurchasingCustomer(admin: SupabaseAdmin, userId: string, req?: Request | null, amountNgn?: number) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin, account_suspended, wallet_review_required')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -160,11 +189,24 @@ async function assertPurchasingCustomer(admin: SupabaseAdmin, userId: string, re
   if (profile?.is_staff || profile?.is_admin) {
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
   }
-  if (profile?.account_suspended || profile?.wallet_review_required) {
+  if (profile?.account_suspended) {
     throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
   }
 
-  await assertFraudDeviceNotBanned(admin, req)
+  const { data: truth, error: truthError } = await admin.rpc('wallet_financial_truth_internal', { p_user_id: userId })
+  const spendable = Number(truth?.confirmed_spendable)
+  if (truthError || !truth || typeof truth.spending_blocked !== 'boolean' ||
+      truth.confirmed_spendable == null || !Number.isFinite(spendable) || spendable < 0) {
+    throw new Error('Could not verify wallet funds for purchase')
+  }
+  if (truth.spending_blocked) {
+    throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
+  }
+  if (amountNgn !== undefined && (!Number.isFinite(amountNgn) || amountNgn <= 0 || spendable < amountNgn)) {
+    throw new Error('Insufficient verified funds for purchase')
+  }
+
+  await assertFraudDeviceNotBanned(admin, userId, req)
 }
 
 // ── Exchange rate ─────────────────────────────────────────────────────────────
@@ -330,44 +372,26 @@ async function deductWallet(admin: SupabaseAdmin, userId: string, amount: number
   }
 }
 
-async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: string; reference: string; price_ngn: number; idempotency_key?: string | null }, reason: string, metadata: Record<string, unknown> = {}) {
-  const amount = Number(order.price_ngn || 0)
-  if (amount <= 0) return
-  const refundRef = `REFUND-${order.reference}`
-  const originalDebitKey = order.idempotency_key
-    ? `telegram:purchase:${order.idempotency_key}`
-    : `telegram:purchase:${order.reference}`
-  const { data: currentOrder } = await admin.from('telegram_orders').select('refunded_at').eq('id', order.id).maybeSingle()
-  if (currentOrder?.refunded_at) return
-  await applyWalletTransaction(admin, {
-    userId: order.user_id,
-    type: 'refund',
-    amount,
-    reference: refundRef,
-    description: reason,
-    idempotencyKey: `telegram:refund:${order.id}`,
-    metadata: {
-      source: 'telegram-stars',
-      ...metadata,
-      source_order_id: order.id,
-      source_order_table: 'telegram_orders',
-      order_id: order.id,
-      original_reference: order.reference,
-      source_debit_idempotency_key: originalDebitKey,
-      original_purchase_idempotency_key: originalDebitKey,
-    },
-  })
-  await admin.from('telegram_orders').update({
-    refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef,
-  }).eq('id', order.id).is('refunded_at', null)
-}
-
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-// Returns star pricing config so the frontend can calculate prices live
+// Return retail quotes without disclosing supplier cost and markup settings.
 async function handleGetStarPricing(admin: SupabaseAdmin) {
   const config = await getStarPricingConfig(admin)
-  return json({ success: true, data: config })
+  const presetPrices = Object.fromEntries(
+    [50, 150, 250, 1000, 2500].map((quantity) =>
+      [quantity, calculateStarPriceNgn(quantity, config)]),
+  )
+  return json({ success: true, data: { preset_prices: presetPrices } })
+}
+
+async function handleQuoteStars(admin: SupabaseAdmin, body: Record<string, unknown>) {
+  const quantity = Number(body.quantity)
+  if (!Number.isSafeInteger(quantity) || quantity < 50 || quantity > 1_000_000) {
+    throw new Error('Quantity must be between 50 and 1,000,000 stars')
+  }
+  const price = calculateStarPriceNgn(quantity, await getStarPricingConfig(admin))
+  if (price <= 0) throw new Error('Star pricing is temporarily unavailable')
+  return json({ success: true, data: { quantity, price_ngn: price } })
 }
 
 // Returns active premium products with live-calculated NGN prices
@@ -379,7 +403,7 @@ async function handleGetPremiumProducts(admin: SupabaseAdmin) {
   if (error) throw new Error(error.message)
   const products = (data || []).map((p: any) => {
     const livePrice = calcPremiumPriceNgn(p.months, premCfg)
-    return { ...p, price_ngn: livePrice || p.price_ngn } // live price takes precedence; fallback to stored
+    return { id: p.id, label: p.label, months: p.months, price_ngn: livePrice || p.price_ngn }
   })
   return json({ success: true, data: products })
 }
@@ -391,7 +415,7 @@ async function handleSearchRecipientStars(admin: SupabaseAdmin, userId: string, 
   if (!Number.isInteger(quantity) || quantity < 50) throw new Error('Minimum 50 stars')
   if (quantity > 1_000_000) throw new Error('Maximum 1,000,000 stars per order')
   const data = await istarGet(`/star/recipient/search?username=${encodeURIComponent(username)}&quantity=${quantity}`)
-  return json({ success: true, data })
+  return json({ success: true, data: publicTelegramRecipient(data) })
 }
 
 async function handleSearchRecipientPremium(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
@@ -400,7 +424,7 @@ async function handleSearchRecipientPremium(admin: SupabaseAdmin, userId: string
   if (!username) throw new Error('username is required')
   if (![3, 6, 12].includes(months)) throw new Error('months must be 3, 6, or 12')
   const data = await istarGet(`/premium/recipient/search?username=${encodeURIComponent(username)}&months=${months}`)
-  return json({ success: true, data })
+  return json({ success: true, data: publicTelegramRecipient(data) })
 }
 
 async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request) {
@@ -420,6 +444,7 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
   const config = await getStarPricingConfig(admin)
   const priceNgn = calculateStarPriceNgn(quantity, config)
   if (priceNgn <= 0) throw new Error('Star pricing is not configured. Please contact support.')
+  await assertPurchasingCustomer(admin, userId, req, priceNgn)
 
   const { data: existingOrder } = await admin.from('telegram_orders')
     .select('*')
@@ -443,7 +468,16 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
       }, 409)
     }
 
-    return json({ success: true, data: existingOrder, idempotency_hit: true })
+    if (existingOrder.status === 'pending' ||
+        (existingOrder.status === 'processing' && !existingOrder.istar_order_id)) {
+      return json({
+        success: false,
+        code: 'ORDER_OUTCOME_UNRESOLVED',
+        order_id: existingOrder.id,
+        error: 'This order is awaiting supplier outcome review. The wallet debit remains posted pending review.',
+      }, 202)
+    }
+    return json({ success: existingOrder.status !== 'failed', data: publicTelegramOrder(existingOrder), idempotency_hit: true })
   }
 
   const { data: orphanedPurchaseTx, error: orphanedPurchaseError } = await admin
@@ -488,7 +522,7 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
   } catch (err: any) {
     await admin.from('telegram_orders').update({
       status: 'failed',
-      error_message: err?.message || 'Wallet debit failed before supplier dispatch',
+      error_message: 'Wallet debit failed before supplier dispatch',
       updated_at: new Date().toISOString(),
     }).eq('id', order.id)
     throw err
@@ -498,10 +532,13 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
     const istarOrder = await istarPost('/orders/star', {
       username, recipient_hash: recipientHash, quantity, wallet_type: config.wallet_type,
     }, reference)
-    await admin.from('telegram_orders').update({
+    if (!istarOrder?.order_id) throw new Error('Supplier order confirmation missing')
+    const { data: trackedOrder, error: orderTrackingError } = await admin.from('telegram_orders').update({
       istar_order_id: istarOrder.order_id, istar_amount: istarOrder.amount,
       status: 'processing', updated_at: new Date().toISOString(),
-    }).eq('id', order.id)
+    }).eq('id', order.id).eq('status', 'pending').is('refunded_at', null)
+      .select('id').maybeSingle()
+    if (orderTrackingError || !trackedOrder) throw new Error('Supplier order tracking unavailable')
 
     // Auto-learn: update cost_per_star_usdt from this real order
     if (istarOrder.amount && quantity > 0) {
@@ -511,14 +548,19 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
       }, { onConflict: 'key' })
     }
 
-    return json({ success: true, data: { ...order, istar_order_id: istarOrder.order_id, status: 'processing' } })
-  } catch (err: any) {
-    await refundWallet(admin, order, `Refund: iStar order failed — ${err.message}`, {
-      request_forensics: walletRequestForensics,
-      order_type: 'stars',
-    })
-    await admin.from('telegram_orders').update({ status: 'failed', error_message: err.message, updated_at: new Date().toISOString() }).eq('id', order.id)
-    throw new Error(`Order failed: ${err.message}. You have been refunded.`)
+    return json({ success: true, data: publicTelegramOrder({ ...order, status: 'processing' }) })
+  } catch (_err) {
+    await admin.from('telegram_orders').update({
+      status: 'processing',
+      error_message: 'Supplier outcome unknown; manual review required',
+      updated_at: new Date().toISOString(),
+    }).eq('id', order.id).eq('status', 'pending').is('refunded_at', null)
+    return json({
+      success: false,
+      code: 'SUPPLIER_OUTCOME_UNKNOWN',
+      order_id: order.id,
+      error: 'Supplier outcome is being reviewed. The wallet debit remains posted pending review.',
+    }, 202)
   }
 }
 
@@ -543,6 +585,7 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
   const livePrice = calcPremiumPriceNgn(product.months, premCfg)
   const chargeNgn = livePrice || product.price_ngn
   if (!chargeNgn || chargeNgn <= 0) throw new Error('This product has no price set. Contact support.')
+  await assertPurchasingCustomer(admin, userId, req, Number(chargeNgn))
   const walletType = String(walletSetting.data?.value || 'USDT').toUpperCase()
 
   const { data: existingOrder } = await admin.from('telegram_orders')
@@ -567,7 +610,16 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
       }, 409)
     }
 
-    return json({ success: true, data: existingOrder, idempotency_hit: true })
+    if (existingOrder.status === 'pending' ||
+        (existingOrder.status === 'processing' && !existingOrder.istar_order_id)) {
+      return json({
+        success: false,
+        code: 'ORDER_OUTCOME_UNRESOLVED',
+        order_id: existingOrder.id,
+        error: 'This order is awaiting supplier outcome review. The wallet debit remains posted pending review.',
+      }, 202)
+    }
+    return json({ success: existingOrder.status !== 'failed', data: publicTelegramOrder(existingOrder), idempotency_hit: true })
   }
 
   const { data: orphanedPurchaseTx, error: orphanedPurchaseError } = await admin
@@ -613,7 +665,7 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
   } catch (err: any) {
     await admin.from('telegram_orders').update({
       status: 'failed',
-      error_message: err?.message || 'Wallet debit failed before supplier dispatch',
+      error_message: 'Wallet debit failed before supplier dispatch',
       updated_at: new Date().toISOString(),
     }).eq('id', order.id)
     throw err
@@ -623,10 +675,13 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
     const istarOrder = await istarPost('/orders/premium', {
       username, recipient_hash: recipientHash, months: product.months, wallet_type: walletType,
     }, reference)
-    await admin.from('telegram_orders').update({
+    if (!istarOrder?.order_id) throw new Error('Supplier order confirmation missing')
+    const { data: trackedOrder, error: orderTrackingError } = await admin.from('telegram_orders').update({
       istar_order_id: istarOrder.order_id, istar_amount: istarOrder.amount,
       status: 'processing', updated_at: new Date().toISOString(),
-    }).eq('id', order.id)
+    }).eq('id', order.id).eq('status', 'pending').is('refunded_at', null)
+      .select('id').maybeSingle()
+    if (orderTrackingError || !trackedOrder) throw new Error('Supplier order tracking unavailable')
 
     // Auto-learn: save the TOTAL iStar USDT charge for this tier (not per-month)
     // Next customer's price = this_usdt_cost × live_ngn_rate + markup
@@ -640,15 +695,19 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
       ])
     }
 
-    return json({ success: true, data: { ...order, istar_order_id: istarOrder.order_id, status: 'processing' } })
-  } catch (err: any) {
-    await refundWallet(admin, order, `Refund: iStar order failed — ${err.message}`, {
-      request_forensics: walletRequestForensics,
-      order_type: 'premium',
-      product_id: productId,
-    })
-    await admin.from('telegram_orders').update({ status: 'failed', error_message: err.message, updated_at: new Date().toISOString() }).eq('id', order.id)
-    throw new Error(`Order failed: ${err.message}. You have been refunded.`)
+    return json({ success: true, data: publicTelegramOrder({ ...order, status: 'processing' }) })
+  } catch (_err) {
+    await admin.from('telegram_orders').update({
+      status: 'processing',
+      error_message: 'Supplier outcome unknown; manual review required',
+      updated_at: new Date().toISOString(),
+    }).eq('id', order.id).eq('status', 'pending').is('refunded_at', null)
+    return json({
+      success: false,
+      code: 'SUPPLIER_OUTCOME_UNKNOWN',
+      order_id: order.id,
+      error: 'Supplier outcome is being reviewed. The wallet debit remains posted pending review.',
+    }, 202)
   }
 }
 
@@ -656,7 +715,7 @@ async function handleGetMyOrders(admin: SupabaseAdmin, userId: string) {
   const { data, error } = await admin.from('telegram_orders')
     .select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(100)
   if (error) throw new Error(error.message)
-  return json({ success: true, data: data || [] })
+  return json({ success: true, data: (data || []).map(publicTelegramOrder) })
 }
 
 async function handlePollOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
@@ -669,18 +728,24 @@ async function handlePollOrder(admin: SupabaseAdmin, userId: string, body: Recor
     try {
       const istarOrder = await istarGet(`/orders/${order.istar_order_id}`)
       if (istarOrder.status === 'completed' && order.status !== 'completed') {
-        await admin.from('telegram_orders').update({ status: 'completed', completed_at: istarOrder.updated_at || new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', order.id)
-        return json({ success: true, data: { ...order, status: 'completed' } })
+        const { data: updated, error: updateError } = await admin.from('telegram_orders')
+          .update({ status: 'completed', completed_at: istarOrder.updated_at || new Date().toISOString(), updated_at: new Date().toISOString() })
+          .eq('id', order.id).eq('status', 'processing').is('refunded_at', null)
+          .select('id').maybeSingle()
+        if (updateError) throw updateError
+        if (updated) return json({ success: true, data: publicTelegramOrder({ ...order, status: 'completed' }) })
       }
       if (istarOrder.status === 'failed' && order.status !== 'failed') {
-        await admin.from('telegram_orders').update({ status: 'failed', error_message: istarOrder.payload?.reason || 'Order failed', updated_at: new Date().toISOString() }).eq('id', order.id)
-        await refundWallet(admin, order, `Refund: Telegram order failed`)
-        return json({ success: true, data: { ...order, status: 'failed' } })
+        return json({
+          success: false,
+          code: 'SUPPLIER_OUTCOME_REVIEW_REQUIRED',
+          error: 'The supplier reported failure. A refund requires outcome review.',
+        }, 202)
       }
     } catch { /* return current status */ }
   }
   const { data: fresh } = await admin.from('telegram_orders').select('*').eq('id', orderId).single()
-  return json({ success: true, data: fresh })
+  return json({ success: true, data: publicTelegramOrder(fresh) })
 }
 
 // ── Admin handlers ────────────────────────────────────────────────────────────
@@ -753,12 +818,11 @@ async function handleAdminCancelOrder(admin: SupabaseAdmin, userId: string, body
   await requireAdmin(admin, userId)
   const orderId = String(body.order_id || '')
   if (!orderId) throw new Error('order_id is required')
-  const { data: order, error } = await admin.from('telegram_orders').select('*').eq('id', orderId).single()
-  if (error || !order) throw new Error('Order not found')
-  if (['completed', 'failed'].includes(order.status)) throw new Error('Order is already in a terminal state')
-  await admin.from('telegram_orders').update({ status: 'failed', error_message: 'Cancelled by admin', updated_at: new Date().toISOString() }).eq('id', orderId)
-  if (!order.refunded_at) await refundWallet(admin, order, `Admin refund for cancelled Telegram order: ${order.reference}`)
-  return json({ success: true })
+  return json({
+    success: false,
+    code: 'TELEGRAM_CANCELLATION_REVIEW_REQUIRED',
+    error: 'Cancellation is paused until the supplier outcome is confirmed.',
+  }, 409)
 }
 
 async function handleAdminGetPremiumPricing(admin: SupabaseAdmin, userId: string) {
@@ -799,6 +863,7 @@ serve(async (req) => {
     const user = await getUser(req)
     switch (action) {
       case 'get_star_pricing':           return await handleGetStarPricing(admin)
+      case 'quote_stars':                return await handleQuoteStars(admin, body)
       case 'get_premium_products':       return await handleGetPremiumProducts(admin)
       case 'search_recipient_stars':     return await handleSearchRecipientStars(admin, user.id, body)
       case 'search_recipient_premium':   return await handleSearchRecipientPremium(admin, user.id, body)
@@ -817,7 +882,7 @@ serve(async (req) => {
       default:                           return json({ error: `Unknown action: ${action}` }, 400)
     }
   } catch (err: any) {
-    console.error('telegram-stars error:', err)
-    return json({ success: false, error: err.message || 'Internal error' }, err.message?.includes('Unauthorized') ? 401 : 400)
+    console.error('Telegram request failed')
+    return json({ success: false, error: err?.message === 'Unauthorized' ? 'Unauthorized' : 'Telegram request could not be completed.' }, err?.message === 'Unauthorized' ? 401 : 400)
   }
 })

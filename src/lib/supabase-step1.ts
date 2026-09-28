@@ -5,6 +5,8 @@ import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+const PUBLIC_PRODUCT_GROUP_COLUMNS =
+  'id,category_id,name,description,price,features,stock_count,availability_status,is_sellable,is_active,created_at,quantity_discount_tiers'
 
 export const supabase = createClient(supabaseUrl, supabaseKey)
 
@@ -53,7 +55,7 @@ export async function getProductGroupsByCategory(categoryId: string): Promise<Pr
   try {
     const { data, error } = await supabase
       .from('product_groups')
-      .select('*')
+      .select(PUBLIC_PRODUCT_GROUP_COLUMNS)
       .eq('category_id', categoryId)
       .eq('is_active', true)
       .order('name')
@@ -71,7 +73,7 @@ export async function getAllProductGroups(): Promise<ProductGroup[]> {
   try {
     const { data, error } = await supabase
       .from('product_groups')
-      .select('*')
+      .select(PUBLIC_PRODUCT_GROUP_COLUMNS)
       .eq('is_active', true)
       .order('name')
 

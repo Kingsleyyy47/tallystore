@@ -50,12 +50,13 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { PERMISSIONS, type PermissionKey } from '@/lib/staffPermissions'
+import { isBalanceNeutralLedgerEvidence } from '@/lib/walletTransactions'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import AdminAlerts from '@/components/AdminAlerts'
 import { 
   getCategories, 
-  getAllProductGroups, 
+  getManagedProductGroups,
   getIndividualAccounts,
   getIndividualAccountsCount,
   createCategory, 
@@ -80,6 +81,12 @@ import {
   searchUsers,
   getUserTransactions,
   getUserOrdersAdmin,
+  getAdminWalletFinancialTruth,
+  getAdminWalletFinancialTruthPage,
+  getAdminCrossWalletPaymentConflictsPage,
+  getAdminFraudLatestVisits,
+  type AdminWalletFinancialTruth,
+  type AdminWalletFinancialTruthPageRow,
   adminAdjustBalance,
   adminRecordLedgerCredit,
   adminRecordChargeback,
@@ -376,6 +383,8 @@ type EmailedDormantCustomer = {
 
 type FraudReviewRow = {
   userId: string
+  role: 'customer' | 'staff' | 'admin'
+  truth: AdminWalletFinancialTruth
   email: string
   fullName?: string | null
   walletBalance: number
@@ -403,14 +412,13 @@ type FraudReviewRow = {
   deviceType?: string | null
   deviceOs?: string | null
   deviceBrowser?: string | null
-  reviewType: 'review_unblock' | 'suspended_risk' | 'overspent' | 'duplicate_deposit' | 'watchlist'
+  reviewType: 'review_unblock' | 'suspended_risk' | 'overspent' | 'quarantined_excess' | 'duplicate_deposit' | 'watchlist'
   reason: string
 }
 
-const DORMANT_EMAIL_STORAGE_KEY = 'tallystore:dormant-customer-email-cohort:v1'
 const DORMANT_EMAIL_SETTING_KEY = 'sales_dormant_customer_email_cohort'
 const ADMIN_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time'
-const WALLET_FUNDING_ENFORCEMENT_CUTOFF = '2026-09-19T00:00:00.000Z'
+const SMS_ORDER_HISTORY_COLUMNS = 'id,user_id,reference,order_type,service_id,service_name,phone_number,country_code,price_ngn,status,messages,created_at,completed_at,cancelled_at,refunded_at,refund_amount_ngn'
 
 function parseAdminDate(value?: string | null): Date | null {
   if (!value) return null
@@ -445,129 +453,6 @@ function normalizeLedgerText(value?: unknown) {
   return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
 }
 
-function isBalanceNeutralAdminRepair(tx: any) {
-  const metadata = tx.metadata && typeof tx.metadata === 'object' ? tx.metadata : {}
-  const balanceBefore = Number(tx.balance_before || 0)
-  const balanceAfter = Number(tx.balance_after || 0)
-  return (
-    String(metadata.source || '') === 'admin-ledger-repair' ||
-    String(metadata.balance_unchanged || '').toLowerCase() === 'true' ||
-    String(metadata.requires_owner_evidence || '').toLowerCase() === 'true' ||
-    balanceAfter <= balanceBefore
-  )
-}
-
-function toLedgerCents(value: unknown) {
-  return Math.round(Number(value || 0) * 100)
-}
-
-function isLegacyGrandfatheredCredit(tx: any) {
-  const createdAt = new Date(tx?.created_at || '').getTime()
-  const amount = Number(tx?.amount || 0)
-  const type = normalizeLedgerText(tx?.type)
-  if (!Number.isFinite(createdAt) || createdAt >= Date.parse(WALLET_FUNDING_ENFORCEMENT_CUTOFF) || amount <= 0) {
-    return false
-  }
-  if (type === 'admin_credit' && isBalanceNeutralAdminRepair(tx)) return false
-
-  return [
-    'topup',
-    'top_up',
-    'wallet_topup',
-    'wallet_deposit',
-    'deposit',
-    'credit',
-    'admin_credit',
-    'staff_credit',
-    'promotion_credit',
-    'correction_credit',
-  ].includes(type)
-}
-
-function isVerifiedGatewayCreditTransaction(
-  tx: any,
-  pendingEvidenceByUser: Map<string, any[]> = new Map(),
-  pocketfiLogsById: Map<string, any> = new Map(),
-) {
-  const type = normalizeLedgerText(tx.type)
-  const amount = Number(tx.amount || 0)
-  const userId = String(tx.user_id || '')
-  const externalPaymentId = String(tx.external_payment_id || '').trim()
-  const reference = String(tx.reference || '').trim()
-  const metadata = tx.metadata && typeof tx.metadata === 'object' ? tx.metadata : {}
-  const provider = String(metadata.provider || '').toLowerCase()
-  const verifiedAmount = Number(metadata.verified_amount_ngn || 0)
-
-  if (![
-    'topup',
-    'top_up',
-    'wallet_topup',
-    'wallet_deposit',
-    'deposit',
-  ].includes(type)) return false
-  if (!externalPaymentId || amount <= 0 || toLedgerCents(verifiedAmount) !== toLedgerCents(amount)) return false
-
-  if (['ercaspay', 'ercas'].includes(provider)) {
-    const localRefs = [reference, externalPaymentId].filter(Boolean)
-    const paymentRows = pendingEvidenceByUser.get(userId) || []
-    return paymentRows.some((payment: any) => {
-      const paymentRefs = [
-        String(payment.transaction_reference || '').trim(),
-        String(payment.ercas_reference || '').trim(),
-      ].filter(Boolean)
-      return String(payment.status || 'pending').toLowerCase() === 'credited' &&
-        toLedgerCents(payment.amount) === toLedgerCents(amount) &&
-        localRefs.some((localRef) => paymentRefs.includes(localRef))
-    })
-  }
-
-  if (provider === 'pocketfi') {
-    const webhookLogId = String(metadata.webhook_log_id || '').trim()
-    const webhookLog = webhookLogId ? pocketfiLogsById.get(webhookLogId) : null
-    return Boolean(
-      webhookLog &&
-      String(webhookLog.matched_user_id || '') === userId &&
-      Boolean(webhookLog.processed) === true &&
-      toLedgerCents(webhookLog.verified_amount_ngn) === toLedgerCents(amount) &&
-      [reference, externalPaymentId].filter(Boolean).includes(String(webhookLog.verified_reference || '').trim()),
-    )
-  }
-
-  return false
-}
-
-function isTrustedCreditTransaction(
-  tx: any,
-  adminActorIds: Set<string> = new Set(),
-  pendingEvidenceByUser: Map<string, any[]> = new Map(),
-  pocketfiLogsById: Map<string, any> = new Map(),
-) {
-  const type = normalizeLedgerText(tx.type)
-  const amount = Number(tx.amount || 0)
-  const createdBy = String(tx.created_by || '').trim()
-  const hasApprovingAdminActor = Boolean(createdBy && adminActorIds.has(createdBy))
-  if (amount <= 0) return false
-
-  if (['refund', 'purchase_refund', 'auto_refund'].includes(type)) return false
-  if (isLegacyGrandfatheredCredit(tx)) return true
-  if (isVerifiedGatewayCreditTransaction(tx, pendingEvidenceByUser, pocketfiLogsById)) return true
-
-  if (type === 'admin_credit') {
-    return hasApprovingAdminActor && !isBalanceNeutralAdminRepair(tx)
-  }
-
-  return false
-}
-
-function isTrustedCryptoCreditTransaction(tx: any) {
-  const status = normalizeLedgerText(tx.status)
-  const transactionType = normalizeLedgerText(tx.transaction_type || tx.type)
-  const amount = Number(tx.naira_amount || tx.amount || 0)
-  if (amount <= 0) return false
-  if (!tx.credited_at) return false
-  if (!['completed', 'credited', 'paid', 'finished'].includes(status)) return false
-  return ['sell', 'crypto_sell', 'deposit', 'crypto_deposit'].includes(transactionType)
-}
 
 function isWalletSpendTransaction(tx: any) {
   const type = normalizeLedgerText(tx.type)
@@ -587,76 +472,9 @@ function isWalletRefundTransaction(tx: any) {
   return ['refund', 'purchase_refund', 'auto_refund'].includes(type)
 }
 
-function getTransactionMetadata(tx: any) {
-  return tx?.metadata && typeof tx.metadata === 'object' ? tx.metadata : {}
-}
-
-function getWalletDebitEvidenceId(tx: any) {
-  return String(tx?.id || tx?.transaction_id || tx?.idempotency_key || '').trim()
-}
-
-function getTrustedPrincipalDebitAmount(tx: any, metadata: any) {
-  if (String(metadata.legacy_trusted_principal || '').toLowerCase() === 'true') {
-    const legacyAmount = Math.abs(Number(tx.amount || 0))
-    return Number.isFinite(legacyAmount) ? legacyAmount : 0
-  }
-  if (String(metadata.trusted_principal_authorized || '').toLowerCase() !== 'true') return 0
-  const trustedAmount = Number(metadata.trusted_principal_debit_amount || 0)
-  if (!Number.isFinite(trustedAmount) || trustedAmount <= 0) return 0
-  return Math.min(Math.abs(Number(tx.amount || 0)), trustedAmount)
-}
-
-function getTrustedDebitEvidence(tx: any) {
-  if (!isWalletSpendTransaction(tx)) return null
-  const metadata = getTransactionMetadata(tx)
-  const trustedDebitAmount = getTrustedPrincipalDebitAmount(tx, metadata)
-  if (trustedDebitAmount <= 0) return null
-
-  const debitId = getWalletDebitEvidenceId(tx)
-  if (!debitId) return null
-
-  return {
-    id: debitId,
-    amount: trustedDebitAmount,
-    idempotencyKey: String(tx.idempotency_key || '').trim(),
-    reference: String(tx.reference || '').trim(),
-    sourceOrderTable: String(metadata.source_order_table || '').trim(),
-    sourceOrderIds: [
-      metadata.source_order_id,
-      metadata.order_id,
-      metadata.transaction_id,
-    ].map((value) => String(value || '').trim()).filter(Boolean),
-  }
-}
-
-function findLinkedTrustedDebit(refund: any, trustedDebits: Map<string, NonNullable<ReturnType<typeof getTrustedDebitEvidence>>>) {
-  const metadata = getTransactionMetadata(refund)
-  const directId = String(metadata.source_debit_transaction_id || '').trim()
-  if (directId && trustedDebits.has(directId)) return trustedDebits.get(directId) || null
-
-  const sourceKey = String(metadata.source_debit_idempotency_key || metadata.original_purchase_idempotency_key || '').trim()
-  if (sourceKey) {
-    return Array.from(trustedDebits.values()).find((debit) => debit.idempotencyKey && debit.idempotencyKey === sourceKey) || null
-  }
-
-  const sourceOrderId = String(metadata.source_order_id || metadata.order_id || metadata.transaction_id || '').trim()
-  const sourceOrderTable = String(metadata.source_order_table || '').trim()
-  if (sourceOrderId) {
-    return Array.from(trustedDebits.values()).find((debit) => {
-      if (sourceOrderTable && debit.sourceOrderTable && debit.sourceOrderTable !== sourceOrderTable) return false
-      return debit.sourceOrderIds.includes(sourceOrderId)
-    }) || null
-  }
-
-  const originalReference = String(metadata.original_reference || '').trim()
-  if (originalReference) {
-    return Array.from(trustedDebits.values()).find((debit) => debit.reference && debit.reference === originalReference) || null
-  }
-
-  return null
-}
 
 function getWalletTransactionDisplayAmount(tx: any) {
+  if (isBalanceNeutralLedgerEvidence(tx)) return 0
   const amount = Number(tx.amount || 0)
   const absoluteAmount = Math.abs(amount)
   const type = normalizeLedgerText(tx.type)
@@ -899,6 +717,10 @@ export default function AdminPage() {
   const [isSearching, setIsSearching] = useState(false)
   const [selectedUser, setSelectedUser] = useState<any>(null)
   const [viewUserOpen, setViewUserOpen] = useState(false)
+  const [userFinancialTruth, setUserFinancialTruth] = useState<AdminWalletFinancialTruth | null>(null)
+  const [userFinancialTruthLoading, setUserFinancialTruthLoading] = useState(false)
+  const [userFinancialTruthError, setUserFinancialTruthError] = useState<string | null>(null)
+  const userFinancialTruthRequestRef = useRef(0)
   const [adjustBalanceOpen, setAdjustBalanceOpen] = useState(false)
   const [adjustmentAmount, setAdjustmentAmount] = useState('')
   const [adjustmentReason, setAdjustmentReason] = useState('')
@@ -906,6 +728,9 @@ export default function AdminPage() {
   const [adjustmentType, setAdjustmentType] = useState<'add' | 'subtract' | 'chargeback'>('add')
   const [ledgerOnlyCredit, setLedgerOnlyCredit] = useState(false)
   const [userTransactions, setUserTransactions] = useState<any[]>([])
+  const [userActivityError, setUserActivityError] = useState<string | null>(null)
+  const [userActivityWarning, setUserActivityWarning] = useState<string | null>(null)
+  const [userActivityLoading, setUserActivityLoading] = useState(false)
   const [userOrders, setUserOrders] = useState<any[]>([])
   const [userSecurityEvents, setUserSecurityEvents] = useState<any[]>([])
   const [showAllUserTransactions, setShowAllUserTransactions] = useState(false)
@@ -919,9 +744,11 @@ export default function AdminPage() {
   const [fraudRows, setFraudRows] = useState<FraudReviewRow[]>([])
   const [fraudLoading, setFraudLoading] = useState(false)
   const [fraudError, setFraudError] = useState<string | null>(null)
+  const [fraudTelemetryError, setFraudTelemetryError] = useState<string | null>(null)
   const [fraudLastLoadedAt, setFraudLastLoadedAt] = useState<string | null>(null)
+  const fraudInitialScanStartedRef = useRef(false)
   const [fraudSearchQuery, setFraudSearchQuery] = useState('')
-  const [fraudReviewFilter, setFraudReviewFilter] = useState<'all' | 'overspent' | 'suspended' | 'unblock' | 'duplicate' | 'watchlist'>('all')
+  const [fraudReviewFilter, setFraudReviewFilter] = useState<'all' | 'overspent' | 'excess' | 'suspended' | 'unblock' | 'review' | 'duplicate' | 'watchlist' | 'internal'>('all')
   const [fraudSuspendingUserId, setFraudSuspendingUserId] = useState<string | null>(null)
   const [fraudUnsuspendingUserId, setFraudUnsuspendingUserId] = useState<string | null>(null)
 
@@ -1118,7 +945,7 @@ export default function AdminPage() {
   type AdminSmsOrder = {
     id: string; reference: string; service_name: string; status: string
     price_ngn: number; created_at: string; cancelled_at?: string; refunded_at?: string
-    messages?: any[]; order_type: string; provider_request_id?: string
+    has_code: boolean; order_type: string; provider_request_id?: string
     profiles?: { email?: string; full_name?: string }
   }
   const [smsOrders, setSmsOrders] = useState<AdminSmsOrder[]>([])
@@ -1146,8 +973,13 @@ export default function AdminPage() {
     try {
       const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_cancel_sms_order', order_id: orderId } })
       if (error) throw error
+      if (data?.code === 'SMS_OUTCOME_REVIEW_REQUIRED' || data?.review_required) {
+        toast({ title: 'SMS outcome review required', description: 'No refund has been confirmed for this order.' })
+        await loadSmsOrders()
+        return
+      }
       if (!data?.success) throw new Error(data?.error || 'Failed to cancel order')
-      toast({ title: 'Order cancelled & refunded' })
+      toast({ title: data?.data?.refunded_at ? 'Order cancelled and refunded' : 'Order outcome needs review' })
       await loadSmsOrders()
     } catch (err: any) {
       toast({ title: 'Cancel failed', description: err.message, variant: 'destructive' })
@@ -1380,7 +1212,6 @@ export default function AdminPage() {
 
   const [tgOrders, setTgOrders] = useState<AdminTelegramOrder[]>([])
   const [tgOrdersLoading, setTgOrdersLoading] = useState(false)
-  const [tgOrdersCancellingId, setTgOrdersCancellingId] = useState<string | null>(null)
   const [tgOrdersFilter, setTgOrdersFilter] = useState<'all' | 'pending' | 'processing' | 'completed' | 'failed'>('all')
   const [tgProducts, setTgProducts] = useState<TelegramProduct[]>(() => {
     try { return JSON.parse(localStorage.getItem('admin_tg_products') || '[]') } catch { return [] }
@@ -1486,21 +1317,6 @@ export default function AdminPage() {
       toast({ title: 'Update failed', description: err.message, variant: 'destructive' })
     }
   }, [toast])
-
-  const adminCancelTgOrder = useCallback(async (orderId: string) => {
-    setTgOrdersCancellingId(orderId)
-    try {
-      const { data, error } = await supabase.functions.invoke('telegram-stars', { body: { action: 'admin_cancel_order', order_id: orderId } })
-      if (error) throw error
-      if (!data?.success) throw new Error(data?.error || 'Failed to cancel order')
-      toast({ title: 'Order cancelled & refunded' })
-      await loadTgOrders()
-    } catch (err: any) {
-      toast({ title: 'Cancel failed', description: err.message, variant: 'destructive' })
-    } finally {
-      setTgOrdersCancellingId(null)
-    }
-  }, [toast, loadTgOrders])
 
   const checkTgWalletBalance = useCallback(async () => {
     setTgWalletBalanceLoading(true)
@@ -1744,7 +1560,7 @@ export default function AdminPage() {
     const newProduct = await acceptSuggestion(suggestion.id)
     if (newProduct) {
       setProductSuggestions(prev => prev.filter(s => s.id !== suggestion.id))
-      const updatedProductGroups = await getAllProductGroups()
+      const updatedProductGroups = await getManagedProductGroups()
       setProductGroups(updatedProductGroups)
       setEditingTemplate(newProduct)
       toast({
@@ -1762,7 +1578,7 @@ export default function AdminPage() {
     try {
       const result = await manualRestock(productGroupId, quantity)
       if (result.success) {
-        const updatedProductGroups = await getAllProductGroups()
+        const updatedProductGroups = await getManagedProductGroups()
         setProductGroups(updatedProductGroups)
         toast({ title: `Bought ${result.bought} unit(s)`, description: 'Stock count updated.' })
       } else {
@@ -2066,7 +1882,7 @@ export default function AdminPage() {
       if (error || data?.success === false) throw new Error(data?.error || error?.message || 'Failed to approve action')
 
       if (['add_single_account', 'bulk_upload_accounts', 'update_product_group'].includes(action.action_type)) {
-        const updatedProductGroups = await getAllProductGroups()
+        const updatedProductGroups = await getManagedProductGroups()
         setProductGroups(updatedProductGroups)
       }
       if (action.action_type === 'create_category') {
@@ -2111,15 +1927,12 @@ export default function AdminPage() {
   const loadSmmServices = useCallback(async (query: string) => {
     setSmmServicesLoading(true)
     try {
-      let q = supabase
-        .from('smm_services')
-        .select('id, external_id, name, platform, price_ngn, is_active')
-        .order('platform')
-        .order('name')
-      if (query.trim()) q = q.ilike('name', `%${query.trim()}%`)
-      const { data, error } = await q
+      const { data, error } = await supabase.rpc('get_admin_smm_services', {
+        p_query: query.trim() || null,
+      })
       if (error) throw error
-      setSmmServices(data || [])
+      if (!Array.isArray(data)) throw new Error('Service catalog unavailable')
+      setSmmServices(data)
     } catch (err) {
       toast({ title: 'Failed to load services', variant: 'destructive' })
     } finally {
@@ -2130,7 +1943,11 @@ export default function AdminPage() {
   const handleToggleSmmService = async (id: number, currentlyActive: boolean) => {
     setSmmTogglingId(id)
     try {
-      const { error } = await supabase.from('smm_services').update({ is_active: !currentlyActive }).eq('id', id)
+      const { error } = await supabase.rpc('set_admin_smm_service_active', {
+        p_service_id: id,
+        p_platform: null,
+        p_is_active: !currentlyActive,
+      })
       if (error) throw error
       setSmmServices(prev => prev.map(s => s.id === id ? { ...s, is_active: !currentlyActive } : s))
     } catch (err) {
@@ -2144,9 +1961,11 @@ export default function AdminPage() {
   const handleBulkTogglePlatform = async (platform: string, makeActive: boolean) => {
     setSmmServicesLoading(true)
     try {
-      let q = supabase.from('smm_services').update({ is_active: makeActive })
-      if (platform) q = (q as any).eq('platform', platform)
-      const { error } = await q
+      const { error } = await supabase.rpc('set_admin_smm_service_active', {
+        p_service_id: null,
+        p_platform: platform || null,
+        p_is_active: makeActive,
+      })
       if (error) throw error
       setSmmServices(prev =>
         prev.map(s => (!platform || s.platform === platform) ? { ...s, is_active: makeActive } : s)
@@ -2635,22 +2454,8 @@ export default function AdminPage() {
   }, [loadBroadcastJobs])
 
   useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(DORMANT_EMAIL_STORAGE_KEY)
-      const parsed = stored ? JSON.parse(stored) : []
-      setEmailedDormantCustomers(Array.isArray(parsed) ? parsed : [])
-    } catch {
-      setEmailedDormantCustomers([])
-    }
+    window.localStorage.removeItem('tallystore:dormant-customer-email-cohort:v1')
   }, [])
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(DORMANT_EMAIL_STORAGE_KEY, JSON.stringify(emailedDormantCustomers))
-    } catch {
-      // Ignore storage failures; the export flow still works for this session.
-    }
-  }, [emailedDormantCustomers])
 
   const loadAllData = async () => {
     try {
@@ -2659,7 +2464,7 @@ export default function AdminPage() {
 
       const [categoriesData, productGroupsData, accountsData, accountsCountData, userCountData, salesStatsData, favoriteIds] = await Promise.all([
         getCategories(),
-        getAllProductGroups(),
+        getManagedProductGroups(),
         getIndividualAccounts(),
         getIndividualAccountsCount(),
         getUserCount(),
@@ -2687,7 +2492,7 @@ export default function AdminPage() {
     setHistoryLoading(true)
     const nextErrors: Record<string, string> = {}
 
-    const readRows = async (label: string, table: string, maxRows = 50000) => {
+    const readRows = async (label: string, table: string, maxRows = 50000, columns = '*') => {
       try {
         const pageSize = 1000
         const rows: any[] = []
@@ -2695,7 +2500,7 @@ export default function AdminPage() {
         for (let from = 0; from < maxRows; from += pageSize) {
           const { data, error } = await supabase
             .from(table as any)
-            .select('*')
+            .select(columns)
             .order('created_at', { ascending: false })
             .range(from, from + pageSize - 1)
 
@@ -2728,13 +2533,16 @@ export default function AdminPage() {
         socialRows,
       ] = await Promise.all([
         readRows('Deposits', 'transactions'),
-        readRows('Product orders', 'orders'),
-        readRows('SMS orders', 'sms_orders'),
+        readRows('Product orders', 'orders_safe_history'),
+        readRows('SMS orders', 'sms_orders', 50000, SMS_ORDER_HISTORY_COLUMNS),
         readRows('Crypto deposits', 'crypto_transactions'),
         readRows('Crypto withdrawals', 'crypto_withdrawals'),
-        readRows('Bills and airtime', 'bills_transactions'),
-        readRows('Gift cards', 'bitrefill_orders'),
-        readRows('Social boost', 'smm_orders'),
+        readRows('Bills and airtime', 'bills_transactions', 50000,
+          'id,user_id,reference,transaction_type,amount,status,service_provider,service_code,beneficiary_phone,payment_source,sagecloud_reference,created_at,completed_at'),
+        readRows('Gift cards', 'bitrefill_orders', 50000,
+          'id,user_id,reference,product_name,quantity,amount_ngn,amount_original,currency,payment_source,status,bitrefill_invoice_id,bitrefill_order_id,created_at'),
+        readRows('Social boost', 'smm_orders', 50000,
+          'id,user_id,service_id,link,quantity,amount_ngn,status,reference,external_order_id,start_count,remains,created_at,updated_at,completed_at'),
       ])
 
       const productGroupById = new Map(productGroups.map((group) => [group.id, group]))
@@ -2843,7 +2651,7 @@ export default function AdminPage() {
           status: gift.status,
           reference: gift.reference || gift.bitrefill_order_id || gift.bitrefill_invoice_id,
           source: 'Gift cards',
-          detail: gift.redemption_code || gift.redemption_link ? 'Redemption delivered' : gift.currency ? `${gift.amount_original || ''} ${gift.currency}`.trim() : null,
+          detail: gift.status === 'successful' ? 'Redemption delivered' : gift.currency ? `${gift.amount_original || ''} ${gift.currency}`.trim() : null,
           raw: gift,
         })),
         ...socialRows.map((order): AdminHistoryRow => {
@@ -2916,291 +2724,185 @@ export default function AdminPage() {
   const loadFraudReview = useCallback(async () => {
     setFraudLoading(true)
     setFraudError(null)
-
-    const readRows = async (table: string, maxRows = 50000) => {
-      const pageSize = 1000
-      const rows: any[] = []
-
-      for (let from = 0; from < maxRows; from += pageSize) {
-        const { data, error } = await supabase
-          .from(table as any)
-          .select('*')
-          .order('created_at', { ascending: false })
-          .range(from, from + pageSize - 1)
-
-        if (error) throw error
-        rows.push(...(data || []))
-        if (!data || data.length < pageSize) break
-      }
-
-      return rows
-    }
+    setFraudTelemetryError(null)
+    setFraudRows([])
+    setFraudLastLoadedAt(null)
 
     try {
-      const [profileRows, transactionRows, cryptoTransactionRows, siteVisitRows, pendingPaymentRows, pocketfiWebhookLogRows] = await Promise.all([
-        readRows('profiles', 50000),
-        readRows('transactions', 500000),
-        readRows('crypto_transactions', 200000).catch(() => []),
-        readRows('site_visits', 100000).catch(() => []),
-        readRows('pending_payments', 200000).catch(() => []),
-        readRows('pocketfi_webhook_logs', 200000).catch(() => []),
-      ])
-
-      const completedStatuses = new Set(['completed', 'success', 'successful', 'credited', 'complete', 'paid', 'finished'])
-      const adminActorIds = new Set(
-        profileRows
-          .filter((profile: any) => profile?.is_admin === true)
-          .map((profile: any) => String(profile.id || ''))
-          .filter(Boolean),
-      )
-
-      const ledgerByUser = new Map<string, {
-        trustedCredits: number
-        completedSpend: number
-        completedRefunds: number
-        eligibleRefunds: number
-        linkedEligibleRefunds: number
-        trustedAvailable: number
-        duplicateTopupReferences: Set<string>
-        trustedDebits: Map<string, NonNullable<ReturnType<typeof getTrustedDebitEvidence>>>
-        completedRefundRows: any[]
-      }>()
-      const ipByUser = new Map<string, {
-        lastIpAddress: string | null
-        lastIpSeenAt: string | null
-        lastUserAgent: string | null
-        lastIpLocation: string | null
-        lastIpIsp: string | null
-        ipAddresses: Set<string>
-      }>()
-      const topupRefs = new Map<string, { count: number; userIds: Set<string> }>()
-      const pendingEvidenceByUser = new Map<string, any[]>()
-      const pocketfiLogsById = new Map<string, any>()
-
-      for (const payment of pendingPaymentRows) {
-        const userId = String(payment.user_id || '')
-        if (!userId) continue
-        const rows = pendingEvidenceByUser.get(userId) || []
-        rows.push(payment)
-        pendingEvidenceByUser.set(userId, rows)
-      }
-
-      for (const log of pocketfiWebhookLogRows) {
-        const id = String(log.id || '')
-        if (!id) continue
-        pocketfiLogsById.set(id, log)
-      }
-
-      const ensureLedger = (userId: string) => {
-        const existing = ledgerByUser.get(userId)
-        if (existing) return existing
-        const next = {
-          trustedCredits: 0,
-          completedSpend: 0,
-          completedRefunds: 0,
-          eligibleRefunds: 0,
-          linkedEligibleRefunds: 0,
-          trustedAvailable: 0,
-          duplicateTopupReferences: new Set<string>(),
-          trustedDebits: new Map<string, NonNullable<ReturnType<typeof getTrustedDebitEvidence>>>(),
-          completedRefundRows: [],
+      const pageRows: AdminWalletFinancialTruthPageRow[] = []
+      let afterUserId: string | null = null
+      while (true) {
+        const page = await getAdminWalletFinancialTruthPage(afterUserId)
+        if (page.length === 0) break
+        if (page.some((row, index) =>
+          row.user_id <= (index === 0 ? afterUserId || '' : page[index - 1].user_id))) {
+          throw new Error('Canonical wallet financial truth pagination did not advance.')
         }
-        ledgerByUser.set(userId, next)
-        return next
+        pageRows.push(...page)
+        afterUserId = page[page.length - 1].user_id
+        if (page.length < 100) break
       }
 
-      for (const visit of siteVisitRows) {
-        const userId = String(visit.user_id || '')
-        const ipAddress = String(visit.ip_address || '').trim()
-        if (!userId || !ipAddress) continue
-        if (visit.ip_source && visit.ip_source !== 'edge') continue
-
-        const existing = ipByUser.get(userId) || {
-          lastIpAddress: null,
-          lastIpSeenAt: null,
-          lastUserAgent: null,
-          lastIpLocation: null,
-          lastIpIsp: null,
-          ipAddresses: new Set<string>(),
-        }
-        existing.ipAddresses.add(ipAddress)
-        if (!existing.lastIpSeenAt || new Date(visit.created_at || 0).getTime() > new Date(existing.lastIpSeenAt).getTime()) {
-          existing.lastIpAddress = ipAddress
-          existing.lastIpSeenAt = visit.created_at || null
-          existing.lastUserAgent = visit.user_agent || null
-          existing.lastIpLocation = formatAdminVisitLocation(visit)
-          existing.lastIpIsp = formatAdminVisitIsp(visit)
-        }
-        ipByUser.set(userId, existing)
-      }
-
-      for (const tx of transactionRows) {
-        const userId = String(tx.user_id || '')
-        if (!userId) continue
-        const status = String(tx.status || 'completed').toLowerCase()
-        if (!completedStatuses.has(status)) continue
-
-        const amount = Number(tx.amount || 0)
-        const ledger = ensureLedger(userId)
-
-        if (isTrustedCreditTransaction(tx, adminActorIds, pendingEvidenceByUser, pocketfiLogsById)) {
-          ledger.trustedCredits += amount
-          const reference = String(tx.reference || '').trim()
-          const type = normalizeLedgerText(tx.type)
-          if (['topup', 'top_up', 'wallet_topup', 'wallet_deposit', 'deposit'].includes(type) && reference) {
-            const existingRef = topupRefs.get(reference) || { count: 0, userIds: new Set<string>() }
-            existingRef.count += 1
-            existingRef.userIds.add(userId)
-            topupRefs.set(reference, existingRef)
+      const duplicateRefsByUser = new Map<string, string[]>()
+      const seenPaymentIdentities = new Set<string>()
+      let afterPaymentIdentity: string | null = null
+      while (true) {
+        const page = await getAdminCrossWalletPaymentConflictsPage(afterPaymentIdentity)
+        if (page.length === 0) break
+        for (const conflict of page) {
+          if (seenPaymentIdentities.has(conflict.payment_identity)) {
+            throw new Error('Cross-wallet payment evidence pagination did not advance.')
           }
-        } else if (isWalletSpendTransaction(tx)) {
-          ledger.completedSpend += Math.abs(amount)
-          const trustedDebit = getTrustedDebitEvidence(tx)
-          if (trustedDebit) ledger.trustedDebits.set(trustedDebit.id, trustedDebit)
-        } else if (isWalletRefundTransaction(tx) && amount > 0) {
-          ledger.completedRefunds += amount
-          ledger.completedRefundRows.push(tx)
+          seenPaymentIdentities.add(conflict.payment_identity)
+          for (const userId of conflict.wallet_ids) {
+            const references = duplicateRefsByUser.get(userId) || []
+            references.push(conflict.payment_identity)
+            duplicateRefsByUser.set(userId, references)
+          }
         }
-      }
-
-      for (const tx of cryptoTransactionRows) {
-        const userId = String(tx.user_id || '')
-        if (!userId || !isTrustedCryptoCreditTransaction(tx)) continue
-        // Crypto credits are quarantined during the wallet incident review and
-        // should not mask uncovered wallet spend.
-        ensureLedger(userId)
-      }
-
-      for (const [reference, info] of topupRefs) {
-        if (info.count <= 1) continue
-        for (const userId of info.userIds) {
-          ensureLedger(userId).duplicateTopupReferences.add(reference)
-        }
-      }
-
-      for (const ledger of ledgerByUser.values()) {
-        const refundedByOriginal = new Map<string, number>()
-
-        for (const refund of ledger.completedRefundRows) {
-          const original = findLinkedTrustedDebit(refund, ledger.trustedDebits)
-          if (!original) continue
-
-          const alreadyRefunded = refundedByOriginal.get(original.id) || 0
-          const refundableRemaining = Math.max(original.amount - alreadyRefunded, 0)
-          const eligibleAmount = Math.min(Number(refund.amount || 0), refundableRemaining)
-          refundedByOriginal.set(original.id, alreadyRefunded + eligibleAmount)
-        }
-
-        ledger.linkedEligibleRefunds = Array.from(refundedByOriginal.values()).reduce((sum, amount) => sum + amount, 0)
-        const trustedDebitCapacity = Math.min(ledger.completedSpend, ledger.trustedCredits)
-        ledger.eligibleRefunds = Math.min(ledger.linkedEligibleRefunds, trustedDebitCapacity)
-        const trustedConsumedSpend = Math.max(trustedDebitCapacity - ledger.eligibleRefunds, 0)
-        ledger.trustedAvailable = Math.max(ledger.trustedCredits - trustedConsumedSpend, 0)
+        afterPaymentIdentity = page[page.length - 1].payment_identity
+        if (page.length < 100) break
       }
 
       const rows: FraudReviewRow[] = []
-      for (const profile of profileRows) {
-        if (profile.is_admin || profile.is_staff) continue
-
-        const userId = String(profile.id || '')
-        if (!userId) continue
-        const ledger = ensureLedger(userId)
-        const trustedDebitCapacity = Math.min(ledger.completedSpend, ledger.trustedCredits)
-        const eligibleRefunds = ledger.eligibleRefunds
-        const trustedConsumedSpend = Math.max(trustedDebitCapacity - eligibleRefunds, 0)
-        const trustedAvailable = ledger.trustedAvailable
-        const netSpend = Math.max(ledger.completedSpend - eligibleRefunds, 0)
-        const spendExposure = Math.max(netSpend - ledger.trustedCredits, 0)
-        const displayedBalanceExposure = Math.max(Number(profile.wallet_balance || 0) - trustedAvailable, 0)
-        const exposure = Math.max(spendExposure, displayedBalanceExposure)
-        const spendRatio = ledger.trustedCredits > 0 ? netSpend / ledger.trustedCredits : netSpend > 0 ? null : 0
-        const duplicateTopupReferences = Array.from(ledger.duplicateTopupReferences)
-        const suspended = profile.account_suspended === true
-        const walletReviewRequired = profile.wallet_review_required === true
+      for (const profile of pageRows) {
+        const truth = profile.truth
+        const duplicateTopupReferences = duplicateRefsByUser.get(profile.user_id) || []
+        const role = profile.is_admin ? 'admin' : profile.is_staff ? 'staff' : 'customer'
+        const netSpend = truth.net_consumed_spend
+        const exposure = Math.max(
+          truth.quarantined_excess,
+          truth.spend_exposure,
+          Math.abs(truth.unexplained_difference),
+          0,
+        )
+        const spendRatio = truth.trusted_principal > 0
+          ? netSpend / truth.trusted_principal
+          : netSpend > 0 ? null : 0
+        const suspended = profile.account_suspended
+        const walletReviewRequired = profile.wallet_review_required
+        const integrityIssue = !truth.evidence_complete || truth.integrity_status !== 'consistent'
         let reviewType: FraudReviewRow['reviewType'] | null = null
         let reason = ''
 
-        if (walletReviewRequired) {
+        if (truth.integrity_status === 'payment_identity_conflict') {
+          reviewType = 'duplicate_deposit'
+          reason = 'Payment identity conflict in canonical wallet evidence.'
+        } else if (truth.integrity_status === 'quarantined_excess') {
+          reviewType = 'quarantined_excess'
+          reason = `Unbacked displayed excess of ${formatAdminNaira(truth.quarantined_excess)} is quarantined. Backed funds remain subject to account and wallet review state.`
+        } else if (integrityIssue) {
+          reviewType = suspended ? 'suspended_risk' : 'overspent'
+          reason = `Wallet integrity: ${truth.integrity_status.replace(/_/g, ' ')}.`
+        } else if (walletReviewRequired || suspended) {
           reviewType = 'review_unblock'
-          reason = profile.wallet_review_reason || 'Wallet review hold: spending is paused while this account is reconciled.'
-        } else if (suspended && exposure <= 1) {
-          reviewType = 'review_unblock'
-          reason = 'Suspended, but trusted principal now covers consumed spend and displayed wallet balance. Review for possible unblock.'
-        } else if (suspended) {
-          reviewType = 'suspended_risk'
-          reason = profile.suspension_reason || `Suspended with ${formatAdminNaira(Math.max(exposure, 0))} uncovered spend.`
-        } else if (displayedBalanceExposure > 1) {
-          reviewType = 'overspent'
-          reason = `Displayed wallet balance exceeds trusted available funds by ${formatAdminNaira(displayedBalanceExposure)}.`
-        } else if (spendExposure > 1) {
-          reviewType = 'overspent'
-          reason = `Completed spend exceeds trusted principal by ${formatAdminNaira(spendExposure)}.`
+          reason = suspended
+            ? 'Account remains suspended. Review the original reason before unblocking.'
+            : truth.spending_blocked
+              ? 'Wallet spending hold remains. Review the original incident before clearing it.'
+              : 'Wallet review flag remains, but backed funds are spendable up to the confirmed amount. Review the original incident before clearing the flag.'
         } else if (duplicateTopupReferences.length > 0) {
           reviewType = 'duplicate_deposit'
-          reason = `Duplicate completed top-up reference detected: ${duplicateTopupReferences.slice(0, 2).join(', ')}`
-        } else if (ledger.trustedCredits > 0 && netSpend >= 250000 && spendRatio !== null && spendRatio >= 0.98 && Number(profile.wallet_balance || 0) <= 1000) {
+          reason = 'The same external payment identity appears on multiple wallets. Verify provider evidence; this signal alone does not block spending.'
+        } else if (truth.legacy_spend_before_recorded_funding) {
           reviewType = 'watchlist'
-          reason = `Watchlist only: customer spent ${Math.round(spendRatio * 100)}% of trusted credits and has low remaining wallet balance.`
+          reason = 'Historical wallet debit predates the first recorded legacy funding credit. Check payment coverage before drawing a conclusion; this signal alone does not block spending.'
+        } else if (role === 'customer' && truth.trusted_principal > 0 && netSpend >= 250000 &&
+          spendRatio !== null && spendRatio >= 0.98 && truth.stored_wallet_balance <= 1000) {
+          reviewType = 'watchlist'
+          reason = `Watchlist only: customer spent ${Math.round(spendRatio * 100)}% of trusted principal.`
         }
 
         if (!reviewType) continue
-        const ipInfo = ipByUser.get(userId)
-        const deviceInfo = parseAdminUserAgent(ipInfo?.lastUserAgent)
-
+        if (duplicateTopupReferences.length > 0 && reviewType !== 'duplicate_deposit') {
+          reason += ' Shared external payment identity also needs provider review.'
+        }
+        if (truth.legacy_spend_before_recorded_funding && reviewType !== 'watchlist') {
+          reason += ' A historical debit also predates the first recorded legacy funding credit.'
+        }
         rows.push({
-          userId,
+          userId: profile.user_id,
+          role,
+          truth,
           email: profile.email || 'Unknown email',
-          fullName: profile.full_name || null,
-          walletBalance: Number(profile.wallet_balance || 0),
+          fullName: profile.full_name,
+          walletBalance: truth.stored_wallet_balance,
           suspended,
           walletReviewRequired,
-          walletReviewReason: profile.wallet_review_reason || null,
-          suspensionReason: profile.suspension_reason || null,
-          suspendedAt: profile.suspended_at || null,
-          trustedCredits: ledger.trustedCredits,
-          completedSpend: ledger.completedSpend,
-          completedRefunds: ledger.completedRefunds,
-          eligibleRefunds,
-          trustedAvailable,
+          walletReviewReason: truth.wallet_review_reason || null,
+          suspensionReason: profile.suspension_reason,
+          suspendedAt: profile.suspended_at,
+          trustedCredits: truth.trusted_principal,
+          completedSpend: truth.completed_debits,
+          completedRefunds: truth.completed_refunds,
+          eligibleRefunds: truth.eligible_refunds,
+          trustedAvailable: truth.confirmed_spendable,
           netSpend,
           exposure,
           spendRatio,
           duplicateTopupReferences,
-          lastIpAddress: ipInfo?.lastIpAddress || null,
-          lastIpSeenAt: ipInfo?.lastIpSeenAt || null,
-          lastIpLocation: ipInfo?.lastIpLocation || null,
-          lastIpIsp: ipInfo?.lastIpIsp || null,
-          lastUserAgent: ipInfo?.lastUserAgent || null,
-          deviceLabel: deviceInfo.deviceLabel,
-          deviceType: deviceInfo.deviceType,
-          deviceOs: deviceInfo.os,
-          deviceBrowser: deviceInfo.browser,
-          ipAddresses: ipInfo ? Array.from(ipInfo.ipAddresses).slice(0, 8) : [],
+          lastIpAddress: null,
+          lastIpSeenAt: null,
+          lastIpLocation: null,
+          lastIpIsp: null,
+          lastUserAgent: null,
+          deviceLabel: null,
+          deviceType: null,
+          deviceOs: null,
+          deviceBrowser: null,
+          ipAddresses: [],
           reviewType,
           reason,
         })
+      }
+
+      try {
+        const telemetry = []
+        for (let offset = 0; offset < rows.length; offset += 100) {
+          telemetry.push(...await getAdminFraudLatestVisits(
+            rows.slice(offset, offset + 100).map((row) => row.userId)
+          ))
+        }
+        const byUser = new Map(telemetry.map((visit) => [visit.user_id, visit]))
+        for (const row of rows) {
+          const visit = byUser.get(row.userId)
+          if (!visit) continue
+          const device = parseAdminUserAgent(visit.user_agent)
+          row.lastIpAddress = visit.ip_address
+          row.lastIpSeenAt = visit.observed_at
+          row.lastIpLocation = formatAdminVisitLocation(visit)
+          row.lastIpIsp = formatAdminVisitIsp(visit)
+          row.lastUserAgent = visit.user_agent
+          row.ipAddresses = visit.ip_addresses
+          row.deviceLabel = device.deviceLabel
+          row.deviceType = device.deviceType
+          row.deviceOs = device.os
+          row.deviceBrowser = device.browser
+        }
+      } catch (error: unknown) {
+        setFraudTelemetryError(error instanceof Error ? error.message : 'IP telemetry unavailable.')
       }
 
       const rank: Record<FraudReviewRow['reviewType'], number> = {
         overspent: 0,
         suspended_risk: 1,
         duplicate_deposit: 2,
-        review_unblock: 3,
-        watchlist: 4,
+        quarantined_excess: 3,
+        review_unblock: 4,
+        watchlist: 5,
       }
-
       setFraudRows(rows.sort((a, b) =>
         rank[a.reviewType] - rank[b.reviewType] ||
         Number(b.suspended) - Number(a.suspended) ||
-        Math.max(b.exposure, 0) - Math.max(a.exposure, 0) ||
+        b.exposure - a.exposure ||
         b.netSpend - a.netSpend
       ))
       setFraudLastLoadedAt(new Date().toISOString())
     } catch (error: any) {
-      setFraudError(error?.message || 'Failed to load fraud review')
+      setFraudError(error?.message || 'Canonical fraud review unavailable')
       toast({
         title: 'Fraud review failed',
-        description: error?.message || 'Could not load fraud review data.',
+        description: error?.message || 'Canonical wallet financial truth could not load.',
         variant: 'destructive',
       })
     } finally {
@@ -3215,10 +2917,11 @@ export default function AdminPage() {
   }, [adminTab, historyRows.length, loadAdminHistories])
 
   useEffect(() => {
-    if (adminTab === 'fraud' && fraudRows.length === 0 && !fraudLoading) {
-      loadFraudReview()
+    if (adminTab === 'fraud' && !fraudInitialScanStartedRef.current) {
+      fraudInitialScanStartedRef.current = true
+      void loadFraudReview()
     }
-  }, [adminTab, fraudLoading, fraudRows.length, loadFraudReview])
+  }, [adminTab, loadFraudReview])
 
   const filteredFraudRows = useMemo(() => {
     const query = fraudSearchQuery.trim().toLowerCase()
@@ -3227,10 +2930,13 @@ export default function AdminPage() {
       const tabMatches =
         fraudReviewFilter === 'all' ||
         (fraudReviewFilter === 'overspent' && row.reviewType === 'overspent') ||
+        (fraudReviewFilter === 'excess' && row.reviewType === 'quarantined_excess') ||
         (fraudReviewFilter === 'suspended' && (row.reviewType === 'suspended_risk' || row.suspended)) ||
-        (fraudReviewFilter === 'unblock' && row.reviewType === 'review_unblock') ||
-        (fraudReviewFilter === 'duplicate' && row.reviewType === 'duplicate_deposit') ||
-        (fraudReviewFilter === 'watchlist' && row.reviewType === 'watchlist')
+        (fraudReviewFilter === 'unblock' && row.truth.spending_blocked) ||
+        (fraudReviewFilter === 'review' && row.walletReviewRequired) ||
+        (fraudReviewFilter === 'duplicate' && (row.reviewType === 'duplicate_deposit' || row.duplicateTopupReferences.length > 0)) ||
+        (fraudReviewFilter === 'watchlist' && row.reviewType === 'watchlist') ||
+        (fraudReviewFilter === 'internal' && row.role !== 'customer')
 
       if (!tabMatches) return false
       if (!query) return true
@@ -3239,6 +2945,7 @@ export default function AdminPage() {
         row.email,
         row.fullName,
         row.userId,
+        row.role,
         row.reason,
         row.suspensionReason,
         row.lastIpAddress,
@@ -3257,21 +2964,24 @@ export default function AdminPage() {
   const fraudFilterCounts = useMemo(() => ({
     all: fraudRows.length,
     overspent: fraudRows.filter(row => row.reviewType === 'overspent').length,
+    excess: fraudRows.filter(row => row.reviewType === 'quarantined_excess').length,
     suspended: fraudRows.filter(row => row.reviewType === 'suspended_risk' || row.suspended).length,
-    unblock: fraudRows.filter(row => row.reviewType === 'review_unblock').length,
-    duplicate: fraudRows.filter(row => row.reviewType === 'duplicate_deposit').length,
+    unblock: fraudRows.filter(row => row.truth.spending_blocked).length,
+    review: fraudRows.filter(row => row.walletReviewRequired).length,
+    duplicate: fraudRows.filter(row => row.reviewType === 'duplicate_deposit' || row.duplicateTopupReferences.length > 0).length,
     watchlist: fraudRows.filter(row => row.reviewType === 'watchlist').length,
+    internal: fraudRows.filter(row => row.role !== 'customer').length,
   }), [fraudRows])
 
   const loadSalesAnalytics = useCallback(async () => {
     setSalesLoading(true)
     const nextErrors: Record<string, string> = {}
 
-    const readRows = async (label: string, table: string, limit = 10000) => {
+    const readRows = async (label: string, table: string, limit = 10000, columns = '*') => {
       try {
         const { data, error } = await supabase
           .from(table as any)
-          .select('*')
+          .select(columns)
           .order('created_at', { ascending: false })
           .limit(limit)
 
@@ -3330,7 +3040,7 @@ export default function AdminPage() {
         readRows('CRO decisions', 'cro_decision_audit', 5000),
         readRows('CRO experiments', 'cro_experiments', 1000),
         readRows('CRO insights', 'cro_commercial_insights', 1000),
-        readRows('Product relationships', 'product_relationships', 5000),
+        readRows('Product relationships', 'product_relationships', 5000, 'id,created_at'),
         readRows('Data quality checks', 'revenue_data_quality_checks', 1000),
         readRows('Feature snapshots', 'revenue_feature_snapshots', 1000),
         readRows('CRO opportunities', 'cro_opportunities', 1000),
@@ -3347,7 +3057,7 @@ export default function AdminPage() {
           nextErrors.Target = err?.message || 'Could not load sales target.'
           return null
         }),
-        readRows('SMS orders', 'sms_orders', 10000),
+        readRows('SMS orders', 'sms_orders', 10000, SMS_ORDER_HISTORY_COLUMNS),
         getAppSetting('sales_recommendation_automation_enabled').catch((err) => {
           nextErrors.Automation = err?.message || 'Could not load automation setting.'
           return null
@@ -3446,10 +3156,7 @@ export default function AdminPage() {
       if (dormantEmailCohort) {
         try {
           const parsed = JSON.parse(dormantEmailCohort)
-          if (Array.isArray(parsed)) {
-            setEmailedDormantCustomers(parsed)
-            window.localStorage.setItem(DORMANT_EMAIL_STORAGE_KEY, JSON.stringify(parsed))
-          }
+          if (Array.isArray(parsed)) setEmailedDormantCustomers(parsed)
         } catch {
           nextErrors.DormantEmails = 'Could not load dormant emailed customer tracking.'
         }
@@ -3554,7 +3261,7 @@ export default function AdminPage() {
       if (success) {
         setIndividualAccounts(prev => prev.filter(acc => acc.id !== accountId))
         // Reload product groups to update stock counts
-        const updatedProductGroups = await getAllProductGroups()
+        const updatedProductGroups = await getManagedProductGroups()
         setProductGroups(updatedProductGroups)
         alert('Account deleted successfully!')
       } else {
@@ -3655,7 +3362,7 @@ export default function AdminPage() {
       const success = await archiveProductGroup(templateId)
       if (success) {
         // Refresh the data to reflect the change
-        const updatedGroups = await getAllProductGroups()
+        const updatedGroups = await getManagedProductGroups()
         setProductGroups(updatedGroups)
         alert('Product template archived successfully!')
       } else {
@@ -3675,7 +3382,7 @@ export default function AdminPage() {
       const success = await restoreProductGroup(templateId)
       if (success) {
         // Refresh the data to reflect the change
-        const updatedGroups = await getAllProductGroups()
+        const updatedGroups = await getManagedProductGroups()
         setProductGroups(updatedGroups)
         alert('Product template restored successfully!')
       } else {
@@ -4533,16 +4240,44 @@ export default function AdminPage() {
     }
   }
 
+  const loadUserFinancialTruth = (userId: string) => {
+    const truthRequest = ++userFinancialTruthRequestRef.current
+    setUserFinancialTruth(null)
+    setUserFinancialTruthError(null)
+    setUserFinancialTruthLoading(true)
+    void getAdminWalletFinancialTruth(userId)
+      .then((truth) => {
+        if (userFinancialTruthRequestRef.current === truthRequest) setUserFinancialTruth(truth)
+      })
+      .catch((error: unknown) => {
+        if (userFinancialTruthRequestRef.current === truthRequest) {
+          setUserFinancialTruthError(error instanceof Error ? error.message : 'Canonical financial truth unavailable.')
+        }
+      })
+      .finally(() => {
+        if (userFinancialTruthRequestRef.current === truthRequest) setUserFinancialTruthLoading(false)
+      })
+  }
+
   // View user details
   const handleViewUser = async (user: any) => {
     try {
+      setSelectedUser(user)
+      setViewUserOpen(true)
+      setUserTransactions([])
+      setUserOrders([])
+      setUserSecurityEvents([])
+      setUserActivityError(null)
+      setUserActivityWarning(null)
+      setUserActivityLoading(true)
+      loadUserFinancialTruth(user.id)
       setShowAllUserTransactions(false)
       setShowAllUserOrders(false)
       setShowAllUserSecurityEvents(false)
 
       // Load user transactions, orders, and latest server-captured visit evidence.
       const [transactions, cryptoTransactions, orders, latestVisitResult, securityEventsResult] = await Promise.all([
-        getUserTransactions(user.id),
+        getUserTransactions(user.id, true),
         supabase
           .from('crypto_transactions' as any)
           .select('*')
@@ -4567,6 +4302,9 @@ export default function AdminPage() {
           .then(({ data, error }) => error ? { data: [], error } : { data: data || [], error: null })
       ])
 
+      if (cryptoTransactions.error) {
+        setUserActivityWarning('Crypto history could not be loaded; wallet transactions are still shown.')
+      }
       const visits = latestVisitResult.data || []
       const latestServerVisit = visits.find((visit: any) => visit.ip_address && visit.ip_source === 'edge') || visits.find((visit: any) => visit.ip_address) || visits[0]
       const deviceInfo = parseAdminUserAgent(latestServerVisit?.user_agent || user.fraud_last_user_agent)
@@ -4600,17 +4338,21 @@ export default function AdminPage() {
         credited_at: tx.credited_at || null,
         transaction_type: tx.transaction_type || null,
         naira_amount: Number(tx.naira_amount || 0),
+        balance_type: 'crypto_activity',
       }))
       setUserTransactions([...transactions, ...cryptoLedgerRows].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()))
       setUserOrders(orders)
       setUserSecurityEvents(securityEventsResult.data || [])
       setViewUserOpen(true)
     } catch (error: any) {
+      setUserActivityError(error?.message || 'User activity could not be loaded.')
       toast({
         title: "Error loading user details",
         description: error.message,
         variant: "destructive"
       })
+    } finally {
+      setUserActivityLoading(false)
     }
   }
 
@@ -4801,10 +4543,11 @@ export default function AdminPage() {
       }
       setSelectedUser(nextUser)
       setUsers(prev => prev.map(u => u.id === selectedUser.id ? nextUser : u))
+      if (viewUserOpen) loadUserFinancialTruth(selectedUser.id)
 
       toast({
         title: 'Account unsuspended',
-        description: `${selectedUser.email || 'Customer'} can purchase again.`,
+        description: `${selectedUser.email || 'Customer'} account suspension was cleared. Wallet review and confirmed funds still govern purchases.`,
       })
     } catch (error: any) {
       toast({
@@ -4832,6 +4575,7 @@ export default function AdminPage() {
       }
       setSelectedUser(nextUser)
       setUsers(prev => prev.map(u => u.id === selectedUser.id ? nextUser : u))
+      if (viewUserOpen) loadUserFinancialTruth(selectedUser.id)
       await loadFraudReview()
 
       toast({
@@ -4855,20 +4599,11 @@ export default function AdminPage() {
       setFraudSuspendingUserId(row.userId)
       await adminSuspendUser(row.userId, reason)
 
-      setFraudRows(prev => prev.map(item => item.userId === row.userId
-        ? {
-            ...item,
-            suspended: true,
-            suspensionReason: reason,
-            suspendedAt: new Date().toISOString(),
-            reviewType: item.exposure > 1 ? 'suspended_risk' : item.reviewType,
-            reason,
-          }
-        : item
-      ))
+      await loadFraudReview()
       setUsers(prev => prev.map(u => u.id === row.userId ? { ...u, account_suspended: true, suspension_reason: reason, suspended_at: new Date().toISOString() } : u))
       if (selectedUser?.id === row.userId) {
         setSelectedUser((prev: any) => prev ? { ...prev, account_suspended: true, suspension_reason: reason, suspended_at: new Date().toISOString() } : prev)
+        if (viewUserOpen) loadUserFinancialTruth(row.userId)
       }
 
       toast({
@@ -4891,28 +4626,16 @@ export default function AdminPage() {
       setFraudUnsuspendingUserId(row.userId)
       await adminUnsuspendUser(row.userId)
 
-      setFraudRows(prev => prev.flatMap(item => {
-        if (item.userId !== row.userId) return [item]
-        if (item.exposure <= 1 && item.duplicateTopupReferences.length === 0 && item.reviewType !== 'watchlist') {
-          return []
-        }
-        return [{
-          ...item,
-          suspended: false,
-          suspensionReason: null,
-          suspendedAt: null,
-          reviewType: item.exposure > 1 ? 'overspent' : item.duplicateTopupReferences.length > 0 ? 'duplicate_deposit' : 'watchlist',
-          reason: item.exposure > 1 ? item.reason : 'Unsuspended. Keep monitoring this customer.',
-        }]
-      }))
+      await loadFraudReview()
       setUsers(prev => prev.map(u => u.id === row.userId ? { ...u, account_suspended: false, suspension_reason: null } : u))
       if (selectedUser?.id === row.userId) {
         setSelectedUser((prev: any) => prev ? { ...prev, account_suspended: false, suspension_reason: null } : prev)
+        if (viewUserOpen) loadUserFinancialTruth(row.userId)
       }
 
       toast({
         title: 'Account unsuspended',
-        description: `${row.email} can purchase again.`,
+        description: `${row.email} account suspension was cleared. Wallet review and confirmed funds still govern purchases.`,
       })
     } catch (error: any) {
       toast({
@@ -4932,11 +4655,6 @@ export default function AdminPage() {
     const amount = parseFloat(adjustmentAmount) || 0
     const adjustment = adjustmentType === 'add' ? amount : -amount
     return (current + adjustment).toLocaleString()
-  }
-
-  // Calculate total spent by user
-  const calculateTotalSpent = (orders: any[]) => {
-    return orders.reduce((sum, order) => sum + (order.amount || 0), 0).toLocaleString()
   }
 
   const exportHistoryRows = () => {
@@ -5031,6 +4749,7 @@ export default function AdminPage() {
         'device_browser',
         'last_user_agent',
         'suspension_reason',
+        'wallet_effect',
       ],
       [
         'account',
@@ -5060,6 +4779,7 @@ export default function AdminPage() {
         selectedUser.fraud_device_browser || '',
         selectedUser.fraud_last_user_agent || '',
         selectedUser.suspension_reason || '',
+        '',
       ],
       ...userSecurityEvents.map((event) => [
         'security_event',
@@ -5094,6 +4814,7 @@ export default function AdminPage() {
         selectedUser.fraud_device_browser || '',
         event.user_agent || selectedUser.fraud_last_user_agent || '',
         selectedUser.suspension_reason || '',
+        '',
       ]),
       ...userTransactions.map((tx) => [
         'transaction',
@@ -5123,6 +4844,7 @@ export default function AdminPage() {
         selectedUser.fraud_device_browser || '',
         selectedUser.fraud_last_user_agent || '',
         selectedUser.suspension_reason || '',
+        tx.balance_type && tx.balance_type !== 'wallet' ? '' : getWalletTransactionDisplayAmount(tx),
       ]),
       ...userOrders.map((order) => [
         'order',
@@ -5152,6 +4874,7 @@ export default function AdminPage() {
         selectedUser.fraud_device_browser || '',
         selectedUser.fraud_last_user_agent || '',
         selectedUser.suspension_reason || '',
+        '',
       ]),
     ]
 
@@ -5232,11 +4955,6 @@ export default function AdminPage() {
   ]
 
   const persistEmailedDormantCustomers = async (records: EmailedDormantCustomer[]) => {
-    try {
-      window.localStorage.setItem(DORMANT_EMAIL_STORAGE_KEY, JSON.stringify(records))
-    } catch {
-      // Local cache is only a fallback; app settings remain the durable source.
-    }
     const saved = await upsertAppSetting(DORMANT_EMAIL_SETTING_KEY, JSON.stringify(records))
     if (!saved) throw new Error('Could not save emailed customer tracking.')
   }
@@ -5606,8 +5324,7 @@ export default function AdminPage() {
     try {
       const fromProduct = productGroups.find((product) => product.id === fromProductId)
       const toProduct = productGroups.find((product) => product.id === toProductId)
-      const now = new Date().toISOString()
-      const { error } = await supabase.from('product_relationships' as any).upsert({
+      const { error } = await supabase.rpc('save_admin_product_relationships', { p_rows: [{
         from_product_group_id: fromProductId,
         to_product_group_id: toProductId,
         relationship_type: relationshipType,
@@ -5622,8 +5339,7 @@ export default function AdminPage() {
           to_product_name: toProduct?.name || null,
           note: 'Admin-defined relationship. Revenue OS should not infer or overwrite this as behavioural evidence.',
         },
-        last_updated: now,
-      }, { onConflict: 'from_product_group_id,to_product_group_id,relationship_type,source' })
+      }] })
 
       if (error) throw error
       await loadSalesAnalytics()
@@ -6045,7 +5761,7 @@ export default function AdminPage() {
         setIndividualAccounts(prev => [...prev, createdAccount])
         
         // Reload product groups to get updated stock counts
-        const updatedProductGroups = await getAllProductGroups()
+        const updatedProductGroups = await getManagedProductGroups()
         setProductGroups(updatedProductGroups)
         
         // Reset form
@@ -6998,6 +6714,10 @@ export default function AdminPage() {
             onOpenChange={(open) => {
               setViewUserOpen(open)
               if (!open) {
+                userFinancialTruthRequestRef.current += 1
+                setUserFinancialTruth(null)
+                setUserFinancialTruthError(null)
+                setUserFinancialTruthLoading(false)
                 setShowAllUserTransactions(false)
                 setShowAllUserOrders(false)
                 setShowAllUserSecurityEvents(false)
@@ -7031,7 +6751,7 @@ export default function AdminPage() {
                       <div>
                         <p className="text-sm text-muted-foreground">Wallet Balance</p>
                         <p className="text-lg font-bold">
-                          ₦{(selectedUser?.wallet_balance || 0).toLocaleString()}
+                          {userFinancialTruth ? formatAdminNaira(userFinancialTruth.stored_wallet_balance) : userFinancialTruthLoading ? 'Loading...' : 'Unavailable'}
                         </p>
                       </div>
                       <div>
@@ -7132,6 +6852,69 @@ export default function AdminPage() {
                   </CardContent>
                 </Card>
 
+                <section className="space-y-3 border-t pt-4" aria-label="Canonical wallet financial truth">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-semibold">Wallet financial truth</h3>
+                    {userFinancialTruth && (
+                      <Badge variant={userFinancialTruth.integrity_status === 'consistent' ? 'secondary' : 'destructive'}>
+                        {userFinancialTruth.integrity_status.replace(/_/g, ' ')}
+                      </Badge>
+                    )}
+                    <Button type="button" size="icon" variant="ghost" className="ml-auto h-8 w-8"
+                      title="Refresh wallet financial truth" aria-label="Refresh wallet financial truth"
+                      disabled={!selectedUser?.id || userFinancialTruthLoading}
+                      onClick={() => selectedUser?.id && loadUserFinancialTruth(selectedUser.id)}>
+                      <RefreshCw className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  {userFinancialTruthLoading ? (
+                    <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading financial truth...</p>
+                  ) : userFinancialTruthError || !userFinancialTruth ? (
+                    <p className="text-sm text-destructive" role="alert">{userFinancialTruthError || 'Canonical financial truth unavailable.'}</p>
+                  ) : (
+                    <>
+                      {!userFinancialTruth.evidence_complete && (
+                        <p className="text-sm text-destructive">Financial evidence is incomplete. Do not treat spendable funds as verified.</p>
+                      )}
+                      {userFinancialTruth.legacy_spend_before_recorded_funding && (
+                        <p className="text-sm text-amber-700">
+                          Historical debit predates recorded legacy funding. First debit: {formatAdminAbsoluteDateTime(userFinancialTruth.legacy_first_recorded_debit_at)}; first credit: {formatAdminAbsoluteDateTime(userFinancialTruth.legacy_first_recorded_funding_at)}. Check older payment records before resolving this signal.
+                        </p>
+                      )}
+                      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+                        {([
+                          ['Verified gateway deposits', 'verified_gateway_deposits'],
+                          ['Approved admin credits', 'approved_admin_credits'],
+                          ['Legacy approved principal', 'legacy_approved_principal'],
+                          ['Trusted principal', 'trusted_principal'],
+                          ['Completed debits', 'completed_debits'],
+                          ['Completed purchases', 'completed_purchases'],
+                          ['Eligible refunds', 'eligible_refunds'],
+                          ['Completed refunds', 'completed_refunds'],
+                          ['Active reservations', 'active_reservations'],
+                          ['Withdrawals', 'withdrawals'],
+                          ['Chargebacks', 'chargebacks'],
+                          ['Trusted book balance', 'trusted_book_balance'],
+                          ['Confirmed spendable', 'confirmed_spendable'],
+                          ['Expected ledger balance', 'expected_ledger_balance'],
+                          ['Stored wallet balance', 'stored_wallet_balance'],
+                          ['Explained difference', 'explained_difference'],
+                          ['Unexplained difference', 'unexplained_difference'],
+                          ['Quarantined excess', 'quarantined_excess'],
+                        ] as const).map(([label, key]) => (
+                          <div key={key} className="flex justify-between gap-3 border-b py-1">
+                            <dt className="text-muted-foreground">{label}</dt>
+                            <dd className="shrink-0 font-medium tabular-nums">{formatAdminNaira(userFinancialTruth[key])}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                      <p className="text-xs text-muted-foreground">
+                        Spending {userFinancialTruth.spending_blocked ? 'blocked' : 'permitted up to confirmed spendable'}; account {userFinancialTruth.account_suspended ? 'suspended' : 'active'}; wallet review {userFinancialTruth.wallet_review_required ? 'required' : 'not required'}. Activity below is history, not a financial total.
+                      </p>
+                    </>
+                  )}
+                </section>
+
                 {/* Security Events Card */}
                 <Card>
                   <CardHeader>
@@ -7226,14 +7009,23 @@ export default function AdminPage() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {userTransactions.length === 0 ? (
+                    {userActivityWarning && (
+                      <p className="text-sm text-destructive pb-3" role="status">{userActivityWarning}</p>
+                    )}
+                    {userActivityLoading ? (
+                      <p className="text-center text-muted-foreground py-4">Loading transactions...</p>
+                    ) : userActivityError ? (
+                      <p className="text-center text-destructive py-4" role="alert">Transaction history unavailable: {userActivityError}</p>
+                    ) : userTransactions.length === 0 ? (
                       <p className="text-center text-muted-foreground py-4">No transactions found</p>
                     ) : (
                       <div className="space-y-2">
                         {(showAllUserTransactions ? userTransactions : userTransactions.slice(0, 5)).map((tx) => {
+                          const isEvidenceOnly = isBalanceNeutralLedgerEvidence(tx)
+                          const isWalletLedgerRow = !tx.balance_type || tx.balance_type === 'wallet'
                           const signedAmount = getWalletTransactionDisplayAmount(tx)
-                          const isCredit = signedAmount > 0
-                          const isSpend = signedAmount < 0
+                          const isCredit = isWalletLedgerRow && signedAmount > 0
+                          const isSpend = isWalletLedgerRow && signedAmount < 0
                           const displayAmount = Math.abs(signedAmount)
 
                           return (
@@ -7241,18 +7033,20 @@ export default function AdminPage() {
                               <div className="flex-1">
                                 <div className="flex items-center gap-2 mb-1">
                                   <Badge variant={isCredit ? 'default' : 'secondary'}>
-                                    {tx.type}
+                                    {isEvidenceOnly ? 'ledger evidence' : tx.type}
                                   </Badge>
                                   <span className="text-sm text-muted-foreground">
                                     {format(new Date(tx.created_at), 'MMM d, HH:mm')}
                                   </span>
                                 </div>
                                 <p className="text-sm">{tx.description || 'No description'}</p>
+                                {isEvidenceOnly && <p className="text-xs text-muted-foreground">Balance unchanged; nominal entry {formatAdminNaira(Number(tx.amount || 0))}.</p>}
+                                {!isWalletLedgerRow && <p className="text-xs text-muted-foreground">Separate activity record; wallet postings are listed separately.</p>}
                               </div>
                               <div className="text-right">
                                 <p className={`font-bold ${isCredit ? 'text-green-600' : isSpend ? 'text-red-600' : 'text-muted-foreground'}`}>
                                   {isCredit ? '+' : isSpend ? '-' : ''}
-                                  ₦{displayAmount.toLocaleString()}
+                                  ₦{(isWalletLedgerRow ? displayAmount : Math.abs(Number(tx.amount || 0))).toLocaleString()}
                                 </p>
                               </div>
                             </div>
@@ -7290,12 +7084,12 @@ export default function AdminPage() {
                       <div className="space-y-4">
                         <div className="grid grid-cols-2 gap-4 p-4 bg-muted rounded-lg">
                           <div>
-                            <p className="text-sm text-muted-foreground">Total Orders</p>
+                            <p className="text-sm text-muted-foreground">Loaded orders</p>
                             <p className="text-2xl font-bold">{userOrders.length}</p>
                           </div>
                           <div>
-                            <p className="text-sm text-muted-foreground">Total Spent</p>
-                            <p className="text-2xl font-bold">₦{calculateTotalSpent(userOrders)}</p>
+                            <p className="text-sm text-muted-foreground">Completed purchases</p>
+                            <p className="text-2xl font-bold">{userFinancialTruth ? formatAdminNaira(userFinancialTruth.completed_purchases) : 'Unavailable'}</p>
                           </div>
                         </div>
 
@@ -8473,7 +8267,7 @@ export default function AdminPage() {
                         Fraud Review
                       </CardTitle>
                       <p className="text-muted-foreground">
-                        Customers flagged by uncovered wallet spend, duplicate deposit references, or low-confidence watchlist checks.
+                        Accounts flagged by canonical wallet integrity, review holds, or watchlist checks.
                       </p>
                       {fraudLastLoadedAt && (
                         <p className="mt-1 text-xs text-muted-foreground">
@@ -8490,84 +8284,101 @@ export default function AdminPage() {
                 <CardContent className="space-y-4">
                   {fraudError && (
                     <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-                      {fraudError}
+                      <p className="font-semibold">Fraud review unavailable. No risk totals or customer classifications were calculated.</p>
+                      <p>{fraudError}</p>
                     </div>
                   )}
-
-                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-                    <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{fraudFilterCounts.unblock}</p>
-                      <p className="text-xs text-muted-foreground">Review to unblock</p>
-                    </div>
-                    <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{fraudFilterCounts.overspent + fraudFilterCounts.suspended}</p>
-                      <p className="text-xs text-muted-foreground">Overspent risk</p>
-                    </div>
-                    <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{fraudFilterCounts.duplicate}</p>
-                      <p className="text-xs text-muted-foreground">Duplicate deposits</p>
-                    </div>
-                    <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{fraudFilterCounts.watchlist}</p>
-                      <p className="text-xs text-muted-foreground">Watchlist</p>
-                    </div>
-                    <div className="rounded-lg border p-3">
-                      <p className="text-2xl font-bold">{formatAdminNaira(fraudRows.reduce((sum, row) => sum + Math.max(row.exposure, 0), 0))}</p>
-                      <p className="text-xs text-muted-foreground">Uncovered exposure</p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 rounded-lg border p-3">
-                    <div className="relative">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        value={fraudSearchQuery}
-                        onChange={(event) => setFraudSearchQuery(event.target.value)}
-                        placeholder="Search fraud by email, name, user ID, IP, location, device, reason, or deposit ref"
-                        className="pl-9"
-                      />
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {[
-                        ['all', 'All'],
-                        ['overspent', 'Overspent'],
-                        ['suspended', 'Suspended'],
-                        ['unblock', 'Unblock'],
-                        ['duplicate', 'Duplicate'],
-                        ['watchlist', 'Watchlist'],
-                      ].map(([id, label]) => {
-                        const filterId = id as typeof fraudReviewFilter
-                        return (
-                          <Button
-                            key={id}
-                            type="button"
-                            size="sm"
-                            variant={fraudReviewFilter === filterId ? 'default' : 'outline'}
-                            onClick={() => setFraudReviewFilter(filterId)}
-                          >
-                            {label}
-                            <Badge variant="secondary" className="ml-2">
-                              {fraudFilterCounts[filterId]}
-                            </Badge>
-                          </Button>
-                        )
-                      })}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Showing {filteredFraudRows.length} of {fraudRows.length} fraud review item(s).
+                  {fraudTelemetryError && !fraudError && (
+                    <p className="text-sm text-destructive" role="status">
+                      IP/device search is unavailable. Financial review results remain complete. {fraudTelemetryError}
                     </p>
-                  </div>
+                  )}
 
-                  {fraudLoading ? (
+                  {!fraudLoading && !fraudError && fraudLastLoadedAt && (
+                    <>
+                      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+                        <div className="rounded-lg border p-3">
+                          <p className="text-2xl font-bold">{fraudFilterCounts.unblock}</p>
+                          <p className="text-xs text-muted-foreground">Spending blocked</p>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'overspent' || row.reviewType === 'suspended_risk').length}</p>
+                          <p className="text-xs text-muted-foreground">Blocking integrity risk</p>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-2xl font-bold">{fraudFilterCounts.excess}</p>
+                          <p className="text-xs text-muted-foreground">Excess quarantined</p>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-2xl font-bold">{fraudFilterCounts.duplicate}</p>
+                          <p className="text-xs text-muted-foreground">Payment conflicts</p>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-2xl font-bold">{fraudFilterCounts.watchlist}</p>
+                          <p className="text-xs text-muted-foreground">Watchlist</p>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-2xl font-bold">{formatAdminNaira(fraudRows.reduce((sum, row) => sum + Math.max(row.exposure, 0), 0))}</p>
+                          <p className="text-xs text-muted-foreground">Difference requiring review</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 rounded-lg border p-3">
+                        <div className="relative">
+                          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                          <Input
+                            value={fraudSearchQuery}
+                            onChange={(event) => setFraudSearchQuery(event.target.value)}
+                            placeholder="Search email, user ID, reason, or recent IP"
+                            className="pl-9"
+                          />
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {[
+                            ['all', 'All'],
+                            ['overspent', 'Integrity'],
+                            ['excess', 'Excess'],
+                            ['suspended', 'Suspended'],
+                            ['unblock', 'Holds'],
+                            ['review', 'Review flags'],
+                            ['duplicate', 'Duplicate'],
+                            ['watchlist', 'Watchlist'],
+                            ['internal', 'Internal'],
+                          ].map(([id, label]) => {
+                            const filterId = id as typeof fraudReviewFilter
+                            return (
+                              <Button
+                                key={id}
+                                type="button"
+                                size="sm"
+                                variant={fraudReviewFilter === filterId ? 'default' : 'outline'}
+                                onClick={() => setFraudReviewFilter(filterId)}
+                              >
+                                {label}
+                                <Badge variant="secondary" className="ml-2">
+                                  {fraudFilterCounts[filterId]}
+                                </Badge>
+                              </Button>
+                            )
+                          })}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Showing {filteredFraudRows.length} of {fraudRows.length} fraud review item(s).
+                        </p>
+                      </div>
+                    </>
+                  )}
+
+                  {fraudError ? null : fraudLoading || !fraudLastLoadedAt ? (
                     <div className="flex items-center justify-center gap-2 rounded-lg border p-8 text-muted-foreground">
                       <Loader2 className="h-5 w-5 animate-spin" />
-                      Scanning customers...
+                      Scanning accounts...
                     </div>
                   ) : fraudRows.length === 0 ? (
                     <div className="rounded-lg border p-8 text-center">
                       <CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-emerald-500" />
                       <p className="font-semibold">No fraud review items</p>
-                      <p className="text-sm text-muted-foreground">No customer currently needs unblock review or risk attention.</p>
+                      <p className="text-sm text-muted-foreground">No account currently needs unblock review or risk attention.</p>
                     </div>
                   ) : filteredFraudRows.length === 0 ? (
                     <div className="rounded-lg border p-8 text-center">
@@ -8580,10 +8391,10 @@ export default function AdminPage() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Customer</TableHead>
+                            <TableHead>Account</TableHead>
                             <TableHead>Flag</TableHead>
                             <TableHead>Ledger</TableHead>
-                            <TableHead>IP</TableHead>
+                            <TableHead>IP evidence</TableHead>
                             <TableHead>Wallet</TableHead>
                             <TableHead>Reason</TableHead>
                             <TableHead>Actions</TableHead>
@@ -8595,6 +8406,7 @@ export default function AdminPage() {
                               <TableCell>
                                 <div className="space-y-1">
                                   <p className="font-mono text-sm">{row.email}</p>
+                                  {row.role !== 'customer' && <Badge variant="outline">{row.role === 'admin' ? 'Admin' : 'Staff'}</Badge>}
                                   <p className="text-xs text-muted-foreground">{row.fullName || row.userId}</p>
                                   {row.suspendedAt && (
                                     <p className="text-xs text-muted-foreground">
@@ -8606,13 +8418,17 @@ export default function AdminPage() {
                               <TableCell>
                                 {row.reviewType === 'review_unblock' ? (
                                   <Badge className={row.walletReviewRequired ? 'bg-amber-500 text-white' : 'bg-emerald-600 text-white'}>
-                                    {row.walletReviewRequired ? 'Wallet review' : 'Review unblock'}
+                                    {row.suspended ? 'Account suspended' : row.truth.spending_blocked ? 'Wallet hold' : 'Review flag'}
                                   </Badge>
                                 ) : row.reviewType === 'watchlist' ? (
                                   <Badge variant="outline">Monitor</Badge>
+                                ) : row.reviewType === 'quarantined_excess' ? (
+                                  <Badge variant="outline">Excess quarantined</Badge>
+                                ) : row.reviewType === 'duplicate_deposit' && row.truth.integrity_status !== 'payment_identity_conflict' ? (
+                                  <Badge variant="outline">Payment ID review</Badge>
                                 ) : (
                                   <Badge variant="destructive">
-                                    {row.reviewType === 'duplicate_deposit' ? 'Duplicate deposit' : row.suspended ? 'Suspended risk' : 'Overspent'}
+                                    {row.reviewType === 'duplicate_deposit' ? 'Payment conflict' : row.suspended ? 'Suspended risk' : 'Integrity risk'}
                                   </Badge>
                                 )}
                               </TableCell>
@@ -8624,10 +8440,14 @@ export default function AdminPage() {
                                       Eligible refund restore: {formatAdminNaira(row.eligibleRefunds)} / {formatAdminNaira(row.completedRefunds)}
                                     </p>
                                   )}
-                                  <p>Trusted available: {formatAdminNaira(row.trustedAvailable)}</p>
-                                  <p>Spend: {formatAdminNaira(row.netSpend)}</p>
+                                  <p>Confirmed spendable: {formatAdminNaira(row.trustedAvailable)}</p>
+                                  <p className="text-xs text-muted-foreground">Spending {row.truth.spending_blocked ? 'blocked' : 'permitted up to confirmed spendable'}</p>
+                                  <p>Active holds: {formatAdminNaira(row.truth.active_reservations)}</p>
+                                  <p>Debits net refunds: {formatAdminNaira(row.netSpend)}</p>
+                                  <p className="text-xs text-muted-foreground">Quarantined: {formatAdminNaira(row.truth.quarantined_excess)}</p>
+                                  <p className="text-xs text-muted-foreground">Unexplained: {formatAdminNaira(row.truth.unexplained_difference)}</p>
                                   <p className={row.exposure > 1 ? 'font-semibold text-destructive' : 'text-muted-foreground'}>
-                                    Gap: {formatAdminNaira(Math.max(row.exposure, 0))}
+                                    Difference: {formatAdminNaira(Math.max(row.exposure, 0))}
                                   </p>
                                   {row.spendRatio !== null && (
                                     <p className="text-xs text-muted-foreground">Ratio: {Math.round(row.spendRatio * 100)}%</p>
@@ -8638,7 +8458,8 @@ export default function AdminPage() {
                                 <div className="min-w-[180px] space-y-1 text-sm">
                                   {row.lastIpAddress ? (
                                     <>
-                                      <p className="font-mono">{row.lastIpAddress}</p>
+                                      <p className="break-all font-mono">{row.lastIpAddress}</p>
+                                      <p className="text-xs text-muted-foreground">IP telemetry, unverified</p>
                                       {row.lastIpLocation && (
                                         <p className="text-xs font-medium">{row.lastIpLocation}</p>
                                       )}
@@ -8663,7 +8484,7 @@ export default function AdminPage() {
                                       )}
                                     </>
                                   ) : (
-                                    <p className="text-xs text-muted-foreground">No server IP yet</p>
+                                    <p className="text-xs text-muted-foreground">Open details for IP evidence</p>
                                   )}
                                 </div>
                               </TableCell>
@@ -8697,8 +8518,8 @@ export default function AdminPage() {
                                         wallet_review_reason: row.walletReviewReason,
                                         suspension_reason: row.suspensionReason,
                                         suspended_at: row.suspendedAt,
-                                        is_admin: false,
-                                        is_staff: false,
+                                        is_admin: row.role === 'admin',
+                                        is_staff: row.role === 'staff',
                                         created_at: new Date().toISOString(),
                                       }
                                       handleViewUser({
@@ -8719,7 +8540,7 @@ export default function AdminPage() {
                                     <Eye className="mr-2 h-4 w-4" />
                                     View
                                   </Button>
-                                  {row.suspended && (
+                                  {row.role === 'customer' && row.suspended && (
                                     <Button
                                       type="button"
                                       size="sm"
@@ -8730,7 +8551,7 @@ export default function AdminPage() {
                                       Unsuspend
                                     </Button>
                                   )}
-                                  {!row.suspended && (
+                                  {row.role === 'customer' && !row.suspended && (
                                     <Button
                                       type="button"
                                       size="sm"
@@ -10422,14 +10243,6 @@ export default function AdminPage() {
                     <div className="p-4 bg-blue-50 dark:bg-blue-950 rounded-lg border border-blue-200 dark:border-blue-800">
                       <p className="font-medium text-blue-800 dark:text-blue-200 mb-1">Dry Run Result</p>
                       <p className="text-sm text-blue-700 dark:text-blue-300">Opted-in recipients: <strong>{dryRunResult.totalRecipients?.toLocaleString()}</strong></p>
-                      {dryRunResult.sampleRecipients?.length > 0 && (
-                        <details className="mt-2">
-                          <summary className="text-xs text-blue-600 dark:text-blue-400 cursor-pointer">Sample recipients ({dryRunResult.sampleRecipients.length})</summary>
-                          <div className="mt-1 max-h-32 overflow-y-auto text-xs text-blue-600 dark:text-blue-400 space-y-0.5">
-                            {dryRunResult.sampleRecipients.map((e: string, i: number) => <div key={i}>{e}</div>)}
-                          </div>
-                        </details>
-                      )}
                     </div>
                   )}
                 </CardContent>
@@ -11135,7 +10948,7 @@ export default function AdminPage() {
                               const pending = isPending(order)
                               const minsPending = Math.floor((now - new Date(order.created_at).getTime()) / 60000)
                               const isStale = pending && minsPending >= 5
-                              const hasCode = order.messages && order.messages.length > 0
+                              const hasCode = order.has_code
                               return (
                                 <tr key={order.id} className={`text-sm ${isStale && !hasCode ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>
                                   <td className="py-2 pr-4">
@@ -11162,7 +10975,9 @@ export default function AdminPage() {
                                   <td className="py-2 pr-4">
                                     {order.refunded_at
                                       ? <span className="text-xs text-emerald-600">✓ Refunded</span>
-                                      : <span className="text-xs text-muted-foreground">—</span>}
+                                      : order.status === 'cancelled'
+                                        ? <span className="text-xs text-amber-600">Refund review</span>
+                                        : <span className="text-xs text-muted-foreground">—</span>}
                                   </td>
                                   <td className="py-2">
                                     {pending && (
@@ -11175,7 +10990,7 @@ export default function AdminPage() {
                                       >
                                         {smsOrdersCancellingId === order.id
                                           ? <Loader2 className="h-3 w-3 animate-spin" />
-                                          : 'Cancel & Refund'}
+                                          : 'Cancel order'}
                                       </Button>
                                     )}
                                   </td>
@@ -11507,15 +11322,9 @@ export default function AdminPage() {
                                   </td>
                                   <td className="py-2">
                                     {!terminal && (
-                                      <Button
-                                        size="sm"
-                                        variant="destructive"
-                                        className="h-7 px-2 text-xs"
-                                        disabled={tgOrdersCancellingId === order.id}
-                                        onClick={() => adminCancelTgOrder(order.id)}
-                                      >
-                                        {tgOrdersCancellingId === order.id ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Cancel & Refund'}
-                                      </Button>
+                                      <span className="text-xs text-amber-700" title="Supplier outcome must be confirmed before cancellation or refund">
+                                        Manual review
+                                      </span>
                                     )}
                                   </td>
                                 </tr>

@@ -206,8 +206,8 @@ async function requireAdmin(req: Request, admin: SupabaseAdmin) {
   )
   const { data: { user }, error } = await anon.auth.getUser(authHeader.replace(/^Bearer\s+/i, ''))
   if (error || !user) throw new Error('Unauthorized')
-  const { data: profile } = await admin.from('profiles').select('is_admin').eq('id', user.id).single()
-  if (!profile?.is_admin) throw new Error('Admin access required')
+  const { data: profile } = await admin.from('profiles').select('is_admin, account_suspended').eq('id', user.id).single()
+  if (!profile?.is_admin || profile.account_suspended === true) throw new Error('Admin access required')
   return user
 }
 

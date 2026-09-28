@@ -49,8 +49,10 @@ source/config changes prove otherwise.
 | --- | --- | --- |
 | `api/partner-api.ts` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Public partner API returns `503 PARTNER_API_PAUSED`; no partner checkout should reopen without route-specific evidence. |
 | `api/webhook-ercas.ts` | `FUNDING_OR_WEBHOOK`, `PAUSED_OR_MANUAL_REVIEW` | Legacy Ercas webhook is gone and returns `410`; active Ercas crediting must go through server verification. |
-| `api/webhook-istar.ts` | `FUNDING_OR_WEBHOOK` | Raw-body HMAC required before iStar failure refunds; duplicate/refund behavior still needs provider/deployed proof. |
-| `api/webhook-pocketfi.ts` | `FUNDING_OR_WEBHOOK` | Raw-body bridge requires provider verification headers and must not inject server secrets into public requests. |
+| `api/webhook-istar.ts` | `FUNDING_OR_WEBHOOK` | Raw-body HMAC required before iStar failure refunds; customer-visible and persisted failures are sanitized. Duplicate/refund behavior still needs provider/deployed proof. |
+| `api/webhook-pocketfi.ts` | `FUNDING_OR_WEBHOOK` | Raw-body bridge requires provider verification headers, must not inject server secrets, and returns fixed error bodies rather than reflecting upstream/database/network failures. |
+| `product_relationships` browser reads | `READ_ONLY_OR_CATALOG` | Storefront reads only recommendation edge columns; admin count reads only ID/time. Admin upserts use the scoped `save_admin_product_relationships` RPC from migration `30200`; migration `31500` removes direct browser access to behavioral metadata, source, and sample size. Deployed grants remain owner verification. |
+| `pending_payments` browser reads | `FUNDING_OR_WEBHOOK` | No storefront caller needs direct reads. Migration `32000` removes browser SELECT on server-created Ercas evidence, references, and historical error messages while retaining service-side verification and recovery. |
 | `pages/api/webhook/ercas.ts` | `FUNDING_OR_WEBHOOK`, `PAUSED_OR_MANUAL_REVIEW` | Legacy Pages Ercas webhook is gone and returns `410`. |
 
 ## Supabase Edge Functions
@@ -59,28 +61,28 @@ source/config changes prove otherwise.
 | --- | --- | --- |
 | `admin-adjust-balance` | `ADMIN_OR_INTERNAL` | Admin/staff value changes must use the wallet engine and approving actor evidence. |
 | `apply-referral` | `ADMIN_OR_INTERNAL` | JWT-authenticated profile attribution only; no direct wallet credit. |
-| `auto-restock` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Auto restock remains disabled during incident review. |
-| `bitrefill-catalog` | `READ_ONLY_OR_CATALOG` | Catalogue lookup only; purchasing is in `purchase-bitrefill` and remains paused. |
+| `auto-restock` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Auto restock remains disabled during incident review. Raw provider payloads and errors are no longer logged or stored; ambiguous supplier outcomes still need durable resolution before enabling. |
+| `bitrefill-catalog` | `READ_ONLY_OR_CATALOG` | Catalogue lookup only; provider errors are sanitized before browser response. Purchasing is in `purchase-bitrefill` and remains paused. |
 | `chatbot` | `READ_ONLY_OR_CATALOG` | Support/assistant surface; no wallet authority should be granted. |
 | `check-pending-payments` | `FUNDING_OR_WEBHOOK`, `ADMIN_OR_INTERNAL` | Cron/service-secret recovery only; delegates to `verify-and-credit-wallet` and must not write balances directly. |
 | `create-crypto-sell-order` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Crypto order/top-up path remains disabled/manual review only. |
-| `create-pocketfi-topup` | `FUNDING_OR_WEBHOOK` | Creates/returns virtual-account setup metadata through protected profile RPCs; must not credit wallet. |
+| `create-pocketfi-topup` | `FUNDING_OR_WEBHOOK` | Creates/returns virtual-account setup metadata through protected profile RPCs; must not credit wallet. Database/provider errors are not returned to the customer. |
 | `create-wallet-topup` | `FUNDING_OR_WEBHOOK` | Creates server-owned pending-payment evidence before checkout URL; no credit at initialization. |
-| `create-withdrawal-request` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Withdrawal provider route remains disabled until provider/idempotency proof is collected. |
+| `create-withdrawal-request` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Withdrawal route remains disabled; unknown transfer outcomes now retain the debit pending reconciliation. Provider lookup and durable idempotency are still required before enabling. |
 | `email` | `ADMIN_OR_INTERNAL` | Email utility; should not have wallet mutation authority. |
 | `get-available-cryptos` | `READ_ONLY_OR_CATALOG` | Read-only crypto catalogue/rate support; crypto funding remains paused. |
-| `get-data-plans` | `READ_ONLY_OR_CATALOG` | Read-only data-plan catalogue; purchasing is in `purchase-bills` and remains paused. |
-| `get-my-ip` | `TELEMETRY_OR_UTILITY` | Utility route for IP inspection; no wallet authority. |
-| `manage-staff` | `ADMIN_OR_INTERNAL` | Staff role/adjustment route; balance changes must use wallet engine and protected role RPCs. |
+| `get-data-plans` | `READ_ONLY_OR_CATALOG` | Read-only data-plan catalogue; provider errors are sanitized before browser response. Purchasing is in `purchase-bills` and remains paused. |
+| `get-my-ip` | `ADMIN_OR_INTERNAL`, `TELEMETRY_OR_UTILITY` | Admin-only Edge utility for outbound IP inspection. The function verifies the current admin role before external lookups and returns fixed errors. The browser route alone is not the security boundary. |
+| `manage-staff` | `ADMIN_OR_INTERNAL` | Staff role/adjustment route; balance changes use wallet engine and protected role RPCs. The `staff_customer_search` action checks current `tab_users` permission and suspension before returning a minimal customer-only profile projection. |
 | `manual-restock` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Manual supplier restock remains disabled during incident review. |
-| `muabanvia-fulfill` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Direct live account fulfillment remains disabled. |
-| `nowpayments-webhook` | `FUNDING_OR_WEBHOOK`, `PAUSED_OR_MANUAL_REVIEW` | Verifies IPN/status but must hold finished crypto payments for manual review, not auto-credit. |
+| `muabanvia-fulfill` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Direct live account fulfillment remains disabled. The admin-only route now bounds quantity and redacts supplier errors if explicitly enabled; it is not a customer purchase authorization path and must not be reopened for customer checkout. |
+| `nowpayments-webhook` | `FUNDING_OR_WEBHOOK`, `PAUSED_OR_MANUAL_REVIEW` | Verifies IPN/status but must hold finished crypto payments for manual review, not auto-credit. Provider and internal failure text is not returned in the webhook response. Its existing HTTP 200 response after an internal processing failure still needs provider-specific retry review before reopening crypto. |
 | `partner-api` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Non-admin partner API actions are hard-paused; partner rows are inactive by migration. |
 | `process-purchase` | `VALUE_DELIVERY` | Local stock purchase path; wallet-engine debit must happen before credential reveal/sold marking. |
-| `purchase-bills` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Bills/airtime purchase remains disabled by default. |
-| `purchase-bitrefill` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Gift card/eSIM purchase remains disabled by default. |
-| `record-site-visit` | `TELEMETRY_OR_UTILITY` | Visit telemetry only; no wallet authority. |
-| `revenue-os-loop` | `ADMIN_OR_INTERNAL` | Maintenance/revenue worker; must not bypass wallet engine or fulfillment pause. |
+| `purchase-bills` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Bills/airtime remains disabled by default; unknown provider outcomes now retain the debit and pending reference rather than auto-refunding. |
+| `purchase-bitrefill` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Gift card/eSIM purchase remains disabled by default. Unknown invoice/redemption outcomes retain the debit; pending idempotency replays return no redemption. Provider resolution and safe refund/retry proof are pending. |
+| `record-site-visit` | `TELEMETRY_OR_UTILITY` | Visit telemetry only; no wallet authority. Anonymous callers receive a fixed failure response, not raw database or configuration errors. |
+| `revenue-os-loop` | `ADMIN_OR_INTERNAL` | Service-role bearer token and POST required before maintenance; verify deployed scheduler method/credential. No wallet or fulfillment authority. |
 | `revenue-os-maintenance` | `ADMIN_OR_INTERNAL` | Maintenance route; service boundary and no direct wallet mutation must be verified live. |
 | `smm-check-all-orders` | `ADMIN_OR_INTERNAL`, `FUNDING_OR_WEBHOOK` | Status worker; refunds must use wallet engine and cron/service authorization. |
 | `smm-check-status` | `FUNDING_OR_WEBHOOK` | Order status/refund path; no new supplier order dispatch. |
@@ -88,7 +90,7 @@ source/config changes prove otherwise.
 | `smm-get-services` | `READ_ONLY_OR_CATALOG` | Service catalogue lookup only; purchase dispatch is separate. |
 | `smm-sync-services` | `ADMIN_OR_INTERNAL`, `READ_ONLY_OR_CATALOG` | Catalogue sync; must not deliver paid customer value. |
 | `smsbus` | `VALUE_DELIVERY`, `FUNDING_OR_WEBHOOK`, `PAUSED_OR_MANUAL_REVIEW` | New OTP rentals return `503 SMS_OTP_PAUSED` by default before auth, wallet debit, local order creation, or Daisy allocation. Existing status/callback actions remain funding/provider-status surfaces and future reopening must keep debit plus pending local order before Daisy allocation. |
-| `telegram-stars` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | New Stars/Premium orders return `503 TELEGRAM_ORDERS_PAUSED` by default before auth, wallet debit, local order creation, or iStar dispatch. Future reopening must keep local order and wallet-engine debit before iStar dispatch. |
+| `telegram-stars` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | New Stars/Premium orders return `503 TELEGRAM_ORDERS_PAUSED` by default before auth, wallet debit, local order creation, or iStar dispatch. Ambiguous supplier POST outcomes now retain the debit and require manual resolution; only a confirmed failed order may be refunded. Reopening still needs provider idempotency/lookup proof. |
 | `update-crypto-rates` | `ADMIN_OR_INTERNAL`, `READ_ONLY_OR_CATALOG` | Rate update worker; crypto wallet funding remains paused. |
 | `validate-bank-account` | `READ_ONLY_OR_CATALOG` | Bank lookup/validation only; withdrawal transfer is separate and paused. |
 | `verify-and-credit-wallet` | `FUNDING_OR_WEBHOOK` | Ercas verification and credit path; requires server-created pending payment and wallet-engine posting. |
@@ -107,12 +109,12 @@ the route/function state:
 | `src/pages/SocialBoostPage.tsx` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | SMM purchase entry; backend `smm-create-order` is default-paused and must not be bypassed. |
 | `src/pages/SmsNumbersPage.tsx` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | SMS rental entry; backend new-rental creation is default-paused and must not reveal codes for non-owned/non-completed orders. |
 | `src/pages/TelegramStarsPage.tsx` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Telegram order entry; backend order creation is default-paused and any future reopening must use server-computed pricing. |
-| `src/pages/BillsPayment.tsx` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | UI should show maintenance/disabled state while `BILLS_ENABLED=false`. |
+| `src/pages/BillsPayment.tsx` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | UI should show maintenance while `BILLS_ENABLED=false`. Customer history reads safe bills columns; raw SageCloud responses are server-only. The Edge order writer uses the service role and fails closed when idempotency lookup is unavailable. |
 | `src/pages/GiftCardsEsims.tsx` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | UI should show maintenance/disabled state while `BITREFILL_ENABLED=false`. |
 | `src/pages/CryptoExchange.tsx` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Crypto top-up/sell paths remain paused/manual review. |
 | `src/pages/CryptoWithdrawal.tsx` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Withdrawal-style value movement remains paused/reviewed. |
 | `src/pages/ReferralWithdrawal.tsx` / `src/pages/ReferralsPage.tsx` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Referral withdrawal and referral-to-wallet movement remain disabled in both UI and backend until source-of-funds proof is complete. |
-| `src/pages/OrderHistoryPage.tsx` | `VALUE_DELIVERY` | Existing order history can reveal already completed credentials; no new value should be revealed for pending/failed orders. |
+| `src/pages/OrderHistoryPage.tsx` | `VALUE_DELIVERY` | Customer history reads `orders_safe_history`; the database, not browser redaction, controls owner-only credential reveal for completed/captured (or pre-enforcement legacy completed) orders. Direct browser reads of base `orders` are revoked. |
 | `src/pages/AdminPage.tsx` | `ADMIN_OR_INTERNAL` | Admin review/adjustment/fraud tools must use wallet-engine and review gates. |
 | `src/pages/StaffAdminPage.tsx` | `ADMIN_OR_INTERNAL` | Staff tools must not bypass protected wallet/profile boundaries. |
 | `src/pages/WalletPage.tsx` | `FUNDING_OR_WEBHOOK` | Top-up UI must initialize server-owned pending payment only; browser success cannot credit. |

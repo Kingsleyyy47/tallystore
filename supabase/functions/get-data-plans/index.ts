@@ -171,8 +171,7 @@ export class SageCloudClient {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`SageCloud authentication failed: ${response.status} - ${errorText}`);
+      throw new Error('SageCloud authentication failed');
     }
 
     const data: AuthResponse = await response.json();
@@ -204,8 +203,7 @@ export class SageCloudClient {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`SageCloud API error: ${response.status} - ${errorText}`);
+      throw new Error('SageCloud data-plan request failed');
     }
 
     return response.json();
@@ -424,27 +422,24 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Failed to fetch data plans';
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    const errorName = error instanceof Error ? error.name : 'Error';
-    console.error('Error fetching data plans:', error);
-    
-    // Log detailed error for server-side debugging only
-    console.error('Detailed error:', JSON.stringify({
-      message: errorMessage,
-      stack: errorStack,
-      name: errorName,
-    }));
+    const message = error instanceof Error ? error.message : '';
+    const clientMessages = new Set([
+      'Missing authorization header', 'Unauthorized',
+      'Provider is required (MTN, GLO, AIRTEL, 9MOBILE)',
+      'Invalid provider. Must be one of: MTN, GLO, AIRTEL, 9MOBILE',
+    ]);
+    const clientError = clientMessages.has(message);
+    console.error(clientError ? 'Data-plan request rejected' : 'Data-plan provider request failed');
     
     return new Response(
       JSON.stringify({ 
         success: false, 
-        error: errorMessage,
-        // Don't expose stack traces to client
+        error: clientError ? message : 'Data plans temporarily unavailable',
       }),
       { 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 400,
+        status: message === 'Missing authorization header' || message === 'Unauthorized'
+          ? 401 : clientError ? 400 : 502,
       }
     );
   }

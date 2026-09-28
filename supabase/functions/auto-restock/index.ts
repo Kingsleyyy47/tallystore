@@ -27,8 +27,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 //   calls both before buying, but the exact field names for "stock" and
 //   "balance" in their responses were not confirmed in writing - the parser
 //   below tries several common field names defensively and logs the raw
-//   response if none match, so it's easy to fix the field name later without
-//   guessing blind.
+//   response if none match. Provider payloads must not be logged because they
+//   may include purchased account credentials or API details.
 //
 // SECURITY: this function spends real money with no human approval step per
 // run, so it is NOT protected by Supabase JWT verification (cron callers have
@@ -123,11 +123,11 @@ async function checkProviderStock(provider: ProviderConfig, apiKey: string, base
     const data = await res.json().catch(() => null)
     const stock = firstNumericField(data, ['stock', 'quantity', 'available', 'qty', 'data.stock', 'data.quantity', 'data.available'])
     if (stock === null) {
-      console.warn(`⚠️ ${provider.name}: could not find a stock field in product.php response, proceeding without a stock check. Raw response:`, JSON.stringify(data))
+      console.warn(`${provider.name}: stock field unavailable; proceeding without a stock check`)
     }
     return stock
-  } catch (err) {
-    console.warn(`⚠️ ${provider.name}: stock check request failed, proceeding without it:`, err)
+  } catch {
+    console.warn(`${provider.name}: stock check request failed; proceeding without it`)
     return null
   }
 }
@@ -140,11 +140,11 @@ async function checkProviderBalance(provider: ProviderConfig, apiKey: string): P
     const data = await res.json().catch(() => null)
     const balance = firstNumericField(data, ['balance', 'money', 'credit', 'wallet', 'data.balance', 'data.money', 'data.credit'])
     if (balance === null) {
-      console.warn(`⚠️ ${provider.name}: could not find a balance field in profile.php response. Raw response:`, JSON.stringify(data))
+      console.warn(`${provider.name}: balance field unavailable`)
     }
     return balance
-  } catch (err) {
-    console.warn(`⚠️ ${provider.name}: balance check request failed, proceeding without it:`, err)
+  } catch {
+    console.warn(`${provider.name}: balance check request failed; proceeding without it`)
     return null
   }
 }
@@ -341,7 +341,7 @@ serve(async (req) => {
           const fulfillResult = await fulfillResponse.json().catch(() => null) as any
 
           if (!fulfillResponse.ok || fulfillResult?.status !== 'success') {
-            throw new Error(fulfillResult?.msg || fulfillResult?.message || fulfillResult?.error || `${provider.name} could not fulfill the request`)
+            throw new Error('Provider purchase was not confirmed')
           }
 
           const fulfilledAccounts = parseFulfilledAccounts(fulfillResult?.data ?? [], buyQty)
@@ -367,7 +367,7 @@ serve(async (req) => {
             .select('id')
 
           if (insertError || !insertedAccounts) {
-            throw new Error(insertError?.message || 'Failed to record auto-restocked accounts')
+            throw new Error('Failed to record auto-restocked accounts')
           }
 
           shortfall -= insertedAccounts.length
@@ -386,9 +386,9 @@ serve(async (req) => {
             success: true,
             message: 'OK',
           }])
-        } catch (buyErr) {
-          const message = buyErr instanceof Error ? buyErr.message : 'Unknown error'
-          console.error(`❌ ${provider.name} auto-restock failed for ${pg.name}:`, message)
+        } catch {
+          const message = 'Provider purchase was not safely completed; review supplier outcome'
+          console.error(`${provider.name} auto-restock requires outcome review for product ${pg.id}`)
           await supabaseAdmin.from('auto_restock_logs').insert([{
             product_group_id: pg.id,
             provider: provider.name,

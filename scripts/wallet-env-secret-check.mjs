@@ -28,6 +28,7 @@ const allowedBrowserVars = new Set([
 
 const criticalServerOnlyVars = [
   'SUPABASE_SERVICE_ROLE_KEY',
+  'EMAIL_BROADCAST_CRON_SECRET',
   'ERCASPAY_SECRET_KEY',
   'ERCAS_SECRET_KEY',
   'POCKETFI_PUBLIC_KEY',

@@ -251,8 +251,7 @@ export class SageCloudClient {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`SageCloud authentication failed: ${response.status} - ${errorText}`);
+      throw new Error(`SageCloud authentication failed (${response.status})`);
     }
 
     const data: AuthResponse = await response.json();
@@ -284,8 +283,7 @@ export class SageCloudClient {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`SageCloud API error: ${response.status} - ${errorText}`);
+      throw new Error(`SageCloud API error (${response.status})`);
     }
 
     return response.json();
@@ -501,7 +499,7 @@ serve(async (req) => {
     } = await supabaseClient.auth.getUser(token);
 
     if (userError || !user) {
-      console.error('Auth error:', userError);
+      console.error('Withdrawal authentication failed');
       throw new Error('Unauthorized');
     }
     const walletRequestForensics = await getWalletRequestForensics(req, 'create-withdrawal-request');
@@ -554,7 +552,7 @@ serve(async (req) => {
 
     // Step 1: Validate bank account (verify account name)
     console.log('Validating bank account...');
-    let validatedAccountName = account_name;
+    let validatedAccountName: string;
     
     try {
       const validationResponse = await sageCloudClient.validateBankAccount({
@@ -562,13 +560,12 @@ serve(async (req) => {
         account_number,
       });
       
-      if (validationResponse && validationResponse.account_name) {
-        validatedAccountName = validationResponse.account_name;
-        console.log('Account validated:', validatedAccountName);
+      if (typeof validationResponse?.account_name !== 'string' || !validationResponse.account_name.trim()) {
+        throw new Error('Bank account verification returned no name');
       }
-    } catch (validationError) {
-      console.warn('Account validation failed, proceeding with provided name:', validationError);
-      // Continue with user-provided name if validation fails
+      validatedAccountName = validationResponse.account_name.trim();
+    } catch {
+      throw new Error('Bank account could not be verified');
     }
 
     // Calculate fee BEFORE checking SageCloud balance (we only need netAmount from SageCloud)
@@ -640,16 +637,14 @@ serve(async (req) => {
       .single();
 
     if (dbError) {
-      console.error('Database error:', dbError);
-      throw new Error(`Failed to create withdrawal record: ${dbError.message}`);
+      console.error('Withdrawal record creation failed');
+      throw new Error('Failed to create withdrawal record');
     }
 
     // Step 4: Deduct from the selected balance through the wallet engine.
     const debitIdempotencyKey = `withdrawal:${withdrawalRecord.id}`;
-    let debitResult: any = null;
-
     try {
-      debitResult = await applyWalletTransaction(supabaseAdmin, {
+      await applyWalletTransaction(supabaseAdmin, {
         userId: user.id,
         type: 'withdrawal',
         amount: withdrawalAmount,
@@ -671,12 +666,11 @@ serve(async (req) => {
         },
       });
     } catch (debitError: unknown) {
-      const errorMessage = debitError instanceof Error ? debitError.message : 'Wallet debit failed before provider dispatch';
       await supabaseAdmin
         .from('crypto_withdrawals')
         .update({
           status: 'failed',
-          sagecloud_response: JSON.stringify({ error: errorMessage, stage: 'wallet_debit' }),
+          sagecloud_response: JSON.stringify({ error: 'wallet_debit_failed', stage: 'wallet_debit' }),
         })
         .eq('id', withdrawalRecord.id);
       throw debitError;
@@ -696,55 +690,33 @@ serve(async (req) => {
         narration: narration || `Withdrawal to ${validatedAccountName}`,
       });
 
-      // Check if transfer was successful
-      if (transferResponse.success && transferResponse.status === 'success') {
-        finalStatus = 'completed';
-      } else {
-        finalStatus = 'failed';
-      }
+      // Anything short of confirmed success needs provider reconciliation.
+      finalStatus = transferResponse.success && transferResponse.status === 'success'
+        ? 'completed' : 'pending';
 
       // Update withdrawal record with transfer response
-      await supabaseClient
+      const { error: statusError } = await supabaseAdmin
         .from('crypto_withdrawals')
         .update({
           status: finalStatus,
-          sagecloud_response: JSON.stringify(transferResponse),
-          sagecloud_transfer_status: transferResponse.status,
+          sagecloud_response: JSON.stringify({
+            outcome: finalStatus === 'completed' ? 'confirmed_success' : 'outcome_unknown',
+            provider_status: String(transferResponse.status || 'unknown').slice(0, 80),
+          }),
+          sagecloud_transfer_status: String(transferResponse.status || 'unknown').slice(0, 80),
           completed_at: finalStatus === 'completed' ? new Date().toISOString() : null,
         })
         .eq('id', withdrawalRecord.id);
+      if (statusError) throw new Error('Could not record transfer outcome');
 
-      if (finalStatus === 'failed') {
-        await applyWalletTransaction(supabaseAdmin, {
-          userId: user.id,
-          type: 'refund',
-          amount: withdrawalAmount,
-          reference: `REFUND-${reference}`,
-          description: `Refund failed ${balanceSource} withdrawal to ${validatedAccountName}`,
-          idempotencyKey: `withdrawal:refund:${withdrawalRecord.id}:provider-returned-failed`,
-          balanceType: balanceSource,
-          metadata: {
-            source: 'create-withdrawal-request',
-            withdrawal_id: withdrawalRecord.id,
-            source_order_id: withdrawalRecord.id,
-            source_order_table: 'crypto_withdrawals',
-            original_reference: reference,
-            source_debit_transaction_id: debitResult?.transaction?.id || null,
-            source_debit_idempotency_key: debitIdempotencyKey,
-            balance_source: balanceSource,
-            reason: 'provider_returned_failed',
-            provider_status: transferResponse.status,
-            request_forensics: walletRequestForensics,
-          },
-        });
-
+      if (finalStatus !== 'completed') {
         return new Response(
           JSON.stringify({
             success: false,
             withdrawal_id: withdrawalRecord.id,
             reference,
-            status: finalStatus,
-            error: 'Withdrawal failed. Your balance has been restored.',
+            status: 'outcome_unknown',
+            error: 'Transfer outcome is being checked. The wallet debit remains posted pending review.',
           }),
           {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -753,44 +725,28 @@ serve(async (req) => {
         );
       }
 
-    } catch (transferError: unknown) {
-      console.error('SageCloud transfer failed:', transferError instanceof Error ? transferError.message : 'Unknown transfer error');
-      const errorMessage = transferError instanceof Error ? transferError.message : 'Unknown transfer error';
-
-      // Update withdrawal as failed
-      await supabaseClient
+    } catch {
+      // A timeout can follow a completed bank transfer. Never auto-refund it.
+      console.error('SageCloud transfer outcome requires review');
+      const { error: reviewError } = await supabaseAdmin
         .from('crypto_withdrawals')
         .update({
-          status: 'failed',
-          sagecloud_response: JSON.stringify({ error: errorMessage }),
+          status: 'pending',
+          sagecloud_response: JSON.stringify({ outcome: 'outcome_unknown' }),
         })
-        .eq('id', withdrawalRecord.id);
-
-      await applyWalletTransaction(supabaseAdmin, {
-        userId: user.id,
-        type: 'refund',
-        amount: withdrawalAmount,
-        reference: `REFUND-${reference}`,
-        description: `Refund failed ${balanceSource} withdrawal to ${validatedAccountName}`,
-        idempotencyKey: `withdrawal:refund:${withdrawalRecord.id}`,
-        balanceType: balanceSource,
-        metadata: {
-          source: 'create-withdrawal-request',
+        .eq('id', withdrawalRecord.id)
+        .neq('status', 'completed');
+      if (reviewError) console.error('Could not record transfer outcome review state');
+      return new Response(
+        JSON.stringify({
+          success: false,
           withdrawal_id: withdrawalRecord.id,
-          source_order_id: withdrawalRecord.id,
-          source_order_table: 'crypto_withdrawals',
-          original_reference: reference,
-          source_debit_transaction_id: debitResult?.transaction?.id || null,
-          source_debit_idempotency_key: debitIdempotencyKey,
-          balance_source: balanceSource,
-          reason: 'provider_transfer_error',
-          error: errorMessage,
-          request_forensics: walletRequestForensics,
-        },
-      });
-      console.log('Withdrawal refunded after provider failure.');
-
-      throw new Error(`Transfer failed: ${errorMessage}`);
+          reference,
+          status: 'outcome_unknown',
+          error: 'Transfer outcome is being checked. The wallet debit remains posted pending review.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
+      );
     }
 
     // Return response
@@ -805,7 +761,6 @@ serve(async (req) => {
         message: finalStatus === 'completed' 
           ? 'Withdrawal processed successfully' 
           : 'Withdrawal is being processed',
-        transfer_response: transferResponse,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -813,27 +768,20 @@ serve(async (req) => {
       }
     );
   } catch (error: unknown) {
-    console.error('Error in create-withdrawal-request:', error);
-    let errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
-    
-    // Handle SERVICE_UNAVAILABLE errors (our internal issues like low balance)
-    if (errorMessage.startsWith('SERVICE_UNAVAILABLE:')) {
-      errorMessage = errorMessage.replace('SERVICE_UNAVAILABLE: ', '');
-    }
-    // Handle SageCloud API errors with professional message
-    else if (errorMessage.includes('SageCloud API error') || errorMessage.includes('SageCloud authentication failed')) {
-      console.error('SageCloud API Error (hidden from user):', errorMessage);
-      errorMessage = 'We\'re experiencing a temporary service disruption. Please try again later. If this continues, contact support.';
-    }
-    // Handle transfer failures with professional message
-    else if (errorMessage.includes('Transfer failed')) {
-      console.error('Transfer Error (hidden from user):', errorMessage);
-      errorMessage = 'Your withdrawal could not be processed at this time. Your balance has been restored. Please try again later.';
-    }
+    const message = error instanceof Error ? error.message : '';
+    const clientMessages = new Set([
+      'Missing authorization header', 'Unauthorized',
+      'Missing required fields: amount, bank_code, bank_name, account_number, account_name',
+      'Invalid amount', 'Withdrawals are only available to customer accounts',
+    ]);
+    const errorMessage = clientMessages.has(message)
+      ? message
+      : 'Withdrawal is temporarily unavailable. Please contact support.';
+    console.error(clientMessages.has(message) ? 'Withdrawal request rejected' : 'Withdrawal request failed before confirmed completion');
     
     // Return 200 status with success: false so client can read the error message
     // Only return non-200 for auth errors
-    const statusCode = errorMessage.includes('Missing authorization') || errorMessage.includes('Unauthorized') ? 401 : 200;
+    const statusCode = message === 'Missing authorization header' || message === 'Unauthorized' ? 401 : 200;
     
     return new Response(
       JSON.stringify({

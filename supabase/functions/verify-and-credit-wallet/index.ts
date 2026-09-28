@@ -1,4 +1,5 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+import { ngnMinorUnits } from '../_shared/ngn-amount.mjs';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
 async function applyWalletTransaction(
@@ -373,7 +374,7 @@ async function markPendingPaymentVerificationRetry(
       status: 'pending',
       last_check_at: new Date().toISOString(),
       check_count: Number(pendingPayment.check_count || 0) + 1,
-      error_message: message,
+      error_message: 'Payment verification is temporarily unavailable.',
     })
     .eq('id', pendingPayment.id)
     .eq('status', 'pending');
@@ -392,7 +393,7 @@ async function markPendingPaymentVerificationFailed(
       status: 'failed',
       last_check_at: new Date().toISOString(),
       check_count: Number(pendingPayment.check_count || 0) + 1,
-      error_message: message,
+      error_message: 'Payment verification failed.',
     })
     .eq('id', pendingPayment.id)
     .eq('status', 'pending');
@@ -513,7 +514,7 @@ serve(async (req) => {
     // someone could submit another successful Ercas reference and claim credit.
     const { data: pendingPayment, error: pendingPaymentError } = await supabaseAdmin
       .from('pending_payments')
-      .select('id, user_id, amount, status, check_count')
+      .select('id, user_id, amount, status, check_count, transaction_reference, ercas_reference')
       .eq('transaction_reference', transaction_reference)
       .eq('user_id', userId)
       .maybeSingle();
@@ -571,12 +572,11 @@ serve(async (req) => {
         }
       );
 
+      if (!verifyResponse.ok) throw new Error('ercas_verify_http_unavailable');
       verifyResult = await verifyResponse.json();
     } catch (verificationError) {
-      const errorMessage = verificationError instanceof Error ? verificationError.message : 'Payment verification request failed';
-      const retryMessage = `Payment verification retry required: ${errorMessage}`;
-      console.warn('⏳ Ercas verification unavailable; leaving payment pending for retry:', errorMessage);
-      await markPendingPaymentVerificationRetry(supabaseAdmin, pendingPayment, retryMessage);
+      console.warn('Ercas verification unavailable; leaving payment pending for retry.');
+      await markPendingPaymentVerificationRetry(supabaseAdmin, pendingPayment, 'Payment verification unavailable');
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_ATTEMPTED',
         eventId: `wallet_topup:PAYMENT_VERIFICATION_RETRY:${transaction_reference}`,
@@ -587,7 +587,7 @@ serve(async (req) => {
           transaction_reference,
           ercas_reference,
           provider: 'ercaspay',
-          error: errorMessage,
+          error: 'provider_verification_unavailable',
           pending_payment_id: pendingPayment.id,
         },
       });
@@ -618,10 +618,9 @@ serve(async (req) => {
     }
 
     // Handle failed
-    if (!verifyResult.requestSuccessful && verifyResult.responseBody?.status !== 'SUCCESSFUL') {
-      const errorMsg = verifyResult.errorMessage || verifyResult.responseMessage || 'Payment verification failed';
-      console.error('❌ Verification failed:', errorMsg);
-      await markPendingPaymentVerificationFailed(supabaseAdmin, pendingPayment, errorMsg);
+    if (verifyResult?.requestSuccessful !== true) {
+      console.error('Payment verification failed.');
+      await markPendingPaymentVerificationFailed(supabaseAdmin, pendingPayment, 'Payment verification failed');
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
         eventId: `wallet_topup:PAYMENT_FAILED:${transaction_reference}`,
@@ -631,7 +630,7 @@ serve(async (req) => {
           transaction_reference,
           ercas_reference,
           provider: 'ercaspay',
-          error: errorMsg,
+          error: 'provider_verification_failed',
           status: verifyResult.responseBody?.status || verifyResult.responseCode || 'failed',
         },
       });
@@ -639,7 +638,7 @@ serve(async (req) => {
         JSON.stringify({
           success: false,
           status: 'failed',
-          error: errorMsg,
+          error: 'Payment verification failed.',
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       );
@@ -668,8 +667,8 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({
           success: false,
-          status: transaction.status.toLowerCase(),
-          error: `Payment status: ${transaction.status}`,
+          status: 'failed',
+          error: 'Payment verification failed.',
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
       );
@@ -677,8 +676,42 @@ serve(async (req) => {
 
     const amount = transaction.amount;
     const ercasRef = transaction.ercs_reference;
-    const expectedAmount = Number(pendingPayment.amount);
-    const verifiedAmount = Number(amount);
+    const providerTransactionReference = firstProviderIdentity(transaction, [
+      'transactionReference', 'transaction_reference',
+    ]);
+    const providerPaymentReference = firstProviderIdentity(transaction, [
+      'paymentReference', 'payment_reference',
+    ]);
+    if (
+      (providerTransactionReference && providerTransactionReference !== pendingPayment.transaction_reference) ||
+      (providerPaymentReference && providerPaymentReference !== pendingPayment.ercas_reference)
+    ) {
+      await markPendingPaymentVerificationFailed(
+        supabaseAdmin,
+        pendingPayment,
+        'Provider payment identity did not match the server-created checkout.'
+      );
+      await recordRevenueEvent(supabaseAdmin, {
+        eventType: 'PAYMENT_FAILED',
+        eventId: `wallet_topup:PAYMENT_FAILED:${transaction_reference}:identity_mismatch`,
+        userId,
+        surface: 'wallet_topup',
+        metadata: {
+          transaction_reference,
+          provider: 'ercaspay',
+          error: 'payment_identity_mismatch',
+          pending_payment_id: pendingPayment.id,
+        },
+      });
+      return new Response(
+        JSON.stringify({ success: false, status: 'failed', error: 'Payment identity did not match the created checkout.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 }
+      );
+    }
+    const expectedMinor = ngnMinorUnits(pendingPayment.amount);
+    const verifiedMinor = ngnMinorUnits(amount);
+    const expectedAmount = expectedMinor === null ? NaN : expectedMinor / 100;
+    const verifiedAmount = verifiedMinor === null ? NaN : verifiedMinor / 100;
     const providerCurrency = firstProviderIdentity(transaction, ['currency', 'currency_code', 'currencyCode']);
     const providerMerchant = firstProviderIdentity(transaction, [
       'merchant_id',
@@ -703,7 +736,7 @@ serve(async (req) => {
       Deno.env.get('ERCAS_MODE')
     );
 
-    if (!Number.isFinite(expectedAmount) || !Number.isFinite(verifiedAmount) || Math.abs(expectedAmount - verifiedAmount) > 0.01) {
+    if (expectedMinor === null || verifiedMinor === null || expectedMinor !== verifiedMinor) {
       console.error('❌ Payment amount mismatch during wallet verification.');
       await markPendingPaymentVerificationFailed(
         supabaseAdmin,
@@ -894,9 +927,11 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('❌ Verify and credit error:', error instanceof Error ? error.message : 'Unknown error');
+    console.error('Verify and credit request failed.');
 
-    const message = error instanceof Error ? error.message : 'Failed to process payment';
+    const message = error instanceof Error && error.message === 'Unauthorized'
+      ? 'Unauthorized'
+      : 'Payment verification could not be completed.';
     const status = message === 'Unauthorized' ? 401 : 400;
 
     return new Response(

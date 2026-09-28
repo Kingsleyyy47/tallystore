@@ -1,5 +1,11 @@
 # Wallet State Machine And Review Workflow
 
+> Policy update (24 September 2026): The full-freeze-on-excess decision below
+> is superseded by `financial-truth-contract.md`. Positive excess remains
+> unspendable and visible for review, without automatically blocking the
+> independently backed portion. Severe integrity and explicit review states
+> still block spending. Staging verification is pending.
+
 Prepared: 2026-09-19
 
 This document defines how TallyStore should decide whether a customer can

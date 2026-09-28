@@ -1,5 +1,11 @@
 # Wallet Financial Model
 
+> Policy update (24 September 2026): The pre-existing examples below describe
+> the former full-freeze purchase rule. Use `financial-truth-contract.md` and
+> `financial-truth-current-path.md` for the current repository draft. Positive
+> excess is quarantined while independently backed funds remain spendable
+> unless another blocking state applies. Staging verification is pending.
+
 Prepared: 2026-09-19
 
 This document defines the money model used by the current containment patch. It
@@ -21,8 +27,8 @@ trusted_principal =
   verified_gateway_deposits
   + approved_admin_credits
 
-trusted_debit_capacity =
-  min(previous_completed_wallet_debits, trusted_principal)
+completed_debits =
+  gross posted wallet debits; each trusted debit is individually evidenced
 
 linked_eligible_refunds =
   refunds linked to prior trusted-principal-authorized debits with
@@ -30,10 +36,10 @@ linked_eligible_refunds =
   capped per original debit amount and trusted debit amount
 
 eligible_refunds =
-  min(linked_eligible_refunds, trusted_debit_capacity)
+  min(linked_eligible_refunds, completed_debits)
 
 trusted_consumed_spend =
-  max(trusted_debit_capacity - eligible_refunds, 0)
+  max(completed_debits - eligible_refunds, 0)
 
 authoritative_backed_available =
   max(trusted_principal - trusted_consumed_spend, 0)
@@ -65,6 +71,10 @@ digits. The wallet engine rejects zero, negative input amounts, numeric `NaN`,
 over-precise amounts, malformed currency codes, and single wallet movements
 above NGN 1,000,000,000 before deriving the signed ledger amount. Currency codes
 are normalized to uppercase and must match `^[A-Z]{3,8}$`.
+Ercas verification now compares the server-owned checkout amount to the
+provider amount in exact NGN minor units. A one-kobo difference or an amount
+with more than two decimal places cannot fund a wallet; the former floating
+point `0.01` tolerance was too permissive.
 
 Migration `20260919013000_enforce_wallet_money_bounds.sql` adds NOT VALID
 constraints so new `transactions` and `profiles` money writes obey the same
@@ -140,25 +150,30 @@ The calculation intentionally excludes:
 
 ## Refund Conservation
 
-Refunds are not outside money. They can restore purchasing power only up to the
-amount of trusted principal that prior completed debits consumed:
+Refunds are not outside money. Each must link to an original trusted debit and
+cannot restore more than that debit. Lifetime refund restoration can exceed
+lifetime principal when the same funded money is spent and refunded across
+several separate purchases:
 
 ```text
-trusted_debit_capacity = min(previous_completed_wallet_debits, trusted_principal)
 linked_eligible_refunds =
   sum(min(sum(refunds linked to each trusted original debit), original debit amount, trusted_principal_debit_amount))
-eligible_refunds = min(linked_eligible_refunds, trusted_debit_capacity)
+eligible_refunds = min(linked_eligible_refunds, all completed wallet debits)
 ```
 
 The wallet engine also rejects new completed wallet refunds when the requested
-refund would exceed the remaining trusted debit capacity or the remaining amount
+refund would exceed gross debit restoration capacity or the remaining amount
 on the linked original debit:
 
 ```text
-refundable_remaining = trusted_debit_capacity - linked_eligible_refunds
+refundable_remaining = completed_debits - eligible_refunds
 reject when requested_refund > refundable_remaining
 reject when already_refunded_for_original_debit + requested_refund > original_debit
 ```
+
+Migration `20260925000000` corrects the canonical reader, refund trigger and
+wallet engine together. The per-original trusted-debit checks remain required;
+the aggregate difference alone is not a refund authorization.
 
 An unbacked historical purchase must not become trusted funding merely because a
 refund row exists. A loose or ambiguous historical refund remains review

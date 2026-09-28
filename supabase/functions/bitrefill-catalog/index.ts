@@ -46,6 +46,38 @@ export interface BitrefillProductsResponse {
   meta?: { _next?: string | null };
 }
 
+function publicBitrefillProduct(product: BitrefillProduct) {
+  return {
+    product_id: typeof product.product_id === 'string' ? product.product_id : '',
+    name: typeof product.name === 'string' ? product.name : '',
+    countries: Array.isArray(product.countries)
+      ? product.countries.filter((country) => typeof country === 'string')
+      : [],
+    currency: typeof product.currency === 'string' ? product.currency : null,
+    recipient_type: typeof product.recipient_type === 'string' ? product.recipient_type : null,
+    packages: Array.isArray(product.packages)
+      ? product.packages
+        .filter((item) => typeof item?.package_id === 'string' && Number.isFinite(item.value))
+        .map((item) => ({ package_id: item.package_id, value: item.value }))
+      : [],
+    range: product.range &&
+      Number.isFinite(product.range.min) &&
+      Number.isFinite(product.range.max) &&
+      Number.isFinite(product.range.step)
+      ? { min: product.range.min, max: product.range.max, step: product.range.step }
+      : null,
+  };
+}
+
+function publicBitrefillCatalog(result: BitrefillProductsResponse | BitrefillProduct, action: string) {
+  if (action === 'details') return publicBitrefillProduct(result as BitrefillProduct);
+  const page = result as BitrefillProductsResponse;
+  return {
+    data: Array.isArray(page?.data) ? page.data.map(publicBitrefillProduct) : [],
+    meta: { _next: typeof page?.meta?._next === 'string' ? page.meta._next : null },
+  };
+}
+
 export interface BitrefillInvoiceItem {
   product_id: string;
   package_id?: string;
@@ -109,8 +141,7 @@ export class BitrefillClient {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Bitrefill API error: ${response.status} - ${errorText}`);
+      throw new Error('Bitrefill catalog request failed');
     }
 
     // Some endpoints (e.g. /ping) may return empty bodies
@@ -305,7 +336,7 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: true,
-        data: result,
+        data: publicBitrefillCatalog(result, action),
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -314,22 +345,28 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('Error in bitrefill-catalog:', error);
-
-    console.error('Detailed error:', JSON.stringify({
-      message: (error as Error).message,
-      stack: (error as Error).stack,
-      name: (error as Error).name,
-    }));
+    const message = error instanceof Error ? error.message : '';
+    const clientMessages = new Set([
+      'Missing authorization header', 'Unauthorized',
+      'action is required (list, search, or details)',
+      'eSIM is not currently available.',
+      'query is required for search',
+      'product_id is required for details',
+      'This product is no longer available.',
+      'Invalid action. Must be one of: list, search, details',
+    ]);
+    const clientError = clientMessages.has(message);
+    console.error(clientError ? 'Bitrefill catalog request rejected' : 'Bitrefill catalog provider request failed');
 
     return new Response(
       JSON.stringify({
         success: false,
-        error: (error as Error).message || 'Failed to fetch Bitrefill catalog',
+        error: clientError ? message : 'Catalog temporarily unavailable',
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 400,
+        status: message === 'Missing authorization header' || message === 'Unauthorized'
+          ? 401 : clientError ? 400 : 502,
       }
     );
   }

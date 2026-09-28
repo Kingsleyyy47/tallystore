@@ -58,6 +58,7 @@ type SmsApiResponse<T> = {
   success: boolean
   data?: T
   error?: string
+  code?: string
   configured?: boolean
   valid?: boolean
   balance?: SmsProviderBalance | null
@@ -314,6 +315,9 @@ async function invokeSms<T>(action: string, payload: Record<string, unknown> = {
   }
 
   if (!data?.success) {
+    if (data?.code === 'SMS_OUTCOME_REVIEW_REQUIRED') {
+      throw new Error('Order outcome needs review. No refund has been confirmed yet.')
+    }
     throw new Error(data?.error || 'SMS request failed')
   }
 
@@ -434,7 +438,7 @@ function SmsOrderCard({
               )}>
                 {order.refunded_at
                   ? `Refunded ${formatNaira(order.refund_amount_ngn || order.price_ngn)}`
-                  : 'Refund pending'}
+                  : 'Refund under review'}
               </p>
             )}
           </div>
@@ -506,7 +510,7 @@ function SmsOrderCard({
               </Button>
               <Button type="button" variant="outline" className="rounded-2xl" disabled={busy} onClick={() => onCancel(order)}>
                 <XCircle className="h-4 w-4" />
-                Cancel & Refund
+                Cancel order
               </Button>
             </>
           )}
@@ -1164,8 +1168,10 @@ function SmsNumbersSurface() {
       await refreshOrders()
       return
     }
-    await invokeSms<SmsOrder>(order.order_type === 'otp' ? 'cancel_otp' : 'cancel_rental', { order_id: order.id })
-    toast.success('Order cancelled')
+    const result = await invokeSms<SmsOrder>(order.order_type === 'otp' ? 'cancel_otp' : 'cancel_rental', { order_id: order.id })
+    toast.success(order.order_type !== 'otp'
+      ? 'Order cancelled'
+      : result.data?.refunded_at ? 'Order cancelled and refunded' : 'Order cancelled; refund under review')
     window.dispatchEvent(new Event('transactionAdded'))
     await refreshOrders()
   })

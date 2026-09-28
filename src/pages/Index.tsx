@@ -23,12 +23,11 @@ import {
 } from "lucide-react"
 import NavbarAuth from "@/components/NavbarAuth"
 import Footer from "@/components/Footer"
-import HomepageLiveActivity from "@/components/HomepageLiveActivity"
 import CategoryLogo from "@/components/CategoryLogo"
 import { getCategoryStyle } from "@/lib/categoryStyles"
 import {
   formatCount,
-  getAdminSalesStats,
+  getPublicOrderCount,
   getAllProductGroups,
   getCategories,
   getUserCount,
@@ -204,11 +203,11 @@ const Index = () => {
 
     async function loadHomepageData() {
       try {
-        const [categoryData, productData, userCount, salesStats] = await Promise.all([
+        const [categoryData, productData, userCount, orderCount] = await Promise.all([
           getCategories(),
           getAllProductGroups(),
           getUserCount(),
-          getAdminSalesStats(),
+          getPublicOrderCount(),
         ])
 
         if (!mounted) return
@@ -220,7 +219,7 @@ const Index = () => {
         const availableAccounts = countDisplayableStock(customerSellableProducts)
         setStats([
           { label: "Customers", value: formatCount(userCount), icon: PackageCheck },
-          { label: "Orders Delivered", value: formatCount(salesStats.totalSales), icon: ShoppingBag },
+          { label: "Orders Delivered", value: formatCount(orderCount), icon: ShoppingBag },
           { label: "Accounts Available", value: formatCount(availableAccounts), icon: ShieldCheck },
           { label: "Product Categories", value: formatCount(categoryData.length), icon: Headphones },
         ])
@@ -508,7 +507,6 @@ const Index = () => {
           </div>
         </section>
 
-        <HomepageLiveActivity />
 
         {recs.length > 0 && (
           <div className="mx-auto max-w-6xl px-4 pb-12">

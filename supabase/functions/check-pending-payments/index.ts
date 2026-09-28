@@ -144,23 +144,21 @@ serve(async (req) => {
         });
 
         if (verifyResponse.error) {
-          console.error(`[CHECK-PENDING] Error calling verify function for ${payment.id}:`, verifyResponse.error);
+          console.warn(`[CHECK-PENDING] Verification retry required for payment ${payment.id}`);
           await supabase
             .from('pending_payments')
             .update({
-              error_message: verifyResponse.error.message || 'Unknown error'
+              error_message: 'Payment verification is temporarily unavailable.'
             })
             .eq('id', payment.id);
           results.errors.push({
             payment_id: payment.id,
-            reference: payment.transaction_reference,
-            error: verifyResponse.error.message
+            error: 'verification_unavailable'
           });
           continue;
         }
 
         const verifyData = verifyResponse.data;
-        console.log(`[CHECK-PENDING] Verify response for ${payment.id}:`, verifyData);
 
         if (verifyData.success && !verifyData.already_processed) {
           // Payment was successfully credited
@@ -195,22 +193,21 @@ serve(async (req) => {
             .from('pending_payments')
             .update({
               status: 'failed',
-              error_message: verifyData.message || 'Payment failed'
+              error_message: 'Payment failed'
             })
             .eq('id', payment.id);
           results.failed++;
         } else {
-          console.log(`[CHECK-PENDING] Payment ${payment.id} has unknown status:`, verifyData);
+          console.warn(`[CHECK-PENDING] Payment ${payment.id} needs status review`);
         }
 
         results.processed++;
 
-      } catch (error: any) {
-        console.error(`[CHECK-PENDING] Error processing payment ${payment.id}:`, error);
+      } catch (_error) {
+        console.warn(`[CHECK-PENDING] Payment ${payment.id} needs recovery retry`);
         results.errors.push({
           payment_id: payment.id,
-          reference: payment.transaction_reference,
-          error: error.message
+          error: 'recovery_retry_required'
         });
       }
     }
@@ -226,10 +223,10 @@ serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
-  } catch (error: any) {
-    console.error('[CHECK-PENDING] Fatal error:', error);
+  } catch (_error) {
+    console.error('[CHECK-PENDING] Recovery run failed');
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: 'Payment recovery is temporarily unavailable.' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

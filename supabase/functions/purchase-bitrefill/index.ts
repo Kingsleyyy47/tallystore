@@ -1,5 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import { ngnMinorUnits } from '../_shared/ngn-amount.mjs';
+import { sameBitrefillRequest } from '../_shared/bitrefill-idempotency.mjs';
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -299,8 +301,7 @@ export class BitrefillClient {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Bitrefill API error: ${response.status} - ${errorText}`);
+      throw new Error(`Bitrefill request failed (${response.status})`);
     }
 
     // Some endpoints (e.g. /ping) may return empty bodies
@@ -480,7 +481,7 @@ async function getWalletRequestForensics(req: Request, route: string) {
   }
 }
 
-async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
+async function assertFraudDeviceNotBanned(admin: any, userId: string, req?: Request | null) {
   const ipAddress = getPurchaseGuardIp(req)
   const userAgent = getPurchaseGuardUserAgent(req)
   const userAgentHash = userAgent ? await purchaseGuardSha256Hex(userAgent) : null
@@ -490,6 +491,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('ip_address', ipAddress)
       .limit(1)
 
@@ -503,6 +505,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('user_agent_hash', userAgentHash)
       .limit(1)
 
@@ -512,10 +515,10 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
   }
 }
 
-export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null) {
+export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null, amountNgn?: number) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin, account_suspended, wallet_review_required')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -527,11 +530,24 @@ export async function assertPurchasingCustomer(admin: any, userId: string, req?:
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
   }
 
-  if (profile?.account_suspended || profile?.wallet_review_required) {
+  if (profile?.account_suspended) {
     throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
   }
 
-  await assertFraudDeviceNotBanned(admin, req)
+  const { data: truth, error: truthError } = await admin.rpc('wallet_financial_truth_internal', { p_user_id: userId })
+  const spendable = Number(truth?.confirmed_spendable)
+  if (truthError || !truth || typeof truth.spending_blocked !== 'boolean' ||
+      truth.confirmed_spendable == null || !Number.isFinite(spendable) || spendable < 0) {
+    throw new Error('Could not verify wallet funds for purchase')
+  }
+  if (truth.spending_blocked) {
+    throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
+  }
+  if (amountNgn !== undefined && (!Number.isFinite(amountNgn) || amountNgn <= 0 || spendable < amountNgn)) {
+    throw new Error('Insufficient verified funds for purchase')
+  }
+
+  await assertFraudDeviceNotBanned(admin, userId, req)
 }
 
 const corsHeaders = {
@@ -673,10 +689,11 @@ serve(async (req) => {
     if (payment_source !== 'wallet') {
       throw new Error('Crypto balance payments are temporarily disabled. Please use your TallyStore wallet.');
     }
-    const expectedAmountNgn = parseFloat(expected_amount_ngn);
-    if (!Number.isFinite(expectedAmountNgn) || expectedAmountNgn <= 0) {
+    const expectedAmountMinor = ngnMinorUnits(expected_amount_ngn);
+    if (expectedAmountMinor === null) {
       throw new Error('Current displayed price is required. Please refresh and try again.');
     }
+    const expectedAmountNgn = expectedAmountMinor / 100;
 
     const qty = Number(quantity ?? 1);
     if (!Number.isInteger(qty) || qty < 1 || qty > 20) {
@@ -691,20 +708,38 @@ serve(async (req) => {
     const walletRequestForensics = await getWalletRequestForensics(req, 'purchase-bitrefill');
 
     // Idempotency check
-    const { data: existingOrder } = await supabaseClient
+    const { data: existingOrder, error: existingOrderError } = await supabaseAdmin
       .from('bitrefill_orders')
-      .select('*')
+      .select('id,reference,status,redemption_code,redemption_link,redemption_pin,product_id,product_name,package_id,quantity,recipient_phone,amount_ngn,amount_original,payment_source')
       .eq('user_id', user.id)
       .eq('idempotency_key', idempotency_key)
-      .single();
+      .maybeSingle();
+    if (existingOrderError) throw new Error('Could not verify existing order');
 
     if (existingOrder) {
+      if (!sameBitrefillRequest(existingOrder, {
+        product_id, product_name, package_id, value, quantity: qty,
+        recipient_phone, expected_amount_ngn, payment_source,
+      })) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Idempotency key is already used for a different purchase.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 },
+        );
+      }
       console.log(`Idempotency hit: returning existing order ${existingOrder.id}`);
+      const completed = existingOrder.status === 'successful';
       return new Response(
         JSON.stringify({
-          success: true,
-          order: existingOrder,
-          message: 'Order already processed',
+          success: completed,
+          order_id: existingOrder.id,
+          reference: existingOrder.reference,
+          status: existingOrder.status === 'pending' ? 'outcome_unknown' : existingOrder.status,
+          redemption: completed ? {
+            code: existingOrder.redemption_code,
+            link: existingOrder.redemption_link,
+            pin: existingOrder.redemption_pin,
+          } : null,
+          error: completed ? null : 'Provider outcome is being checked. The wallet debit remains posted pending review.',
           idempotency_hit: true,
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
@@ -714,21 +749,18 @@ serve(async (req) => {
     // Reject any product an admin has blocked via the catalog curation list
     // in AdminPage, even if the client has a stale/cached product_id from
     // before it was blocked.
-    try {
-      const { data: blockSetting } = await supabaseAdmin
-        .from('app_settings')
-        .select('value')
-        .eq('key', 'bitrefill_blocked_products')
-        .single();
-      if (blockSetting?.value) {
-        const parsed = JSON.parse(blockSetting.value);
-        if (Array.isArray(parsed) && parsed.some((p: { product_id: string }) => p.product_id === product_id)) {
-          throw new Error('This product is no longer available.');
-        }
+    const { data: blockSetting, error: blockSettingError } = await supabaseAdmin
+      .from('app_settings')
+      .select('value')
+      .eq('key', 'bitrefill_blocked_products')
+      .maybeSingle();
+    if (blockSettingError) throw new Error('Could not verify product availability');
+    if (blockSetting?.value) {
+      const parsed = JSON.parse(blockSetting.value);
+      if (!Array.isArray(parsed)) throw new Error('Could not verify product availability');
+      if (parsed.some((p: { product_id: string }) => p.product_id === product_id)) {
+        throw new Error('This product is no longer available.');
       }
-    } catch (err) {
-      if (err instanceof Error && err.message === 'This product is no longer available.') throw err;
-      // no blocklist configured — nothing to check
     }
 
     const bitrefill = createBitrefillClient({ apiKey: Deno.env.get('BITREFILL_API_KEY') ?? '' });
@@ -746,7 +778,11 @@ serve(async (req) => {
       if (!pkg) throw new Error('Selected denomination is no longer available');
       unitPrice = pkg.value;
     } else {
-      const numericValue = parseFloat(value);
+      const denominationMinor = ngnMinorUnits(value);
+      if (denominationMinor === null) {
+        throw new Error('Invalid selected amount');
+      }
+      const numericValue = denominationMinor / 100;
       if (!product.range || numericValue < product.range.min || numericValue > product.range.max) {
         throw new Error('Selected amount is outside the allowed range for this product');
       }
@@ -757,25 +793,25 @@ serve(async (req) => {
 
     // Apply optional admin markup (app_settings.bitrefill_markup_pct), defaults to 0
     let markupPct = 0;
-    try {
-      const { data: markupSetting } = await supabaseAdmin
-        .from('app_settings')
-        .select('value')
-        .eq('key', 'bitrefill_markup_pct')
-        .single();
-      if (markupSetting?.value) {
-        const parsed = parseFloat(markupSetting.value);
-        if (!isNaN(parsed) && parsed >= 0) markupPct = parsed;
-      }
-    } catch (_err) {
-      // no markup configured, default to 0
+    const { data: markupSetting, error: markupSettingError } = await supabaseAdmin
+      .from('app_settings')
+      .select('value')
+      .eq('key', 'bitrefill_markup_pct')
+      .maybeSingle();
+    if (markupSettingError) throw new Error('Could not verify product price');
+    if (markupSetting?.value != null) {
+      const parsed = Number(markupSetting.value);
+      if (!Number.isFinite(parsed) || parsed < 0) throw new Error('Could not verify product price');
+      markupPct = parsed;
     }
 
     const baseNgn = await convertToNgn(totalOriginal, currency, supabaseAdmin);
     const chargeNgn = Math.ceil(baseNgn * (1 + markupPct / 100));
-    if (Math.abs(expectedAmountNgn - chargeNgn) > 1) {
+    if (!Number.isSafeInteger(chargeNgn) || expectedAmountMinor !== chargeNgn * 100) {
       throw new Error(`Price changed from ₦${expectedAmountNgn.toLocaleString()} to ₦${chargeNgn.toLocaleString()}. Please refresh and try again.`);
     }
+
+    await assertPurchasingCustomer(supabaseAdmin, user.id, req, chargeNgn);
 
     await recordRevenueEvent(supabaseAdmin, {
       eventType: 'PAYMENT_STARTED',
@@ -826,7 +862,7 @@ serve(async (req) => {
     const reference = `TALLY-GIFT-${Date.now()}-${user.id.substring(0, 8)}`;
 
     // Create pending order record
-    const { data: orderRecord, error: dbError } = await supabaseClient
+    const { data: orderRecord, error: dbError } = await supabaseAdmin
       .from('bitrefill_orders')
       .insert({
         user_id: user.id,
@@ -847,13 +883,12 @@ serve(async (req) => {
       .single();
 
     if (dbError) {
-      console.error('Database error:', dbError);
-      throw new Error(`Failed to create order record: ${dbError.message}`);
+      console.error('Bitrefill order record creation failed');
+      throw new Error('Failed to create order record');
     }
 
-    let debitResult: any;
     try {
-      debitResult = await applyWalletTransaction(supabaseAdmin, {
+      await applyWalletTransaction(supabaseAdmin, {
         userId: user.id,
         type: 'purchase',
         amount: chargeNgn,
@@ -875,19 +910,19 @@ serve(async (req) => {
         },
       });
     } catch (debitError: unknown) {
-      const errorMessage = debitError instanceof Error ? debitError.message : 'Wallet debit failed before provider dispatch';
       await supabaseAdmin
         .from('bitrefill_orders')
         .update({
           status: 'failed',
-          bitrefill_response: { error: errorMessage, stage: 'wallet_debit' },
+          bitrefill_response: { error: 'wallet_debit_failed', stage: 'wallet_debit' },
         })
         .eq('id', orderRecord.id);
       throw debitError;
     }
-    void debitResult;
 
     // Buy from Bitrefill using TallyStore's own Bitrefill account balance
+    let invoiceId: string | null = null;
+    let providerOrderId: string | null = null;
     try {
       const invoice = await bitrefill.createInvoice({
         products: [
@@ -902,27 +937,30 @@ serve(async (req) => {
         payment_method: 'balance',
         auto_pay: true,
       });
+      invoiceId = invoice.id;
 
       let finalStatus = 'pending';
       let redemption: any = null;
       const orderId = invoice.orders?.[0]?.id;
+      providerOrderId = orderId || null;
 
       if (invoice.status === 'complete' && orderId) {
         const orderDetail = await bitrefill.getOrder(orderId);
         redemption = orderDetail.redemption_info || null;
         finalStatus = 'successful';
-      } else if (['blocked', 'denied', 'payment_error'].includes(invoice.status)) {
-        finalStatus = 'failed';
       }
-      // otherwise leave as 'pending' — a webhook/poll can resolve this later
+      // Every other provider status needs reconciliation before any refund.
 
-      await supabaseClient
+      const { error: statusError } = await supabaseAdmin
         .from('bitrefill_orders')
         .update({
           status: finalStatus,
           bitrefill_invoice_id: invoice.id,
           bitrefill_order_id: orderId || null,
-          bitrefill_response: invoice,
+          bitrefill_response: {
+            outcome: finalStatus === 'successful' ? 'confirmed_success' : 'outcome_unknown',
+            provider_status: String(invoice.status || 'unknown').slice(0, 80),
+          },
           redemption_code: redemption?.code || null,
           redemption_link: redemption?.link || null,
           redemption_pin: redemption?.pin || null,
@@ -931,73 +969,16 @@ serve(async (req) => {
           completed_at: finalStatus === 'successful' ? new Date().toISOString() : null,
         })
         .eq('id', orderRecord.id);
+      if (statusError) throw new Error('Could not record Bitrefill outcome');
 
-      if (finalStatus === 'failed') {
-        // Refund — Bitrefill rejected the purchase
-        const refundedBalance = await refundBalance(
-          supabaseAdmin,
-          {
-            userId: user.id,
-            reference,
-            amount: chargeNgn,
-            description: `Auto-refund for failed gift card/eSIM purchase: ${product_name}`,
-            idempotencyKey: `bitrefill:refund:${orderRecord.id}:provider-declined`,
-            metadata: {
-              source: 'purchase-bitrefill',
-              source_order_id: orderRecord.id,
-              source_order_table: 'bitrefill_orders',
-              order_id: orderRecord.id,
-              original_reference: reference,
-              source_debit_transaction_id: debitResult?.transaction?.id || null,
-              source_debit_idempotency_key: `bitrefill:purchase:${idempotency_key}`,
-              product_id,
-              reason: 'provider_declined',
-              request_forensics: walletRequestForensics,
-            },
-          },
-        );
-        await recordRevenueEvent(supabaseAdmin, {
-          eventType: 'PAYMENT_FAILED',
-          eventId: `bitrefill:PAYMENT_FAILED:${idempotency_key}`,
-          userId: user.id,
-          surface: 'giftcards',
-          revenueContext,
-          metadata: {
-            order_id: orderRecord.id,
-            reference,
-            product_id,
-            product_name,
-            package_id: resolvedPackageId || null,
-            amount_ngn: chargeNgn,
-            amount_original: totalOriginal,
-            currency,
-            payment_source,
-            provider_status: invoice.status,
-          },
-        });
-        await recordRevenueEvent(supabaseAdmin, {
-          eventType: 'PRODUCT_PURCHASE_REVERSED',
-          eventId: `bitrefill:PRODUCT_PURCHASE_REVERSED:${idempotency_key}`,
-          userId: user.id,
-          surface: 'giftcards',
-          revenueContext,
-          metadata: {
-            order_id: orderRecord.id,
-            reference,
-            product_id,
-            product_name,
-            amount_ngn: chargeNgn,
-            balance_after: refundedBalance,
-            reason: 'provider_declined',
-          },
-        });
+      if (finalStatus !== 'successful') {
         return new Response(
           JSON.stringify({
             success: false,
             order_id: orderRecord.id,
             reference,
-            status: finalStatus,
-            error: 'Purchase was declined by the provider. Your balance has been refunded.',
+            status: 'outcome_unknown',
+            error: 'Provider outcome is being checked. The wallet debit remains posted pending review.',
           }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
         );
@@ -1061,111 +1042,52 @@ serve(async (req) => {
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       );
 
-    } catch (purchaseError: unknown) {
-      const errorMessage = purchaseError instanceof Error ? purchaseError.message : 'Unknown purchase error';
-      console.error('Bitrefill purchase failed:', errorMessage);
-
-      await supabaseClient
+    } catch {
+      // The invoice may have been accepted even if its response or redemption
+      // lookup failed. Retain the debit and any known provider identifiers.
+      console.error('Bitrefill order outcome requires review');
+      const { error: reviewError } = await supabaseAdmin
         .from('bitrefill_orders')
         .update({
-          status: 'failed',
-          bitrefill_response: { error: errorMessage },
+          status: 'pending',
+          bitrefill_invoice_id: invoiceId,
+          bitrefill_order_id: providerOrderId,
+          bitrefill_response: { outcome: 'outcome_unknown' },
         })
-        .eq('id', orderRecord.id);
-
-      const refundedBalance = await refundBalance(
-        supabaseAdmin,
-        {
-          userId: user.id,
+        .eq('id', orderRecord.id)
+        .neq('status', 'successful');
+      if (reviewError) console.error('Could not record Bitrefill outcome review state');
+      return new Response(
+        JSON.stringify({
+          success: false,
+          order_id: orderRecord.id,
           reference,
-          amount: chargeNgn,
-          description: `Auto-refund for failed gift card/eSIM purchase: ${product_name}`,
-          idempotencyKey: `bitrefill:refund:${orderRecord.id}:provider-error`,
-          metadata: {
-            source: 'purchase-bitrefill',
-            source_order_id: orderRecord.id,
-            source_order_table: 'bitrefill_orders',
-            order_id: orderRecord.id,
-            original_reference: reference,
-            source_debit_transaction_id: debitResult?.transaction?.id || null,
-            source_debit_idempotency_key: `bitrefill:purchase:${idempotency_key}`,
-            product_id,
-            reason: 'provider_purchase_error',
-            error: errorMessage,
-            request_forensics: walletRequestForensics,
-          },
-        },
+          status: 'outcome_unknown',
+          error: 'Provider outcome is being checked. The wallet debit remains posted pending review.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
       );
-      await recordRevenueEvent(supabaseAdmin, {
-        eventType: 'PAYMENT_FAILED',
-        eventId: `bitrefill:PAYMENT_FAILED:${idempotency_key}`,
-        userId: user.id,
-        surface: 'giftcards',
-        revenueContext,
-        metadata: {
-          order_id: orderRecord.id,
-          reference,
-          product_id,
-          product_name,
-          package_id: resolvedPackageId || null,
-          amount_ngn: chargeNgn,
-          amount_original: totalOriginal,
-          currency,
-          payment_source,
-          error: errorMessage,
-        },
-      });
-      await recordRevenueEvent(supabaseAdmin, {
-        eventType: 'PRODUCT_PURCHASE_REVERSED',
-        eventId: `bitrefill:PRODUCT_PURCHASE_REVERSED:${idempotency_key}`,
-        userId: user.id,
-        surface: 'giftcards',
-        revenueContext,
-        metadata: {
-          order_id: orderRecord.id,
-          reference,
-          product_id,
-          product_name,
-          amount_ngn: chargeNgn,
-          balance_after: refundedBalance,
-          reason: 'provider_purchase_error',
-        },
-      });
-
-      throw new Error(`Purchase failed: ${errorMessage}`);
     }
 
   } catch (error) {
-    console.error('Error in purchase-bitrefill:', error instanceof Error ? error.message : 'Unknown error');
+    const message = error instanceof Error ? error.message : '';
+    const clientMessages = new Set([
+      'Missing authorization header', 'Unauthorized',
+      'Valid idempotency_key is required',
+      'Crypto balance payments are temporarily disabled. Please use your TallyStore wallet.',
+      'Current displayed price is required. Please refresh and try again.',
+      'quantity must be between 1 and 20',
+      'This product is no longer available.',
+      'Selected denomination is no longer available',
+      'Selected amount is outside the allowed range for this product',
+    ]);
+    console.error(clientMessages.has(message) ? 'Bitrefill request rejected' : 'Bitrefill request failed before confirmed completion');
     return new Response(
       JSON.stringify({
         success: false,
-        error: (error as Error).message || 'An unexpected error occurred',
+        error: clientMessages.has(message) ? message : 'Gift card purchase is temporarily unavailable. Please contact support.',
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
     );
   }
 });
-
-async function refundBalance(
-  supabaseAdmin: any,
-  input: {
-    userId: string;
-    reference: string;
-    amount: number;
-    description: string;
-    idempotencyKey: string;
-    metadata?: Record<string, unknown>;
-  },
-) {
-  const result = await applyWalletTransaction(supabaseAdmin, {
-    userId: input.userId,
-    type: 'refund',
-    amount: input.amount,
-    reference: `REFUND-${input.reference}`,
-    description: input.description,
-    idempotencyKey: input.idempotencyKey,
-    metadata: input.metadata,
-  });
-  return Number(result.balance_after ?? 0);
-}

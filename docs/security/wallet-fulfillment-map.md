@@ -47,17 +47,17 @@ dispatch, retry, refund, and provider evidence are reviewed.
 | --- | --- | --- | --- | --- | --- |
 | Pre-stocked account credentials | `supabase/functions/process-purchase/index.ts` | Credentials are inserted into `orders.account_details`; `individual_accounts.status` becomes `sold`. | `authorize_product_purchase` locks trusted funds, the order, and inventory reservation together; `complete_product_purchase` captures the hold, writes credentials, and marks the same inventory sold atomically. The route never uses `profiles.wallet_balance` as authority and never directly posts a product debit. | Active for local stock only. | Staging denied-order test proves no credentials returned and no account marked sold when wallet is unbacked/frozen/insufficient; concurrency and fault tests prove one reservation/capture and no duplicate credential delivery. |
 | Live account suppliers | `process-purchase`, `muabanvia-fulfill`, auto/manual restock | External provider stock purchase and insertion into inventory. | Checkout supplier fallback is hard-coded off; direct fulfillment/restock routes fail closed by env flags. Direct MuaBanVia fulfillment returns `503 LIVE_ACCOUNT_FULFILLMENT_PAUSED` before auth/admin reads or supplier fetch; manual/auto restock return `503 MANUAL_RESTOCK_PAUSED` / `503 AUTO_RESTOCK_PAUSED` before product lookups, supplier fetches, or inventory writes. | Paused; static check enforces pause ordering. | Redesign to reserve backed funds before provider call, then run provider duplicate/timeout tests. |
-| SMM/social boost | `supabase/functions/smm-create-order/index.ts` | `smmClient.createOrder(...)` panel call. | While paused, returns `503 SMM_ORDERS_PAUSED` before auth, wallet debit, local order creation, or panel call. If later reopened, wallet-engine debit occurs before local `smm_orders` insert and before panel call; orphan-ledger retry is blocked; debit/refund metadata includes sanitized request forensics. | Paused by `SMM_ORDERS_ENABLED`; local adapter mock passed; provider sandbox pending. | Local adapter mock covers denied wallet, duplicate idempotency key, panel timeout, accepted dispatch, failed refund, and duplicate refund. Real panel idempotency/status contract still needs sandbox proof before reopening. |
+| SMM/social boost | `supabase/functions/smm-create-order/index.ts` | `smmClient.createOrder(...)` panel call. | While paused, returns `503 SMM_ORDERS_PAUSED` before auth, wallet debit, local order creation, or panel call. If later reopened, wallet-engine debit occurs before local `smm_orders` insert and before panel call; orphan-ledger retry is blocked. Ambiguous panel outcomes retain the debit and enter `outcome_unknown`; same-key retries and new orders while unresolved cannot redispatch. | Paused by `SMM_ORDERS_ENABLED`; isolated role/source checks passed; provider sandbox pending. | No-network adapter mock and source checks cover the boundary, but real panel idempotency, status lookup, and lost-response behavior need sandbox proof before reopening. |
 | SMM status workers | `smm-check-status`, `smm-check-all-orders` | Status lookup and possible refund; no new order dispatch. | Refunds use wallet engine with deterministic keys. | Patched, cron boundary checked. | Verify duplicate failed statuses cannot refund twice and cron secret is live-only. |
-| SMS OTP rental | `supabase/functions/smsbus/index.ts?action=create_otp` | `daisyGetNumber(...)` number allocation. | While paused, returns `503 SMS_OTP_PAUSED` before auth, wallet debit, local order creation, or Daisy allocation. If later reopened, wallet-engine debit first; pending `sms_orders` row created before Daisy allocation; debit/failure-refund metadata includes sanitized request forensics. | Paused by `SMS_OTP_ENABLED`; local adapter mock passed; Daisy sandbox pending. | Local adapter mock covers denied wallet, timeout/unknown, failed refund, and duplicate refund. Daisy price/cancellation/late-code contract still needs sandbox proof before reopening. |
-| SMS status/cancel/keep | `smsbus` order actions and Daisy callback | Revealing OTP code, keeping rental active, canceling provider activation. | Existing local order must belong to user/admin; refunds use wallet engine. | Patched, local outcome mock passed; Daisy sandbox pending. | Verify frozen users cannot start new rentals but can view existing history; duplicate callbacks do not double-refund. |
-| Telegram Stars | `supabase/functions/telegram-stars/index.ts` | `istarPost('/orders/star', ...)`. | While paused, returns `503 TELEGRAM_ORDERS_PAUSED` before auth, wallet debit, local order creation, or iStar dispatch. If later reopened, local order is created, then wallet-engine debit, then iStar call; checkout debit/refund metadata includes sanitized request forensics. | Paused by `TELEGRAM_ORDERS_ENABLED`; local adapter mock passed; iStar sandbox pending. | Local adapter mock covers invalid/denied dispatch, response lost, accepted dispatch, and failed refund once. iStar callback/status contract still needs sandbox proof before reopening. |
-| Telegram Premium | `telegram-stars` | `istarPost('/orders/premium', ...)`. | While paused, returns `503 TELEGRAM_ORDERS_PAUSED` before auth, wallet debit, local order creation, or iStar dispatch. If later reopened, local order is created, then wallet-engine debit, then iStar call; checkout debit/refund metadata includes sanitized request forensics. | Paused by `TELEGRAM_ORDERS_ENABLED`; local adapter mock passed; iStar sandbox pending. | Same iStar proof as Stars. |
-| iStar webhook refunds | `api/webhook-istar.ts` | Refund for failed iStar order. | Raw-body HMAC verification required before order update/refund; refund uses wallet engine. | Patched. | Deployed invalid-signature `401`, valid failure refunds once, duplicate callback idempotent. |
-| Bills and airtime | `supabase/functions/purchase-bills/index.ts` | SageCloud airtime/data call. | While paused, returns `503 BILLS_PAUSED` before auth/profile reads, local bills row creation, wallet debit, SageCloud setup, or provider purchase. If later reopened, local `bills_transactions` row and wallet-engine debit happen before provider call; debit-denied rows are kept as failed `wallet_debit` evidence. | Paused by `BILLS_ENABLED`; local adapter mock passed; static check enforces pause ordering. | Local adapter mock proves failed/unknown/duplicate decisions do not double-refund or dispatch without debit. SageCloud sandbox remains required before reopening. |
-| Gift cards/eSIM | `supabase/functions/purchase-bitrefill/index.ts` | Bitrefill invoice/order creation. | While paused, returns `503 BITREFILL_PAUSED` before auth/profile reads, local Bitrefill order creation, wallet debit, provider setup, or invoice creation. If later reopened, local `bitrefill_orders` row and wallet-engine debit happen before provider call; debit-denied rows are kept as failed `wallet_debit` evidence. | Paused by `BITREFILL_ENABLED`; local adapter mock passed; static check enforces pause ordering. | Local adapter mock covers idempotency, timeout, failure refund, and duplicate refund. Bitrefill sandbox remains required before reopening. |
+| SMS OTP rental | `supabase/functions/smsbus/index.ts?action=create_otp` | `daisyGetNumber(...)` number allocation. | While paused, returns `503 SMS_OTP_PAUSED` before auth, wallet debit, local order creation, or Daisy allocation. If later reopened, wallet-engine debit first; pending `sms_orders` row created before Daisy allocation; a lost allocation response retains the debit for review, while a definitive decline or confirmed cancellation can refund. | Paused by `SMS_OTP_ENABLED`; local cancellation mock passed; Daisy sandbox pending. | Provider timeout, allocation parsing, cancellation, and late-code behavior need sandbox and real-DB concurrency proof before reopening. |
+| SMS status/cancel/keep | `smsbus` and `manage-staff` order actions plus Daisy callback | Revealing OTP code, keeping rental active, canceling provider activation. | Existing local order must belong to user/admin; only `ACCESS_CANCEL` or `STATUS_CANCEL` confirms non-delivery for automatic refund; conditional status transitions prevent stale completion/cancellation overwrites. | Patched, local outcome mock passed; Daisy sandbox pending. | Verify frozen users can view existing history; old cancelled-but-unrefunded rows need manual evidence review; status and refund remain separate commits. |
+| Telegram Stars | `supabase/functions/telegram-stars/index.ts` | `istarPost('/orders/star', ...)`. | While paused, returns `503 TELEGRAM_ORDERS_PAUSED` before auth, wallet debit, local order creation, or iStar dispatch. If later reopened, local order is created, then wallet-engine debit, then iStar call. Late tracking writes cannot reopen terminal orders; polling does not refund a reported failure. | Paused by `TELEGRAM_ORDERS_ENABLED`; local source/type checks passed; iStar sandbox pending. | Test accepted dispatch, response loss, late success/failure callbacks, and manual resolution of a failed poll without releasing funds twice. |
+| Telegram Premium | `telegram-stars` | `istarPost('/orders/premium', ...)`. | Same paused order boundary and conditional tracking writes as Stars. Polling holds reported failure for review; admin cancellation is paused. | Paused by `TELEGRAM_ORDERS_ENABLED`; local source/type checks passed; iStar sandbox pending. | Same iStar proof as Stars. |
+| iStar webhook refunds | `api/webhook-istar.ts` | Refund for a signed failed iStar order. | Signed-body event type, HMAC, and conditional nonterminal order transition precede the wallet-engine refund. A stale callback that loses the status update cannot refund. | Local no-network handler mock passed; deployed behavior unknown. | Deployed invalid-signature `401`, valid failure refunds once, success/failure race, duplicate callback idempotency, and real-Postgres status/refund concurrency. |
+| Bills and airtime | `supabase/functions/purchase-bills/index.ts` | SageCloud airtime/data call. | While paused, returns `503 BILLS_PAUSED` before auth/profile reads, local bills row creation, wallet debit, SageCloud setup, or provider purchase. If later reopened, local `bills_transactions` row and wallet-engine debit happen before provider call; debit-denied rows are kept as failed `wallet_debit` evidence. Data plans require an exact browser/live-price match and charge the provider price; incompatible same-key retries conflict. | Paused by `BILLS_ENABLED`; local adapter mock and amount/key tests passed; static check enforces pause ordering. | Local adapter mock proves failed/unknown/duplicate decisions do not double-refund or dispatch without debit. SageCloud sandbox and deployed route tests remain required before reopening. |
+| Gift cards/eSIM | `supabase/functions/purchase-bitrefill/index.ts` | Bitrefill invoice/order creation. | While paused, returns `503 BITREFILL_PAUSED` before auth/profile reads, local Bitrefill order creation, wallet debit, provider setup, or invoice creation. If later reopened, local `bitrefill_orders` row and wallet-engine debit happen before provider call; debit-denied rows are kept as failed `wallet_debit` evidence. Incompatible same-key retries conflict and flexible denominations require exact numeric parsing. | Paused by `BITREFILL_ENABLED`; local adapter mock and amount/key tests passed; static check enforces pause ordering. | Local adapter mock covers idempotency, timeout, failure refund, and duplicate refund. Bitrefill sandbox and deployed route tests remain required before reopening. |
 | Withdrawals | `supabase/functions/create-withdrawal-request/index.ts` | SageCloud transfer. | While paused, returns `503 WITHDRAWALS_PAUSED` before auth/profile reads, local withdrawal row creation, wallet debit, SageCloud setup, or transfer. If later reopened, local withdrawal row and wallet-engine debit happen before transfer; debit-denied rows are kept as failed `wallet_debit` evidence, and provider-failure refunds carry the original reference, debit transaction id, debit idempotency key, and `crypto_withdrawals` source-order provenance. | Paused by `WITHDRAWALS_ENABLED`; local adapter mock passed; static check enforces pause ordering and refund provenance. | Local adapter mock covers transfer idempotency and duplicate failure-refund behavior. SageCloud sandbox remains required before reopening. |
-| Crypto top-up | `create-crypto-sell-order`, `nowpayments-webhook` | Accepting crypto payment as spendable value. | While paused, returns `503 CRYPTO_TOPUP_PAUSED` before auth, Supabase client setup, local crypto transaction rows, NOWPayments setup, or provider payment creation. Auto-credit disabled; finished payments held for manual review. | Paused/manual review only; static check enforces pause ordering. | NOWPayments sandbox for fake/disappearing/partial/underpaid/replayed payments; owner approval workflow for any credit. |
+| Crypto top-up | `create-crypto-sell-order`, `nowpayments-webhook` | Accepting crypto payment as spendable value. | While paused, returns `503 CRYPTO_TOPUP_PAUSED` before auth, Supabase client setup, local crypto transaction rows, NOWPayments setup, or provider payment creation. Auto-credit disabled; finished payments held for manual review. New merchant references are project/user scoped and retries compare stored terms, with a legacy-reference lookup. | Paused/manual review only; static amount/key tests and pause-order guard passed. | NOWPayments sandbox for fake/disappearing/partial/underpaid/replayed payments; owner approval workflow for any credit. Provider creation versus local insert is still non-atomic; historical reference collisions and webhook lookup ambiguity need resolution before reopening. |
 | Referral withdrawal | `withdraw-referral-balance` | Moving referral balance to wallet balance. | Hard-paused in source: returns `503 REFERRAL_WITHDRAWALS_PAUSED` without auth/profile reads or the referral-to-wallet RPC. | Paused; static check enforces that no env flag or legacy RPC call can reopen the route in this build. | Referral source-of-funds proof, redesigned trusted-principal handling, and restricted-role RPC denial before any future replacement. |
 | Partner API checkout | `api/partner-api.ts`, `supabase/functions/partner-api/index.ts` | Partner order and partner customer delivery through API. | Public route returns `PARTNER_API_PAUSED`; Edge Function hard-paused for non-admin actions; existing partners inactive. | Closed. | Owner must explicitly review partner, re-enable row, and run route-specific wallet/provider tests before any partner key is trusted. |
 | PocketFi partner customer payments | `api/webhook-pocketfi.ts`, `webhook-pocketfi` | Crediting/fulfilling partner customer order. | Bridge requires provider verification headers and raw body; Edge Function logs partner payments for manual review while partner API is paused. | Manual review only. | Sandbox signed partner-account event proves no partner fulfillment is triggered during pause. |
@@ -92,37 +92,59 @@ remains paused and is not covered by this local-stock migration.
 `smm-create-order` derives price from `smm_services`, checks idempotency, blocks
 orphaned purchase-ledger retries, debits through `apply_wallet_transaction`,
 creates a local order row, and calls the panel only after that local state
-exists. Checkout debit and same-request failure-refund ledger metadata carries
-`request_forensics`. Status workers refund failed orders through the wallet
-engine.
+exists. Checkout debit and local-order-creation failure-refund ledger metadata
+carry `request_forensics`. Status workers refund confirmed failed orders through
+the wallet engine.
+
+A panel timeout, malformed reply, or unverified error now leaves the debit
+committed and marks the order `outcome_unknown`; it does not automatically
+refund or send another order. A same-key retry returns the review state, and
+new orders for the wallet are paused while an unknown outcome remains. Orders
+without a captured panel ID require provider/dashboard lookup or manual
+resolution. Customer status responses no longer reveal panel charge or raw
+panel errors; browser roles are denied raw `smm_orders.panel_response` and
+supplier cost by the staged `20260925007000` contract migration.
 
 Residual risk: panel idempotency and unknown-outcome behavior are provider
 contract issues. A lost HTTP response after the panel accepted an order cannot
-be proven safe by local database checks alone.
+be resolved by local database checks alone. Supplier-status workers and manual
+review require deployed/provider evidence before SMM ordering can reopen.
 
 ### SMS
 
 `smsbus` debits the wallet first, creates a pending local `sms_orders` row with
 `pending_provider_allocation: true`, and only then calls DaisySMS for a number.
-If activation fails, the provider number is canceled where possible and the
-wallet refund is posted through the wallet engine. Checkout debit and immediate
-failure-refund metadata carries `request_forensics`. The route also blocks
+If Daisy explicitly declines allocation, or a known activation is confirmed
+cancelled, the wallet refund is posted through the wallet engine. A timeout,
+unrecognized response, or `NO_ACTIVATION` is not proof of non-delivery and
+retains the debit for review. The confirmed-cancellation path also refuses a
+refund when a received code is already recorded on the local order. Checkout debit and eligible failure-refund
+metadata carries `request_forensics`. The route also blocks
 active fraud device/IP bans before purchase.
 
-Residual risk: DaisySMS late callbacks, cancellation authority, duplicate
-callbacks, and provider "not found" semantics need sandbox/mock verification.
+Residual risk: DaisySMS provider sandbox and real-Postgres concurrency still
+need verification. Order-status and refund posting are separate commits;
+older deployed workers and historical cancelled-but-unrefunded orders need
+individual outcome review before enabling SMS ordering.
+The service-role SMS admin order list and cancellation response now omit
+cross-customer OTP messages and raw provider payloads. Customer self-history
+continues to show that customer's own messages.
 
 ### Telegram/iStar
 
 `telegram-stars` creates a local order, posts the debit through
 `apply_wallet_transaction`, and then calls iStar. `api/webhook-istar.ts` disables
 body parsing, verifies HMAC over the raw body with timing-safe comparison, and
-uses deterministic wallet-engine refund keys for failed provider callbacks.
-Checkout debit and same-request iStar-failure refund metadata carries
+uses deterministic wallet-engine refund keys for signed failed provider callbacks.
+The webhook conditionally transitions only a nonterminal, unrefunded order;
+customer polling no longer credits a refund, and admin cancellation is held
+for supplier outcome review. Checkout debit metadata carries sanitized
 `request_forensics`.
 
-Residual risk: iStar provider outcome lookup/idempotency still needs sandbox or
-mocked tests.
+Residual risk: local database order transition and wallet refund are separate
+commits, and an older deployed worker or conflicting supplier outcome may still
+need manual resolution. Real-Postgres concurrency and iStar sandbox tests are
+required before reopening.
 
 ### Paused Provider-Money Routes
 

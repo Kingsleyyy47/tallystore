@@ -182,7 +182,7 @@ function calculateBacking(entries) {
   const linkedEligibleRefunds = [...refundedByOriginal.values()].reduce((sum, amount) => sum + amount, 0)
   const trustedDebitCapacity = Math.min(completedDebits, trustedPrincipal)
   const eligibleRefunds = Math.min(linkedEligibleRefunds, trustedDebitCapacity)
-  const trustedConsumedSpend = Math.max(trustedDebitCapacity - eligibleRefunds, 0)
+  const trustedConsumedSpend = Math.max(completedDebits - eligibleRefunds, 0)
   const backedAvailable = Math.max(trustedPrincipal - trustedConsumedSpend, 0)
 
   return {

@@ -1,5 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import { ngnMinorUnits } from '../_shared/ngn-amount.mjs';
+import { sameBillsRequest } from '../_shared/bills-idempotency.mjs';
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -361,8 +363,7 @@ export class SageCloudClient {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`SageCloud authentication failed: ${response.status} - ${errorText}`);
+      throw new Error(`SageCloud authentication failed (${response.status})`);
     }
 
     const data: AuthResponse = await response.json();
@@ -394,8 +395,7 @@ export class SageCloudClient {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`SageCloud API error: ${response.status} - ${errorText}`);
+      throw new Error(`SageCloud API error (${response.status})`);
     }
 
     return response.json();
@@ -565,7 +565,7 @@ async function getWalletRequestForensics(req: Request, route: string) {
   }
 }
 
-async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
+async function assertFraudDeviceNotBanned(admin: any, userId: string, req?: Request | null) {
   const ipAddress = getPurchaseGuardIp(req)
   const userAgent = getPurchaseGuardUserAgent(req)
   const userAgentHash = userAgent ? await purchaseGuardSha256Hex(userAgent) : null
@@ -575,6 +575,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('ip_address', ipAddress)
       .limit(1)
 
@@ -588,6 +589,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('user_agent_hash', userAgentHash)
       .limit(1)
 
@@ -597,10 +599,10 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
   }
 }
 
-export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null) {
+export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null, amountNgn?: number) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin, account_suspended, wallet_review_required')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -612,11 +614,24 @@ export async function assertPurchasingCustomer(admin: any, userId: string, req?:
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
   }
 
-  if (profile?.account_suspended || profile?.wallet_review_required) {
+  if (profile?.account_suspended) {
     throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
   }
 
-  await assertFraudDeviceNotBanned(admin, req)
+  const { data: truth, error: truthError } = await admin.rpc('wallet_financial_truth_internal', { p_user_id: userId })
+  const spendable = Number(truth?.confirmed_spendable)
+  if (truthError || !truth || typeof truth.spending_blocked !== 'boolean' ||
+      truth.confirmed_spendable == null || !Number.isFinite(spendable) || spendable < 0) {
+    throw new Error('Could not verify wallet funds for purchase')
+  }
+  if (truth.spending_blocked) {
+    throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
+  }
+  if (amountNgn !== undefined && (!Number.isFinite(amountNgn) || amountNgn <= 0 || spendable < amountNgn)) {
+    throw new Error('Insufficient verified funds for purchase')
+  }
+
+  await assertFraudDeviceNotBanned(admin, userId, req)
 }
 
 const corsHeaders = {
@@ -823,28 +838,54 @@ serve(async (req) => {
       throw new Error(`Invalid service_provider. Must be one of: ${validProviders.join(', ')}`);
     }
 
+    const clientAmountMinor = ngnMinorUnits(amount);
+    if (clientAmountMinor === null) {
+      throw new Error('Invalid amount');
+    }
+    if (transaction_type === 'data' && !data_plan_code) {
+      throw new Error('data_plan_code is required for data purchases');
+    }
+
     // Idempotency check - prevent double-charges
-    const { data: existingTransaction } = await supabaseClient
+    const { data: existingTransaction, error: existingTransactionError } = await supabaseAdmin
       .from('bills_transactions')
-      .select('*')
+      .select('id, reference, status, transaction_type, amount, service_provider, service_code, beneficiary_phone, payment_source')
       .eq('user_id', user.id)
       .eq('idempotency_key', idempotency_key)
-      .single();
+      .maybeSingle();
+
+    if (existingTransactionError) {
+      throw new Error('Could not verify existing bills transaction');
+    }
 
     if (existingTransaction) {
+      if (!sameBillsRequest(existingTransaction, {
+        transaction_type,
+        amount,
+        service_provider: normalizedProvider,
+        service_code: data_plan_code || null,
+        beneficiary_phone: normalizedPhone,
+        payment_source,
+      })) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Idempotency key is already used for a different purchase.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 },
+        );
+      }
       console.log('Bills idempotency hit: returning existing transaction.');
+      const unresolved = existingTransaction.status === 'pending';
       return new Response(
         JSON.stringify({
-          success: true,
+          success: !unresolved && existingTransaction.status === 'successful',
           transaction_id: existingTransaction.id,
           reference: existingTransaction.reference,
-          status: existingTransaction.status,
+          status: unresolved ? 'outcome_unknown' : existingTransaction.status,
           transaction_type: existingTransaction.transaction_type,
           amount: existingTransaction.amount,
           service_provider: existingTransaction.service_provider,
           beneficiary_phone: existingTransaction.beneficiary_phone,
           payment_source: existingTransaction.payment_source,
-          message: 'Transaction already processed',
+          message: unresolved ? 'Provider outcome is being checked; no new order was sent.' : 'Transaction already processed',
           idempotency_hit: true,
         }),
         {
@@ -855,19 +896,12 @@ serve(async (req) => {
     }
 
     // Validate amount
-    const purchaseAmount = parseFloat(amount);
-    if (isNaN(purchaseAmount) || purchaseAmount <= 0) {
-      throw new Error('Invalid amount');
-    }
+    let purchaseAmount = clientAmountMinor / 100;
     if (transaction_type === 'airtime' && (purchaseAmount < 50 || purchaseAmount > 50000)) {
       throw new Error('Airtime amount must be between ₦50 and ₦50,000');
     }
 
     // For data purchase, validate plan code
-    if (transaction_type === 'data' && !data_plan_code) {
-      throw new Error('data_plan_code is required for data purchases');
-    }
-
     // Initialize SageCloud client before any charge calculation that depends on
     // provider-owned catalogue data. Never trust client-supplied data-plan prices.
     const sageCloudClient = createSageCloudClient({
@@ -882,14 +916,18 @@ serve(async (req) => {
         throw new Error('Could not verify live data plan price. Please try again.');
       }
       const livePlan = plansResponse.data.find((plan) => String(plan.code) === String(data_plan_code));
-      const livePlanPrice = Number(livePlan?.price);
-      if (!livePlan || !Number.isFinite(livePlanPrice) || livePlanPrice <= 0) {
+      const liveAmountMinor = ngnMinorUnits(livePlan?.price);
+      if (!livePlan || liveAmountMinor === null) {
         throw new Error('Selected data plan is no longer available.');
       }
-      if (Math.round(purchaseAmount) !== Math.round(livePlanPrice)) {
+      if (clientAmountMinor !== liveAmountMinor) {
+        const livePlanPrice = liveAmountMinor / 100;
         throw new Error(`Data plan price changed from ₦${purchaseAmount.toLocaleString()} to ₦${livePlanPrice.toLocaleString()}. Please refresh and try again.`);
       }
+      purchaseAmount = liveAmountMinor / 100;
     }
+
+    await assertPurchasingCustomer(supabaseAdmin, user.id, req, purchaseAmount);
 
     // Check SageCloud balance
     const sageCloudBalance = await sageCloudClient.getBalanceAmount();
@@ -961,7 +999,7 @@ serve(async (req) => {
     });
 
     // Create bills transaction record (pending status) - includes payment_source and idempotency_key
-    const { data: billRecord, error: dbError } = await supabaseClient
+    const { data: billRecord, error: dbError } = await supabaseAdmin
       .from('bills_transactions')
       .insert({
         user_id: user.id,
@@ -979,13 +1017,12 @@ serve(async (req) => {
       .single();
 
     if (dbError) {
-      console.error('Database error:', dbError);
-      throw new Error(`Failed to create transaction record: ${dbError.message}`);
+      console.error('Bills transaction record creation failed');
+      throw new Error('Failed to create transaction record');
     }
 
-    let debitResult: any;
     try {
-      debitResult = await applyWalletTransaction(supabaseAdmin, {
+      await applyWalletTransaction(supabaseAdmin, {
         userId: user.id,
         type: 'purchase',
         amount: purchaseAmount,
@@ -1005,17 +1042,15 @@ serve(async (req) => {
         },
       });
     } catch (debitError: unknown) {
-      const errorMessage = debitError instanceof Error ? debitError.message : 'Wallet debit failed before provider dispatch';
       await supabaseAdmin
         .from('bills_transactions')
         .update({
           status: 'failed',
-          sagecloud_response: JSON.stringify({ error: errorMessage, stage: 'wallet_debit' }),
+          sagecloud_response: JSON.stringify({ error: 'wallet_debit_failed', stage: 'wallet_debit' }),
         })
         .eq('id', billRecord.id);
       throw debitError;
     }
-    void debitResult;
 
     // Process purchase via SageCloud
     let purchaseResponse;
@@ -1047,85 +1082,33 @@ serve(async (req) => {
           provider: normalizedProvider,
         });
       }
-      // Check if purchase was successful
-      if (purchaseResponse.success && purchaseResponse.status === 'success') {
-        finalStatus = 'successful';
-      } else {
-        finalStatus = 'failed';
-      }
+      // Any non-success response needs provider reconciliation before a refund.
+      finalStatus = purchaseResponse.success && purchaseResponse.status === 'success'
+        ? 'successful' : 'pending';
 
       // Update transaction with response
-      await supabaseClient
+      const { error: statusError } = await supabaseAdmin
         .from('bills_transactions')
         .update({
           status: finalStatus,
           sagecloud_reference: purchaseResponse.reference || reference,
-          sagecloud_response: JSON.stringify(purchaseResponse),
+          sagecloud_response: JSON.stringify({
+            outcome: finalStatus === 'successful' ? 'confirmed_success' : 'outcome_unknown',
+            provider_status: String(purchaseResponse.status || 'unknown').slice(0, 80),
+          }),
           completed_at: finalStatus === 'successful' ? new Date().toISOString() : null,
         })
         .eq('id', billRecord.id);
+      if (statusError) throw new Error('Could not record provider outcome');
 
-      if (finalStatus === 'failed') {
-        const refundResult = await applyWalletTransaction(supabaseAdmin, {
-          userId: user.id,
-          type: 'refund',
-          amount: purchaseAmount,
-          description: `Auto-refund for failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
-          reference: `REFUND-${reference}`,
-          idempotencyKey: `bills:refund:${billRecord.id}:provider-returned-failed`,
-          metadata: {
-            source: 'purchase-bills',
-            source_order_id: billRecord.id,
-            source_order_table: 'bills_transactions',
-            transaction_id: billRecord.id,
-            original_reference: reference,
-            source_debit_transaction_id: debitResult?.transaction?.id || null,
-            source_debit_idempotency_key: `bills:purchase:${idempotency_key}`,
-            reason: 'provider_returned_failed',
-            request_forensics: walletRequestForensics,
-          },
-        });
-        const refundedBalance = Number(refundResult.balance_after ?? 0);
-        await recordRevenueEvent(supabaseAdmin, {
-          eventType: 'PAYMENT_FAILED',
-          eventId: `bills:PAYMENT_FAILED:${idempotency_key}`,
-          userId: user.id,
-          surface: 'bills',
-          revenueContext,
-          metadata: {
-            transaction_id: billRecord.id,
-            reference,
-            transaction_type,
-            amount_ngn: purchaseAmount,
-            service_provider: normalizedProvider,
-            beneficiary_phone: normalizedPhone,
-            payment_source,
-            provider_status: finalStatus,
-            provider_reference_present: Boolean(purchaseResponse.reference),
-          },
-        });
-        await recordRevenueEvent(supabaseAdmin, {
-          eventType: 'PRODUCT_PURCHASE_REVERSED',
-          eventId: `bills:PRODUCT_PURCHASE_REVERSED:${idempotency_key}`,
-          userId: user.id,
-          surface: 'bills',
-          revenueContext,
-          metadata: {
-            transaction_id: billRecord.id,
-            reference,
-            transaction_type,
-            amount_ngn: purchaseAmount,
-            balance_after: refundedBalance,
-            reason: 'provider_returned_failed',
-          },
-        });
+      if (finalStatus !== 'successful') {
         return new Response(
           JSON.stringify({
             success: false,
             transaction_id: billRecord.id,
             reference,
-            status: finalStatus,
-            error: `${transaction_type === 'airtime' ? 'Airtime' : 'Data'} purchase failed. Your balance has been refunded.`,
+            status: 'outcome_unknown',
+            error: 'Provider outcome is being checked. The wallet debit remains posted pending review.',
           }),
           {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -1168,75 +1151,29 @@ serve(async (req) => {
           provider_reference: purchaseResponse.reference || reference,
         },
       });
-    } catch (purchaseError: unknown) {
-      console.error('SageCloud purchase failed:', purchaseError instanceof Error ? purchaseError.message : 'Unknown purchase error');
-      const errorMessage = purchaseError instanceof Error ? purchaseError.message : 'Unknown purchase error';
-
-      // Update transaction as failed
-      await supabaseClient
+    } catch {
+      // A lost response or later database failure does not prove non-delivery.
+      // Keep the debit and original reference for manual/provider reconciliation.
+      console.error('SageCloud bills outcome requires review');
+      const { error: reviewError } = await supabaseAdmin
         .from('bills_transactions')
         .update({
-          status: 'failed',
-          sagecloud_response: JSON.stringify({ error: errorMessage }),
+          status: 'pending',
+          sagecloud_response: JSON.stringify({ outcome: 'outcome_unknown' }),
         })
-        .eq('id', billRecord.id);
-
-      const refundResult = await applyWalletTransaction(supabaseAdmin, {
-        userId: user.id,
-        type: 'refund',
-        amount: purchaseAmount,
-        description: `Auto-refund for failed ${transaction_type === 'airtime' ? 'airtime' : 'data'} purchase: ${normalizedProvider} ${normalizedPhone}`,
-        reference: `REFUND-${reference}`,
-        idempotencyKey: `bills:refund:${billRecord.id}:provider-error`,
-        metadata: {
-          source: 'purchase-bills',
-          source_order_id: billRecord.id,
-          source_order_table: 'bills_transactions',
-          transaction_id: billRecord.id,
-          original_reference: reference,
-          source_debit_transaction_id: debitResult?.transaction?.id || null,
-          source_debit_idempotency_key: `bills:purchase:${idempotency_key}`,
-          reason: 'provider_purchase_error',
-          error: errorMessage,
-          request_forensics: walletRequestForensics,
-        },
-      });
-      const refundedBalance = Number(refundResult.balance_after ?? 0);
-      console.log('Bills purchase refunded after provider failure.');
-      await recordRevenueEvent(supabaseAdmin, {
-        eventType: 'PAYMENT_FAILED',
-        eventId: `bills:PAYMENT_FAILED:${idempotency_key}`,
-        userId: user.id,
-        surface: 'bills',
-        revenueContext,
-        metadata: {
+        .eq('id', billRecord.id)
+        .neq('status', 'successful');
+      if (reviewError) console.error('Could not record bills outcome review state');
+      return new Response(
+        JSON.stringify({
+          success: false,
           transaction_id: billRecord.id,
           reference,
-          transaction_type,
-          amount_ngn: purchaseAmount,
-          service_provider: normalizedProvider,
-          beneficiary_phone: normalizedPhone,
-          payment_source,
-          error: errorMessage,
-        },
-      });
-      await recordRevenueEvent(supabaseAdmin, {
-        eventType: 'PRODUCT_PURCHASE_REVERSED',
-        eventId: `bills:PRODUCT_PURCHASE_REVERSED:${idempotency_key}`,
-        userId: user.id,
-        surface: 'bills',
-        revenueContext,
-        metadata: {
-          transaction_id: billRecord.id,
-          reference,
-          transaction_type,
-          amount_ngn: purchaseAmount,
-          balance_after: refundedBalance,
-          reason: 'provider_purchase_error',
-        },
-      });
-
-      throw new Error(`Purchase failed: ${errorMessage}`);
+          status: 'outcome_unknown',
+          error: 'Provider outcome is being checked. The wallet debit remains posted pending review.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 },
+      );
     }
 
     // Return response
@@ -1254,7 +1191,6 @@ serve(async (req) => {
         message: finalStatus === 'successful' 
           ? `${transaction_type === 'airtime' ? 'Airtime' : 'Data'} purchase successful` 
           : `${transaction_type === 'airtime' ? 'Airtime' : 'Data'} purchase is being processed`,
-        purchase_response: purchaseResponse,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -1262,13 +1198,27 @@ serve(async (req) => {
       }
     );
   } catch (error) {
-    console.error('Error in purchase-bills:', error instanceof Error ? error.message : 'Unknown error');
+    const message = error instanceof Error ? error.message : '';
+    const clientMessages = new Set([
+      'Missing authorization header', 'Unauthorized',
+      'Missing required fields: transaction_type, amount, service_provider, phone',
+      'Valid idempotency_key is required',
+      'Invalid transaction_type. Must be "airtime" or "data"',
+      'Invalid phone number. Enter an 11-digit Nigerian phone number.',
+      'Crypto balance payments are temporarily disabled. Please use your TallyStore wallet.',
+      'Invalid service_provider. Must be one of: MTN, GLO, AIRTEL, 9MOBILE',
+      'Invalid amount', 'Airtime amount must be between ₦50 and ₦50,000',
+      'data_plan_code is required for data purchases',
+      'Insufficient verified funds for purchase',
+      'Purchasing is paused while this wallet is under security review. Please contact support.',
+    ]);
+    console.error(clientMessages.has(message) ? 'Bills request rejected' : 'Bills request failed before confirmed completion');
     
     // Return 200 status with success: false so client can read the error message
     return new Response(
       JSON.stringify({
         success: false,
-        error: (error as Error).message || 'An unexpected error occurred',
+        error: clientMessages.has(message) ? message : 'Bills purchase is temporarily unavailable. Please contact support.',
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

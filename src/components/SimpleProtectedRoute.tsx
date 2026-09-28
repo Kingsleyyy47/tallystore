@@ -21,6 +21,9 @@ export function ProtectedRoute({ children, redirectTo = '/login', requireRole }:
 
   if (!user) return <Navigate to={redirectTo} replace />
 
+  if (requireRole === 'user' && isAdmin) return <Navigate to="/admin" replace />
+  if (requireRole === 'user' && isStaff) return <Navigate to="/staff-admin" replace />
+
   if (requireRole === 'admin' && !isAdmin) {
     // Staff members trying to hit /admin get sent to their own page
     if (isStaff) return <Navigate to="/staff-admin" replace />

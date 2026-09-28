@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import { ngnMinorUnits } from '../_shared/ngn-amount.mjs';
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -241,7 +242,7 @@ async function getWalletRequestForensics(req: Request, route: string) {
   }
 }
 
-async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
+async function assertFraudDeviceNotBanned(admin: any, userId: string, req?: Request | null) {
   const ipAddress = getPurchaseGuardIp(req)
   const userAgent = getPurchaseGuardUserAgent(req)
   const userAgentHash = userAgent ? await purchaseGuardSha256Hex(userAgent) : null
@@ -251,6 +252,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('ip_address', ipAddress)
       .limit(1)
 
@@ -264,6 +266,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('user_agent_hash', userAgentHash)
       .limit(1)
 
@@ -273,10 +276,10 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
   }
 }
 
-export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null) {
+export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null, amountNgn?: number) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin, account_suspended, wallet_review_required')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -288,11 +291,24 @@ export async function assertPurchasingCustomer(admin: any, userId: string, req?:
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
   }
 
-  if (profile?.account_suspended || profile?.wallet_review_required) {
+  if (profile?.account_suspended) {
     throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
   }
 
-  await assertFraudDeviceNotBanned(admin, req)
+  const { data: truth, error: truthError } = await admin.rpc('wallet_financial_truth_internal', { p_user_id: userId })
+  const spendable = Number(truth?.confirmed_spendable)
+  if (truthError || !truth || typeof truth.spending_blocked !== 'boolean' ||
+      truth.confirmed_spendable == null || !Number.isFinite(spendable) || spendable < 0) {
+    throw new Error('Could not verify wallet funds for purchase')
+  }
+  if (truth.spending_blocked) {
+    throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
+  }
+  if (amountNgn !== undefined && (!Number.isFinite(amountNgn) || amountNgn <= 0 || spendable < amountNgn)) {
+    throw new Error('Insufficient verified funds for purchase')
+  }
+
+  await assertFraudDeviceNotBanned(admin, userId, req)
 }
 
 const corsHeaders = {
@@ -347,6 +363,54 @@ function cleanOptionalText(value: unknown, maxLength = 120) {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   return trimmed ? trimmed.slice(0, maxLength) : null
+}
+
+const customerPurchaseErrors = new Set([
+  'Missing authorization header',
+  'Unauthorized',
+  'This device or network has been blocked from purchasing. Please contact support.',
+  'Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.',
+  'Purchasing is paused while this wallet is under security review. Please contact support.',
+  'Insufficient verified funds for purchase',
+  'Invalid request: product_group_id and whole-number quantity (>= 1) required',
+  'Maximum purchase quantity is 500 accounts per checkout.',
+  'Valid idempotency_key required',
+  'Current displayed price is required. Please refresh and try again.',
+  'Product not found',
+  'Product is no longer available for purchase',
+  'Product is currently out of stock',
+  'Product has an invalid customer price',
+  "Discount codes can't be combined with the bulk quantity discount already applied to this order.",
+  'Invalid or expired discount code',
+  'Discount codes are temporarily unavailable',
+  'This discount code has expired',
+  'This discount code has reached its usage limit',
+  'This discount code is not valid for this product',
+  'This discount code is not valid for this category',
+  'This discount code is not valid for your account',
+  'Selected account is no longer available',
+])
+
+function publicPurchaseError(message: string) {
+  if (customerPurchaseErrors.has(message)) return message
+  if (message.startsWith('INSUFFICIENT_STOCK:')) {
+    return 'INSUFFICIENT_STOCK: Not enough accounts are available. Please try a smaller quantity.'
+  }
+  if (message.startsWith('Price changed from ₦')) return 'Price changed. Please refresh and try again.'
+  if (message.startsWith('Insufficient verified funds. Required: ₦')) return 'Insufficient verified funds for purchase'
+  if (message.startsWith('This code is only valid for orders up to ₦')) {
+    return 'This discount code does not apply to this order.'
+  }
+  if (message.includes('discount_code_unavailable') || message.includes('discount_code_capacity_exhausted')) {
+    return 'Invalid or expired discount code'
+  }
+  if (message.includes('discount_order_amount_invalid')) {
+    return 'Price changed. Please refresh and try again.'
+  }
+  if (message.includes('WALLET_UNBACKED_FUNDS') || message.includes('WALLET_REVIEW_REQUIRED')) {
+    return 'Purchasing is paused while this wallet is under security review. Please contact support.'
+  }
+  return 'Purchase is temporarily unavailable. Please try again or contact support.'
 }
 
 serve(async (req) => {
@@ -434,10 +498,11 @@ serve(async (req) => {
     if (!idempotency_key || typeof idempotency_key !== 'string' || idempotency_key.length < 10) {
       throw new Error('Valid idempotency_key required');
     }
-    const expectedAmountNgn = Number(expected_amount_ngn);
-    if (!Number.isFinite(expectedAmountNgn) || expectedAmountNgn <= 0) {
+    const expectedAmountMinor = ngnMinorUnits(expected_amount_ngn);
+    if (expectedAmountMinor === null) {
       throw new Error('Current displayed price is required. Please refresh and try again.');
     }
+    const expectedAmountNgn = expectedAmountMinor / 100;
 
     const preferredAccountId = typeof preferred_account_id === 'string' && preferred_account_id.trim()
       ? preferred_account_id.trim()
@@ -456,11 +521,11 @@ serve(async (req) => {
         ? existingOrder.account_details as Record<string, unknown>
         : {};
       const existingQuantity = Number(existingDetails.quantity || 0);
-      const existingAmount = Number(existingOrder.amount || 0);
+      const existingAmountMinor = ngnMinorUnits(existingOrder.amount);
       const sameRequest =
         String(existingOrder.product_group_id || '') === product_group_id &&
         existingQuantity === quantity &&
-        Math.abs(existingAmount - expectedAmountNgn) <= 1;
+        existingAmountMinor === expectedAmountMinor;
 
       if (!sameRequest) {
         return new Response(
@@ -544,7 +609,8 @@ serve(async (req) => {
     if (productError || !productGroup) {
       throw new Error('Product not found');
     }
-    const unitPrice = Number(productGroup.price);
+    const unitPriceMinor = ngnMinorUnits(productGroup.price);
+    const unitPrice = unitPriceMinor === null ? 0 : unitPriceMinor / 100;
     if (productGroup.is_active === false) {
       throw new Error('Product is no longer available for purchase');
     }
@@ -552,7 +618,7 @@ serve(async (req) => {
     if (productGroup.is_sellable === false || ['UNAVAILABLE', 'PAUSED'].includes(availabilityStatus)) {
       throw new Error('Product is currently out of stock');
     }
-    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+    if (unitPriceMinor === null || !Number.isSafeInteger(unitPriceMinor * quantity)) {
       throw new Error('Product has an invalid customer price');
     }
     // Incident containment: live supplier purchases must stay hard-paused until
@@ -578,15 +644,24 @@ serve(async (req) => {
     const tiers: Array<{ min_qty: number; discount_pct: number }> = DISCOUNTS_ENABLED && Array.isArray(productGroup.quantity_discount_tiers)
       ? productGroup.quantity_discount_tiers
       : [];
-    const originalTotal = unitPrice * quantity;
+    const originalTotalMinor = unitPriceMinor * quantity;
+    const originalTotal = originalTotalMinor / 100;
     const applicableTier = tiers
       .filter((t) => Number(t.min_qty) >= 2 && quantity >= Number(t.min_qty))
       .sort((a, b) => b.discount_pct - a.discount_pct)[0];
     const discountPct = applicableTier ? Math.min(Math.max(applicableTier.discount_pct, 0), 100) : 0;
-    let totalPrice = discountPct > 0 ? Math.round(originalTotal * (1 - discountPct / 100)) : originalTotal;
+    let totalPriceMinor = discountPct > 0
+      ? Math.round(originalTotal * (1 - discountPct / 100)) * 100
+      : originalTotalMinor;
+    let totalPrice = totalPriceMinor / 100;
 
     let appliedDiscountCode: { id: string; code: string } | null = null;
     if (DISCOUNTS_ENABLED && discount_code && typeof discount_code === 'string' && discount_code.trim()) {
+      const { data: discountCapacityVersion, error: discountCapacityError } =
+        await supabaseAdmin.rpc('discount_code_capacity_version');
+      if (discountCapacityError || discountCapacityVersion !== 1) {
+        throw new Error('Discount codes are temporarily unavailable');
+      }
       if (discountPct > 0) {
         throw new Error('Discount codes can\'t be combined with the bulk quantity discount already applied to this order.');
       }
@@ -620,12 +695,18 @@ serve(async (req) => {
       }
 
       const codePct = Math.min(Math.max(codeRow.percent_off, 0), 100);
-      totalPrice = Math.round(totalPrice * (1 - codePct / 100));
+      totalPriceMinor = Math.round(totalPrice * (1 - codePct / 100)) * 100;
+      totalPrice = totalPriceMinor / 100;
       appliedDiscountCode = { id: codeRow.id, code: codeRow.code };
     }
-    if (Math.abs(expectedAmountNgn - totalPrice) > 1) {
+    if (!Number.isSafeInteger(totalPriceMinor) || totalPriceMinor <= 0) {
+      throw new Error('Product has an invalid customer price');
+    }
+    if (expectedAmountMinor !== totalPriceMinor) {
       throw new Error(`Price changed from ₦${expectedAmountNgn.toLocaleString()} to ₦${totalPrice.toLocaleString()}. Please refresh and try again.`);
     }
+
+    await assertPurchasingCustomer(supabaseAdmin, user.id, req, totalPrice);
 
     const purchaseEventMetadata = {
       product_group_id,
@@ -809,22 +890,10 @@ serve(async (req) => {
       account_details: completionResult.account_details || accountDetails,
     };
 
-    // 6b. Bump the discount code's used_count now that the order is locked in.
-    // Done after order creation (not before) so a failed/rolled-back purchase
-    // never consumes a use.
-    if (appliedDiscountCode) {
-      const { data: codeNow } = await supabaseAdmin
-        .from('discount_codes')
-        .select('used_count')
-        .eq('id', appliedDiscountCode.id)
-        .single();
-      await supabaseAdmin
-        .from('discount_codes')
-        .update({ used_count: (codeNow?.used_count || 0) + 1 })
-        .eq('id', appliedDiscountCode.id);
-    }
+    // Discount capacity is reserved by the order insert and consumed by the
+    // completed-order update in the same database transactions.
 
-    // 6c. Auto-reward: purchases with an original value of ₦100,000+ earn a
+    // 6b. Auto-reward: purchases with an original value of ₦100,000+ earn a
     //     personalised 20%-off code valid on any next order up to ₦12,000.
     //     Generated AFTER the order is committed so a rollback never issues one.
     //     Failures are non-fatal — the purchase is already complete.
@@ -942,9 +1011,9 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('❌ Purchase error:', error instanceof Error ? error.message : 'Unknown error');
-
-    const message = error instanceof Error ? error.message : 'Purchase failed';
+    const internalMessage = error instanceof Error ? error.message : 'Unknown error';
+    const message = publicPurchaseError(internalMessage);
+    console.error('Purchase failed:', message);
 
     if (revenueContext.userId && supabaseAdmin) {
       await recordRevenueEvent(supabaseAdmin, {
@@ -963,7 +1032,7 @@ serve(async (req) => {
     
     // Return 200 with success: false for business errors so the client can read the message
     // Only return 401 for auth errors
-    const status = message === 'Unauthorized' ? 401 : 200;
+    const status = message === 'Unauthorized' || message === 'Missing authorization header' ? 401 : 200;
 
     return new Response(
       JSON.stringify({ success: false, error: message }),

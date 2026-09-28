@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { projectRevenueOrder } from './order-projection.mjs'
 
 // ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
 
@@ -501,17 +502,13 @@ async function requireAuthorized(req: Request, supabase: SupabaseAdmin) {
     const { data: userData } = await supabase.auth.getUser(token)
     const user = userData?.user
     const userId = user?.id
-    const userEmail = user?.email?.toLowerCase() || ''
-    // Owner email is always authorized (fallback when is_admin column is missing)
-    const OWNER_EMAIL = 'wisdomthedev@gmail.com'
-    if (userEmail === OWNER_EMAIL) return
     if (userId) {
       const { data: profile } = await supabase
         .from('profiles')
-        .select('is_admin, is_staff')
+        .select('is_admin, account_suspended')
         .eq('id', userId)
         .maybeSingle()
-      if (profile?.is_admin === true) return
+      if (profile?.is_admin === true && profile.account_suspended !== true) return
     }
   }
   throw new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
@@ -2145,7 +2142,7 @@ serve(async (req) => {
       promotionMaxDiscountValue,
       promotionMonthlyBudgetValue,
     ] = await Promise.all([
-      safeRead<any[]>(now, 'product_groups', supabase.from('product_groups').select('*').limit(5000), []),
+      safeRead<any[]>(now, 'product_groups', supabase.from('product_groups').select('id,category_id,name,description,price,stock_count,is_active,created_at,auto_fulfill_enabled,muabanvia_product_id,shopclone_product_id,shopviaclone_product_id').limit(5000), []),
       safeRead<any[]>(now, 'categories', supabase.from('categories').select('id,name,is_active').limit(1000), []),
       safeRead<any[]>(now, 'profiles', supabase.from('profiles').select('id,email,is_admin,is_staff,created_at').limit(10000), []),
       safeRead<any[]>(now, 'orders', supabase.from('orders').select('id,user_id,product_group_id,amount,status,account_details,created_at').gte('created_at', since.toISOString()).limit(10000), []),
@@ -2187,7 +2184,7 @@ serve(async (req) => {
     const productRows = productsResult.data as ProductGroup[]
     const categoryRows = categoriesResult.data || []
     const profileRows = profilesResult.data || []
-    const orderRows = (ordersResult.data || []).map((order: any) => ({ ...order, commerce_source: 'products' }))
+    const orderRows = (ordersResult.data || []).map(projectRevenueOrder)
     const smsOrderRows = (smsOrdersResult.data || []).map((order: any) => ({
       ...order,
       amount: toNumber(order.amount_ngn, toNumber(order.total_cost)),

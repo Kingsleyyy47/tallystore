@@ -115,7 +115,7 @@ export function buildBroadcastHtml(message: string): string {
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+    "authorization, x-client-info, apikey, content-type, x-cron-secret",
 };
 
 function json(data: unknown, status = 200) {
@@ -138,17 +138,15 @@ function isValidEmail(value: unknown): value is string {
 
 async function listPromotionConsentedEmails(
   admin: any,
-  options: { offset?: number; limit?: number; sampleLimit?: number } = {},
+  options: { offset?: number; limit?: number } = {},
 ) {
   const offset = Math.max(0, Math.round(Number(options.offset || 0)));
   const limit = Math.max(0, Math.round(Number(options.limit || 0)));
-  const sampleLimit = Math.max(0, Math.round(Number(options.sampleLimit || 0)));
   const batchSize = 1000;
   let profileOffset = 0;
   let eligibleSeen = 0;
   let totalRecipients = 0;
   const recipients: string[] = [];
-  const sampleRecipients: string[] = [];
 
   while (true) {
     const { data: profiles, error: profilesError } = await admin
@@ -178,7 +176,6 @@ async function listPromotionConsentedEmails(
       if (!isValidEmail(profile.email)) continue;
 
       totalRecipients += 1;
-      if (sampleRecipients.length < sampleLimit) sampleRecipients.push(profile.email);
       if (limit > 0 && eligibleSeen >= offset && recipients.length < limit) {
         recipients.push(profile.email);
       }
@@ -189,7 +186,7 @@ async function listPromotionConsentedEmails(
     profileOffset += batchSize;
   }
 
-  return { recipients, sampleRecipients, totalRecipients };
+  return { recipients, totalRecipients };
 }
 
 /** Verify the caller is an admin. Returns user id or throws. */
@@ -211,12 +208,32 @@ async function requireAdmin(req: Request): Promise<string> {
   const admin = getAdmin();
   const { data: profile } = await admin
     .from("profiles")
-    .select("is_admin")
+    .select("is_admin, account_suspended")
     .eq("id", user.id)
     .single();
 
-  if (!profile?.is_admin) throw new Error("Forbidden: admin only");
+  if (!profile?.is_admin || profile.account_suspended === true) throw new Error("Forbidden: admin only");
   return user.id;
+}
+
+function credentialMatches(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const encoder = new TextEncoder();
+  const left = encoder.encode(provided);
+  const right = encoder.encode(expected);
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let i = 0; i < left.length; i += 1) difference |= left[i] ^ right[i];
+  return difference === 0;
+}
+
+async function requireBroadcastWorker(req: Request): Promise<void> {
+  const authorization = req.headers.get("Authorization") || "";
+  const bearer = authorization.replace(/^Bearer\s+/i, "").trim();
+  if (credentialMatches(bearer, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "")) return;
+  if (credentialMatches(req.headers.get("x-cron-secret") || "", Deno.env.get("EMAIL_BROADCAST_CRON_SECRET") || "")) return;
+  if (!authorization) throw new Error("Unauthorized");
+  await requireAdmin(req);
 }
 
 async function requireAdminOrStaffPermission(
@@ -241,10 +258,11 @@ async function requireAdminOrStaffPermission(
   const admin = getAdmin();
   const { data: profile } = await admin
     .from("profiles")
-    .select("is_admin, is_staff")
+    .select("is_admin, is_staff, account_suspended")
     .eq("id", user.id)
     .single();
 
+  if (profile?.account_suspended === true) throw new Error("Forbidden");
   if (profile?.is_admin) return user.id;
   if (!profile?.is_staff) throw new Error("Forbidden");
 
@@ -274,7 +292,7 @@ async function handleSend(req: Request) {
 
   const result = await sendEmail({ to, subject, html });
   if (!result.success) {
-    return json({ success: false, error: result.error }, 500);
+    return json({ success: false, error: "Email delivery failed" }, 500);
   }
   console.log('Admin/staff email sent.');
   return json({ success: true, message: "Email sent" });
@@ -294,14 +312,13 @@ async function handleBroadcast(req: Request) {
   }
 
   const admin = getAdmin();
-  const consented = await listPromotionConsentedEmails(admin, { sampleLimit: dryRun ? 200 : 0 });
+  const consented = await listPromotionConsentedEmails(admin);
 
   if (dryRun) {
     return json({
       success: true,
       dryRun: true,
       totalRecipients: consented.totalRecipients,
-      sampleRecipients: consented.sampleRecipients,
       audience: "promotion_opted_in_customers",
     });
   }
@@ -328,7 +345,7 @@ async function handleBroadcast(req: Request) {
 
   if (error) {
     console.error("Failed to create broadcast job:", error);
-    return json({ success: false, error: error.message }, 500);
+    return json({ success: false, error: "Could not queue broadcast" }, 500);
   }
 
   console.log(`Broadcast job created for ${consented.totalRecipients} opted-in recipient(s).`);
@@ -342,7 +359,9 @@ async function handleBroadcast(req: Request) {
 }
 
 // ─── Route: POST /email/process-broadcast (pg_cron worker) ──────────
-async function handleProcessBroadcast() {
+async function handleProcessBroadcast(req: Request) {
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  await requireBroadcastWorker(req);
   const admin = getAdmin();
   const now = new Date();
 
@@ -528,7 +547,7 @@ async function handleProcessBroadcast() {
       .from("broadcast_jobs")
       .update({ processing_lock: null })
       .eq("id", job.id);
-    return json({ success: false, error: String(err) }, 500);
+    return json({ success: false, error: "Broadcast processing failed" }, 500);
   }
 }
 
@@ -544,7 +563,8 @@ async function handleBroadcastStatus(req: Request) {
     .limit(20);
 
   if (error) {
-    return json({ success: false, error: error.message }, 500);
+    console.error("Failed to load broadcast status:", error);
+    return json({ success: false, error: "Could not load broadcast status" }, 500);
   }
 
   return json({ success: true, jobs: jobs || [] });
@@ -567,7 +587,8 @@ async function handleCancelBroadcast(req: Request) {
     .in("status", ["queued", "processing"]);
 
   if (error) {
-    return json({ success: false, error: error.message }, 500);
+    console.error("Failed to cancel broadcast:", error);
+    return json({ success: false, error: "Could not cancel broadcast" }, 500);
   }
 
   console.log(`🚫 Broadcast job ${jobId} cancelled`);
@@ -590,21 +611,22 @@ serve(async (req) => {
       case "/broadcast":
         return await handleBroadcast(req);
       case "/process-broadcast":
-        return await handleProcessBroadcast();
+        return await handleProcessBroadcast(req);
       case "/broadcast-status":
         return await handleBroadcastStatus(req);
       case "/cancel-broadcast":
         return await handleCancelBroadcast(req);
       default:
-        return json({ error: `Unknown route: ${path}` }, 404);
+        return json({ error: "Unknown route" }, 404);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Internal error";
-    const status = message === "Unauthorized"
+    const status = message === "Unauthorized" || message === "Missing authorization header"
       ? 401
       : message.startsWith("Forbidden")
         ? 403
         : 500;
-    return json({ success: false, error: message }, status);
+    if (status === 500) console.error("Email request failed:", err);
+    return json({ success: false, error: status === 500 ? "Email request failed" : status === 401 ? "Unauthorized" : "Forbidden" }, status);
   }
 });

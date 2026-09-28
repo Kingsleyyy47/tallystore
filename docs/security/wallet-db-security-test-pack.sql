@@ -80,6 +80,10 @@ UPDATE public.profiles
        account_suspended = false,
        suspension_reason = null,
        suspended_at = null,
+       wallet_review_required = false,
+       wallet_review_reason = null,
+       wallet_reviewed_at = null,
+       wallet_reviewed_by = null,
        is_admin = false,
        is_staff = false,
        pocketfi_account_number = null,
@@ -357,29 +361,51 @@ RESET ROLE;
 -- Legacy balance RPCs must also be unavailable to browser roles.
 DO $$
 DECLARE
-  fn_name text;
   fn regprocedure;
   v_can_execute boolean;
 BEGIN
-  FOREACH fn_name IN ARRAY ARRAY[
-    'public.update_wallet_balance(uuid,numeric,text,text,text)',
-    'public.credit_crypto_balance(uuid,numeric)',
-    'public.deduct_crypto_balance(uuid,numeric)',
-    'public.transfer_crypto_to_wallet(uuid,numeric)',
-    'public.withdraw_referral_balance_to_wallet(uuid)'
-  ]
+  FOR fn IN
+    SELECT p.oid::regprocedure
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname = ANY (ARRAY[
+        'update_wallet_balance', 'credit_crypto_balance',
+        'deduct_crypto_balance', 'transfer_crypto_to_wallet',
+        'withdraw_referral_balance_to_wallet'
+      ])
   LOOP
-    fn := to_regprocedure(fn_name);
-    IF fn IS NOT NULL THEN
-      SELECT has_function_privilege('anon', fn, 'EXECUTE')
-          OR has_function_privilege('authenticated', fn, 'EXECUTE')
-        INTO v_can_execute;
+    SELECT has_function_privilege('anon', fn, 'EXECUTE')
+        OR has_function_privilege('authenticated', fn, 'EXECUTE')
+      INTO v_can_execute;
 
-      IF v_can_execute THEN
-        RAISE EXCEPTION 'FAILED: legacy balance RPC % is executable by anon/authenticated.', fn_name;
-      END IF;
+    IF v_can_execute THEN
+      RAISE EXCEPTION 'FAILED: legacy balance RPC overload % is executable by anon/authenticated.', fn;
     END IF;
   END LOOP;
+END $$;
+
+-- Unsuspension must recheck canonical truth inside the locked database RPC,
+-- not rely only on the earlier Edge request's review snapshot.
+DO $$
+DECLARE
+  v_definition text;
+BEGIN
+  SELECT pg_get_functiondef(
+    'public.set_customer_suspension_state(uuid,boolean,text,uuid)'::regprocedure
+  ) INTO v_definition;
+  IF position('FOR UPDATE' IN v_definition) = 0
+    OR position('public.wallet_financial_truth_internal(p_user_id)' IN v_definition) = 0
+    OR position('wallet_review_required_before_unsuspension' IN v_definition) = 0
+  THEN
+    RAISE EXCEPTION 'FAILED: unsuspension RPC lacks locked canonical truth recheck.';
+  END IF;
+  IF has_function_privilege('anon',
+      'public.set_customer_suspension_state(uuid,boolean,text,uuid)', 'EXECUTE')
+    OR has_function_privilege('authenticated',
+      'public.set_customer_suspension_state(uuid,boolean,text,uuid)', 'EXECUTE')
+  THEN
+    RAISE EXCEPTION 'FAILED: browser role can execute unsuspension RPC.';
+  END IF;
 END $$;
 
 -- T04/T73: direct ledger writes outside the wallet engine are skipped/audited
@@ -453,15 +479,15 @@ BEGIN
   END IF;
 END $$;
 
--- T25/T26/T27/T28/T41: fabricated stored wallet balances with no trusted
--- backing must be denied and frozen before any purchase can be authorized.
+-- T25/T26/T27/T28/T41: displayed balances without trusted backing cannot
+-- authorize a purchase, but insufficient funds do not suspend the account.
 DO $$
 DECLARE
   v_user uuid := current_setting('app.wallet_security_test_user_id')::uuid;
   v_fabricated_balance numeric;
   v_result jsonb;
   v_profile record;
-  v_event_rows integer;
+  v_truth jsonb;
 BEGIN
   FOREACH v_fabricated_balance IN ARRAY ARRAY[500000, 450000, 789292, 1]
   LOOP
@@ -493,8 +519,17 @@ BEGIN
     )
     INTO v_result;
 
-    IF v_result->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
-      RAISE EXCEPTION 'FAILED: fabricated balance % was not denied with WALLET_UNBACKED_FUNDS. Result: %', v_fabricated_balance, v_result;
+    IF v_result->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS' THEN
+      RAISE EXCEPTION 'FAILED: fabricated balance % was not denied for insufficient trusted funds. Result: %', v_fabricated_balance, v_result;
+    END IF;
+
+    SELECT public.wallet_financial_truth_internal(v_user) INTO v_truth;
+    IF COALESCE((v_truth->>'trusted_principal')::numeric, -1) <> 0
+      OR COALESCE((v_truth->>'confirmed_spendable')::numeric, -1) <> 0
+      OR v_truth->>'integrity_status' IS DISTINCT FROM 'quarantined_excess'
+      OR COALESCE((v_truth->>'spending_blocked')::boolean, true)
+    THEN
+      RAISE EXCEPTION 'FAILED: fabricated balance % changed canonical wallet truth. Truth: %', v_fabricated_balance, v_truth;
     END IF;
 
     SELECT wallet_balance, account_suspended, suspension_reason
@@ -502,26 +537,118 @@ BEGIN
     FROM public.profiles
     WHERE id = v_user;
 
-    IF NOT COALESCE(v_profile.account_suspended, false) THEN
-      RAISE EXCEPTION 'FAILED: fabricated balance % did not freeze/suspend wallet. Profile: %', v_fabricated_balance, row_to_json(v_profile);
+    IF COALESCE(v_profile.account_suspended, false) OR v_profile.suspension_reason IS NOT NULL THEN
+      RAISE EXCEPTION 'FAILED: insufficient backed funds suspended the account. Profile: %', row_to_json(v_profile);
     END IF;
 
     IF COALESCE(v_profile.wallet_balance, 0) <> v_fabricated_balance THEN
       RAISE EXCEPTION 'FAILED: denied unbacked purchase changed stored balance %. Profile: %', v_fabricated_balance, row_to_json(v_profile);
     END IF;
 
-    SELECT count(*)
-      INTO v_event_rows
-    FROM public.wallet_security_events
-    WHERE wallet_user_id = v_user
-      AND event_type = 'WALLET_FINANCIAL_FREEZE'
-      AND denial_code = 'WALLET_UNBACKED_FUNDS'
-      AND financial_snapshot->>'suspension_reason' ILIKE '%backed available%';
-
-    IF v_event_rows < 1 THEN
-      RAISE EXCEPTION 'FAILED: unbacked purchase freeze did not create wallet_security_events forensic row. Result: %', v_result;
-    END IF;
   END LOOP;
+END $$;
+
+-- A displayed 100000 with 70000 verified backing quarantines only the excess.
+-- Fraud Review reports the excess, but no new wallet hold is created.
+DO $$
+DECLARE
+  v_user uuid := current_setting('app.wallet_security_test_user_id')::uuid;
+  v_topup jsonb;
+  v_truth jsonb;
+  v_scan jsonb;
+  v_purchase jsonb;
+  v_denied jsonb;
+  v_profile record;
+BEGIN
+  PERFORM set_config('app.tally_wallet_engine_authorized', 'true', true);
+  PERFORM set_config('app.tally_profile_privileged_authorized', 'true', true);
+  UPDATE public.profiles
+     SET wallet_balance = 0,
+         account_suspended = false,
+         suspension_reason = null,
+         suspended_at = null,
+         wallet_review_required = false,
+         wallet_review_reason = null,
+         wallet_reviewed_at = null,
+         wallet_reviewed_by = null,
+         updated_at = now()
+   WHERE id = v_user;
+  DELETE FROM public.transactions WHERE user_id = v_user;
+  PERFORM set_config('app.tally_wallet_engine_authorized', 'false', true);
+  PERFORM set_config('app.tally_profile_privileged_authorized', 'false', true);
+
+  INSERT INTO public.pending_payments (user_id, transaction_reference, ercas_reference, amount, status)
+  VALUES (v_user, 'wallet-db-security-test-backed-excess-topup',
+          'wallet-db-security-test-backed-excess-provider-id', 70000, 'pending');
+
+  SELECT public.apply_wallet_transaction(
+    v_user, 'topup', 70000, 'wallet-db-security-test-backed-excess-topup',
+    'Verified funding for positive excess test',
+    'wallet-db-security-test:backed-excess:topup',
+    jsonb_build_object('source', 'wallet-db-security-test-pack',
+      'provider', 'ercaspay', 'verified_amount_ngn', 70000),
+    'NGN', 'wallet', 'wallet-db-security-test-backed-excess-provider-id', null
+  ) INTO v_topup;
+  IF COALESCE((v_topup->>'success')::boolean, false) IS NOT TRUE THEN
+    RAISE EXCEPTION 'FAILED: backed excess topup did not post. Result: %', v_topup;
+  END IF;
+
+  PERFORM set_config('app.tally_wallet_engine_authorized', 'true', true);
+  PERFORM set_config('app.tally_profile_privileged_authorized', 'true', true);
+  UPDATE public.profiles SET wallet_balance = 100000, updated_at = now() WHERE id = v_user;
+  PERFORM set_config('app.tally_wallet_engine_authorized', 'false', true);
+  PERFORM set_config('app.tally_profile_privileged_authorized', 'false', true);
+
+  SELECT public.wallet_financial_truth_internal(v_user) INTO v_truth;
+  IF COALESCE((v_truth->>'trusted_principal')::numeric, -1) <> 70000
+    OR COALESCE((v_truth->>'confirmed_spendable')::numeric, -1) <> 70000
+    OR COALESCE((v_truth->>'quarantined_excess')::numeric, -1) <> 30000
+    OR v_truth->>'integrity_status' IS DISTINCT FROM 'quarantined_excess'
+    OR COALESCE((v_truth->>'spending_blocked')::boolean, true)
+  THEN
+    RAISE EXCEPTION 'FAILED: positive excess obscured backed spend. Truth: %', v_truth;
+  END IF;
+
+  SELECT public.evaluate_customer_ledger_suspension(v_user, 0) INTO v_scan;
+  SELECT public.wallet_financial_truth_internal(v_user) INTO v_truth;
+  SELECT wallet_review_required, account_suspended INTO v_profile
+    FROM public.profiles WHERE id = v_user;
+  IF COALESCE(v_profile.wallet_review_required, false)
+    OR COALESCE(v_profile.account_suspended, false)
+    OR COALESCE((v_truth->>'spending_blocked')::boolean, true)
+    OR COALESCE((v_truth->>'confirmed_spendable')::numeric, -1) <> 70000
+  THEN
+    RAISE EXCEPTION 'FAILED: excess review blocked backed funds. Scan: %, Truth: %, Profile: %',
+      v_scan, v_truth, row_to_json(v_profile);
+  END IF;
+
+  SELECT public.apply_wallet_transaction(
+    v_user, 'purchase', 70000, 'wallet-db-security-test-backed-excess-purchase',
+    'Spend only verified backing despite displayed excess',
+    'wallet-db-security-test:backed-excess:purchase',
+    jsonb_build_object('source', 'wallet-db-security-test-pack'),
+    'NGN', 'wallet', null, null
+  ) INTO v_purchase;
+  IF COALESCE((v_purchase->>'success')::boolean, false) IS NOT TRUE THEN
+    RAISE EXCEPTION 'FAILED: backed portion was denied. Result: %', v_purchase;
+  END IF;
+
+  SELECT public.apply_wallet_transaction(
+    v_user, 'purchase', 1, 'wallet-db-security-test-backed-excess-denied',
+    'Quarantined remainder must not fund a purchase',
+    'wallet-db-security-test:backed-excess:denied',
+    jsonb_build_object('source', 'wallet-db-security-test-pack'),
+    'NGN', 'wallet', null, null
+  ) INTO v_denied;
+  SELECT wallet_balance, account_suspended INTO v_profile
+    FROM public.profiles WHERE id = v_user;
+  IF v_denied->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS'
+    OR COALESCE(v_profile.wallet_balance, -1) <> 30000
+    OR COALESCE(v_profile.account_suspended, false)
+  THEN
+    RAISE EXCEPTION 'FAILED: quarantined remainder was spendable or account suspended. Denial: %, Profile: %',
+      v_denied, row_to_json(v_profile);
+  END IF;
 END $$;
 
 -- Wallet engine/profile-trigger contract: the wallet engine itself must set the
@@ -535,6 +662,10 @@ UPDATE public.profiles
    SET wallet_balance = 0,
        account_suspended = false,
        suspension_reason = null,
+       wallet_review_required = false,
+       wallet_review_reason = null,
+       wallet_reviewed_at = null,
+       wallet_reviewed_by = null,
        updated_at = now()
  WHERE id = current_setting('app.wallet_security_test_user_id')::uuid;
 
@@ -884,8 +1015,42 @@ BEGIN
   )
   INTO v_purchase;
 
-  IF v_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
+  IF v_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS' THEN
     RAISE EXCEPTION 'FAILED: balance-neutral admin repair evidence authorized spend. Purchase: %', v_purchase;
+  END IF;
+END $$;
+
+-- A real admin repair is audit evidence, not a posted wallet movement. It
+-- must not manufacture an expected-ledger surplus or spendable principal.
+DO $$
+DECLARE
+  v_user uuid := current_setting('app.wallet_security_test_user_id')::uuid;
+  v_admin uuid := current_setting('app.wallet_security_test_admin_id')::uuid;
+  v_before jsonb;
+  v_after jsonb;
+BEGIN
+  SELECT public.wallet_financial_truth_internal(v_user) INTO v_before;
+  INSERT INTO public.transactions (
+    user_id, type, amount, status, balance_type, balance_before,
+    balance_after, description, reference, idempotency_key, metadata, created_by
+  ) VALUES (
+    v_user, 'admin_credit', 10000, 'completed', 'wallet', 10000,
+    10000, 'Balance-neutral admin repair fixture',
+    'wallet-db-security-test-valid-admin-repair',
+    'wallet-db-security-test:valid-admin-repair',
+    jsonb_build_object(
+      'source', 'admin-ledger-repair',
+      'balance_unchanged', true,
+      'requires_owner_evidence', true
+    ),
+    v_admin
+  );
+  SELECT public.wallet_financial_truth_internal(v_user) INTO v_after;
+  IF v_after->>'expected_ledger_balance' IS DISTINCT FROM v_before->>'expected_ledger_balance'
+    OR v_after->>'trusted_principal' IS DISTINCT FROM v_before->>'trusted_principal'
+    OR v_after->>'confirmed_spendable' IS DISTINCT FROM v_before->>'confirmed_spendable'
+  THEN
+    RAISE EXCEPTION 'FAILED: neutral admin repair changed canonical money. Before: %, after: %', v_before, v_after;
   END IF;
 END $$;
 
@@ -952,7 +1117,7 @@ BEGIN
     )
     INTO v_purchase;
 
-    IF v_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
+    IF v_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS' THEN
       RAISE EXCEPTION 'FAILED: % authorized spend. Credit: %, Purchase: %', v_type, v_credit, v_purchase;
     END IF;
   END LOOP;
@@ -1017,7 +1182,7 @@ BEGIN
   )
   INTO v_purchase;
 
-  IF v_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
+  IF v_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS' THEN
     RAISE EXCEPTION 'FAILED: internal/referral movement authorized spend. Credit: %, Purchase: %', v_internal_credit, v_purchase;
   END IF;
 END $$;
@@ -1047,6 +1212,8 @@ DECLARE
   v_topup jsonb;
   v_purchase jsonb;
   v_missing_original_refund jsonb;
+  v_conflicting_original_refund jsonb;
+  v_original_debit public.transactions%ROWTYPE;
   v_over_refund jsonb;
   v_valid_refund jsonb;
   v_allowed_repurchase jsonb;
@@ -1097,6 +1264,43 @@ BEGIN
 
   IF COALESCE((v_purchase->>'success')::boolean, false) IS NOT TRUE THEN
     RAISE EXCEPTION 'FAILED: refund cap setup purchase did not post. Result: %', v_purchase;
+  END IF;
+
+  SELECT * INTO v_original_debit
+  FROM public.transactions
+  WHERE user_id = v_user
+    AND idempotency_key = 'wallet-db-security-test:refund-cap:purchase';
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'FAILED: original purchase debit missing from refund test';
+  END IF;
+
+  IF public.wallet_refund_links_debit(
+    jsonb_build_object(
+      'source_debit_transaction_id', gen_random_uuid()::text,
+      'source_debit_idempotency_key', v_original_debit.idempotency_key
+    ),
+    v_original_debit.id, v_original_debit.idempotency_key,
+    v_original_debit.metadata, v_original_debit.reference
+  ) THEN
+    RAISE EXCEPTION 'FAILED: a bad explicit debit ID fell through to the correct key';
+  END IF;
+
+  SELECT public.apply_wallet_transaction(
+    v_user,
+    'refund',
+    1,
+    'wallet-db-security-test-refund-cap-conflicting-original',
+    'Conflicting refund identifiers must not post',
+    'wallet-db-security-test:refund-cap:conflicting-original',
+    jsonb_build_object(
+      'source', 'wallet-db-security-test-pack',
+      'source_debit_transaction_id', gen_random_uuid()::text,
+      'source_debit_idempotency_key', v_original_debit.idempotency_key
+    ),
+    'NGN', 'wallet', null, null
+  ) INTO v_conflicting_original_refund;
+  IF v_conflicting_original_refund->>'code' IS DISTINCT FROM 'REFUND_ORIGINAL_DEBIT_REQUIRED' THEN
+    RAISE EXCEPTION 'FAILED: conflicting refund identifiers posted. Result: %', v_conflicting_original_refund;
   END IF;
 
   SELECT public.apply_wallet_transaction(
@@ -1182,6 +1386,13 @@ BEGIN
     RAISE EXCEPTION 'FAILED: eligible refund amount did not restore the original backed debit. Result: %', v_allowed_repurchase;
   END IF;
 
+  -- Keep the stored-balance check from masking the canonical trusted-funds gate.
+  PERFORM set_config('app.tally_wallet_engine_authorized', 'true', true);
+  PERFORM set_config('app.tally_profile_privileged_authorized', 'true', true);
+  UPDATE public.profiles SET wallet_balance = 1, updated_at = now() WHERE id = v_user;
+  PERFORM set_config('app.tally_wallet_engine_authorized', 'false', true);
+  PERFORM set_config('app.tally_profile_privileged_authorized', 'false', true);
+
   SELECT public.apply_wallet_transaction(
     v_user,
     'purchase',
@@ -1197,7 +1408,7 @@ BEGIN
   )
   INTO v_extra_purchase;
 
-  IF v_extra_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
+  IF v_extra_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS' THEN
     RAISE EXCEPTION 'FAILED: extra spend after fully consumed refund was authorized. Result: %', v_extra_purchase;
   END IF;
 END $$;
@@ -1274,7 +1485,7 @@ BEGIN
   )
   INTO v_loose_refund_purchase;
 
-  IF v_loose_refund_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
+  IF v_loose_refund_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS' THEN
     RAISE EXCEPTION 'FAILED: completed loose refund without original debit became spendable. Result: %', v_loose_refund_purchase;
   END IF;
 END $$;
@@ -1401,7 +1612,7 @@ BEGIN
   )
   INTO v_pending_refund_purchase;
 
-  IF v_pending_refund_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
+  IF v_pending_refund_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS' THEN
     RAISE EXCEPTION 'FAILED: pending refund with invalid snapshot became spendable. Result: %', v_pending_refund_purchase;
   END IF;
 END $$;
@@ -1501,7 +1712,7 @@ BEGIN
   )
   INTO v_legacy_refund_purchase;
 
-  IF v_legacy_refund_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
+  IF v_legacy_refund_purchase->>'code' IS DISTINCT FROM 'WALLET_REVIEW_REQUIRED' THEN
     RAISE EXCEPTION 'FAILED: refund of unbacked legacy purchase became spendable. Result: %', v_legacy_refund_purchase;
   END IF;
 END $$;
@@ -1604,7 +1815,7 @@ BEGIN
   )
   INTO v_fake_metadata_purchase;
 
-  IF v_fake_metadata_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
+  IF v_fake_metadata_purchase->>'code' IS DISTINCT FROM 'WALLET_REVIEW_REQUIRED' THEN
     RAISE EXCEPTION 'FAILED: forged trusted-principal metadata became spendable. Result: %', v_fake_metadata_purchase;
   END IF;
 END $$;
@@ -1857,6 +2068,7 @@ DECLARE
   v_active_count integer := 0;
   v_unsafe_partner_grants integer := 0;
   v_unsafe_pending_payment_grants integer := 0;
+  v_history_table text;
 BEGIN
   IF to_regclass('public.api_partners') IS NOT NULL THEN
     SELECT count(*) INTO v_active_count FROM public.api_partners WHERE is_active = true;
@@ -1906,6 +2118,53 @@ BEGIN
     IF v_unsafe_pending_payment_grants > 0 THEN
       RAISE EXCEPTION 'FAILED: pending_payments still has % anon/authenticated write privilege(s).', v_unsafe_pending_payment_grants;
     END IF;
+  END IF;
+
+  IF to_regclass('public.pocketfi_webhook_logs') IS NOT NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM (VALUES ('anon'), ('authenticated')) AS roles(role_name)
+      CROSS JOIN (VALUES
+        ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'),
+        ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')
+      ) AS privileges(privilege_name)
+      WHERE has_table_privilege(
+        roles.role_name, 'public.pocketfi_webhook_logs', privileges.privilege_name
+      )
+    ) THEN
+      RAISE EXCEPTION 'FAILED: PocketFi payment evidence has effective browser-role privileges.';
+    END IF;
+    IF has_table_privilege('service_role', 'public.pocketfi_webhook_logs', 'SELECT') IS NOT TRUE
+      OR has_table_privilege('service_role', 'public.pocketfi_webhook_logs', 'INSERT') IS NOT TRUE
+      OR has_table_privilege('service_role', 'public.pocketfi_webhook_logs', 'UPDATE') IS NOT TRUE
+    THEN
+      RAISE EXCEPTION 'FAILED: service_role cannot read/write PocketFi payment evidence.';
+    END IF;
+  END IF;
+
+  FOREACH v_history_table IN ARRAY ARRAY[
+    'transactions', 'pending_payments', 'orders', 'bitrefill_orders',
+    'crypto_transactions', 'smm_orders', 'telegram_orders', 'bills_transactions'
+  ] LOOP
+    IF to_regclass('public.' || v_history_table) IS NOT NULL AND EXISTS (
+      SELECT 1
+      FROM (VALUES ('anon'), ('authenticated')) AS roles(role_name)
+      CROSS JOIN (VALUES
+        ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'),
+        ('REFERENCES'), ('TRIGGER')
+      ) AS privileges(privilege_name)
+      WHERE has_table_privilege(
+        roles.role_name, 'public.' || v_history_table, privileges.privilege_name
+      )
+    ) THEN
+      RAISE EXCEPTION 'FAILED: financial-history table % has effective browser write privileges.', v_history_table;
+    END IF;
+  END LOOP;
+
+  IF has_table_privilege('anon', 'public.profiles', 'TRUNCATE')
+    OR has_table_privilege('authenticated', 'public.profiles', 'TRUNCATE')
+  THEN
+    RAISE EXCEPTION 'FAILED: browser role can truncate profiles.';
   END IF;
 END $$;
 
@@ -2913,16 +3172,27 @@ END $$;
 RESET ROLE;
 
 -- T25/T29/T41/T67: a legacy/direct generic `credit` row must not become
--- trusted principal, and the scanner must not auto-unsuspend an already
--- auto-suspended wallet even if later evidence appears balanced.
+-- trusted principal. Review persists without an account suspension.
 SELECT set_config('app.tally_wallet_engine_authorized', 'true', true);
 SELECT set_config('app.tally_profile_privileged_authorized', 'true', true);
+
+-- Earlier outbox fixtures intentionally leave holds active; retire only those
+-- test holds so they do not reduce this scanner fixture's spendable amount.
+UPDATE public.wallet_reservations
+   SET status = 'released', released_at = now(), updated_at = now()
+ WHERE user_id = current_setting('app.wallet_security_test_user_id')::uuid
+   AND idempotency_key LIKE 'wallet-db-security-test:reservation:outbox-%'
+   AND status IN ('active', 'review_required');
 
 UPDATE public.profiles
    SET wallet_balance = 10000,
        account_suspended = false,
        suspension_reason = null,
        suspended_at = null,
+       wallet_review_required = false,
+       wallet_review_reason = null,
+       wallet_reviewed_at = null,
+       wallet_reviewed_by = null,
        updated_at = now()
  WHERE id = current_setting('app.wallet_security_test_user_id')::uuid;
 
@@ -2966,28 +3236,31 @@ DO $$
 DECLARE
   v_user uuid := current_setting('app.wallet_security_test_user_id')::uuid;
   v_scan jsonb;
+  v_truth jsonb;
   v_profile record;
 BEGIN
   SELECT public.evaluate_customer_ledger_suspension(v_user, 1)
     INTO v_scan;
 
-  IF COALESCE((v_scan->>'suspended')::boolean, false) IS NOT TRUE
+  IF COALESCE((v_scan->>'suspended')::boolean, true)
     OR COALESCE((v_scan->>'trusted_credits')::numeric, -1) <> 0
     OR COALESCE((v_scan->>'trusted_available')::numeric, -1) <> 0
     OR COALESCE((v_scan->>'displayed_balance_exposure')::numeric, 0) < 10000
   THEN
-    RAISE EXCEPTION 'FAILED: generic credit was trusted or did not trigger review. Scan: %', v_scan;
+    RAISE EXCEPTION 'FAILED: generic credit was trusted or excess was not reported. Scan: %', v_scan;
   END IF;
 
-  SELECT account_suspended, suspension_reason
+  SELECT public.wallet_financial_truth_internal(v_user) INTO v_truth;
+  SELECT account_suspended, wallet_review_required
     INTO v_profile
   FROM public.profiles
   WHERE id = v_user;
 
-  IF COALESCE(v_profile.account_suspended, false) IS NOT TRUE
-    OR COALESCE(v_profile.suspension_reason, '') NOT LIKE 'Auto-suspended:%'
+  IF COALESCE(v_profile.account_suspended, false)
+    OR COALESCE(v_profile.wallet_review_required, false)
+    OR COALESCE((v_truth->>'confirmed_spendable')::numeric, -1) <> 0
   THEN
-    RAISE EXCEPTION 'FAILED: generic credit scan did not persist auto-suspension. Profile: %', row_to_json(v_profile);
+    RAISE EXCEPTION 'FAILED: generic credit created a blocking hold or zero backing was not preserved. Truth: %, Profile: %', v_truth, row_to_json(v_profile);
   END IF;
 END $$;
 
@@ -3039,7 +3312,7 @@ VALUES (
 );
 
 UPDATE public.profiles
-   SET wallet_balance = 10000,
+   SET wallet_balance = 20000,
        updated_at = now()
  WHERE id = current_setting('app.wallet_security_test_user_id')::uuid;
 
@@ -3050,21 +3323,26 @@ DO $$
 DECLARE
   v_user uuid := current_setting('app.wallet_security_test_user_id')::uuid;
   v_scan jsonb;
+  v_truth jsonb;
   v_profile record;
 BEGIN
   SELECT public.evaluate_customer_ledger_suspension(v_user, 1)
     INTO v_scan;
 
-  SELECT account_suspended, suspension_reason
+  SELECT public.wallet_financial_truth_internal(v_user) INTO v_truth;
+  SELECT account_suspended, wallet_review_required
     INTO v_profile
   FROM public.profiles
   WHERE id = v_user;
 
-  IF COALESCE((v_scan->>'review_required')::boolean, false) IS NOT TRUE
-    OR COALESCE(v_profile.account_suspended, false) IS NOT TRUE
-    OR COALESCE(v_profile.suspension_reason, '') NOT LIKE 'Auto-suspended:%'
+  IF COALESCE((v_scan->>'review_required')::boolean, true)
+    OR COALESCE(v_profile.wallet_review_required, false)
+    OR COALESCE(v_profile.account_suspended, false)
+    OR COALESCE((v_truth->>'spending_blocked')::boolean, true)
+    OR COALESCE((v_truth->>'confirmed_spendable')::numeric, -1) <> 10000
+    OR COALESCE((v_truth->>'quarantined_excess')::numeric, -1) <> 10000
   THEN
-    RAISE EXCEPTION 'FAILED: fraud scanner auto-unsuspended an existing review. Scan: %, Profile: %', v_scan, row_to_json(v_profile);
+    RAISE EXCEPTION 'FAILED: excess review blocked later backed funding. Scan: %, Truth: %, Profile: %', v_scan, v_truth, row_to_json(v_profile);
   END IF;
 END $$;
 
@@ -3095,6 +3373,460 @@ BEGIN
     RAISE EXCEPTION 'FAILED: % wallet money-bound constraint(s) missing.', v_missing_constraints;
   END IF;
 END $$;
+
+-- Financial audit reads must require the current admin role, never an email.
+DO $$
+DECLARE
+  v_email_policies integer;
+  v_admin_policies integer;
+BEGIN
+  SELECT count(*) INTO v_email_policies
+  FROM pg_policies
+  WHERE schemaname = 'public'
+    AND tablename IN ('transaction_ledger_blocked_attempts', 'wallet_security_events')
+    AND COALESCE(qual, '') ~* '(p[.]email|email[[:space:]]*=)';
+
+  IF v_email_policies > 0 THEN
+    RAISE EXCEPTION 'FAILED: % financial audit policy/policies still grant by email.', v_email_policies;
+  END IF;
+
+  SELECT count(*) INTO v_admin_policies
+  FROM pg_policies
+  WHERE schemaname = 'public'
+    AND (
+      (tablename = 'transaction_ledger_blocked_attempts'
+        AND policyname = 'Admins can read transaction ledger blocked attempts')
+      OR (tablename = 'wallet_security_events'
+        AND policyname = 'Admins can read wallet security events')
+    )
+    AND cmd = 'SELECT'
+    AND array_to_string(roles, ',') LIKE '%authenticated%'
+    AND COALESCE(qual, '') LIKE '%is_admin%';
+
+  IF v_admin_policies <> 2 THEN
+    RAISE EXCEPTION 'FAILED: expected two current-admin financial audit read policies, found %.', v_admin_policies;
+  END IF;
+END $$;
+
+-- The historical funding baseline is trusted principal, not a runtime
+-- balance-adjustment surface. Test effective grants, including inherited ones.
+DO $$
+DECLARE
+  v_write_grants integer;
+BEGIN
+  IF to_regclass('public.wallet_legacy_funding') IS NULL THEN
+    RAISE EXCEPTION 'FAILED: wallet legacy funding baseline is missing.';
+  END IF;
+
+  SELECT count(*) INTO v_write_grants
+  FROM unnest(array['anon', 'authenticated', 'service_role']) AS role_name
+  CROSS JOIN unnest(array['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) AS privilege_name
+  WHERE has_table_privilege(role_name, 'public.wallet_legacy_funding', privilege_name);
+
+  IF v_write_grants > 0 THEN
+    RAISE EXCEPTION 'FAILED: legacy trusted principal has % effective runtime write grant(s).', v_write_grants;
+  END IF;
+
+  IF has_table_privilege('service_role', 'public.wallet_legacy_funding', 'SELECT') IS NOT TRUE THEN
+    RAISE EXCEPTION 'FAILED: service_role cannot read the legacy trusted principal.';
+  END IF;
+END $$;
+
+-- Per-customer amounts and event times must not be callable as public social
+-- proof, even if the current frontend no longer mounts the feed component.
+DO $$
+BEGIN
+  IF to_regprocedure('public.get_recent_activity_feed(integer)') IS NULL THEN
+    RAISE EXCEPTION 'FAILED: expected activity feed function is missing; verify deployed version.';
+  END IF;
+
+  IF has_function_privilege('anon', 'public.get_recent_activity_feed(integer)', 'EXECUTE')
+    OR has_function_privilege('authenticated', 'public.get_recent_activity_feed(integer)', 'EXECUTE')
+  THEN
+    RAISE EXCEPTION 'FAILED: browser roles can execute per-customer public activity feed.';
+  END IF;
+END $$;
+
+-- A 14 September migration exposed inventory usernames to anonymous callers.
+-- The later narrow view and admin-only base-table policy must supersede it.
+DO $$
+DECLARE
+  v_policy_count integer;
+  v_bad_policy_count integer;
+  v_exposed_username_count integer;
+  v_anon_column_reads integer;
+BEGIN
+  IF to_regclass('public.individual_accounts') IS NULL
+    OR to_regclass('public.individual_accounts_public') IS NULL THEN
+    RAISE EXCEPTION 'FAILED: inventory base table or public pointer view is missing.';
+  END IF;
+
+  IF has_table_privilege('anon', 'public.individual_accounts', 'SELECT') THEN
+    RAISE EXCEPTION 'FAILED: anonymous role can read inventory base table.';
+  END IF;
+
+  IF has_table_privilege('anon', 'public.individual_accounts_public', 'SELECT') IS NOT TRUE THEN
+    RAISE EXCEPTION 'FAILED: anonymous storefront cannot read safe inventory pointers.';
+  END IF;
+
+  SELECT count(*) INTO v_anon_column_reads
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.individual_accounts'::regclass
+    AND a.attnum > 0 AND NOT a.attisdropped
+    AND has_column_privilege(
+      'anon', 'public.individual_accounts', a.attname, 'SELECT'
+    );
+
+  IF v_anon_column_reads > 0 THEN
+    RAISE EXCEPTION 'FAILED: anonymous role can read % inventory base-table column(s).', v_anon_column_reads;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    WHERE c.oid = 'public.individual_accounts'::regclass
+      AND c.relrowsecurity
+  ) THEN
+    RAISE EXCEPTION 'FAILED: inventory base table RLS is disabled.';
+  END IF;
+
+  SELECT count(*), count(*) FILTER (
+    WHERE policyname <> 'individual_accounts admin all'
+      OR cmd <> 'ALL'
+      OR array_to_string(roles, ',') <> 'authenticated'
+      OR coalesce(qual, '') NOT LIKE '%is_admin_profile%'
+      OR coalesce(with_check, '') NOT LIKE '%is_admin_profile%'
+  ) INTO v_policy_count, v_bad_policy_count
+  FROM pg_policies
+  WHERE schemaname = 'public' AND tablename = 'individual_accounts';
+
+  IF v_policy_count <> 1 OR v_bad_policy_count <> 0 THEN
+    RAISE EXCEPTION 'FAILED: inventory has unexpected browser RLS policy/policies.';
+  END IF;
+
+  SELECT count(*) INTO v_exposed_username_count
+  FROM public.individual_accounts_public
+  WHERE username IS NOT NULL;
+
+  IF v_exposed_username_count <> 0 THEN
+    RAISE EXCEPTION 'FAILED: public inventory view exposes % username(s).', v_exposed_username_count;
+  END IF;
+
+  IF pg_get_viewdef('public.individual_accounts_public'::regclass, true)
+      !~* 'case[[:space:]]+when[[:space:]]+false[[:space:]]+then' THEN
+    RAISE EXCEPTION 'FAILED: public inventory username column is not forced to NULL.';
+  END IF;
+END $$;
+
+-- The retired manual SQL Editor script must not leave public settings or
+-- browser-writable visit/CRO/chat evidence after the ordered migrations.
+DO $$
+DECLARE
+  v_table text;
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'app_settings'
+      AND policyname = 'Anyone can read app settings'
+  ) THEN
+    RAISE EXCEPTION 'FAILED: old public app-settings read policy remains';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'site_visits'
+      AND policyname = 'Anyone can insert site visits'
+  ) OR has_table_privilege('anon', 'public.site_visits', 'INSERT')
+    OR has_table_privilege('authenticated', 'public.site_visits', 'INSERT')
+  THEN
+    RAISE EXCEPTION 'FAILED: browser can still manufacture site-visit evidence';
+  END IF;
+
+  FOREACH v_table IN ARRAY ARRAY[
+    'cro_outcomes', 'cro_interventions', 'chat_sessions', 'chat_interventions'
+  ] LOOP
+    IF to_regclass('public.' || v_table) IS NOT NULL AND (
+      has_table_privilege('anon', 'public.' || v_table, 'SELECT')
+      OR has_table_privilege('authenticated', 'public.' || v_table, 'SELECT')
+      OR has_table_privilege('anon', 'public.' || v_table, 'INSERT')
+      OR has_table_privilege('authenticated', 'public.' || v_table, 'INSERT')
+      OR has_table_privilege('anon', 'public.' || v_table, 'UPDATE')
+      OR has_table_privilege('authenticated', 'public.' || v_table, 'UPDATE')
+    ) THEN
+      RAISE EXCEPTION 'FAILED: browser still has direct % analytics access', v_table;
+    END IF;
+  END LOOP;
+
+  IF has_table_privilege('anon', 'public.revenue_events', 'UPDATE')
+    OR has_table_privilege('authenticated', 'public.revenue_events', 'UPDATE')
+  THEN
+    RAISE EXCEPTION 'FAILED: browser can update revenue-event evidence';
+  END IF;
+
+  IF to_regclass('public.admin_alerts') IS NULL
+    OR has_table_privilege('anon', 'public.admin_alerts', 'INSERT')
+    OR has_table_privilege('authenticated', 'public.admin_alerts', 'INSERT')
+    OR NOT has_table_privilege('service_role', 'public.admin_alerts', 'INSERT')
+    OR EXISTS (
+      SELECT 1 FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'admin_alerts'
+        AND policyname = 'Allow insert via service role'
+    )
+  THEN
+    RAISE EXCEPTION 'FAILED: browser can forge admin security alerts or service insert is missing';
+  END IF;
+
+  IF has_table_privilege('anon', 'public.admin_alerts', 'UPDATE')
+    OR has_table_privilege('authenticated', 'public.admin_alerts', 'UPDATE')
+    OR has_table_privilege('anon', 'public.admin_alerts', 'SELECT')
+    OR NOT has_table_privilege('authenticated', 'public.admin_alerts', 'SELECT')
+    OR has_column_privilege('anon', 'public.admin_alerts', 'acknowledged', 'UPDATE')
+    OR NOT has_column_privilege('authenticated', 'public.admin_alerts', 'acknowledged', 'UPDATE')
+    OR NOT has_table_privilege('service_role', 'public.admin_alerts', 'UPDATE')
+    OR EXISTS (
+      SELECT 1 FROM pg_catalog.pg_attribute a
+      WHERE a.attrelid = 'public.admin_alerts'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+        AND a.attname <> 'acknowledged'
+        AND has_column_privilege('authenticated', 'public.admin_alerts', a.attname, 'UPDATE')
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_trigger
+      WHERE tgrelid = 'public.admin_alerts'::regclass
+        AND tgname = 'trg_guard_admin_alert_acknowledgement'
+        AND NOT tgisinternal
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_policies
+      WHERE schemaname = 'public' AND tablename = 'admin_alerts'
+        AND policyname = 'Admins can view all alerts' AND cmd = 'SELECT'
+        AND qual LIKE '%is_admin_profile%'
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_policies
+      WHERE schemaname = 'public' AND tablename = 'admin_alerts'
+        AND policyname = 'Admins can update alerts' AND cmd = 'UPDATE'
+        AND qual LIKE '%is_admin_profile%'
+        AND with_check LIKE '%is_admin_profile%'
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_policies
+      WHERE schemaname = 'public' AND tablename = 'admin_alerts'
+        AND policyname = 'admin_alerts_active_admin_limit'
+        AND cmd = 'ALL' AND permissive = 'RESTRICTIVE'
+        AND qual LIKE '%is_admin_profile%'
+    )
+  THEN
+    RAISE EXCEPTION 'FAILED: browser can alter admin alert evidence or acknowledgement guard is missing';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF to_regprocedure('public.is_admin_profile()') IS NULL
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_proc p
+      WHERE p.oid = 'public.is_admin_profile()'::regprocedure
+        AND p.prosecdef
+        AND EXISTS (
+          SELECT 1 FROM unnest(p.proconfig) AS setting
+          WHERE setting LIKE 'search_path=%'
+        )
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_policies
+      WHERE schemaname = 'public' AND tablename = 'profiles'
+        AND policyname = 'Admin can read all profiles' AND cmd = 'SELECT'
+        AND qual LIKE '%is_admin_profile%'
+        AND qual NOT LIKE '%FROM public.profiles%'
+    )
+    OR EXISTS (
+      SELECT 1 FROM pg_catalog.pg_policies
+      WHERE schemaname = 'public' AND tablename = 'profiles'
+        AND policyname IN ('Users and admins can read profiles', 'profiles_select')
+    )
+    OR (
+      SELECT count(*) FROM pg_catalog.pg_policies
+      WHERE schemaname = 'public' AND tablename = 'profiles'
+        AND cmd IN ('SELECT', 'ALL')
+    ) <> 1
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_proc p
+      WHERE p.oid = 'public.wallet_active_staff_profile_reader()'::regprocedure
+        AND p.prosecdef
+        AND EXISTS (
+          SELECT 1 FROM unnest(p.proconfig) AS setting
+          WHERE setting IN ('search_path=', 'search_path=""')
+        )
+    )
+  THEN
+    RAISE EXCEPTION 'FAILED: profile reader policies are broad, recursive, or unpinned';
+  END IF;
+END $$;
+
+SELECT set_config(
+  'app.wallet_security_private_setting_key',
+  'wallet_security_private_' || gen_random_uuid()::text,
+  true
+);
+INSERT INTO public.app_settings(key, value)
+VALUES (current_setting('app.wallet_security_private_setting_key'), 'private-test-value');
+SET LOCAL ROLE anon;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM public.app_settings
+    WHERE key = current_setting('app.wallet_security_private_setting_key')
+  ) THEN
+    RAISE EXCEPTION 'FAILED: anon can read a private app setting';
+  END IF;
+END $$;
+RESET ROLE;
+
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub', gen_random_uuid()::text, true);
+SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+DO $$
+DECLARE
+  v_denied boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.revenue_events(event_id, event_type, user_id)
+    VALUES (
+      'wallet-security-forged-revenue-' || gen_random_uuid()::text,
+      'PAGE_VIEWED',
+      current_setting('app.wallet_security_test_user_id')::uuid
+    );
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied := true;
+  END;
+  IF NOT v_denied THEN
+    RAISE EXCEPTION 'FAILED: authenticated browser can forge another user revenue event';
+  END IF;
+END $$;
+RESET ROLE;
+
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claim.sub', gen_random_uuid()::text, true);
+SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+DO $$
+DECLARE
+  v_denied boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.cro_decision_audit(
+      decision_id, user_id, surface, selected_action, metadata, guardrails
+    ) VALUES (
+      'wallet-security-forged-cro-' || gen_random_uuid()::text,
+      current_setting('app.wallet_security_test_user_id')::uuid,
+      'security-test', 'DO_NOTHING',
+      '{"client_observed":true,"authoritative":false}'::jsonb,
+      '{"server_authoritative":false}'::jsonb
+    );
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied := true;
+  END;
+  IF NOT v_denied THEN
+    RAISE EXCEPTION 'FAILED: browser can attribute a CRO decision to another user';
+  END IF;
+END $$;
+RESET ROLE;
+
+SET LOCAL ROLE authenticated;
+SELECT set_config(
+  'request.jwt.claim.sub', current_setting('app.wallet_security_test_user_id'), true
+);
+SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+INSERT INTO public.cro_decision_audit(
+  decision_id, user_id, surface, selected_action, metadata, guardrails
+) VALUES (
+  'wallet-security-own-cro-' || gen_random_uuid()::text,
+  current_setting('app.wallet_security_test_user_id')::uuid,
+  'security-test', 'DO_NOTHING',
+  '{"client_observed":true,"authoritative":false}'::jsonb,
+  '{"server_authoritative":false}'::jsonb
+);
+RESET ROLE;
+
+-- Public counters must not carry exact private sales totals or product units.
+DO $$
+BEGIN
+  IF has_function_privilege('anon', 'public.get_customer_sales_stats()', 'EXECUTE')
+    OR has_function_privilege('anon', 'public.get_customer_top_product_groups(integer)', 'EXECUTE')
+    OR has_function_privilege('authenticated', 'public.get_customer_top_product_groups(integer)', 'EXECUTE')
+  THEN
+    RAISE EXCEPTION 'FAILED: public sales aggregate still exposes revenue or units sold';
+  END IF;
+  IF has_table_privilege('anon', 'public.staff_permissions', 'INSERT')
+    OR has_table_privilege('anon', 'public.staff_permissions', 'UPDATE')
+    OR has_table_privilege('authenticated', 'public.staff_permissions', 'INSERT')
+    OR has_table_privilege('authenticated', 'public.staff_permissions', 'UPDATE')
+  THEN
+    RAISE EXCEPTION 'FAILED: browser can modify staff revenue permission';
+  END IF;
+  IF has_table_privilege('anon', 'public.staff_pending_actions', 'INSERT')
+    OR has_table_privilege('authenticated', 'public.staff_pending_actions', 'INSERT')
+    OR has_table_privilege('authenticated', 'public.staff_pending_actions', 'UPDATE')
+    OR has_table_privilege('authenticated', 'public.staff_pending_actions', 'TRUNCATE')
+    OR EXISTS (
+      SELECT 1 FROM pg_catalog.pg_attribute a
+      WHERE a.attrelid = 'public.staff_pending_actions'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped
+        AND (
+          has_column_privilege('authenticated', 'public.staff_pending_actions', a.attname, 'INSERT')
+          OR has_column_privilege('authenticated', 'public.staff_pending_actions', a.attname, 'UPDATE')
+        )
+    )
+    OR NOT has_table_privilege('authenticated', 'public.staff_pending_actions', 'SELECT')
+    OR NOT has_table_privilege('service_role', 'public.staff_pending_actions', 'INSERT')
+  THEN
+    RAISE EXCEPTION 'FAILED: staff action queue privilege boundary is unsafe';
+  END IF;
+  IF NOT has_function_privilege('anon', 'public.get_public_customer_order_count()', 'EXECUTE')
+    OR NOT has_function_privilege('anon', 'public.get_public_top_product_group_ids(integer)', 'EXECUTE')
+  THEN
+    RAISE EXCEPTION 'FAILED: bounded public sales counters are unavailable';
+  END IF;
+END $$;
+
+SET LOCAL ROLE anon;
+DO $$
+DECLARE
+  v_denied boolean := false;
+BEGIN
+  BEGIN
+    PERFORM * FROM public.get_customer_sales_stats();
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied := true;
+  END;
+  IF NOT v_denied THEN
+    RAISE EXCEPTION 'FAILED: anonymous caller read exact sales revenue';
+  END IF;
+  PERFORM public.get_public_customer_order_count();
+  PERFORM * FROM public.get_public_top_product_group_ids(1000000);
+END $$;
+RESET ROLE;
+
+SET LOCAL ROLE authenticated;
+SELECT set_config(
+  'request.jwt.claim.sub', current_setting('app.wallet_security_test_user_id'), true
+);
+SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+DO $$
+DECLARE
+  v_denied boolean := false;
+BEGIN
+  BEGIN
+    PERFORM * FROM public.get_customer_sales_stats();
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied := true;
+  END;
+  IF NOT v_denied THEN
+    RAISE EXCEPTION 'FAILED: ordinary customer read staff sales revenue';
+  END IF;
+END $$;
+RESET ROLE;
 
 SELECT 'wallet-db-security-test-pack passed inside rollback transaction' AS result;
 

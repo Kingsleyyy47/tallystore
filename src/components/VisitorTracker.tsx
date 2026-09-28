@@ -98,17 +98,6 @@ export default function VisitorTracker() {
         body: visitPayload,
       })
       .then(({ error }) => {
-        if (!error) return
-        console.warn('Server visit recording failed, using fallback:', error.message)
-        return supabase
-          .from('site_visits' as any)
-          .insert({
-            ...visitPayload,
-            user_id: user?.id || null,
-          })
-      })
-      .then((result) => {
-        const error = result && 'error' in result ? result.error : null
         if (error) console.warn('Failed to record site visit:', error.message)
       })
   }, [isAdmin, isStaff, location.pathname, location.search, user?.id])

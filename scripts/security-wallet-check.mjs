@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { ngnMinorUnits } from '../supabase/functions/_shared/ngn-amount.mjs'
 
 const root = process.cwd()
 
@@ -207,7 +208,9 @@ check('PocketFi duplicate references cannot silently credit mismatched payments'
   const src = read('supabase/functions/webhook-pocketfi/index.ts')
   assert(src.includes('POCKETFI_REFERENCE_CONFLICT'), 'PocketFi duplicate reference conflicts must return a conflict code')
   assert(src.includes('existingTransaction.user_id !== userId'), 'PocketFi duplicate check must compare credited user')
-  assert(src.includes('Math.round(existingAmount * 100) !== Math.round(amount * 100)'), 'PocketFi duplicate check must compare credited amount')
+  assert(src.includes('const amountMinor = ngnMinorUnits(rawAmount)'), 'PocketFi must validate raw provider amount before number conversion')
+  assert(src.includes('existingAmountMinor !== amountMinor'), 'PocketFi duplicate check must compare exact credited amount')
+  assert(!src.includes('Math.round(existingAmount * 100)'), 'PocketFi duplicate check must not round a mismatch into an idempotent replay')
 })
 
 check('PocketFi Vercel bridge preserves provider verification boundaries', () => {
@@ -289,15 +292,23 @@ check('future public functions are not browser-executable by default', () => {
   assert(src.includes('Intended public RPCs must receive explicit grants'), 'migration must document explicit grants for intended public RPCs')
 })
 
-check('wallet purchases require backed available funds and freeze on mismatch', () => {
+check('wallet purchases use canonical backed funds and decline without automatic suspension', () => {
   const src = read('supabase/migrations/20260919001000_enforce_backed_wallet_purchases.sql')
   const trigger = read('supabase/migrations/20260919015000_enforce_trusted_principal_transaction_guard.sql')
   const fraudEvidence = read('supabase/migrations/20260919004000_harden_fraud_credit_evidence.sql')
-  const ledgerEvaluatorDefinitions = migrationFilesContaining('CREATE OR REPLACE FUNCTION public.evaluate_customer_ledger_suspension')
+  const canonical = read('supabase/migrations/20260924006000_wallet_financial_truth.sql')
+  const canonicalReview = read('supabase/migrations/20260924007000_use_financial_truth_for_review.sql')
+  const canonicalGates = read('supabase/migrations/20260924008000_route_wallet_gates_through_financial_truth.sql')
+  const ledgerEvaluatorDefinitions = migrationFilesContaining('CREATE OR REPLACE FUNCTION public.evaluate_customer_ledger_suspension(')
   assert(
-    ledgerEvaluatorDefinitions.at(-1) === '20260919004000_harden_fraud_credit_evidence.sql',
-    `hardened fraud evaluator must be the final migration definition, got ${ledgerEvaluatorDefinitions.at(-1) || 'none'}`,
+    ledgerEvaluatorDefinitions.at(-1) === '20260924007000_use_financial_truth_for_review.sql',
+    `canonical evaluator must be the final migration definition, got ${ledgerEvaluatorDefinitions.at(-1) || 'none'}`,
   )
+  assert(canonicalReview.includes('public.wallet_financial_truth_internal(target_user_id)'), 'review decisions must use canonical financial truth')
+  assert(canonicalGates.includes('v_financial_truth := public.wallet_financial_truth_internal(p_user_id)'), 'wallet engine purchase decisions must use canonical financial truth')
+  assert(canonicalGates.includes("v_scan := public.wallet_financial_truth_internal(p_user_id)"), 'reservations must use canonical financial truth')
+  assert(canonicalGates.includes("'confirmed_spendable'"), 'reservation authorization must use canonical confirmed spendable')
+  assert(canonical.includes("'quarantined_excess'"), 'positive excess must be visible for review')
   assert(!fraudEvidence.includes("'staff_credit'"), 'final fraud evaluator must not count staff_credit as trusted principal')
   assert(!fraudEvidence.includes("'referral_withdrawal'"), 'final fraud evaluator must not count referral withdrawals as trusted principal')
   assert(!fraudEvidence.includes('trusted_credits := trusted_credits + crypto_credits'), 'final fraud evaluator must not add crypto review credits to trusted principal')
@@ -315,6 +326,12 @@ check('wallet purchases require backed available funds and freeze on mismatch', 
   assert(fraudEvidence.includes("COALESCE(d.metadata->>'trusted_principal_authorized', '') = 'true'"), 'fraud ledger scanner must count only refunds linked to trusted-principal-authorized debits')
   assert(fraudEvidence.includes("d.metadata->>'trusted_principal_debit_amount'"), 'fraud ledger scanner must require trusted-principal debit amount evidence for refund restoration')
   assert(src.includes('v_trusted_consumed_spend := GREATEST(v_trusted_debit_capacity - v_eligible_refunds, 0)'), 'wallet engine must calculate consumed trusted spend')
+  const spendFix = read('supabase/migrations/20260924000000_fix_trusted_spend_accounting.sql')
+  assert(spendFix.includes('GREATEST(completed_spend - eligible_refunds, 0)'), 'fraud evaluator must count all posted debits after eligible refunds')
+  assert(spendFix.includes('GREATEST(v_completed_debits - v_eligible_refunds, 0)'), 'ledger guard must count all posted debits after eligible refunds')
+  assert(spendFix.includes('GREATEST(v_previous_wallet_debits - v_eligible_refunds, 0)'), 'wallet engine must count all posted debits after eligible refunds')
+  assert(spendFix.includes("current_setting('app.tally_wallet_engine_authorized', true) = 'true'"), 'fraud trigger must not compare the ledger and profile before an engine posting finishes')
+  assert(spendFix.includes('IF v_current_balance <= v_authoritative_available THEN'), 'ordinary insufficient funds must not freeze a reconciled wallet')
   assert(src.includes('v_authoritative_available := GREATEST(v_trusted_credits - v_trusted_consumed_spend, 0)'), 'wallet engine must not add refunds as new trusted money')
   assert(!src.includes('v_authoritative_available := v_trusted_credits + v_eligible_refunds - v_previous_wallet_debits'), 'wallet engine must not use refunds as additive principal')
   assert(src.includes("lower(COALESCE(t.status, 'completed')) = 'completed'"), 'wallet engine must normalize transaction status case when checking completed rows')
@@ -342,13 +359,8 @@ check('wallet purchases require backed available funds and freeze on mismatch', 
   assert(src.includes("SET processed = true"), 'wallet engine must atomically mark PocketFi webhook evidence processed before trusting it')
   assert(src.includes('round(COALESCE(pwl.verified_amount_ngn, -1), 2) = round(t.amount, 2)'), 'wallet engine must match PocketFi verified amount to the posted credit')
   assert(src.includes("NULLIF(trim(COALESCE(pwl.verified_reference, '')), '') IN"), 'wallet engine must match PocketFi verified reference to the posted credit')
-  assert(src.includes('WALLET_UNBACKED_FUNDS'), 'missing unbacked funds denial code')
-  assert(src.includes('account_suspended = true'), 'unbacked wallet purchase must freeze/suspend financial access')
-  const unbackedFreezeBlock = src.slice(
-    src.indexOf("IF v_balance_type = 'wallet' AND v_type = 'purchase' THEN"),
-    src.indexOf("'code', 'WALLET_UNBACKED_FUNDS'"),
-  )
-  assert(unbackedFreezeBlock.includes('suspended_at = COALESCE(suspended_at, now())'), 'unbacked wallet purchase must timestamp the durable freeze')
+  assert(canonicalGates.includes('INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS'), 'unbacked purchase must decline before posting')
+  assert(!canonicalGates.includes('account_suspended = true'), 'ordinary insufficient funds must not suspend the account')
   assert(trigger.includes('guard_trusted_principal_transaction'), 'trusted principal trigger guard must exist for already-deployed wallet engines')
   assert(trigger.includes("current_setting('app.tally_wallet_engine_authorized'"), 'trusted principal guard must run only inside the wallet engine context')
   assert(trigger.includes('v_trusted_available := GREATEST(v_trusted_principal - v_trusted_consumed_spend, 0)'), 'trusted principal trigger must calculate trusted available')
@@ -470,26 +482,17 @@ check('approved admin credits require a server-side approving actor and explicit
   }
 
   const adminAdjust = read('supabase/functions/admin-adjust-balance/index.ts')
+  const canonical = read('supabase/migrations/20260924006000_wallet_financial_truth.sql')
   assert(adminAdjust.includes('p_created_by: params.createdBy || null'), 'admin-adjust wrapper must pass createdBy into wallet engine')
-  assert(adminAdjust.includes('created_by, external_payment_id'), 'admin unsuspend backing must load provider payment reference')
-  assert(adminAdjust.includes(".from('pending_payments')"), 'admin unsuspend backing must load Ercas pending-payment evidence')
-  assert(adminAdjust.includes(".from('pocketfi_webhook_logs')"), 'admin unsuspend backing must load PocketFi webhook evidence')
-  assert(adminAdjust.includes('balance_before, balance_after'), 'admin unsuspend backing must load balance snapshots for admin-credit trust checks')
-  assert(adminAdjust.includes('function isVerifiedGatewayCredit'), 'admin unsuspend backing must centralize verified gateway credit checks')
-  assert(adminAdjust.includes('metadata.verified_amount_ngn'), 'admin unsuspend backing must require provider-verified amount metadata')
-  assert(adminAdjust.includes('pendingPayments.some'), 'admin unsuspend backing must require matching pending-payment evidence for Ercas deposits')
-  assert(adminAdjust.includes("String(payment.status || 'pending').toLowerCase() === 'credited'"), 'admin unsuspend backing must not count merely pending Ercas payment evidence as trusted principal')
-  assert(adminAdjust.includes('pocketfiWebhookLogs.some'), 'admin unsuspend backing must require matching PocketFi webhook evidence')
-  assert(adminAdjust.includes('Boolean(log.processed) === true'), 'admin unsuspend backing must require processed PocketFi webhook evidence')
-  assert(adminAdjust.includes('toCents(log.verified_amount_ngn) === toCents(amount)'), 'admin unsuspend backing must require matching PocketFi verified amount evidence')
-  assert(adminAdjust.includes('log.verified_reference'), 'admin unsuspend backing must require matching PocketFi verified reference evidence')
-  assert(adminAdjust.includes('const isBalanceNeutralAdminRepair'), 'admin unsuspend backing must identify balance-neutral admin repair evidence')
-  assert(adminAdjust.includes("metadata.source || '') === 'admin-ledger-repair'"), 'admin unsuspend backing must exclude admin ledger repair evidence from trusted principal')
-  assert(adminAdjust.includes('balanceAfter <= balanceBefore'), 'admin unsuspend backing must require approved admin credits to increase the balance')
-  assert(adminAdjust.includes('.eq(\'is_admin\', true)'), 'admin unsuspend review must verify admin_credit actors are admins')
-  assert(adminAdjust.includes('function hasApprovedAdminCreditEvidence'), 'admin unsuspend review must require explicit admin-credit approval metadata')
-  assert(adminAdjust.includes('metadata.approved_by'), 'admin unsuspend review must require admin_credit approved_by metadata')
-  assert(adminAdjust.includes('metadata.approval_reference'), 'admin unsuspend review must require admin_credit approval_reference metadata')
+  assert(adminAdjust.includes("supabaseAdmin.rpc('wallet_financial_truth_internal'"), 'admin unsuspend must read canonical financial truth')
+  assert(!adminAdjust.includes('calculateWalletBacking'), 'admin unsuspend must not retain a second financial calculator')
+  assert(canonical.includes('FROM public.pending_payments pp'), 'canonical reader must load Ercas evidence')
+  assert(canonical.includes('FROM public.pocketfi_webhook_logs pwl'), 'canonical reader must load PocketFi evidence')
+  assert(canonical.includes("lower(COALESCE(pp.status, 'pending')) = 'credited'"), 'pending Ercas evidence must not create principal')
+  assert(canonical.includes('COALESCE(pwl.processed, false)'), 'PocketFi evidence must be processed')
+  assert(canonical.includes("t.metadata->>'approved_by'"), 'admin credit must have approver metadata')
+  assert(canonical.includes("t.metadata->>'approval_reference'"), 'admin credit must have a stable approval reference')
+  assert(canonical.includes('WHERE approver.id = t.created_by AND COALESCE(approver.is_admin, false)'), 'admin credit actor must be an admin')
   assert(adminAdjust.includes('createdBy: user.id'), 'admin adjustments must use the authenticated admin as approving actor')
   assert(adminAdjust.includes("approval_type: 'direct_admin_adjustment'"), 'direct admin credits must record direct admin approval type')
   assert(adminAdjust.includes('approval_reference: idempotency_key || adjustmentReference'), 'direct admin credits must record a stable approval reference')
@@ -510,32 +513,19 @@ check('approved admin credits require a server-side approving actor and explicit
   assert(!browser.includes('created_by: user.id'), 'browser helper must not manufacture created_by evidence')
 
   const adminPage = read('src/pages/AdminPage.tsx')
-  assert(adminPage.includes('function isTrustedCreditTransaction'), 'admin fraud review must define the trusted-credit helper')
-  assert(adminPage.includes('function isVerifiedGatewayCreditTransaction'), 'admin fraud review must centralize verified gateway credit checks')
-  assert(adminPage.includes('function isBalanceNeutralAdminRepair'), 'admin fraud review must identify balance-neutral admin repair evidence')
-  assert(adminPage.includes('const adminActorIds = new Set'), 'admin fraud review must build admin actor evidence from profiles')
-  assert(adminPage.includes("readRows('pending_payments'"), 'admin fraud review must load pending payment evidence')
-  assert(adminPage.includes("readRows('pocketfi_webhook_logs'"), 'admin fraud review must load PocketFi webhook evidence')
-  assert(adminPage.includes('pendingEvidenceByUser'), 'admin fraud review must index pending payment evidence by user')
-  assert(adminPage.includes('pocketfiLogsById'), 'admin fraud review must index PocketFi webhook evidence by id')
-  assert(adminPage.includes("String(payment.status || 'pending').toLowerCase() === 'credited'"), 'admin fraud review must not count merely pending Ercas payment evidence as trusted principal')
-  assert(adminPage.includes('metadata.verified_amount_ngn'), 'admin fraud review must require provider-verified amount metadata')
-  assert(adminPage.includes('Boolean(webhookLog.processed) === true'), 'admin fraud review must require processed PocketFi webhook evidence')
-  assert(adminPage.includes('toLedgerCents(webhookLog.verified_amount_ngn) === toLedgerCents(amount)'), 'admin fraud review must require matching PocketFi verified amount evidence')
-  assert(adminPage.includes('webhookLog.verified_reference'), 'admin fraud review must require matching PocketFi verified reference evidence')
-  assert(adminPage.includes('function findLinkedTrustedDebit'), 'admin fraud review must link refunds to original trusted debits')
-  assert(adminPage.includes('metadata.trusted_principal_authorized'), 'admin fraud review must only treat trusted-principal-authorized debits as refundable capacity')
-  assert(adminPage.includes('metadata.trusted_principal_debit_amount'), 'admin fraud review must require trusted-principal debit amount evidence')
-  assert(adminPage.includes('ledger.completedRefundRows.push(tx)'), 'admin fraud review must preserve refund rows for linkage instead of only aggregating amounts')
-  assert(adminPage.includes('const original = findLinkedTrustedDebit(refund, ledger.trustedDebits)'), 'admin fraud review must match refunds against trusted debit evidence')
-  assert(adminPage.includes('ledger.linkedEligibleRefunds = Array.from(refundedByOriginal.values()).reduce'), 'admin fraud review must calculate linked eligible refunds separately')
-  assert(!adminPage.includes('const eligibleRefunds = Math.min(ledger.completedRefunds, trustedDebitCapacity)'), 'admin fraud review must not treat aggregate completed refunds as eligible restoration')
-  assert(adminPage.includes('adminActorIds.has(createdBy)'), 'admin fraud review must verify admin_credit actors are admins')
-  assert(adminPage.includes('hasApprovingAdminActor && !isBalanceNeutralAdminRepair(tx)'), 'admin fraud review must exclude admin repair rows from trusted principal')
+  assert(adminPage.includes('getAdminWalletFinancialTruthPage(afterUserId)'), 'fraud review must use paged canonical truth')
+  assert(adminPage.includes('getAdminWalletFinancialTruth(userId)'), 'admin user detail must load canonical truth')
+  assert(!adminPage.includes("readRows('pending_payments'"), 'fraud review must not independently reconstruct payment evidence in the browser')
+  assert(!adminPage.includes('function isTrustedCreditTransaction'), 'fraud review must not have another trusted-principal calculation')
+  assert(canonical.includes('FROM public.pending_payments pp'), 'canonical truth must require Ercas payment evidence')
+  assert(canonical.includes('FROM public.pocketfi_webhook_logs pwl'), 'canonical truth must require PocketFi payment evidence')
+  assert(canonical.includes('COALESCE(approver.is_admin, false)'), 'canonical admin credits must require an approving actor')
+  assert(canonical.includes('eligible_refund_matches AS'), 'canonical truth must link refunds to trusted debits')
   assert(adminPage.includes("if (isWalletSpendTransaction(tx)) return -absoluteAmount"), 'admin user detail transactions must render admin_debit and other spends as negative amounts')
   assert(adminPage.includes('const signedAmount = getWalletTransactionDisplayAmount(tx)'), 'admin user detail transaction rows must use the signed display amount helper')
-  assert(adminPage.includes('const isCredit = signedAmount > 0'), 'admin user detail transaction rows must derive credit styling from signed amount')
-  assert(adminPage.includes('const isSpend = signedAmount < 0'), 'admin user detail transaction rows must derive debit styling from signed amount')
+  assert(adminPage.includes('const isCredit = isWalletLedgerRow && signedAmount > 0'), 'admin user detail wallet credits must derive styling from signed wallet amount')
+  assert(adminPage.includes('const isSpend = isWalletLedgerRow && signedAmount < 0'), 'admin user detail wallet debits must derive styling from signed wallet amount')
+  assert(adminPage.includes("balance_type: 'crypto_activity'"), 'separate crypto activity must not be labelled as a wallet movement')
   assert(adminPage.includes("{isCredit ? '+' : isSpend ? '-' : ''}"), 'admin user detail transaction rows must render debit signs from signed amount')
   assert(adminPage.includes("'wallet_deposit', 'admin_credit'"), 'admin user history may show approved admin_credit funding rows')
   assert(!adminPage.includes("'wallet_deposit', 'credit', 'admin_credit', 'staff_credit'"), 'admin user history must not label generic or staff_credit rows as deposits')
@@ -545,17 +535,6 @@ check('approved admin credits require a server-side approving actor and explicit
   assert(adminReviewModel.includes('entry.providerEvidence.processed === true'), 'admin review model must require processed PocketFi evidence')
   assert(adminReviewModel.includes('toCents(entry.providerEvidence.amount) === toCents(amount)'), 'admin review model must require matching PocketFi amount evidence')
   assert(adminReviewModel.includes('entry.providerEvidence.reference'), 'admin review model must require matching PocketFi reference evidence')
-  const trustedCreditHelper = adminPage.slice(
-    adminPage.indexOf('function isTrustedCreditTransaction'),
-    adminPage.indexOf('function isTrustedCryptoCreditTransaction'),
-  )
-  assert(!trustedCreditHelper.includes("'credit'"), 'admin fraud review must not treat generic credit as trusted principal')
-  for (const type of ['staff_credit', 'promotion_credit', 'correction_credit']) {
-    assert(!trustedCreditHelper.includes(`'${type}'`), `admin fraud review must not treat ${type} as trusted principal`)
-  }
-  assert(trustedCreditHelper.includes('isVerifiedGatewayCreditTransaction'), 'admin fraud review must require verified provider evidence for deposit principal')
-  assert(trustedCreditHelper.includes('!isBalanceNeutralAdminRepair(tx)'), 'admin fraud review must not count audit-only admin repair rows as trusted principal')
-
   const adminReviewTest = read('scripts/wallet-admin-review-decision-test.mjs')
   const pkg = read('package.json')
   assert(pkg.includes('"security:wallet:admin-review": "node scripts/wallet-admin-review-decision-test.mjs"'), 'package script must expose admin review decision tests')
@@ -643,18 +622,23 @@ check('wallet refunds are capped by trusted original debits', () => {
 
 check("refund paths credit the original order owner's wallet", () => {
   const telegram = read('supabase/functions/telegram-stars/index.ts')
-  assert(/async function refundWallet\(admin: SupabaseAdmin, order: \{[^}]*user_id: string[^}]*\}, reason: string/.test(telegram), 'Telegram refunds must accept an order carrying user_id')
-  assert(telegram.includes('userId: order.user_id'), 'Telegram refunds must credit order.user_id')
-  assert(telegram.includes('idempotencyKey: `telegram:refund:${order.id}`'), 'Telegram refunds must use order-bound idempotency')
-  assert(telegram.includes("source_order_id: order.id") && telegram.includes("source_order_table: 'telegram_orders'"), 'Telegram refunds must keep normalized source order metadata')
-  assert(telegram.includes(".select('*').eq('id', orderId).single()"), 'Telegram admin refund must load the target order by id before refunding')
+  const istar = read('api/webhook-istar.ts')
+  assert(!/type:\s*['"]refund['"]/.test(telegram), 'customer polling and admin cancellation must not credit Telegram refunds')
+  assert(telegram.includes("code: 'TELEGRAM_CANCELLATION_REVIEW_REQUIRED'"), 'Telegram admin cancellation must require supplier review')
+  assert(telegram.includes("code: 'SUPPLIER_OUTCOME_REVIEW_REQUIRED'"), 'customer polling must hold supplier failure for review')
+  assert(telegram.includes(".eq('status', 'pending').is('refunded_at', null)"), 'late Telegram tracking writes must not reopen terminal orders')
+  assert(istar.includes('p_user_id: order.user_id'), 'iStar refunds must credit the loaded order owner')
+  assert(istar.includes('p_idempotency_key: `telegram:refund:${order.id}`'), 'iStar refunds must use order-bound idempotency')
+  assert(istar.includes("source_order_id: order.id") && istar.includes("source_order_table: 'telegram_orders'"), 'iStar refunds must keep normalized source order metadata')
 
   const sms = read('supabase/functions/smsbus/index.ts')
   assert(/async function refundWallet\(admin: SupabaseAdmin, order: \{[^}]*user_id: string[^}]*\}, reason: string/.test(sms), 'SMS refunds must accept an order carrying user_id')
   assert(sms.includes('userId: order.user_id'), 'SMS refunds must credit order.user_id')
   assert(sms.includes('idempotencyKey: `sms:refund:${refundRef}`'), 'SMS refunds must use order/reference-bound idempotency')
   assert(sms.includes("source_order_id: order.id") && sms.includes("source_order_table: 'sms_orders'"), 'SMS refunds must keep normalized source order metadata')
-  assert(sms.includes('await refundWallet(admin, order, `Admin refund for cancelled SMS order: ${order.reference}`)'), 'SMS admin cancellation must refund the loaded order owner')
+  assert(sms.includes("if (!cancellation.cancelled) return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED' }, 202)"), 'SMS admin cancellation must hold an unconfirmed provider outcome')
+  assert(sms.includes("await cancelSmsOrderAndRefund(admin, order, 'admin_cancelled'"), 'confirmed SMS admin cancellation must use the order-bound refund path')
+  assert(sms.includes(".in('status', ['pending', 'active', 'waiting'])") && sms.includes(".is('refunded_at', null)"), 'SMS cancellation must not overwrite terminal or refunded orders')
 
   const manageStaff = read('supabase/functions/manage-staff/index.ts')
   assert(manageStaff.includes('refundSmsOrderWallet(admin: any, order: any, reason: string, metadata: Record<string, unknown> = {})'), 'Staff SMS refunds must accept approval metadata')
@@ -665,6 +649,8 @@ check("refund paths credit the original order owner's wallet", () => {
   assert(manageStaff.includes('const approvingAdminId = pendingAction.reviewed_by || pendingAction.admin_id || null'), 'Staff SMS refund workflow must resolve approving admin evidence')
   assert(manageStaff.includes('approved_by: approvingAdminId'), 'Staff SMS refund ledger metadata must include approving admin evidence')
   assert(manageStaff.includes('pending_action_id: pendingAction.id || null'), 'Staff SMS refund ledger metadata must include pending action evidence')
+  assert(manageStaff.includes("(await res.text()).trim() !== 'ACCESS_CANCEL'"), 'staff SMS cancellation requires the documented provider confirmation')
+  assert(!manageStaff.includes('keep local cancellation moving'), 'staff cancellation must not ignore provider failures')
 
   const smmStatus = read('supabase/functions/smm-check-status/index.ts')
   const smmAll = read('supabase/functions/smm-check-all-orders/index.ts')
@@ -673,21 +659,20 @@ check("refund paths credit the original order owner's wallet", () => {
     assert(src.includes('idempotencyKey: `smm:refund:${order.id}:${newStatus}`'), `${label} refunds must use order/status-bound idempotency`)
     assert(src.includes('source_order_id: order.id') && src.includes("source_order_table: 'smm_orders'"), `${label} refunds must keep normalized source order metadata`)
     assert(src.includes('eventId: `') && src.includes('PRODUCT_PURCHASE_REVERSED:${order.id}:${newStatus}`'), `${label} reversal events must bind to the original order`)
+    assert(!src.includes("charge || '0'"), `${label} must not interpret missing panel charge as zero`)
+    assert(src.includes('Number.isFinite(panelCharge)'), `${label} must require explicit finite panel charge`)
+    assert(src.lastIndexOf('await applyRefundTransaction(') < src.lastIndexOf('.update(updateData)'), `${label} must refund before terminalizing the order`)
   }
 
   const bills = read('supabase/functions/purchase-bills/index.ts')
   assert(bills.includes('user_id: user.id'), 'Bills order records must be created for the authenticated user')
-  assert(bills.includes('userId: user.id'), 'Bills provider-failure refunds must credit the authenticated order creator')
-  assert(bills.includes('idempotencyKey: `bills:refund:${billRecord.id}:provider-returned-failed`'), 'Bills returned-failed refunds must bind to the local bill record')
-  assert(bills.includes('idempotencyKey: `bills:refund:${billRecord.id}:provider-error`'), 'Bills provider-error refunds must bind to the local bill record')
-  assert(bills.includes('source_order_id: billRecord.id') && bills.includes("source_order_table: 'bills_transactions'"), 'Bills refunds must keep normalized source transaction metadata')
+  assert(!/type:\s*['"]refund['"]/.test(bills), 'Bills must not auto-refund an unverified provider outcome')
+  assert(bills.includes('source_order_id: billRecord.id') && bills.includes("source_order_table: 'bills_transactions'"), 'Bills debit must keep normalized source transaction metadata')
 
   const bitrefill = read('supabase/functions/purchase-bitrefill/index.ts')
   assert(bitrefill.includes('user_id: user.id'), 'Bitrefill order records must be created for the authenticated user')
-  assert(bitrefill.includes('userId: user.id'), 'Bitrefill provider-failure refunds must credit the authenticated order creator')
-  assert(bitrefill.includes('idempotencyKey: `bitrefill:refund:${orderRecord.id}:provider-declined`'), 'Bitrefill declined refunds must bind to the local order record')
-  assert(bitrefill.includes('idempotencyKey: `bitrefill:refund:${orderRecord.id}:provider-error`'), 'Bitrefill provider-error refunds must bind to the local order record')
-  assert(bitrefill.includes('source_order_id: orderRecord.id') && bitrefill.includes("source_order_table: 'bitrefill_orders'"), 'Bitrefill refunds must keep normalized source order metadata')
+  assert(!/type:\s*['"]refund['"]/.test(bitrefill), 'Bitrefill must not auto-refund an unverified provider outcome')
+  assert(bitrefill.includes('source_order_id: orderRecord.id') && bitrefill.includes("source_order_table: 'bitrefill_orders'"), 'Bitrefill debit must keep normalized source order metadata')
 })
 
 check('refund paths carry original debit provenance', () => {
@@ -701,22 +686,22 @@ check('refund paths carry original debit provenance', () => {
   assert(smm.includes('source_debit_idempotency_key: `smm:purchase:${idempotency_key}`'), 'SMM immediate refunds must link to the original purchase idempotency key')
 
   const bills = read('supabase/functions/purchase-bills/index.ts')
-  assert(bills.includes('source_debit_transaction_id: debitResult?.transaction?.id || null'), 'Bills refunds must link to the original debit transaction id')
-  assert(bills.includes('source_debit_idempotency_key: `bills:purchase:${idempotency_key}`'), 'Bills refunds must link to the original purchase idempotency key')
+  assert(bills.includes('idempotencyKey: `bills:purchase:${idempotency_key}`'), 'Bills debit must retain its original idempotency identity for later verified resolution')
+  assert(!/type:\s*['"]refund['"]/.test(bills), 'Bills must not restore funds without confirmed provider non-delivery')
 
   const bitrefill = read('supabase/functions/purchase-bitrefill/index.ts')
-  assert(bitrefill.includes('source_debit_transaction_id: debitResult?.transaction?.id || null'), 'Bitrefill refunds must link to the original debit transaction id')
-  assert(bitrefill.includes('source_debit_idempotency_key: `bitrefill:purchase:${idempotency_key}`'), 'Bitrefill refunds must link to the original purchase idempotency key')
+  assert(bitrefill.includes('idempotencyKey: `bitrefill:purchase:${idempotency_key}`'), 'Bitrefill debit must retain its original idempotency identity for later verified resolution')
+  assert(bitrefill.includes("outcome: 'outcome_unknown'"), 'Bitrefill must preserve unresolved outcome without restoring funds')
 
   const withdrawal = read('supabase/functions/create-withdrawal-request/index.ts')
   assert(withdrawal.includes('const debitIdempotencyKey = `withdrawal:${withdrawalRecord.id}`'), 'Withdrawal route must keep a stable original debit idempotency key')
-  assert(withdrawal.includes('source_debit_transaction_id: debitResult?.transaction?.id || null'), 'Withdrawal refunds must link to the original debit transaction id')
-  assert(withdrawal.includes('source_debit_idempotency_key: debitIdempotencyKey'), 'Withdrawal refunds must link to the original withdrawal debit idempotency key')
-  assert(withdrawal.includes('original_reference: reference'), 'Withdrawal refunds must keep the original debit reference')
+  assert(withdrawal.includes('idempotencyKey: debitIdempotencyKey'), 'Withdrawal debit must keep its idempotency identity for later verified resolution')
+  assert(withdrawal.includes('sagecloud_reference: reference'), 'Withdrawal record must retain the provider reference')
+  assert(!/type:\s*['"]refund['"]/.test(withdrawal), 'Withdrawal must not auto-refund an ambiguous transfer')
 
-  const telegram = read('supabase/functions/telegram-stars/index.ts')
-  assert(telegram.includes('original_reference: order.reference'), 'Telegram refunds must keep the original debit reference for deferred callbacks')
-  assert(telegram.includes("source_order_table: 'telegram_orders'"), 'Telegram refunds must keep source-order provenance for deferred callbacks')
+  const istar = read('api/webhook-istar.ts')
+  assert(istar.includes('original_reference: order.reference'), 'iStar refunds must keep the original debit reference for deferred callbacks')
+  assert(istar.includes("source_order_table: 'telegram_orders'"), 'iStar refunds must keep source-order provenance for deferred callbacks')
 
   const sms = read('supabase/functions/smsbus/index.ts')
   assert(sms.includes('original_reference: order.reference'), 'SMS refunds must keep the original debit reference for deferred callbacks')
@@ -762,19 +747,23 @@ check('wallet chargebacks preserve debt and freeze spending', () => {
 
 check('admin unsuspend requires wallet backing reconciliation', () => {
   const src = read('supabase/functions/admin-adjust-balance/index.ts')
-  assert(src.includes('calculateWalletBacking'), 'admin unsuspend must calculate wallet backing before reinstatement')
+  assert(src.includes('loadWalletFinancialTruth'), 'admin unsuspend must use canonical financial truth before reinstatement')
+  assert(src.includes("rpc('wallet_financial_truth_internal'"), 'admin unsuspend must load canonical database truth')
   assert(src.includes('WALLET_REVIEW_REQUIRED'), 'admin unsuspend must fail closed when backing review fails')
-  assert(src.includes('storedWalletBalance > unsuspendReview.backedAvailable'), 'admin unsuspend must compare stored balance with backed funds')
-  assert(src.includes('trustedCredits'), 'admin unsuspend review must include trusted credit evidence')
-  assert(src.includes('eligibleRefunds'), 'admin unsuspend review must include eligible refund evidence')
-  assert(src.includes('findLinkedTrustedDebit'), 'admin unsuspend review must link refunds to trusted original debits')
-  assert(src.includes('linkedEligibleRefunds'), 'admin unsuspend review must report linked eligible refund evidence')
-  assert(!src.includes('const eligibleRefunds = Math.min(completedRefunds, trustedDebitCapacity)'), 'admin unsuspend backing must not treat aggregate completed refunds as eligible restoration')
-  assert(src.includes('const hasTransactionIdempotencyKey = await transactionsHaveIdempotencyKey(supabaseAdmin)'), 'admin unsuspend backing must probe transaction idempotency column before selecting it')
-  assert(src.includes('.select(transactionSelect)'), 'admin unsuspend backing must use schema-safe transaction select list')
-  assert(src.includes('processed, verified_amount_ngn, verified_reference'), 'admin unsuspend PocketFi evidence query must select every field it validates')
-  assert(src.includes(".or('balance_type.eq.wallet,balance_type.is.null')"), 'admin unsuspend review must include legacy wallet ledger rows')
-  assert(!src.includes("'deposit',\n        'credit'"), 'admin unsuspend backing must not count generic credit rows as trusted funds')
+  assert(src.includes('unsuspendBlockReason'), 'admin unsuspend must check canonical integrity status')
+  assert(src.includes("truth.integrity_status !== 'quarantined_excess'" ) || src.includes("'consistent', 'quarantined_excess'"), 'quarantined excess alone must not remove backed access')
+  assert(!src.includes('readFinancialHistory('), 'admin unsuspend must not independently rescan financial history')
+})
+
+check('owner-only financial and staff actions require server identity and current admin role', () => {
+  const adjustment = read('supabase/functions/admin-adjust-balance/index.ts')
+  const staff = read('supabase/functions/manage-staff/index.ts')
+  for (const [name, source] of [['admin-adjust-balance', adjustment], ['manage-staff', staff]]) {
+    assert(source.includes("Deno.env.get('TALLYSTORE_OWNER_USER_ID')?.trim()"), `${name} must load the server-only owner user ID`)
+    assert(source.includes('user.id !== ownerUserId'), `${name} must bind the owner check to the authenticated user ID`)
+    assert(source.includes('is_admin'), `${name} must check the current database admin role`)
+    assert(!/[a-z0-9._%+-]+@(?:gmail|yahoo|outlook|hotmail|boxfi)\.[a-z]{2,}/i.test(source), `${name} must not publish a personal owner email`)
+  }
 })
 
 check('direct ledger writes are skipped and audited', () => {
@@ -794,8 +783,8 @@ check('staging DB security test pack covers dangerous wallet paths', () => {
     'wallet_security_events',
     'DIRECT_LEDGER_WRITE_BLOCKED',
     'direct transaction insert did not create wallet_security_events forensic row',
-    'WALLET_UNBACKED_FUNDS',
-    'unbacked purchase freeze did not create wallet_security_events forensic row',
+    'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS',
+    "v_truth->>'integrity_status' IS DISTINCT FROM 'quarantined_excess'",
     'IDEMPOTENCY_CONFLICT',
     'ARRAY[500000, 450000, 789292, 1]',
     'wallet-db-security-test:engine-profile:topup',
@@ -822,9 +811,9 @@ check('staging DB security test pack covers dangerous wallet paths', () => {
     "ARRAY['staff_credit', 'promotion_credit', 'correction_credit']",
     "'wallet-db-security-test:untrusted:' || v_type",
     'wallet-db-security-test:generic-credit-not-principal',
-    'generic credit was trusted or did not trigger review',
+    'generic credit was trusted or excess was not reported',
     'wallet-db-security-test:fraud-scanner-no-auto-unsuspend',
-    'fraud scanner auto-unsuspended an existing review',
+    'excess review blocked later backed funding',
     'public auth.users foreign key(s) still use ON DELETE CASCADE',
     'partner/API evidence foreign key(s) still use ON DELETE CASCADE',
     'v_auth_cascades',
@@ -877,7 +866,7 @@ check('staging DB security test pack covers dangerous wallet paths', () => {
     'wallet-db-security-test:chargeback:debt',
     'request.jwt.claim.sub',
     'expected_trusted_backing',
-    "v_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS'",
+    "v_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS'",
     'ROLLBACK',
   ]) {
     assert(src.includes(needle), `DB security test pack missing ${needle}`)
@@ -1169,11 +1158,11 @@ check('staging DB security test pack covers refund conservation edge cases', () 
     'ALTER TABLE public.transactions ENABLE TRIGGER guard_trusted_principal_transaction_insert',
     "v_missing_original_refund->>'code' IS DISTINCT FROM 'REFUND_ORIGINAL_DEBIT_REQUIRED'",
     "v_over_refund->>'code' IS DISTINCT FROM 'REFUND_EXCEEDS_TRUSTED_ORIGINAL_DEBIT'",
-    "v_extra_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS'",
-    "v_loose_refund_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS'",
-    "v_pending_refund_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS'",
-    "v_legacy_refund_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS'",
-    "v_fake_metadata_purchase->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS'",
+    "v_extra_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS'",
+    "v_loose_refund_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS'",
+    "v_pending_refund_purchase->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS'",
+    "v_legacy_refund_purchase->>'code' IS DISTINCT FROM 'WALLET_REVIEW_REQUIRED'",
+    "v_fake_metadata_purchase->>'code' IS DISTINCT FROM 'WALLET_REVIEW_REQUIRED'",
     "v_fake_metadata_refund->>'code' IS DISTINCT FROM 'REFUND_ORIGINAL_DEBIT_NOT_TRUSTED'",
   ]) {
     assert(src.includes(needle), `DB security refund edge-case coverage missing ${needle}`)
@@ -1249,8 +1238,8 @@ check('admin transaction display treats debit types as negative', () => {
     "'chargeback'",
     'if (isWalletSpendTransaction(tx)) return -absoluteAmount',
     'const signedAmount = getWalletTransactionDisplayAmount(tx)',
-    'const isCredit = signedAmount > 0',
-    'const isSpend = signedAmount < 0',
+    'const isCredit = isWalletLedgerRow && signedAmount > 0',
+    'const isSpend = isWalletLedgerRow && signedAmount < 0',
   ]) {
     assert(adminPage.includes(needle), `admin transaction display guard missing ${needle}`)
   }
@@ -1394,6 +1383,39 @@ check('server protected profile writes use narrow RPCs', () => {
   assert(read('supabase/functions/manage-staff/index.ts').includes("rpc('set_staff_role'"), 'staff role changes must use the narrow RPC')
 })
 
+check('revoked admin roles cannot use owner-email fallbacks', () => {
+  const manageStaff = read('supabase/functions/manage-staff/index.ts')
+  const maintenance = read('supabase/functions/revenue-os-maintenance/index.ts')
+  assert(manageStaff.includes("ownerProfile?.is_admin !== true"), 'owner-only staff operations must check the current admin role')
+  assert(!manageStaff.includes('isSuperAdmin ||'), 'staff operations must not bypass revoked admin roles through owner email')
+  assert(!manageStaff.includes('if (isSuperAdmin ||'), 'staff read operations must not bypass revoked admin roles through owner email')
+  assert(!maintenance.includes('if (userEmail === OWNER_EMAIL) return'), 'maintenance must not authorize by owner email alone')
+  assert(maintenance.includes('if (profile?.is_admin === true && profile.account_suspended !== true) return'), 'maintenance must check the current admin role and suspension')
+  const blockedAttempts = read('supabase/migrations/20260919005000_guard_transaction_ledger_authority.sql')
+  const securityEvents = read('supabase/migrations/20260919017000_create_wallet_security_events.sql')
+  const policyRepair = read('supabase/migrations/20260924011000_remove_email_based_financial_audit_access.sql')
+  for (const source of [blockedAttempts, securityEvents, policyRepair]) {
+    assert(!/p\.email\s*=/.test(source), 'financial audit policies must not grant access by profile email')
+  }
+  assert(policyRepair.includes('DROP POLICY IF EXISTS "Admins can read transaction ledger blocked attempts"'), 'deployed blocked-attempt audit policy must be replaced')
+  assert(policyRepair.includes('DROP POLICY IF EXISTS "Admins can read wallet security events"'), 'deployed wallet-security audit policy must be replaced')
+  assert((policyRepair.match(/COALESCE\(p\.is_admin, false\) = true/g) || []).length === 2, 'both financial audit reads must require current admin status')
+  assert(read('docs/security/wallet-db-security-test-pack.sql').includes('financial audit policy/policies still grant by email'), 'staging DB pack must reject deployed email-based audit policies')
+})
+
+check('public settings and referral graph have narrow browser reads', () => {
+  const settings = read('supabase/migrations/20260924003000_restrict_public_app_settings.sql')
+  const referral = read('supabase/migrations/20260924004000_restrict_referral_lookup.sql')
+  const client = read('src/lib/supabase.ts')
+  assert(settings.includes('DROP POLICY IF EXISTS "app_settings_select_all"'), 'the broad public settings policy must be removed')
+  assert(settings.includes("'support_whatsapp_url'") && settings.includes("'ngn_usd_rate'") && settings.includes("'sales_favorite_product_group_ids'"), 'the storefront settings allowlist must keep required public keys')
+  assert(!settings.includes("'telegram_star_cost_usdt'"), 'supplier cost settings must remain private')
+  assert(referral.includes('REVOKE SELECT ON public.referral_lookup FROM PUBLIC, anon, authenticated'), 'browser roles must not enumerate the referral graph')
+  assert(referral.includes('WHERE referred_by = auth.uid()::text'), 'referral count must bind to the authenticated caller')
+  assert(client.includes("rpc('get_my_referral_count')"), 'customer referral UI must use the narrow count RPC')
+  assert(!client.includes(".from('referral_lookup')"), 'browser code must not read referral graph rows')
+})
+
 check('browser profile writes and signup metadata cannot mass-assign protected fields', () => {
   const protectedFields = [
     'wallet_balance',
@@ -1514,13 +1536,19 @@ check('browser payment success pages cannot create wallet credit', () => {
   assert(!/\.from\(['"]profiles['"]\)[\s\S]*?\.update\s*\(/.test(walletBalanceHelper), 'legacy wallet-balance helper must not update profiles')
   assert(!/\.from\(['"]transactions['"]\)[\s\S]*?\.insert\s*\(/.test(topupRecordHelper), 'legacy top-up helper must not insert transactions')
 
-  assertOrder(topup, ".from('pending_payments')", 'Could not create trusted payment evidence. Please try again before paying.', 'create-wallet-topup must check pending payment evidence before returning checkout details')
+  assertOrder(topup, ".from('pending_payments')", "throw new Error('Could not create trusted payment evidence. Please try again before paying.')", 'create-wallet-topup must check pending payment evidence before returning checkout details')
   assertOrder(topup, 'Could not create trusted payment evidence. Please try again before paying.', 'return json({\n      success: true', 'create-wallet-topup must fail closed before returning checkout details')
   assert(topup.includes('Could not create trusted payment evidence. Please try again before paying.'), 'create-wallet-topup must fail closed when pending evidence cannot be created')
   assert(verifier.includes('Payment reference was not created for this account.'), 'verifier must reject callback references not created for the authenticated user')
   assert(verifier.includes('const amount = transaction.amount'), 'verifier must use provider-returned amount as the credited amount')
-  assert(verifier.includes('Math.abs(expectedAmount - verifiedAmount) > 0.01'), 'verifier must compare provider amount to server-created pending amount')
-  assertOrder(verifier, 'Math.abs(expectedAmount - verifiedAmount) > 0.01', 'const creditResult = await applyWalletTransaction', 'amount mismatch must be rejected before wallet credit')
+  assert(verifier.includes('expectedMinor !== verifiedMinor'), 'verifier must compare exact provider amount to server-created pending amount')
+  assert(verifier.includes("import { ngnMinorUnits } from '../_shared/ngn-amount.mjs'"), 'verifier must use the tested minor-unit parser')
+  assertOrder(verifier, 'expectedMinor !== verifiedMinor', 'const creditResult = await applyWalletTransaction', 'amount mismatch must be rejected before wallet credit')
+  assert(verifier.includes('providerTransactionReference !== pendingPayment.transaction_reference'), 'provider transaction reference must match server checkout')
+  assert(verifier.includes('providerPaymentReference !== pendingPayment.ercas_reference'), 'provider payment reference must match server checkout')
+  assertOrder(verifier, 'providerTransactionReference !== pendingPayment.transaction_reference', 'const creditResult = await applyWalletTransaction', 'provider identity mismatch must be rejected before wallet credit')
+  assert(verifier.includes("if (!verifyResponse.ok) throw new Error('ercas_verify_http_unavailable')"), 'HTTP verification failure must not be credited')
+  assert(verifier.includes('verifyResult?.requestSuccessful !== true'), 'provider verification envelope must succeed before credit')
 })
 
 check('Ercas verification timeouts stay pending and never credit provisionally', () => {
@@ -1553,7 +1581,7 @@ check('Ercas definitive provider failures close pending evidence before credit',
   ]) {
     assert(src.includes(marker), `definitive failure closer must cover ${marker}`)
   }
-  assertOrder(src, 'markPendingPaymentVerificationFailed(supabaseAdmin, pendingPayment, errorMsg)', 'const creditResult = await applyWalletTransaction', 'provider failed result must close evidence before wallet credit')
+  assertOrder(src, "markPendingPaymentVerificationFailed(supabaseAdmin, pendingPayment, 'Payment verification failed')", 'const creditResult = await applyWalletTransaction', 'provider failed result must close evidence before wallet credit')
   assertOrder(src, '`Payment status: ${transaction.status}`', 'const creditResult = await applyWalletTransaction', 'provider non-success status must close evidence before wallet credit')
   assertOrder(src, '`Amount mismatch. Expected ${expectedAmount}, got ${verifiedAmount}`', 'const creditResult = await applyWalletTransaction', 'amount mismatch must close evidence before wallet credit')
 })
@@ -1616,13 +1644,22 @@ check('iStar webhook verifies raw body and refunds through wallet engine', () =>
   assert(src.includes('crypto.createHmac'), 'iStar webhook must verify an HMAC signature')
   assert(src.includes('timingSafeEqual'), 'iStar webhook signature comparison must be timing-safe')
   assert(src.includes('ISTAR_WEBHOOK_SECRET'), 'iStar webhook must require the configured webhook secret')
+  assert(src.includes('const eventType = payload.event_type'), 'iStar event type must come from the signed body')
+  assert(!src.includes("req.headers['x-istar-event']"), 'unsigned iStar event header must not control order state')
+  assert(!src.includes('JSON.stringify(req.body)'), 'parsed body must not replace signed raw webhook bytes')
   assert(src.includes(".rpc('apply_wallet_transaction'"), 'iStar failure refunds must use the wallet engine')
-  assert(src.includes("p_idempotency_key: `istar:refund:${order.id}`"), 'iStar refunds must have deterministic idempotency keys')
-  assert(!/\.from\(['"]transactions['"]\)[^;]{0,500}\.(insert|update|delete|upsert)\s*\(/.test(src), 'iStar webhook must not directly mutate wallet ledger rows')
+  assert(src.includes("p_idempotency_key: `telegram:refund:${order.id}`"), 'iStar refunds must share Telegram refund idempotency keys')
+  assert(src.includes('source_debit_idempotency_key: originalDebitKey'), 'iStar refunds must identify the original wallet debit')
+  assert(src.includes(".in('status', ['pending', 'processing'])"), 'iStar status changes must be conditional on nonterminal orders')
+  assert(src.includes(".is('refunded_at', null)"), 'iStar status changes must not overwrite refunded orders')
+  assert(src.includes(".eq('idempotency_key', originalDebitKey)"), 'iStar must check the completed debit before refunding')
+  assert(!/\.from\(['"]transactions['"]\)\s*\.(insert|update|delete|upsert)\s*\(/.test(src), 'iStar webhook must not directly mutate wallet ledger rows')
 })
 
 check('forged payment webhooks cannot punish or credit named customers before verification', () => {
   const pocketfi = read('supabase/functions/webhook-pocketfi/index.ts')
+  assert(!pocketfi.includes("status.includes('success')"), 'PocketFi must not treat unsuccessful events as credits')
+  assert(pocketfi.includes('statuslessTransfer'), 'status-less PocketFi events must have transfer evidence')
   assertOrder(pocketfi, 'const verified = await verifyPocketFiWebhook(req, rawBody)', 'const payload = rawBody ? JSON.parse(rawBody)', 'PocketFi must verify before parsing or attributing payload')
   assertOrder(pocketfi, 'if (!verified) {', "return json({ error: 'Unauthorized webhook' }, 401)", 'PocketFi invalid signatures must return before payload use')
   assertOrder(pocketfi, "return json({ error: 'Unauthorized webhook' }, 401)", 'const accountNumber = extractAccountNumber(payload)', 'PocketFi must reject before extracting customer account number')
@@ -1631,7 +1668,7 @@ check('forged payment webhooks cannot punish or credit named customers before ve
 
   const istar = read('api/webhook-istar.ts')
   assertOrder(istar, 'if (!verifySignature(rawBody, sig, webhookSecret))', 'const { createClient } = await import', 'iStar must verify signature before creating DB client')
-  assertOrder(istar, 'if (!verifySignature(rawBody, sig, webhookSecret))', 'const payload = parsePayload(rawBody, req.body)', 'iStar must verify signature before parsing customer/order payload')
+  assertOrder(istar, 'if (!verifySignature(rawBody, sig, webhookSecret))', 'const payload = parsePayload(rawBody)', 'iStar must verify signature before parsing customer/order payload')
   assert(!istar.includes('account_suspended'), 'iStar forged webhook payloads must not suspend a named customer')
   assert(!istar.includes('is_suspended'), 'iStar forged webhook payloads must not set suspension flags')
 
@@ -1707,8 +1744,14 @@ check('JWT-disabled Edge Functions have explicit internal authorization boundari
   const recordVisit = read('supabase/functions/record-site-visit/index.ts')
   assert(contains('supabase/functions/record-site-visit/config.toml', 'verify_jwt = false'), 'record-site-visit config must be explicit')
   assert(recordVisit.includes(".from('site_visits')"), 'record-site-visit must be limited to site visit evidence writes')
+  assert(recordVisit.includes("ip_source: 'unknown'"), 'forwarded visit headers must not be labeled trusted edge evidence')
   assert(!recordVisit.includes(".from('profiles')"), 'record-site-visit must not write profiles')
   assert(!recordVisit.includes(".from('transactions')"), 'record-site-visit must not touch wallet ledger rows')
+
+  const visitGrant = read('supabase/migrations/20260924002000_restrict_site_visit_fraud_evidence.sql')
+  assert(visitGrant.includes('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.site_visits'), 'browser roles must not write visit evidence directly')
+  assert(!read('src/components/VisitorTracker.tsx').includes(".from('site_visits'"), 'browser visit tracking must not fall back to direct evidence insertion')
+  assert(!read('supabase/functions/admin-adjust-balance/index.ts').includes('upsertFraudDeviceBans('), 'account suspension must not generate IP/device bans from unverified visit headers')
 })
 
 check('paused paid surfaces fail closed by default', () => {
@@ -1752,7 +1795,7 @@ check('paused paid surfaces fail closed by default', () => {
   assertOrder(bills, "code: 'BILLS_PAUSED'", "req.headers.get('Authorization')", 'bills route must pause before auth/profile work')
   assertOrder(bills, "code: 'BILLS_PAUSED'", 'const sageCloudClient = createSageCloudClient', 'bills route must pause before SageCloud setup')
   assertOrder(bills, "code: 'BILLS_PAUSED'", ".from('bills_transactions')", 'bills route must pause before local transaction row creation')
-  assertOrder(bills, "code: 'BILLS_PAUSED'", 'debitResult = await applyWalletTransaction', 'bills route must pause before wallet debit')
+  assertOrder(bills, "code: 'BILLS_PAUSED'", 'await applyWalletTransaction(supabaseAdmin, {', 'bills route must pause before wallet debit')
   assertOrder(bills, "code: 'BILLS_PAUSED'", 'purchaseResponse = await sageCloudClient', 'bills route must pause before provider purchase')
 
   const bitrefill = read('supabase/functions/purchase-bitrefill/index.ts')
@@ -1761,7 +1804,7 @@ check('paused paid surfaces fail closed by default', () => {
   assertOrder(bitrefill, "code: 'BITREFILL_PAUSED'", "req.headers.get('Authorization')", 'Bitrefill route must pause before auth/profile work')
   assertOrder(bitrefill, "code: 'BITREFILL_PAUSED'", 'const bitrefill = createBitrefillClient', 'Bitrefill route must pause before provider setup')
   assertOrder(bitrefill, "code: 'BITREFILL_PAUSED'", ".from('bitrefill_orders')", 'Bitrefill route must pause before local order creation')
-  assertOrder(bitrefill, "code: 'BITREFILL_PAUSED'", 'debitResult = await applyWalletTransaction', 'Bitrefill route must pause before wallet debit')
+  assertOrder(bitrefill, "code: 'BITREFILL_PAUSED'", 'await applyWalletTransaction(supabaseAdmin, {', 'Bitrefill route must pause before wallet debit')
   assertOrder(bitrefill, "code: 'BITREFILL_PAUSED'", 'const invoice = await bitrefill.createInvoice', 'Bitrefill route must pause before provider invoice creation')
 
   const cryptoTopup = read('supabase/functions/create-crypto-sell-order/index.ts')
@@ -1969,7 +2012,7 @@ check('mapped purchase routes check current suspension before debit or dispatch'
 check('frozen customers keep read-only order history and support access', () => {
   const auth = read('src/contexts/SimpleAuth.tsx')
   assert(auth.includes('accountSuspended: boolean'), 'auth context must expose account suspension state')
-  assert(auth.includes("select('is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason')"), 'auth context must load account and wallet-review state with profile')
+  assert(auth.includes("select('is_admin, is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason')"), 'auth context must load role, account, and wallet-review state with profile')
   assert(auth.includes('setAccountSuspended(Boolean(data?.account_suspended))'), 'auth context must update account suspension state')
 
   const protectedRoute = read('src/components/SimpleProtectedRoute.tsx')
@@ -1996,8 +2039,8 @@ check('mapped purchase routes validate hostile quantity and price input', () => 
   const product = read('supabase/functions/process-purchase/index.ts')
   assert(product.includes('!Number.isInteger(quantity) || quantity < 1'), 'product checkout must reject non-integer or negative quantities')
   assert(product.includes('quantity > 500'), 'product checkout must cap quantity')
-  assert(product.includes('!Number.isFinite(expectedAmountNgn) || expectedAmountNgn <= 0'), 'product checkout must require a positive displayed amount')
-  assert(product.includes('Math.abs(expectedAmountNgn - totalPrice) > 1'), 'product checkout must compare expected amount to server price')
+  assert(product.includes('expectedAmountMinor === null'), 'product checkout must require an exact positive displayed amount')
+  assert(product.includes('expectedAmountMinor !== totalPriceMinor'), 'product checkout must compare expected kobo to server price without a tolerance')
 
   const smm = read('supabase/functions/smm-create-order/index.ts')
   assert(smm.includes('!Number.isInteger(actualQuantity) || actualQuantity < 1'), 'SMM checkout must reject non-integer or negative quantities')
@@ -2018,8 +2061,12 @@ check('mapped purchase routes validate hostile quantity and price input', () => 
 
   const bitrefill = read('supabase/functions/purchase-bitrefill/index.ts')
   assert(bitrefill.includes('!Number.isInteger(qty) || qty < 1 || qty > 20'), 'Bitrefill checkout must reject malformed or out-of-range quantities')
-  assert(bitrefill.includes('!Number.isFinite(expectedAmountNgn) || expectedAmountNgn <= 0'), 'Bitrefill checkout must require a positive displayed amount')
-  assert(bitrefill.includes('Math.abs(expectedAmountNgn - chargeNgn) > 1'), 'Bitrefill checkout must compare expected amount to server price')
+  assert(bitrefill.includes('expectedAmountMinor === null'), 'Bitrefill checkout must require an exact positive displayed amount')
+  assert(bitrefill.includes('expectedAmountMinor !== chargeNgn * 100'), 'Bitrefill checkout must compare expected kobo to server price without a tolerance')
+  assert(ngnMinorUnits('100.00') === 10000 && ngnMinorUnits('101.00') === 10100,
+    'exact minor-unit parser must distinguish one-naira price changes')
+  assert(ngnMinorUnits('100.001') === null && ngnMinorUnits('100junk') === null,
+    'exact minor-unit parser must reject over-precise and malformed prices')
 })
 
 check('wallet money boundaries reject precision, currency, and overflow hazards', () => {
@@ -2075,7 +2122,7 @@ check('mapped purchase routes bind idempotency keys to request contents', () => 
   assert(product.includes('IDEMPOTENCY_REQUEST_CONFLICT'), 'product checkout must reject idempotency key reuse with changed request contents')
   assert(product.includes("String(existingOrder.product_group_id || '') === product_group_id"), 'product idempotency must bind product_group_id')
   assert(product.includes('existingQuantity === quantity'), 'product idempotency must bind quantity')
-  assert(product.includes('Math.abs(existingAmount - expectedAmountNgn) <= 1'), 'product idempotency must bind charged amount')
+  assert(product.includes('existingAmountMinor === expectedAmountMinor'), 'product idempotency must bind the exact charged amount')
 
   const smm = read('supabase/functions/smm-create-order/index.ts')
   assert(smm.includes('IDEMPOTENCY_REQUEST_CONFLICT'), 'SMM checkout must reject idempotency key reuse with changed request contents')
@@ -2108,7 +2155,7 @@ check('mapped purchase routes bind idempotency keys to request contents', () => 
 check('paused provider-money routes keep local records and wallet debits before provider calls', () => {
   const bills = read('supabase/functions/purchase-bills/index.ts')
   const billsLocalRecord = bills.indexOf(".from('bills_transactions')")
-  const billsDebit = bills.indexOf('debitResult = await applyWalletTransaction')
+  const billsDebit = bills.indexOf('await applyWalletTransaction(supabaseAdmin, {')
   const billsAirtimeProvider = bills.indexOf('purchaseResponse = await sageCloudClient.purchaseAirtime')
   const billsDataProvider = bills.indexOf('purchaseResponse = await sageCloudClient.purchaseData')
   assert(bills.includes('BILLS_ENABLED'), 'bills route must remain behind the BILLS_ENABLED fail-closed gate')
@@ -2121,7 +2168,7 @@ check('paused provider-money routes keep local records and wallet debits before 
 
   const bitrefill = read('supabase/functions/purchase-bitrefill/index.ts')
   const bitrefillLocalOrder = bitrefill.indexOf(".from('bitrefill_orders')")
-  const bitrefillDebit = bitrefill.indexOf('debitResult = await applyWalletTransaction')
+  const bitrefillDebit = bitrefill.indexOf('await applyWalletTransaction(supabaseAdmin, {')
   const bitrefillProvider = bitrefill.indexOf('const invoice = await bitrefill.createInvoice')
   assert(bitrefill.includes('BITREFILL_ENABLED'), 'Bitrefill route must remain behind the BITREFILL_ENABLED fail-closed gate')
   assert(bitrefill.includes("if (payment_source !== 'wallet')"), 'Bitrefill route must reject non-wallet payment sources during incident review')
@@ -2139,8 +2186,8 @@ check('paused provider-money routes keep local records and wallet debits before 
   assert(withdrawalDebit > -1 && withdrawalProvider > withdrawalDebit, 'withdrawal provider transfer must happen after wallet debit')
   assert(!withdrawal.includes(".from('crypto_withdrawals')\n        .delete()"), 'withdrawal debit-failed records must be preserved as failed evidence')
   assert(withdrawal.includes("stage: 'wallet_debit'"), 'withdrawal debit failure must store wallet_debit evidence on the local record')
-  assert(withdrawal.includes('source_debit_transaction_id: debitResult?.transaction?.id || null'), 'withdrawal refunds must keep original debit transaction id')
-  assert(withdrawal.includes('source_debit_idempotency_key: debitIdempotencyKey'), 'withdrawal refunds must keep original debit idempotency key')
+  assert(withdrawal.includes('idempotencyKey: debitIdempotencyKey'), 'withdrawal debit must keep original idempotency key')
+  assert(withdrawal.includes("outcome: 'outcome_unknown'"), 'withdrawal must record unresolved provider outcome without restoring funds')
   assert(withdrawal.includes('request_forensics: walletRequestForensics'), 'withdrawal wallet metadata must carry request forensics')
 })
 
@@ -2238,36 +2285,40 @@ check('read-only reconciliation command is guarded against unsafe use', () => {
   assert(script.includes('unresolvedDebitAmount'), 'reconciliation command must report unresolved failed/refunded debit exposure')
   const localSuite = read('scripts/wallet-local-security-suite.mjs')
   assert(localSuite.includes("['node', ['scripts/wallet-reconcile-readonly.mjs', '--self-test']"), 'local suite must run read-only reconciliation self-test without Supabase credentials')
-  assert(script.includes('trustedDebitCapacity = Math.min(grossDebits, trustedCredits)'), 'reconciliation command must cap refunds by trusted principal')
+  assert(script.includes('eligibleRefunds = Math.min(linkedEligibleRefunds, grossDebits)'), 'offline reconciliation must cap refunds by original debits across spend cycles')
   assert(script.includes('findTrustedOriginalDebit'), 'reconciliation command must link refunds to original trusted debits')
   assert(script.includes("String(metadata.trusted_principal_authorized || '').toLowerCase() !== 'true'"), 'reconciliation command must count only trusted-principal-authorized original debits for refund restoration')
   assert(script.includes('metadata.trusted_principal_debit_amount'), 'reconciliation command must require trusted-principal debit amount evidence for refund restoration')
   assert(script.includes('linkedEligibleRefunds'), 'reconciliation command must report linked eligible refunds separately from raw refunds')
-  assert(script.includes('eligibleRefunds = Math.min(linkedEligibleRefunds, trustedDebitCapacity)'), 'reconciliation command must not treat raw refunds as eligible restoration')
+  assert(script.includes('const refundableRemaining = Math.max(original.amount - alreadyRefunded, 0)'), 'offline reconciliation must cap each refund by its original trusted debit')
+  assert(script.includes('if (directId) return trustedDebitById.get(directId) || null'), 'offline reconciliation must not fall back to a weaker refund link when an explicit debit ID is invalid')
   assert(script.includes('backedAvailable: Math.max(trustedCredits - trustedConsumedSpend, 0)'), 'reconciliation command must not add refunds as principal')
   assert(script.includes('const WALLET_DEBIT_TYPES = ['), 'reconciliation command must centralize wallet debit classification')
   for (const type of ['purchase', 'admin_debit', 'staff_debit', 'debit', 'withdrawal', 'chargeback', 'correction_debit']) {
     assert(script.includes(`'${type}'`), `reconciliation command must include ${type} in wallet debit classification`)
   }
   assert(script.includes('const isDebit = WALLET_DEBIT_TYPES.includes(type)'), 'reconciliation drill-down must use the same debit list as backing totals')
-  assert(script.includes('async function loadAdminActorIds'), 'reconciliation command must load admin actor evidence')
+  assert(!script.includes('const adminActorIds = await loadAdminActorIds(transactions)'), 'live reconciliation must not independently classify admin credits')
   assert(script.includes('isVerifiedGatewayCredit'), 'reconciliation command must centralize verified gateway credit checks')
   assert(script.includes('pendingPayments'), 'reconciliation command must load pending payment evidence for Ercas deposits')
   assert(script.includes("paymentStatus === 'credited'"), 'reconciliation command must not count merely pending Ercas payment evidence as trusted principal')
   assert(script.includes('pocketfiWebhookLogs'), 'reconciliation command must load PocketFi webhook evidence for bank-transfer deposits')
   assert(script.includes('verified_amount_ngn'), 'reconciliation command must require provider-verified amount metadata')
   assert(script.includes('Boolean(log.processed) === true'), 'reconciliation command must require processed PocketFi webhook evidence')
-  assert(script.includes('toCents(number(log.verified_amount_ngn)) === toCents(amount)'), 'reconciliation command must require matching PocketFi verified amount evidence')
+  assert(script.includes('ngnMinorUnits(log.verified_amount_ngn) === amountMinor'), 'offline reconciliation must require an exact PocketFi verified amount')
+  assert(script.includes('ngnMinorUnits(payment.amount) === amountMinor'), 'offline reconciliation must require an exact Ercas verified amount')
   assert(script.includes('log.verified_reference'), 'reconciliation command must require matching PocketFi verified reference evidence')
   assert(
     script.includes("type === 'admin_credit'")
-      && script.includes('adminActorIds.has(String(row.created_by || \'\'))')
-      && script.includes('hasApprovedAdminCreditEvidence(row, metadata)'),
-    'reconciliation command must only count admin_credit rows created by admins with approval evidence',
+      && script.includes('hasApprovedAdminCreditEvidence(row, metadata)')
+      && script.includes("String(metadata.approved_by || '').trim() === createdBy"),
+    'offline reconciliation must require recorded approval evidence rather than current actor role',
   )
   assert(script.includes('function hasApprovedAdminCreditEvidence'), 'reconciliation command must require explicit admin-credit approval metadata')
   assert(script.includes('metadata.approved_by'), 'reconciliation command must require admin_credit approved_by metadata')
   assert(script.includes('metadata.approval_reference'), 'reconciliation command must require admin_credit approval_reference metadata')
+  assert(script.includes("supabase.rpc('wallet_financial_truth_internal'"), 'live reconciliation must read canonical full-history wallet truth')
+  assert(script.includes('walletBacking: canonicalTruth'), 'live reconciliation must report canonical wallet truth rather than a local subset formula')
   assert(script.includes('const isBalanceNeutralAdminRepair'), 'reconciliation command must identify audit-only admin repair rows')
   assert(script.includes("metadata.source || '') === 'admin-ledger-repair'"), 'reconciliation command must exclude admin ledger repair rows from trusted principal')
   assert(script.includes('balanceAfter <= balanceBefore'), 'reconciliation command must require trusted admin credits to increase balance')
@@ -2275,28 +2326,19 @@ check('read-only reconciliation command is guarded against unsafe use', () => {
     assert(!script.includes(`'${type}'`), `reconciliation command must not trust ${type}`)
   }
   assert(!script.includes("'deposit', 'credit'"), 'reconciliation command must not trust generic credit rows as principal')
-  assert(queryPack.includes('least(c.wallet_debits, c.trusted_credits) as trusted_debit_capacity'), 'read-only query pack must report trusted debit capacity')
-  assert(queryPack.includes('linked_eligible_refunds'), 'read-only query pack must report linked eligible refunds instead of raw refund totals')
-  assert(queryPack.includes('eligible_refund_matches'), 'read-only query pack must link refunds to original trusted debits')
-  assert(queryPack.includes("coalesce(d.metadata->>'trusted_principal_authorized', '') = 'true'"), 'read-only query pack must count only refunds linked to trusted-principal-authorized debits')
-  assert(queryPack.includes("d.metadata->>'trusted_principal_debit_amount'"), 'read-only query pack must require trusted-principal debit amount evidence for refund restoration')
-  assert(queryPack.includes('sum(least(refund_amount, debit_amount))'), 'read-only query pack must cap linked refunds by each original debit amount')
-  assert(queryPack.includes('trusted_consumed_spend'), 'read-only query pack must report trusted consumed spend')
-  assert(queryPack.includes("metadata->>'verified_amount_ngn'"), 'read-only query pack must require provider-verified amount metadata')
-  assert(queryPack.includes('from public.pending_payments pp'), 'read-only query pack must require pending payment evidence for Ercas deposits')
-  assert(queryPack.includes("lower(coalesce(pp.status, 'pending')) = 'credited'"), 'read-only query pack must not count merely pending Ercas payment evidence as trusted principal')
-  assert(queryPack.includes('from public.pocketfi_webhook_logs pwl'), 'read-only query pack must require PocketFi webhook evidence')
-  assert(queryPack.includes('pwl.matched_user_id = t.user_id'), 'read-only query pack must bind PocketFi webhook evidence to the credited user')
-  assert(queryPack.includes('coalesce(pwl.processed, false) = true'), 'read-only query pack must require processed PocketFi webhook evidence')
-  assert(queryPack.includes('round(coalesce(pwl.verified_amount_ngn, -1), 2) = round(t.amount, 2)'), 'read-only query pack must require matching PocketFi verified amount evidence')
-  assert(queryPack.includes('pwl.verified_reference'), 'read-only query pack must require matching PocketFi verified reference evidence')
-  assert(queryPack.includes("t.type = 'admin_credit'"), 'read-only query pack must only count approved admin_credit business principal')
-  assert(queryPack.includes('where coalesce(is_admin, false) = true'), 'read-only query pack must require admin actor evidence for admin_credit principal')
-  assert(queryPack.includes("coalesce(t.metadata->>'approved_by', '') = t.created_by::text"), 'read-only query pack must require approved_by metadata for admin_credit principal')
-  assert(queryPack.includes("coalesce(t.metadata->>'approval_reference', '')"), 'read-only query pack must require approval_reference metadata for admin_credit principal')
-  assert(queryPack.includes("coalesce(t.metadata->>'reason', '')"), 'read-only query pack must require reason metadata for admin_credit principal')
-  assert(queryPack.includes('coalesce(t.balance_after, 0) > coalesce(t.balance_before, 0)'), 'read-only query pack must require admin_credit to increase balance before trusting it')
-  assert(queryPack.includes("t.metadata->>'source', '') <> 'admin-ledger-repair'"), 'read-only query pack must exclude admin ledger repair rows from trusted principal')
+  assert(queryPack.includes('public.wallet_financial_truth_internal(:user_id::uuid)'), 'read-only query pack must use the canonical full-history financial reader')
+  for (const field of [
+    'verified_gateway_deposits', 'approved_admin_credits', 'trusted_principal',
+    'completed_debits', 'eligible_refunds', 'active_reservations',
+    'confirmed_spendable', 'expected_ledger_balance', 'stored_wallet_balance',
+    'explained_difference', 'unexplained_difference', 'integrity_status',
+    'evidence_complete',
+  ]) {
+    assert(queryPack.includes(`truth->>'${field}'`), `read-only query pack must report canonical ${field}`)
+  }
+  assert(!queryPack.includes('eligible_refund_matches as'), 'read-only query pack must not duplicate refund calculations')
+  assert(!queryPack.includes('least(c.wallet_debits, c.trusted_credits)'), 'read-only query pack must not retain capped-debit authorization math')
+  assert(queryPack.includes('DEBIT_PRECEDES_RECORDED_CREDIT'), 'read-only query pack must expose the legacy funding chronology clue')
   assert(queryPack.includes('Failed/cancelled/refunded product orders that still have posted purchase'), 'read-only query pack must expose failed/refunded product orders with posted debits')
   assert(queryPack.includes('Failed/cancelled/refunded SMM orders with posted purchase debits'), 'read-only query pack must expose failed/refunded SMM orders with posted debits')
   assert(queryPack.includes('Failed/cancelled/refunded SMS orders with posted purchase debits'), 'read-only query pack must expose failed/refunded SMS orders with posted debits')
@@ -2312,10 +2354,11 @@ check('read-only reconciliation command is guarded against unsafe use', () => {
   assert(queryPack.includes("idx_' || t.table_name || '_wallet_reservation_id"), 'read-only query pack must check wallet-reservation indexes')
   assert(queryPack.includes("idx_' || t.table_name || '_fulfillment_outbox_id"), 'read-only query pack must check fulfillment-outbox indexes')
   assert(!queryPack.includes("type = 'referral_withdrawal'"), 'read-only query pack must not count referral withdrawals as trusted principal')
-  assert(!queryPack.includes("'deposit', 'credit'"), 'read-only query pack must not count generic credit as trusted principal')
 
-  const mutationPattern = /\.(insert|update|upsert|delete|rpc)\s*\(/
-  assert(!mutationPattern.test(script), 'read-only reconciliation command must not call Supabase mutation/RPC methods')
+  const mutationPattern = /\.(insert|update|upsert|delete)\s*\(/
+  assert(!mutationPattern.test(script), 'read-only reconciliation command must not call Supabase mutation methods')
+  const calledRpcs = [...script.matchAll(/\.rpc\(['"]([^'"]+)/g)].map((match) => match[1])
+  assert(calledRpcs.length === 1 && calledRpcs[0] === 'wallet_financial_truth_internal', 'read-only reconciliation may call only the canonical financial-truth RPC')
 })
 
 check('local wallet security suite runs available checks and records external gaps', () => {
@@ -2377,7 +2420,7 @@ check('staging database concurrency runner requires guarded real psql proof', ()
   assert(runner.includes('setup SQL must seed server-owned pending payment evidence'), 'DB concurrency runner self-test must inspect setup SQL content')
   assert(runner.includes('purchase race SQL must post a purchase through the wallet engine'), 'DB concurrency runner self-test must inspect purchase race SQL content')
   assert(runner.includes('refund race SQL must link to the original order identity'), 'DB concurrency runner self-test must inspect refund race SQL content')
-  assert(runner.includes('freeze durability SQL must assert the unbacked-funds denial code'), 'DB concurrency runner self-test must inspect freeze durability SQL content')
+  assert(runner.includes('excess quarantine SQL must assert the backed-funds denial code'), 'DB concurrency runner self-test must inspect backed-funds denial SQL content')
   assert(runner.includes('provider verification SQL must assert one shared provider credit'), 'DB concurrency runner self-test must inspect provider identity race SQL content')
   assert(runner.includes('cleanup SQL must remove runner ledger and pending-payment fixtures'), 'DB concurrency runner self-test must inspect cleanup SQL content')
   assert(runner.includes('TALLYSTORE_DB_TEST_ENV'), 'DB concurrency runner must require an explicit non-production test environment')
@@ -2398,9 +2441,9 @@ check('staging database concurrency runner requires guarded real psql proof', ()
   assert(runner.includes('expected one shared provider payment credit'), 'DB concurrency runner must assert one provider identity cannot fund two wallets')
   assert(runner.includes('expected one consumed shared pending payment'), 'DB concurrency runner must assert only one provider evidence row is consumed')
   assert(runner.includes('expected combined wallet balance 500 after shared provider race'), 'DB concurrency runner must verify the cross-wallet provider race final balances')
-  assert(runner.includes('freeze_durability'), 'DB concurrency runner must test durable unbacked-purchase freeze behavior')
-  assert(runner.includes('expected WALLET_UNBACKED_FUNDS freeze denial'), 'DB concurrency runner must require the unbacked freeze denial code')
-  assert(runner.includes('unbacked purchase denial did not durably freeze wallet'), 'DB concurrency runner must verify the freeze state remains after the function returns')
+  assert(runner.includes('excess_quarantine'), 'DB concurrency runner must test quarantine without full account suspension')
+  assert(runner.includes('expected backed-funds decline'), 'DB concurrency runner must require the backed-funds denial code')
+  assert(runner.includes('backed-funds decline suspended the customer'), 'DB concurrency runner must verify the legitimate backed portion remains available')
   assert(runner.includes('denied unbacked purchase inserted'), 'DB concurrency runner must verify denied unbacked purchases do not insert purchase ledgers')
   assert(runner.includes('expected wallet balance 300 after purchase race'), 'DB concurrency runner must verify final wallet state after purchase race')
   assert(runner.includes('expected wallet balance 1000 after refund race'), 'DB concurrency runner must verify final wallet state after refund race')
@@ -2569,10 +2612,10 @@ check('owner handoff verifier preserves production proof boundaries', () => {
   ]) {
     assert(script.includes(needle), `owner handoff checker missing ${needle}`)
   }
-  assert(checklist.includes('89 passing'), 'owner checklist must reflect current 89-check wallet guard')
-  assert(containment.includes('reports 89 passing checks'), 'containment report must reflect current 89-check wallet guard')
+  assert(checklist.includes('92 passing'), 'owner checklist must reflect current 92-check wallet guard')
+  assert(containment.includes('reports 89 passing checks'), 'historical containment report must retain its point-in-time wallet guard result')
   assert(includesPhrase(containment, '32 currently changed function entrypoints'), 'containment report must reflect current deployment manifest function count')
-  assert(containment.includes('passed 50 repository-local checks'), 'containment report must reflect current local security suite count')
+  assert(containment.includes('passed 50 repository-local checks'), 'historical containment report must retain its point-in-time local suite result')
   assert(containment.includes('validation-shaped fillable evidence file'), 'containment report must mention provider fillable evidence file coverage')
   assert(containment.includes('provider-evidence validator self-test'), 'containment report must mention provider evidence validator coverage')
   assert(containment.includes('all 37 local Edge Functions'), 'containment report must mention all-function Deno Edge Function type check')
@@ -2660,7 +2703,7 @@ check('deployment manifest covers migrations, functions, app routes, and pause f
     assert(manifest.includes(needle), `deployment manifest missing ${needle}`)
   }
 
-  assert(manifest.includes('reports 89 checks passing'), 'deployment manifest must describe the current 89-check wallet guard')
+  assert(manifest.includes('runs the current source security checks'), 'deployment manifest must describe the wallet guard')
   assert(!manifest.includes('reports 73 checks'), 'deployment manifest has stale wallet check count')
   assert(!manifest.includes('reports 74 checks'), 'deployment manifest has stale wallet check count')
 })
@@ -2670,7 +2713,7 @@ check('incident migration safety tests cover grants, function exposure, and sear
   const pkg = read('package.json')
 
   assert(pkg.includes('"security:wallet:migrations": "node scripts/wallet-migration-safety-test.mjs"'), 'package script must expose migration safety tests')
-  assert(script.includes('202609(?:17|19|21)'), 'migration test must target incident migration set')
+  assert(script.includes('202609(?:1[7-9]|2[0-9]|30)'), 'migration test must target the full incident migration set')
   assert(script.includes('20260914007000_fix_security_definer_public_views.sql'), 'migration test must include the patched security-definer public view migration')
   assert(script.includes('protectedTables'), 'migration test must enumerate protected tables')
   assert(script.includes('stripDollarQuotedBodies'), 'migration test must inspect top-level SQL outside function bodies')
@@ -2679,7 +2722,7 @@ check('incident migration safety tests cover grants, function exposure, and sear
   assert(script.includes('inserts transaction ledger rows during migration execution'), 'migration test must reject deployment-time ledger inserts')
   assert(script.includes('safeNullNormalization'), 'migration test must allow only explicit null-to-zero balance normalization')
   assert(script.includes('no browser write grants'), 'migration test must reject browser writes to protected tables')
-  assert(script.includes('no browser EXECUTE grants'), 'migration test must reject browser function execution grants')
+  assert(script.includes('only reviewed admin-gated read RPCs and narrow helpers have browser EXECUTE grants'), 'migration test must reject unreviewed browser function execution grants')
   assert(script.includes('DISABLE\\s+ROW\\s+LEVEL\\s+SECURITY'), 'migration test must reject RLS disablement')
   assert(script.includes('SET\\s+search_path\\s*=\\s*public'), 'migration test must enforce definer search_path pinning')
   assert(script.includes('standalone transaction control inside a SQL function body'), 'migration test must reject transaction control inside SQL function bodies')
@@ -2938,7 +2981,7 @@ check('route decision tests cover hostile payload, wallet authorization, and ide
   assert(script.includes('IDEMPOTENCY_REQUEST_CONFLICT'), 'route test must reject changed idempotency payloads')
   assert(script.includes('server-computed amount'), 'route test must assert server-computed pricing')
   for (const needle of [
-    'admin unsuspend must calculate wallet backing before changing suspension state',
+    'admin unsuspend must load canonical wallet truth before changing suspension state',
     'NOWPayments webhook must verify IPN signature before creating service-role client',
     'NOWPayments crypto credit must stay held for manual review',
     'bills route must debit wallet before airtime provider dispatch',
@@ -2973,8 +3016,8 @@ check('supplier outcome tests cover unknown, duplicate, and late provider states
   assert(script.includes('lateSuccessAfterUnknownDoesNotDuplicateDispatch'), 'supplier test must cover late success after unknown outcome')
   assert(script.includes('definitiveFailureRefundsOnce'), 'supplier test must cover definitive failure refund idempotency')
   assert(script.includes('smmPartialRefundIsCappedAndIdempotent'), 'supplier test must cover capped/idempotent SMM partial refunds')
-  assert(script.includes('daisyTerminalCallbacksRefundOnceAndHideCode'), 'supplier test must cover Daisy terminal failure refunds')
-  assert(script.includes('daisyLateCodeAfterFailureDoesNotRefundAgain'), 'supplier test must cover late Daisy success without second refund')
+  assert(script.includes('daisyMissingActivationRequiresReview'), 'supplier test must hold a missing Daisy activation for review')
+  assert(script.includes('daisyConfirmedCancellationRefundsOnce'), 'supplier test must refund a confirmed Daisy cancellation once')
   assert(script.includes('REFUND_EXCEEDS_ORDER_AMOUNT'), 'supplier test must reject supplier over-refunds')
   assert(script.includes('outcome_unknown'), 'supplier test must preserve unknown outcomes')
 })
@@ -3411,14 +3454,13 @@ check('wallet financial model documents backed funds and remaining hold gaps', (
     'verified_amount_ngn',
     'verified_reference',
     'deposit-looking row with only an external ID',
-    'trusted_debit_capacity',
+    'completed_debits',
     'trusted_consumed_spend',
     'eligible_refunds',
     'linked_eligible_refunds',
     'refund rows that are not linked to a trusted-principal-authorized original',
-    'previous_completed_wallet_debits',
-    'eligible_refunds = min(linked_eligible_refunds, trusted_debit_capacity)',
-    'refundable_remaining = trusted_debit_capacity - linked_eligible_refunds',
+    'eligible_refunds = min(linked_eligible_refunds, all completed wallet debits)',
+    'refundable_remaining = completed_debits - eligible_refunds',
     'WALLET_UNBACKED_FUNDS',
     'FOR UPDATE',
     'Ordinary insufficient funds should not by itself suspend the customer',
@@ -3465,7 +3507,7 @@ check('wallet incident final report separates source fixes from production proof
     'Legacy Ercas',
     'NOWPayments',
     'Supporting Artifacts',
-    '89 checks passing',
+    '92 checks passing',
     'route inventory',
     'env/secret inventory',
     'wallet_security_events',

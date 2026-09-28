@@ -297,6 +297,12 @@ serve(async (req) => {
     const currency = url.searchParams.get('currency');
     
     if (currency) {
+      if (!/^[a-z0-9]{2,20}$/i.test(currency)) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Invalid currency.' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
       // Get minimum amount for specific currency
       console.log(`📊 Fetching minimum amount for ${currency}...`);
       const minAmountResponse = await nowpayments.getMinimumPaymentAmount(
@@ -360,13 +366,11 @@ serve(async (req) => {
       }
     );
 
-  } catch (error: any) {
-    console.error('❌ Error fetching available cryptos:', error);
-    
+  } catch (_error) {
     return new Response(
       JSON.stringify({ 
         success: false, 
-        error: error.message || 'Failed to fetch cryptocurrencies',
+        error: 'Cryptocurrency list is temporarily unavailable.',
         timestamp: new Date().toISOString(),
       }),
       { 

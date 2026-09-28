@@ -15,7 +15,6 @@ import GlobalPaymentChecker from '@/components/GlobalPaymentChecker'
 import LoginWelcomeDialog from '@/components/LoginWelcomeDialog'
 import ChatWidget from '@/components/ChatWidget'
 import MobileBottomNav from '@/components/MobileBottomNav'
-import GlobalActivityFeed from '@/components/GlobalActivityFeed'
 import VisitorTracker from '@/components/VisitorTracker'
 
 // ⚠️ MAINTENANCE MODE - Set to false to restore normal site
@@ -318,7 +317,6 @@ const App = () => {
               {/* Catch all route */}
               <Route path="*" element={<NotFound />} />
             </Routes>
-            <GlobalActivityFeed />
             <MobileBottomNav />
           </CurrencyProvider>
           </AuthProvider>

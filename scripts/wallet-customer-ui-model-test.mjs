@@ -1,3 +1,9 @@
+import {
+  getTransactionSignedAmount as realSignedAmount,
+  getWalletTransactionTitle as realTitle,
+  isBalanceNeutralLedgerEvidence,
+} from '../src/lib/walletTransactions.ts'
+
 function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
@@ -147,6 +153,17 @@ const dashboardNeutral = dashboardActivity({ type: 'unknown', amount: 0, descrip
 assert(dashboardNeutral.tone === 'neutral', 'dashboard zero unknown transaction should be neutral')
 assert(dashboardNeutral.sign === '', 'dashboard neutral transaction should not show a plus or minus sign')
 
+const neutralRepair = {
+  type: 'admin_credit', amount: 5000, balance_before: 15000, balance_after: 15000,
+  metadata: { source: 'admin-ledger-repair', balance_unchanged: true, requires_owner_evidence: true },
+}
+assert(isBalanceNeutralLedgerEvidence(neutralRepair), 'real wallet helper did not identify neutral repair evidence')
+assert(realSignedAmount(neutralRepair) === 0, 'customer wallet helper displayed neutral repair as credit')
+assert(realTitle(neutralRepair).includes('no balance change'), 'customer wallet helper did not label neutral repair')
+assert(!isBalanceNeutralLedgerEvidence({ ...neutralRepair, balance_after: 20000 }), 'changed-snapshot credit was hidden as neutral evidence')
+assert(realSignedAmount({ ...neutralRepair, balance_after: 20000 }) === 5000, 'changed-snapshot credit lost its displayed movement')
+assert(!isBalanceNeutralLedgerEvidence({ ...neutralRepair, type: 'admin-credit' }), 'UI neutral type recognition exceeded SQL rule')
+
 console.log(JSON.stringify({
   ok: true,
   scenarios: [
@@ -158,5 +175,6 @@ console.log(JSON.stringify({
     'dashboard recent activity labels admin credits as admin credits, not top-ups',
     'dashboard recent activity derives tone and sign from typed signed amount instead of raw amount positivity',
     'neutral zero-value rows do not render fake debit signs',
+    'balance-neutral admin repair evidence displays no wallet movement',
   ],
 }, null, 2))

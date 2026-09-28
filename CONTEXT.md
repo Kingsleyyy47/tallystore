@@ -128,8 +128,10 @@ Provider webhook deployment notes:
 - **Page headers**: Purple gradient nav (like Bills page) or standard NavbarAuth
 - **Forms**: shadcn Input, Select, Button with loading states
 
-## Admin Account
-- Email: `wisdomthedev@gmail.com` (hardcoded admin check)
+## Owner Authorization
+- Owner-only Edge functions require the server-side `TALLYSTORE_OWNER_USER_ID`
+  setting and a current `profiles.is_admin` role. Do not place the owner ID in
+  browser configuration or repository source.
 
 ## Conventions
 - Edge Functions use `corsHeaders` pattern

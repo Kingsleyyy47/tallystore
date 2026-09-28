@@ -188,7 +188,7 @@ export default function Dashboard() {
         )
         const { data, error, count } = await Promise.race([
           supabase
-            .from('orders')
+            .from('orders_safe_history' as any)
             .select('amount', { count: from === 0 ? 'exact' : undefined })
             .eq('user_id', user.id)
             .eq('status', 'completed')
@@ -245,7 +245,7 @@ export default function Dashboard() {
           .order('created_at', { ascending: false })
           .limit(5),
         supabase
-          .from('orders')
+          .from('orders_safe_history' as any)
           .select('id,amount,status,created_at,account_details')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })

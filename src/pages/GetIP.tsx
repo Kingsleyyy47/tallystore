@@ -71,7 +71,7 @@ export default function GetIP() {
       trackRevenueEvent({
         eventType: 'OFFER_DISMISSED',
         surface: 'get_ip_detect_failed',
-        metadata: { reason: error?.message || 'ip_detect_failed' },
+        metadata: { reason: 'ip_detect_failed' },
       });
       toast({
         title: "Error",

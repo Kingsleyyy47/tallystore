@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { readFileSync } from 'node:fs'
+import { ngnMinorUnits } from '../supabase/functions/_shared/ngn-amount.mjs'
 
 const args = new Map()
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -44,7 +45,7 @@ Usage:
 Options:
   --user-id <uuid>        Reconcile one profile by id.
   --email <email>         Reconcile one profile by email.
-  --since <iso-date>      Limit supporting event scans to a lower bound.
+  --since <iso-date>      Report transaction coverage from this date; evidence and wallet truth remain full-history.
   --history-csv <paths>   Offline CSV export reconciliation. Use comma-separated local file paths.
   --allow-production      Required when TALLYSTORE_RECONCILE_ENV=production.
   --json                 Output compact JSON only.
@@ -99,6 +100,7 @@ const run = async () => {
 
   const profile = await findProfile()
   const userId = profile.id
+  const canonicalTruth = await loadCanonicalWalletTruth(userId)
   const [
     transactions,
     orders,
@@ -123,14 +125,7 @@ const run = async () => {
     selectRows('crypto_transactions', '*', (q) => q.eq('user_id', userId).order('created_at', { ascending: true })),
   ])
 
-  const adminActorIds = await loadAdminActorIds(transactions)
-
   const filteredTransactions = filterSince(transactions)
-  const walletTransactions = filteredTransactions.filter((row) =>
-    String(row.balance_type || 'wallet').toLowerCase() === 'wallet' &&
-    String(row.status || 'completed').toLowerCase() === 'completed'
-  )
-  const backing = calculateWalletBacking(walletTransactions, adminActorIds, { pendingPayments, pocketfiWebhookLogs })
   const duplicateReferences = duplicatesBy(transactions.filter((row) => row.reference), (row) => `${row.type || ''}:${row.reference}`)
   const duplicateIdempotencyKeys = duplicatesBy(transactions.filter((row) => row.idempotency_key), (row) => row.idempotency_key)
   const orphaned = {
@@ -201,16 +196,7 @@ const run = async () => {
       createdAt: profile.created_at || null,
       updatedAt: profile.updated_at || null,
     },
-    walletBacking: {
-      storedWalletBalance: number(profile.wallet_balance),
-      trustedCredits: backing.trustedCredits,
-      grossDebits: backing.grossDebits,
-      completedRefunds: backing.completedRefunds,
-      eligibleRefunds: backing.eligibleRefunds,
-      trustedConsumedSpend: backing.trustedConsumedSpend,
-      backedAvailable: backing.backedAvailable,
-      unexplainedDifference: number(profile.wallet_balance) - backing.backedAvailable,
-    },
+    walletBacking: canonicalTruth,
     evidenceFlags: {
       duplicateReferences,
       duplicateIdempotencyKeys,
@@ -247,6 +233,27 @@ function splitInputPaths(value) {
 function number(value) {
   const parsed = Number(value || 0)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+async function loadCanonicalWalletTruth(userId) {
+  const { data, error } = await supabase.rpc('wallet_financial_truth_internal', { p_user_id: userId })
+  if (error) throw new Error(`Canonical wallet financial truth unavailable: ${error.message}`)
+  if (!data || typeof data !== 'object' || Array.isArray(data) ||
+      data.user_id !== userId || typeof data.integrity_status !== 'string' ||
+      typeof data.evidence_complete !== 'boolean') {
+    throw new Error('Canonical wallet financial truth is incomplete or belongs to another user.')
+  }
+  for (const field of [
+    'verified_gateway_deposits', 'approved_admin_credits', 'trusted_principal',
+    'completed_debits', 'eligible_refunds', 'active_reservations',
+    'confirmed_spendable', 'expected_ledger_balance', 'stored_wallet_balance',
+    'explained_difference', 'unexplained_difference',
+  ]) {
+    if (data[field] == null || !Number.isFinite(Number(data[field]))) {
+      throw new Error(`Canonical wallet financial truth is missing ${field}.`)
+    }
+  }
+  return data
 }
 
 function absMoneyFromRow(row) {
@@ -317,6 +324,8 @@ function runSelfTest() {
         approved_by: 'admin-1',
         approval_reference: 'approval-admin-credit-1',
         reason: 'verified business credit',
+        source: 'admin-adjust-balance',
+        approval_type: 'direct_admin_adjustment',
       },
       status: 'completed',
     },
@@ -356,7 +365,6 @@ function runSelfTest() {
       status: 'completed',
     },
   ]
-  const backingAdminActors = new Set(['admin-1'])
   const backingEvidence = {
     pendingPayments: [{
       user_id: 'user-1',
@@ -366,7 +374,7 @@ function runSelfTest() {
       ercas_reference: 'ercas-1',
     }],
   }
-  const backing = calculateWalletBacking(backingRows, backingAdminActors, backingEvidence)
+  const backing = calculateWalletBacking(backingRows, backingEvidence)
 
   assertSelf(backing.trustedCredits === 150, 'verified deposit plus approved admin credit must create trusted principal')
   assertSelf(backing.grossDebits === 80, 'purchase debit must consume principal capacity')
@@ -393,18 +401,53 @@ function runSelfTest() {
       metadata: { source_debit_transaction_id: 'fake-marked-debit' },
       status: 'completed',
     },
-  ], backingAdminActors, backingEvidence)
+  ], backingEvidence)
   assertSelf(forgedMarkerBacking.completedRefunds === 150, 'forged-marker raw refund must remain visible for review')
   assertSelf(forgedMarkerBacking.linkedEligibleRefunds === 30, 'forged trusted marker without trusted amount must not restore refund capacity')
   assertSelf(forgedMarkerBacking.eligibleRefunds === 30, 'forged trusted marker refund must not become eligible trusted backing')
   assertSelf(forgedMarkerBacking.backedAvailable === 60, 'forged trusted marker refund must not increase backed availability')
 
+  const overPreciseEvidence = calculateWalletBacking(backingRows, {
+    pendingPayments: [{ ...backingEvidence.pendingPayments[0], amount: 100.004 }],
+  })
+  assertSelf(overPreciseEvidence.trustedCredits === 50, 'rounded provider evidence must not become trusted principal')
+
+  const cycleRows = [
+    backingRows[0],
+    { id: 'cycle-debit-1', type: 'purchase', amount: -40, status: 'completed',
+      metadata: { trusted_principal_authorized: true, trusted_principal_debit_amount: 40 } },
+    { id: 'cycle-refund-1', type: 'refund', amount: 40, status: 'completed',
+      metadata: { source_debit_transaction_id: 'cycle-debit-1' } },
+    { id: 'cycle-debit-2', type: 'purchase', amount: -100, status: 'completed',
+      metadata: { trusted_principal_authorized: true, trusted_principal_debit_amount: 100 } },
+    { id: 'cycle-refund-2', type: 'refund', amount: 100, status: 'completed',
+      metadata: { source_debit_transaction_id: 'cycle-debit-2' } },
+  ]
+  const cycleBacking = calculateWalletBacking(cycleRows, backingEvidence)
+  assertSelf(cycleBacking.trustedCredits === 100, 'cycle funding principal changed')
+  assertSelf(cycleBacking.eligibleRefunds === 140, 'refund cycles must not be capped at lifetime principal')
+  assertSelf(cycleBacking.backedAvailable === 100, 'separate full refund cycles must restore original principal')
+
+  const conflictingLink = calculateWalletBacking([
+    ...cycleRows,
+    { id: 'cycle-debit-3', type: 'purchase', amount: -20, status: 'completed',
+      reference: 'cycle-order',
+      metadata: { trusted_principal_authorized: true, trusted_principal_debit_amount: 20 } },
+    { id: 'conflicting-refund', type: 'refund', amount: 20, status: 'completed',
+      metadata: { source_debit_transaction_id: 'missing-debit', original_reference: 'cycle-order' } },
+  ], backingEvidence)
+  assertSelf(conflictingLink.eligibleRefunds === 140, 'bad stronger refund ID must not fall back to a weaker link')
+  assertSelf(conflictingLink.backedAvailable === 80, 'conflicting refund link must not restore a third debit')
+
   console.log(JSON.stringify({
     ok: true,
-    checks: 17,
+    checks: 23,
     noSupabaseConnection: true,
     looseRefundsDoNotCreateTrustedFunds: true,
     forgedTrustedMarkersDoNotCreateTrustedFunds: true,
+    exactProviderEvidenceRequired: true,
+    repeatedRefundCyclesRestored: true,
+    conflictingRefundLinkRejected: true,
   }, null, 2))
 }
 
@@ -768,19 +811,7 @@ function filterSince(rows) {
   })
 }
 
-async function loadAdminActorIds(transactions) {
-  const ids = Array.from(new Set(
-    transactions
-      .filter((row) => String(row.type || '').toLowerCase() === 'admin_credit' && row.created_by)
-      .map((row) => String(row.created_by))
-      .filter(Boolean)
-  ))
-  if (!ids.length) return new Set()
-  const adminRows = await selectRows('profiles', 'id,is_admin', (q) => q.in('id', ids).eq('is_admin', true))
-  return new Set(adminRows.map((row) => String(row.id)))
-}
-
-function calculateWalletBacking(rows, adminActorIds = new Set(), evidence = {}) {
+function calculateWalletBacking(rows, evidence = {}) {
   let trustedCredits = 0
   let grossDebits = 0
   let completedRefunds = 0
@@ -803,7 +834,6 @@ function calculateWalletBacking(rows, adminActorIds = new Set(), evidence = {}) 
     } else if (
       amount > 0
       && type === 'admin_credit'
-      && adminActorIds.has(String(row.created_by || ''))
       && hasApprovedAdminCreditEvidence(row, metadata)
       && !isBalanceNeutralAdminRepair
     ) {
@@ -845,9 +875,8 @@ function calculateWalletBacking(rows, adminActorIds = new Set(), evidence = {}) 
     refundedByOriginal.set(original.id, alreadyRefunded + eligibleAmount)
   }
   const linkedEligibleRefunds = [...refundedByOriginal.values()].reduce((sum, amount) => sum + amount, 0)
-  const trustedDebitCapacity = Math.min(grossDebits, trustedCredits)
-  const eligibleRefunds = Math.min(linkedEligibleRefunds, trustedDebitCapacity)
-  const trustedConsumedSpend = Math.max(trustedDebitCapacity - eligibleRefunds, 0)
+  const eligibleRefunds = Math.min(linkedEligibleRefunds, grossDebits)
+  const trustedConsumedSpend = Math.max(grossDebits - eligibleRefunds, 0)
   return {
     trustedCredits,
     grossDebits,
@@ -865,6 +894,10 @@ function hasApprovedAdminCreditEvidence(row, metadata) {
     && String(metadata.approved_by || '').trim() === createdBy
     && String(metadata.approval_reference || '').trim().length >= 8
     && String(metadata.reason || '').trim().length >= 3
+    && (
+      (metadata.source === 'admin-adjust-balance' && metadata.approval_type === 'direct_admin_adjustment') ||
+      (metadata.source === 'manage-staff' && metadata.approval_type === 'staff_action_review')
+    )
 }
 
 function trustedPrincipalDebitAmount(row, metadata, amount) {
@@ -876,7 +909,7 @@ function trustedPrincipalDebitAmount(row, metadata, amount) {
 
 function findTrustedOriginalDebit(refundMetadata, trustedDebitById) {
   const directId = String(refundMetadata.source_debit_transaction_id || '').trim()
-  if (directId && trustedDebitById.has(directId)) return trustedDebitById.get(directId)
+  if (directId) return trustedDebitById.get(directId) || null
 
   const debitKey = String(
     refundMetadata.source_debit_idempotency_key ||
@@ -885,7 +918,7 @@ function findTrustedOriginalDebit(refundMetadata, trustedDebitById) {
   ).trim()
   if (debitKey) {
     const byKey = [...trustedDebitById.values()].find((debit) => debit.idempotencyKey && debit.idempotencyKey === debitKey)
-    if (byKey) return byKey
+    return byKey || null
   }
 
   const sourceOrderId = String(
@@ -900,7 +933,7 @@ function findTrustedOriginalDebit(refundMetadata, trustedDebitById) {
       if (sourceOrderTable && debit.sourceOrderTable && debit.sourceOrderTable !== sourceOrderTable) return false
       return debit.sourceOrderIds.includes(sourceOrderId)
     })
-    if (byOrder) return byOrder
+    return byOrder || null
   }
 
   const originalReference = String(refundMetadata.original_reference || '').trim()
@@ -925,14 +958,14 @@ function parseMetadata(metadata) {
 }
 
 function isVerifiedGatewayCredit(row, evidence = {}) {
-  const amount = number(row.amount)
+  const amountMinor = ngnMinorUnits(row.amount)
   const externalPaymentId = String(row.external_payment_id || '').trim()
   const reference = String(row.reference || '').trim()
   const metadata = parseMetadata(row.metadata)
   const provider = String(metadata.provider || '').toLowerCase()
-  const verifiedAmount = number(metadata.verified_amount_ngn)
+  const verifiedMinor = ngnMinorUnits(metadata.verified_amount_ngn)
 
-  if (!externalPaymentId || amount <= 0 || toCents(verifiedAmount) !== toCents(amount)) return false
+  if (!externalPaymentId || amountMinor === null || verifiedMinor !== amountMinor) return false
 
   if (['ercaspay', 'ercas'].includes(provider)) {
     return Array.isArray(evidence.pendingPayments) && evidence.pendingPayments.some((payment) => {
@@ -944,7 +977,7 @@ function isVerifiedGatewayCredit(row, evidence = {}) {
       ].filter(Boolean)
       return String(payment.user_id || '') === String(row.user_id || '') &&
         paymentStatus === 'credited' &&
-        toCents(number(payment.amount)) === toCents(amount) &&
+        ngnMinorUnits(payment.amount) === amountMinor &&
         localRefs.some((localRef) => paymentRefs.includes(localRef))
     })
   }
@@ -957,16 +990,12 @@ function isVerifiedGatewayCredit(row, evidence = {}) {
         String(log.id || '') === webhookLogId &&
         String(log.matched_user_id || '') === String(row.user_id || '') &&
         Boolean(log.processed) === true &&
-        toCents(number(log.verified_amount_ngn)) === toCents(amount) &&
+        ngnMinorUnits(log.verified_amount_ngn) === amountMinor &&
         [reference, externalPaymentId].filter(Boolean).includes(String(log.verified_reference || '').trim())
       )
   }
 
   return false
-}
-
-function toCents(value) {
-  return Math.round(number(value) * 100)
 }
 
 function duplicatesBy(rows, keyFn) {

@@ -14,6 +14,7 @@ import { trackRevenueEvent } from '@/lib/revenue-os';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { RecommendationStrip } from '@/components/RecommendationCard';
 import { useRecommendations } from '@/hooks/useRecommendations';
+import { getPaymentStorageItem, removePaymentStorageItem } from '@/lib/paymentStorage';
 
 export default function PaymentSuccessPage() {
   const [searchParams] = useSearchParams();
@@ -56,8 +57,8 @@ export default function PaymentSuccessPage() {
                             searchParams.get('tx_ref') || 
                             searchParams.get('reference');
       
-      // Also check localStorage for pending transaction
-      const pendingTopup = localStorage.getItem('pending_topup');
+      // Also check tab-scoped storage for a pending transaction
+      const pendingTopup = getPaymentStorageItem('pending_topup');
       let storedTransaction = null;
       
       if (pendingTopup) {
@@ -103,7 +104,7 @@ export default function PaymentSuccessPage() {
           });
 
           // Clear pending transaction
-          localStorage.removeItem('pending_topup');
+          removePaymentStorageItem('pending_topup');
 
           const message = result.already_processed 
             ? `Payment already processed. Your wallet balance is up to date.`
@@ -129,7 +130,7 @@ export default function PaymentSuccessPage() {
             userId: user?.id || null,
             surface: 'payment_success_failed',
             metadata: {
-              reason: result.error || 'verification_failed',
+              reason: 'verification_failed',
               stored_amount_ngn: storedTransaction?.amount || 0,
             },
           });
@@ -148,7 +149,7 @@ export default function PaymentSuccessPage() {
           userId: user?.id || null,
           surface: 'payment_success_error',
           metadata: {
-            reason: error?.message || 'unexpected_error',
+            reason: 'unexpected_error',
             stored_amount_ngn: storedTransaction?.amount || 0,
           },
         });

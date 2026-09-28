@@ -87,13 +87,22 @@ function smmStatusDecision(order, { status, remains = 0, panelCharge = 0 }) {
 }
 
 function daisyStatusDecision(order, status) {
+  if (order.status === 'failed_refunded' || order.status === 'fulfilled') {
+    return { status: order.status, refund: null, revealCode: false }
+  }
+
   if (status === 'STATUS_OK') {
     order.status = 'fulfilled'
     order.delivered = true
     return { status: order.status, refund: null, revealCode: true }
   }
 
-  if (status === 'NO_ACTIVATION' || status === 'STATUS_CANCEL') {
+  if (status === 'NO_ACTIVATION') {
+    order.status = 'outcome_unknown'
+    return { status: order.status, refund: null, revealCode: false }
+  }
+
+  if (status === 'STATUS_CANCEL') {
     const refund = order.refund(`sms:refund:${order.id}:${status}`, order.amount)
     order.status = 'failed_refunded'
     return { status: order.status, refund, revealCode: false }
@@ -145,31 +154,32 @@ function smmPartialRefundIsCappedAndIdempotent() {
   assert(!excessive.ok && excessive.code === 'REFUND_EXCEEDS_ORDER_AMOUNT', 'SMM over-refund was not capped')
 }
 
-function daisyTerminalCallbacksRefundOnceAndHideCode() {
+function daisyMissingActivationRequiresReview() {
   const order = new SupplierOrder({ id: 'sms-1', kind: 'sms', amount: 1200 })
-  const first = daisyStatusDecision(order, 'NO_ACTIVATION')
-  const duplicate = daisyStatusDecision(order, 'NO_ACTIVATION')
-  assert(first.refund.code === 'REFUND_POSTED', 'Daisy terminal failure did not refund')
-  assert(duplicate.refund.code === 'REFUND_IDEMPOTENT_REPLAY', 'Daisy duplicate terminal callback double-refunded')
-  assert(first.revealCode === false, 'Daisy failure revealed an OTP code')
-  assert(order.refunded === 1200, 'Daisy terminal failure refunded wrong amount')
+  const missing = daisyStatusDecision(order, 'NO_ACTIVATION')
+  assert(missing.status === 'outcome_unknown', 'missing activation was treated as confirmed cancellation')
+  assert(missing.refund === null && order.refunded === 0, 'missing activation refunded without provider confirmation')
+  assert(missing.revealCode === false, 'missing activation revealed an OTP code')
 }
 
-function daisyLateCodeAfterFailureDoesNotRefundAgain() {
+function daisyConfirmedCancellationRefundsOnce() {
   const order = new SupplierOrder({ id: 'sms-2', kind: 'sms', amount: 1200 })
-  daisyStatusDecision(order, 'STATUS_CANCEL')
+  const first = daisyStatusDecision(order, 'STATUS_CANCEL')
+  const duplicate = daisyStatusDecision(order, 'STATUS_CANCEL')
+  assert(first.refund?.code === 'REFUND_POSTED', 'confirmed cancellation did not refund')
+  assert(duplicate.refund === null, 'duplicate cancellation created another refund')
   const lateCode = daisyStatusDecision(order, 'STATUS_OK')
-  assert(lateCode.revealCode === true, 'Daisy late success did not reveal code')
+  assert(lateCode.revealCode === false, 'late code revealed value after confirmed cancellation')
   assert(order.refunded === 1200, 'Daisy late success changed refund total')
-  assert(order.delivered, 'Daisy late success was not recorded as delivered')
+  assert(!order.delivered, 'Daisy late success overwrote the terminal state')
 }
 
 lostResponseDoesNotRetryOrRefund()
 lateSuccessAfterUnknownDoesNotDuplicateDispatch()
 definitiveFailureRefundsOnce()
 smmPartialRefundIsCappedAndIdempotent()
-daisyTerminalCallbacksRefundOnceAndHideCode()
-daisyLateCodeAfterFailureDoesNotRefundAgain()
+daisyMissingActivationRequiresReview()
+daisyConfirmedCancellationRefundsOnce()
 
 console.log(JSON.stringify({
   ok: true,
@@ -178,7 +188,7 @@ console.log(JSON.stringify({
     'late success after unknown outcome fulfills without duplicate dispatch',
     'definitive provider failure refunds once with idempotent duplicate handling',
     'SMM partial refund is ratio-based, capped, and idempotent',
-    'Daisy terminal failure callbacks refund once and do not reveal code',
-    'late Daisy success after terminal failure does not create a second refund',
+    'Daisy missing activation requires outcome review without refund',
+    'confirmed Daisy cancellation refunds once and ignores stale code updates',
   ],
 }, null, 2))

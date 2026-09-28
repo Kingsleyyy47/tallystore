@@ -86,8 +86,8 @@ try {
     providerIdentityRace = summarizeChildren(providerCredits)
   }
 
-  const freezeDurability = runPsql('verify-unbacked-freeze-durability', freezeDurabilitySql())
-  if (!freezeDurability.ok) throw new Error(`unbacked freeze durability verification failed: ${freezeDurability.stderrTail || freezeDurability.stdoutTail}`)
+  const excessQuarantine = runPsql('verify-unbacked-excess-quarantine', excessQuarantineSql())
+  if (!excessQuarantine.ok) throw new Error(`unbacked excess quarantine verification failed: ${excessQuarantine.stderrTail || excessQuarantine.stdoutTail}`)
 
   cleanupResult = runPsql('cleanup', cleanupSql())
   if (!cleanupResult.ok) throw new Error(`cleanup failed: ${cleanupResult.stderrTail || cleanupResult.stdoutTail}`)
@@ -105,14 +105,14 @@ try {
     purchaseRace: summarizeChildren(purchases),
     refundRace: summarizeChildren(refunds),
     providerIdentityRace: providerIdentityRace || 'skipped: provide --second-test-user-id to test one provider payment racing across two wallets',
-    freezeDurability,
+    excessQuarantine,
     checks: [
       'one of two concurrent over-total purchases can commit at most one debit',
       'duplicate concurrent refunds against one original debit commit at most one refund',
       secondTestUserId
         ? 'one provider payment identity racing across two wallets can commit at most one verified credit'
         : 'cross-wallet provider payment identity race skipped because no second ordinary test user was supplied',
-      'an unbacked purchase denial durably freezes the wallet without inserting a purchase ledger row',
+      'an over-backed purchase is denied without spending or suspending the legitimate backed portion',
       'final staging state is verified after each race',
       'test wallet cleanup ran after committed staging mutations',
     ],
@@ -316,7 +316,7 @@ END $$;
 `
 }
 
-function freezeDurabilitySql() {
+function excessQuarantineSql() {
   return `
 DO $$
 DECLARE
@@ -342,13 +342,13 @@ BEGIN
     'purchase',
     10000,
     ${sqlString(`${runId}-freeze-durability-purchase`)},
-    'Unbacked purchase should freeze without ledger debit',
-    ${sqlString(`${runId}:freeze-durability:purchase`)},
+    'Unbacked purchase should decline without ledger debit',
+    ${sqlString(`${runId}:excess-quarantine:purchase`)},
     jsonb_build_object(
       'source', 'wallet-db-concurrency-runner',
       'run_id', ${sqlString(runId)},
-      'race', 'freeze_durability',
-      'expected_denial', 'WALLET_UNBACKED_FUNDS'
+      'race', 'excess_quarantine',
+      'expected_denial', 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS'
     ),
     'NGN',
     'wallet',
@@ -356,8 +356,8 @@ BEGIN
     null
   ) INTO v_result;
 
-  IF v_result->>'code' IS DISTINCT FROM 'WALLET_UNBACKED_FUNDS' THEN
-    RAISE EXCEPTION 'wallet-db-concurrency-test: expected WALLET_UNBACKED_FUNDS freeze denial, got %', v_result;
+  IF v_result->>'code' IS DISTINCT FROM 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS' THEN
+    RAISE EXCEPTION 'wallet-db-concurrency-test: expected backed-funds decline, got %', v_result;
   END IF;
 
   SELECT wallet_balance, account_suspended, suspension_reason
@@ -365,10 +365,8 @@ BEGIN
   FROM public.profiles
   WHERE id = v_user;
 
-  IF COALESCE(v_profile.account_suspended, false) IS NOT TRUE
-    OR COALESCE(v_profile.suspension_reason, '') NOT ILIKE '%exceeds backed available funds%'
-  THEN
-    RAISE EXCEPTION 'wallet-db-concurrency-test: unbacked purchase denial did not durably freeze wallet. Profile: %', row_to_json(v_profile);
+  IF COALESCE(v_profile.account_suspended, false) IS NOT FALSE THEN
+    RAISE EXCEPTION 'wallet-db-concurrency-test: backed-funds decline suspended the customer. Profile: %', row_to_json(v_profile);
   END IF;
 
   IF round(COALESCE(v_profile.wallet_balance, -1), 2) <> 999999 THEN
@@ -378,7 +376,7 @@ BEGIN
   SELECT COUNT(*) INTO v_purchase_count
   FROM public.transactions
   WHERE user_id = v_user
-    AND idempotency_key = ${sqlString(`${runId}:freeze-durability:purchase`)};
+    AND idempotency_key = ${sqlString(`${runId}:excess-quarantine:purchase`)};
 
   IF v_purchase_count <> 0 THEN
     RAISE EXCEPTION 'wallet-db-concurrency-test: denied unbacked purchase inserted % ledger row(s)', v_purchase_count;
@@ -717,7 +715,7 @@ function runSelfTest() {
   const refundStatement = refundSql('self-test')
   const purchaseVerifyStatement = verifyPurchaseSql()
   const refundVerifyStatement = verifyRefundSql()
-  const freezeStatement = freezeDurabilitySql()
+  const excessStatement = excessQuarantineSql()
   const providerSetupStatement = setupProviderIdentityRaceSql()
   const providerCreditStatement = providerCreditSql('11111111-1111-4111-8111-111111111111', 'self-test')
   const providerVerifyStatement = verifyProviderIdentityRaceSql()
@@ -742,9 +740,9 @@ function runSelfTest() {
   assertSelf(refundStatement.includes('source_order_id'), 'refund race SQL must link to the original order identity')
   assertSelf(purchaseVerifyStatement.includes('expected exactly one purchase'), 'purchase verification SQL must assert one race winner')
   assertSelf(refundVerifyStatement.includes('expected exactly one refund'), 'refund verification SQL must assert one race winner')
-  assertSelf(freezeStatement.includes('WALLET_UNBACKED_FUNDS'), 'freeze durability SQL must assert the unbacked-funds denial code')
-  assertSelf(freezeStatement.includes('account_suspended'), 'freeze durability SQL must verify account suspension persists')
-  assertSelf(freezeStatement.includes('denied unbacked purchase inserted'), 'freeze durability SQL must verify denied purchases do not create ledger rows')
+  assertSelf(excessStatement.includes('INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS'), 'excess quarantine SQL must assert the backed-funds denial code')
+  assertSelf(excessStatement.includes('account_suspended'), 'excess quarantine SQL must verify the customer is not suspended')
+  assertSelf(excessStatement.includes('denied unbacked purchase inserted'), 'excess quarantine SQL must verify denied purchases do not create ledger rows')
   assertSelf(providerSetupStatement.includes(`${runId}-shared-provider`), 'provider race setup SQL must seed one shared provider identity')
   assertSelf(providerCreditStatement.includes("'provider_identity'"), 'provider credit SQL must mark the provider identity race')
   assertSelf(providerCreditStatement.includes("'verified_amount_ngn', 500"), 'provider credit SQL must include verified amount metadata')
@@ -795,8 +793,8 @@ Safety:
     apply_wallet_transaction, then verifies committed ledger/profile state.
   - With --second-test-user-id, seeds two pending-payment rows with the same
     provider payment identity and verifies only one wallet credit can commit.
-  - Verifies an unbacked purchase denial durably freezes the wallet and inserts
-    no purchase ledger row before cleanup resets the fixture.
+  - Verifies an over-backed purchase is denied without suspending the customer
+    or inserting a purchase ledger row before cleanup resets the fixture.
   - Performs best-effort cleanup of this run's test ledger and pending-payment
     rows and resets the supplied test wallet(s) to zero.
 `)

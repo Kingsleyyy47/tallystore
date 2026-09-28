@@ -793,13 +793,17 @@ function safeUrl(value: string | null | undefined, base = 'https://tallystore.lo
 export function safeRevenuePath(value: string | null | undefined) {
   const url = safeUrl(value || '/', typeof window === 'undefined' ? 'https://tallystore.local' : window.location.origin)
   if (!url) return null
-  return url.pathname || '/'
+  // Route parameters can contain account identifiers or callback credentials.
+  const root = url.pathname.split('/').filter(Boolean)[0]
+  if (!root) return '/'
+  const knownRoutes = new Set(['products', 'category', 'product', 'how-it-works', 'support', 'terms', 'privacy', 'about', 'contact', 'web-services', 'travel-visa', 'email-confirmation', 'login', 'register', 'dashboard', 'profile', 'orders', 'checkout', 'wallet', 'referrals', 'payment-callback', 'payment-success', 'crypto-exchange', 'bills', 'gift-cards', 'crypto-withdrawal', 'referral-withdrawal', 'crypto-history', 'get-ip', 'social-boost', 'sms-numbers', 'telegram-stars', 'us-canada', 'admin', 'staff-admin'])
+  return knownRoutes.has(root) ? `/${root}` : '/other'
 }
 
 export function safeRevenueReferrer(value: string | null | undefined) {
   const url = safeUrl(value || null)
   if (!url) return null
-  return `${url.origin}${url.pathname || '/'}`.slice(0, 240)
+  return url.origin.slice(0, 240)
 }
 
 function classifyTrafficQuality(input: { userAgent?: string | null; path?: string | null; internal?: boolean }): TrafficQuality {
@@ -821,11 +825,12 @@ export function deriveRevenueAttribution(input: {
   const url = safeUrl(input.path || '/', typeof window === 'undefined' ? 'https://tallystore.local' : window.location.origin)
   const referrerUrl = safeUrl(input.referrer || null)
   const params = url?.searchParams || new URLSearchParams()
-  const utmSource = params.get('utm_source') || params.get('source')
-  const utmMedium = params.get('utm_medium')
-  const utmCampaign = params.get('utm_campaign')
-  const utmTerm = params.get('utm_term')
-  const utmContent = params.get('utm_content')
+  const rawSource = (params.get('utm_source') || params.get('source') || '').toLowerCase()
+  const rawMedium = (params.get('utm_medium') || '').toLowerCase()
+  const knownSources = new Set(['google', 'bing', 'facebook', 'instagram', 'tiktok', 'youtube', 'telegram', 'whatsapp', 'snapchat', 'discord', 'twitter', 'x', 'direct'])
+  const knownMedia = new Set(['cpc', 'paid', 'email', 'affiliate', 'referral', 'social', 'organic', 'organic_search', 'direct'])
+  const utmSource = rawSource ? (knownSources.has(rawSource) ? rawSource : 'campaign') : null
+  const utmMedium = rawMedium ? (knownMedia.has(rawMedium) ? rawMedium : 'other') : null
   const gclid = params.get('gclid')
   const fbclid = params.get('fbclid')
   const referrerHost = referrerUrl?.hostname?.replace(/^www\./, '') || null
@@ -847,11 +852,11 @@ export function deriveRevenueAttribution(input: {
     channel,
     source,
     medium: utmMedium,
-    campaign: utmCampaign,
-    term: utmTerm,
-    content: utmContent,
+    campaign: params.has('utm_campaign') ? '[campaign]' : null,
+    term: null,
+    content: null,
     referrerHost,
-    landingPath: url ? url.pathname : safeRevenuePath(input.path),
+    landingPath: safeRevenuePath(input.path),
     trafficQuality,
   }
 }
@@ -1061,12 +1066,9 @@ export function getProductTokens(product: ProductGroup, category?: Category) {
 }
 
 function canAutoFulfill(product: ProductGroup) {
-  return !!(
-    product.auto_fulfill_enabled &&
-    (product.muabanvia_product_id ||
-      product.shopclone_product_id ||
-      product.shopviaclone_product_id)
-  )
+  return import.meta.env.VITE_LIVE_ACCOUNT_FULFILLMENT_ENABLED === 'true' &&
+    product.is_sellable !== false &&
+    String(product.availability_status || '').toUpperCase() === 'UNLIMITED'
 }
 
 export function evaluateProductEligibility(product: ProductGroup): ProductEligibility {
@@ -1935,8 +1937,8 @@ export function deriveBehavioralProductRelationships(
 
 export async function recordCatalogueProductRelationships(relationships: CatalogueProductRelationship[]) {
   if (relationships.length === 0) return
-  const { error } = await supabase.from('product_relationships' as any).upsert(
-    relationships.map((relationship) => ({
+  const { error } = await supabase.rpc('save_admin_product_relationships', {
+    p_rows: relationships.map((relationship) => ({
       from_product_group_id: relationship.fromProductGroupId,
       to_product_group_id: relationship.toProductGroupId,
       relationship_type: relationship.relationshipType,
@@ -1945,10 +1947,8 @@ export async function recordCatalogueProductRelationships(relationships: Catalog
       sample_size: relationship.sampleSize || 0,
       source: relationship.source || 'CATALOGUE',
       metadata: relationship.metadata || {},
-      last_updated: new Date().toISOString(),
     })),
-    { onConflict: 'from_product_group_id,to_product_group_id,relationship_type,source' },
-  )
+  })
   if (error) throw error
 }
 
@@ -5636,7 +5636,7 @@ export async function loadRevenueOsSettings(): Promise<RevenueOsSettings> {
   }
 }
 
-const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
+const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups|search|query|term|text|name|message|error|reason)(\b|_)?/i
 const REVENUE_METADATA_CONTROL_KEYS = new Set(['forceTrack'])
 
 function sanitizeRevenueMetadataValue(value: unknown, depth = 0): unknown {

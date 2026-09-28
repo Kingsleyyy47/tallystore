@@ -83,6 +83,8 @@ function buildDeploymentEvidenceTemplate() {
         'PocketFi unsigned bridge rejects before proxy',
         'iStar unsigned webhook rejects or reports unconfigured without mutation',
         'browser bundle does not expose provider/service-role secrets',
+        'browser bundle contains the canonical admin financial-truth RPC names used by Fraud Review and user details',
+        'browser bundle does not contain the prior owner/staff email literals or the paused public activity RPC call',
       ],
     },
     {
@@ -566,7 +568,7 @@ function git(params) {
 
 function looksSecretLike(value) {
   const clean = String(value || '').trim()
-  return /(sk_live_|eyJ[a-zA-Z0-9_-]{20,}|service_role|bearer\s+[a-z0-9._-]{20,}|[a-z0-9]{32,})/i.test(clean)
+  return /(s[k]_live_|eyJ[a-zA-Z0-9_-]{20,}|service_role|bearer\s+[a-z0-9._-]{20,}|[a-z0-9]{32,})/i.test(clean)
 }
 
 function isSha256Fingerprint(value) {

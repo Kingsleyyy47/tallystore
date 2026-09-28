@@ -581,7 +581,9 @@ serve(async (req) => {
             order_id: order.id,
             reference: order.reference,
             status: order.status,
-            message: 'Order has not been submitted to panel yet',
+            message: order.status === 'outcome_unknown'
+              ? 'Order outcome is under review. Please contact support.'
+              : 'Order has not been submitted to panel yet',
           },
         }),
         {
@@ -601,7 +603,7 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({
           success: false,
-          error: `Panel error: ${panelStatus.error}`,
+          error: 'Order status is temporarily unavailable. Please try again later.',
           data: {
             order_id: order.id,
             reference: order.reference,
@@ -618,6 +620,17 @@ serve(async (req) => {
     // Map and update status
     const newStatus = mapPanelStatus(panelStatus.status || 'pending');
     const isCompleted = newStatus === 'completed' || newStatus === 'partial' || newStatus === 'cancelled';
+    const panelCharge = panelStatus.charge == null || String(panelStatus.charge).trim() === ''
+      ? NaN : Number(panelStatus.charge);
+    const panelRemains = panelStatus.remains == null || String(panelStatus.remains).trim() === ''
+      ? NaN : Number(panelStatus.remains);
+    if ((newStatus === 'cancelled' && (!Number.isFinite(panelCharge) || panelCharge < 0)) ||
+        (newStatus === 'partial' && (!Number.isInteger(panelRemains) || panelRemains < 1 || panelRemains > order.quantity))) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Panel refund evidence is incomplete; order held for retry' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 },
+      );
+    }
 
     // Update order in database
     const updateData: Record<string, any> = {
@@ -632,11 +645,6 @@ serve(async (req) => {
       updateData.completed_at = new Date().toISOString();
     }
 
-    await supabaseAdmin
-      .from('smm_orders')
-      .update(updateData)
-      .eq('id', order.id);
-
     // Auto-refund for cancelled orders where panel charge is 0 (nothing was delivered)
     // Also handle partial refunds for partial orders
     let refundAmount = 0;
@@ -644,14 +652,13 @@ serve(async (req) => {
 
     if (newStatus === 'cancelled' && order.status !== 'cancelled') {
       // Full refund — panel cancelled and charged nothing
-      const panelCharge = parseFloat(panelStatus.charge || '0');
       if (panelCharge === 0) {
         refundAmount = parseFloat(order.amount_ngn) || 0;
         refundMessage = `Auto-refund for cancelled SMM order (panel charge: $0)`;
       }
     } else if (newStatus === 'partial' && order.status !== 'partial') {
       // Partial refund — panel only delivered some of the order
-      const totalRemains = parseInt(panelStatus.remains || '0');
+      const totalRemains = panelRemains;
       if (totalRemains > 0 && order.quantity > 0) {
         const undeliveredRatio = totalRemains / order.quantity;
         refundAmount = Math.floor(parseFloat(order.amount_ngn) * undeliveredRatio);
@@ -689,6 +696,12 @@ serve(async (req) => {
       }
     }
 
+    const { error: updateError } = await supabaseAdmin
+      .from('smm_orders')
+      .update(updateData)
+      .eq('id', order.id);
+    if (updateError) throw new Error(`Could not update SMM order: ${updateError.message}`);
+
     if (['cancelled', 'failed', 'partial'].includes(newStatus) && order.status !== newStatus) {
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PRODUCT_PURCHASE_REVERSED',
@@ -721,7 +734,6 @@ serve(async (req) => {
           status: newStatus,
           start_count: updateData.start_count,
           remains: updateData.remains,
-          charge: panelStatus.charge,
           refund_amount: refundAmount > 0 ? refundAmount : undefined,
           created_at: order.created_at,
           updated_at: updateData.updated_at,
@@ -736,14 +748,20 @@ serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('SMM Check Status Error:', error);
+    const publicError = errorMessage === 'Unauthorized' || errorMessage === 'Missing authorization header'
+      ? 'Unauthorized'
+      : errorMessage === 'order_id is required' || errorMessage === 'Order not found'
+        ? errorMessage
+        : 'Order status is temporarily unavailable. Please try again later.';
     return new Response(
       JSON.stringify({
         success: false,
-        error: errorMessage,
+        error: publicError,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: errorMessage === 'Unauthorized' ? 401 : 400,
+        status: publicError === 'Unauthorized' ? 401 : publicError === 'Order not found' ? 404 :
+          publicError === 'order_id is required' ? 400 : 503,
       }
     );
   }

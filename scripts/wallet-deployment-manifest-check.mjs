@@ -29,7 +29,7 @@ const sharedFunctionFilesChanged = worktreeChangedFunctionPaths
 const requiredMigrations = [
   '20260914007000_fix_security_definer_public_views.sql',
   ...readdirSync(join(root, 'supabase', 'migrations'))
-    .filter((file) => /^202609(?:17|19).+\.sql$/i.test(file))
+    .filter((file) => /^202609(?:1[7-9]|2[0-9]|30).+\.sql$/i.test(file))
     .sort(),
 ]
 
@@ -64,6 +64,7 @@ const changedFunctions = [
   'smm-create-order',
   'smsbus',
   'telegram-stars',
+  'validate-bank-account',
   'verify-and-credit-wallet',
   'webhook-pocketfi',
   'withdraw-referral-balance',
@@ -87,12 +88,20 @@ const edgeFunctions = readdirSync(join(root, 'supabase', 'functions'), { withFil
   .map((entry) => entry.name)
   .sort()
 
+const projectFunctionConfig = read('supabase/config.toml')
+const configuredJwtDisabledFunctions = [...projectFunctionConfig.matchAll(
+  /^\[functions\.([a-z0-9-]+)\]\s*\r?\nverify_jwt\s*=\s*false\s*$/gm,
+)].map((match) => match[1]).sort()
 const jwtDisabledFunctions = edgeFunctions
   .filter((name) => {
     const configPath = join('supabase', 'functions', name, 'config.toml')
-    return existsSync(join(root, configPath)) && read(configPath).includes('verify_jwt = false')
+    return existsSync(join(root, configPath)) && /^verify_jwt\s*=\s*false\s*$/m.test(read(configPath))
   })
   .sort()
+assert(
+  JSON.stringify(configuredJwtDisabledFunctions) === JSON.stringify(jwtDisabledFunctions),
+  `supabase/config.toml JWT-disabled functions must match reviewed function configs: ${jwtDisabledFunctions.join(', ')}`,
+)
 
 const vercelSurfaces = [
   'api/partner-api.ts',
@@ -100,17 +109,36 @@ const vercelSurfaces = [
   'api/webhook-istar.ts',
   'api/webhook-pocketfi.ts',
   'pages/api/webhook/ercas.ts',
+  'src/App.tsx',
   'src/components/CryptoBalanceCard.tsx',
+  'src/components/SimpleProtectedRoute.tsx',
+  'src/components/TopUpWallet.tsx',
+  'src/components/VisitorTracker.tsx',
   'src/contexts/SimpleAuth.tsx',
   'src/hooks/useAuth.ts',
+  'src/hooks/usePaymentStatusChecker.ts',
   'src/hooks/useRecommendations.ts',
+  'src/lib/paymentStorage.ts',
   'src/lib/productAvailability.ts',
+  'src/lib/revenue-os.ts',
   'src/lib/supabase.ts',
   'src/pages/AdminPage.tsx',
   'src/pages/BillsPayment.tsx',
+  'src/pages/CheckoutPage.tsx',
+  'src/pages/CryptoHistory.tsx',
+  'src/pages/CryptoWithdrawal.tsx',
   'src/pages/GiftCardsEsims.tsx',
+  'src/pages/GetIP.tsx',
+  'src/pages/Index.tsx',
   'src/pages/OrderHistoryPage.tsx',
+  'src/pages/PaymentCallbackPage.tsx',
+  'src/pages/PaymentSuccessPage.tsx',
+  'src/pages/ProductDetailPage.tsx',
+  'src/pages/ProductsPage.tsx',
+  'src/pages/SimpleLogin.tsx',
+  'src/pages/SimpleRegister.tsx',
   'src/pages/SupportPage.tsx',
+  'src/pages/WebServicesPage.tsx',
 ]
 
 const pauseFlags = [
@@ -210,9 +238,11 @@ for (const fn of jwtDisabledFunctions) {
 }
 
 for (const phrase of [
-  'From source `config.toml`, the currently JWT-disabled functions are',
+  'From project-level `supabase/config.toml`, the currently JWT-disabled functions are',
   'Every JWT-disabled deployed function must still match this source list',
   'All other deployed Edge Functions should keep Supabase JWT verification enabled',
+  'supabase functions deploy --use-api --project-ref',
+  'Do not add `--no-verify-jwt` to the deploy-all command',
 ]) {
   assert(normalizedManifest.includes(phrase), `deployment manifest missing JWT config boundary: ${phrase}`)
 }
@@ -299,10 +329,21 @@ function buildDeploymentPlan(summary) {
     generatedAt: new Date().toISOString(),
     preDeployLocalGates: preDeployCommands,
     database: {
-      command: 'supabase db push',
+      command: 'phased reviewed migration rollout; do not bulk-push catalog or relationship contracts before the browser build',
       requiredMigrations,
       legacyReplayMigrations,
-      boundary: 'Apply migrations before deploying functions; preserve SQL output if using SQL editor instead of CLI.',
+      catalogDeploymentOrder: [
+        'apply 20260924030200_add_admin_product_relationship_writer.sql',
+        'apply 20260924030500_add_managed_catalog_readers.sql',
+        'deploy matching Vercel/browser build',
+        'deploy matching chatbot Edge Function',
+        'verify public listings, chatbot product search, admin/staff product editing, and admin relationship upserts',
+        'apply 20260924031000_restrict_catalog_supplier_config.sql',
+        'verify read-only query 37 denies supplier columns to browser roles',
+        'apply 20260924031500_restrict_product_relationship_metadata.sql',
+        'verify read-only query 38 denies relationship metadata to browser roles',
+      ],
+      boundary: 'Apply earlier migrations in order through relationship writer 30200 and catalog reader 30500, deploy and verify the app and chatbot Edge Function, then apply catalog and relationship contract migrations 31000 and 31500. Preserve SQL output.',
     },
     supabaseFunctions: {
       count: deployCommands.length,
@@ -373,6 +414,11 @@ function validateDeploymentPlanObject(plan) {
   comparePrimitive(plan.database?.command, expectedPlan.database.command, 'DATABASE_COMMAND', issues)
   compareArray(plan.database?.requiredMigrations, expectedPlan.database.requiredMigrations, 'DATABASE_MIGRATIONS', issues)
   compareArray(plan.database?.legacyReplayMigrations, expectedPlan.database.legacyReplayMigrations, 'LEGACY_REPLAY_MIGRATIONS', issues)
+  if (JSON.stringify(plan.database?.catalogDeploymentOrder) !==
+      JSON.stringify(expectedPlan.database.catalogDeploymentOrder)) {
+    issues.push(issue('CATALOG_DEPLOYMENT_ORDER_MISMATCH',
+      'catalog expand, browser deploy, verification, and privilege contraction must remain in order'))
+  }
   compareArray(plan.preDeployLocalGates, expectedPlan.preDeployLocalGates, 'PRE_DEPLOY_LOCAL_GATES', issues)
   compareArray(plan.vercelOrSite?.surfaces, expectedPlan.vercelOrSite.surfaces, 'VERCEL_SURFACES', issues)
   compareArray(plan.pauseFlags, expectedPlan.pauseFlags, 'PAUSE_FLAGS', issues)
@@ -514,6 +560,13 @@ function runSelfTest() {
     'stale deployment plan migration list was accepted',
   )
 
+  const unsafeCatalogOrder = structuredClone(plan)
+  unsafeCatalogOrder.database.catalogDeploymentOrder = unsafeCatalogOrder.database.catalogDeploymentOrder.slice().reverse()
+  assert(
+    validateDeploymentPlanObject(unsafeCatalogOrder).issues.some((item) => item.code === 'CATALOG_DEPLOYMENT_ORDER_MISMATCH'),
+    'deployment plan accepted catalog privilege contraction before app verification',
+  )
+
   const staleDeployCommand = structuredClone(plan)
   staleDeployCommand.supabaseFunctions.deployCommands = staleDeployCommand.supabaseFunctions.deployCommands.slice(1)
   assert(
@@ -540,6 +593,6 @@ function runSelfTest() {
   console.log(JSON.stringify({
     ok: true,
     mode: 'deployment-plan-self-test',
-    checks: 5,
+    checks: 6,
   }, null, 2))
 }

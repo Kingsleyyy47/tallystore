@@ -104,7 +104,9 @@ function calculateTrustedState(entries, reservations = []) {
     eligibleRefunds += eligible
   }
 
-  const trustedConsumedSpend = Math.max(trustedDebitCapacity - eligibleRefunds, 0)
+  const grossDebits = completed.filter(isDebit)
+    .reduce((sum, entry) => sum + Math.abs(Number(entry.amount || 0)), 0)
+  const trustedConsumedSpend = Math.max(grossDebits - eligibleRefunds, 0)
   const trustedBookBalance = Math.max(trustedPrincipal - trustedConsumedSpend, 0)
   const reservedSpend = reservations
     .filter((reservation) => normalize(reservation.status || 'active') === 'active')
@@ -337,6 +339,17 @@ const userExampleAfterRefund = calculateTrustedState([
 assert(userExampleAfterRefund.trustedPrincipal === 100_000, 'example refund incorrectly created new trusted principal')
 assert(userExampleAfterRefund.trustedAvailable === 100_000, 'example refund did not restore the prior trusted debit')
 
+const overspentThenRefunded = calculateTrustedState([
+  verifiedDeposit,
+  fundedPurchase,
+  { id: 'unbacked-extra-debit', type: 'purchase', amount: -110_000, status: 'completed' },
+  validRefund,
+])
+assert(overspentThenRefunded.trustedPrincipal === 100_000, 'refund changed funded principal')
+assert(overspentThenRefunded.eligibleRefunds === 30_000, 'linked refund was not counted')
+assert(overspentThenRefunded.trustedConsumedSpend === 110_000, 'unbacked spend disappeared behind the principal cap')
+assert(overspentThenRefunded.trustedAvailable === 0, 'refund revived spendable value despite remaining overspend')
+
 const unbackedPurchase = {
   id: 'legacy-unbacked-purchase',
   walletId: 'wallet-2',
@@ -539,6 +552,7 @@ console.log(JSON.stringify({
     'refunds restore prior trusted debit capacity without increasing trusted principal',
     'completed status checks are case-normalized for imported or legacy rows',
     'a 100k verified deposit, 30k purchase, and 30k linked refund restores availability back to 100k without increasing principal',
+    'a linked refund cannot revive spendable funds while gross debits exceed principal',
     'unbacked legacy purchases and their refunds cannot create spendable funds',
     'fake trusted-principal metadata on an unbacked debit still cannot create refundable trusted capacity',
     'fake trusted-principal metadata without trusted debit amount cannot create refundable capacity even when deposits exist',

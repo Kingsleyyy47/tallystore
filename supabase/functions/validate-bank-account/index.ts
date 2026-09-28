@@ -406,8 +406,6 @@ serve(async (req) => {
       account_number,
     });
 
-    console.log('SageCloud validation response:', JSON.stringify(validationResponse));
-
     // SageCloud response structure varies - check multiple paths
     const accountName = validationResponse.account_name || 
                         validationResponse.data?.account_name || 
@@ -415,8 +413,6 @@ serve(async (req) => {
                         validationResponse.accountName;
     
     if (accountName) {
-      console.log(`✅ Account validated: ${accountName}`);
-      
       return new Response(
         JSON.stringify({
           success: true,
@@ -429,23 +425,23 @@ serve(async (req) => {
     }
 
     // If we get here, validation failed or no account name returned
-    console.error('❌ Account validation failed - no account name in response:', validationResponse);
+    console.error('Account validation failed: provider returned no account name');
     
     return new Response(
       JSON.stringify({
         success: false,
-        error: validationResponse.message || 'Could not verify account details. Please check your bank and account number.',
+        error: 'Could not verify account details. Please check your bank and account number.',
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
     );
 
-  } catch (error: any) {
-    console.error('Error in validate-bank-account:', error);
+  } catch {
+    console.error('Bank account validation request failed');
     
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message || 'An unexpected error occurred',
+        error: 'Bank account validation is temporarily unavailable.',
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
     );

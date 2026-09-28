@@ -1,0 +1,26 @@
+# Supabase CLI reads per-function gateway settings from this project file.
+# All functions not listed below keep the default JWT verification enabled.
+# These eight routes perform their own provider, cron, or request authorization.
+[functions.check-pending-payments]
+verify_jwt = false
+
+[functions.nowpayments-webhook]
+verify_jwt = false
+
+[functions.partner-api]
+verify_jwt = false
+
+[functions.record-site-visit]
+verify_jwt = false
+
+[functions.revenue-os-maintenance]
+verify_jwt = false
+
+[functions.smm-check-all-orders]
+verify_jwt = false
+
+[functions.smsbus]
+verify_jwt = false
+
+[functions.webhook-pocketfi]
+verify_jwt = false

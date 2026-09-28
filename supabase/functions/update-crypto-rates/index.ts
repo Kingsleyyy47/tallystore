@@ -260,8 +260,13 @@ export class NowPaymentsClient {
     currency_from: string,
     currency_to: string
   ): Promise<{ currency_from: string; amount_from: number; currency_to: string; estimated_amount: number }> {
+    const params = new URLSearchParams({
+      amount: String(amount),
+      currency_from,
+      currency_to,
+    });
     return this.makeRequest(
-      `/estimate?amount=${amount}&currency_from=${currency_from}&currency_to=${currency_to}`
+      `/estimate?${params.toString()}`
     );
   }
 }
@@ -337,6 +342,7 @@ serve(async (req) => {
   try {
     // Parse request body
     const { crypto_amount, crypto_currency } = await req.json();
+    const amount = Number(crypto_amount);
 
     // Validation
     if (!crypto_amount || !crypto_currency) {
@@ -352,11 +358,12 @@ serve(async (req) => {
       );
     }
 
-    if (crypto_amount <= 0) {
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1e12 ||
+        typeof crypto_currency !== 'string' || !/^[a-z0-9]{2,20}$/i.test(crypto_currency)) {
       return new Response(
         JSON.stringify({ 
           success: false, 
-          error: 'crypto_amount must be greater than 0' 
+          error: 'Invalid crypto amount or currency.'
         }),
         { 
           status: 400, 
@@ -365,7 +372,7 @@ serve(async (req) => {
       );
     }
 
-    console.log(`🔄 Fetching live rate for ${crypto_amount} ${crypto_currency.toUpperCase()}...`);
+    console.log(`🔄 Fetching live rate for ${amount} ${crypto_currency.toUpperCase()}...`);
 
     // Initialize NowPayments client
     const nowpaymentsApiKey = Deno.env.get('NOWPAYMENTS_API_KEY');
@@ -385,7 +392,7 @@ serve(async (req) => {
     // currency_from = crypto (e.g., btc, eth, usdt)
     // currency_to = usd (we'll convert USD to NGN)
     const estimate = await nowpayments.getEstimatedPrice(
-      crypto_amount,
+      amount,
       crypto_currency.toLowerCase(),
       'usd'
     );
@@ -405,7 +412,7 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: true,
-        crypto_amount: crypto_amount,
+        crypto_amount: amount,
         crypto_currency: crypto_currency.toLowerCase(),
         usd_amount: estimate.estimated_amount,
         ngn_amount: Math.round(finalNgnAmount * 100) / 100, // Round to 2 decimal places
@@ -420,13 +427,11 @@ serve(async (req) => {
       }
     );
 
-  } catch (error: any) {
-    console.error('❌ Error getting crypto estimate:', error);
-    
+  } catch (_error) {
     return new Response(
       JSON.stringify({ 
         success: false, 
-        error: error.message || 'Failed to get estimate',
+        error: 'Crypto estimate is temporarily unavailable.',
         timestamp: new Date().toISOString(),
       }),
       { 

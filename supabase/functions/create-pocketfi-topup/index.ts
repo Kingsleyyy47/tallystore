@@ -99,8 +99,8 @@ serve(async (req) => {
       .single()
 
     if (profileError) {
-      console.error('Failed to load profile:', JSON.stringify(profileError))
-      throw new Error(`Failed to load profile: ${profileError.message || profileError.code || 'unknown error'}`)
+      console.error('Failed to load profile for PocketFi account setup')
+      throw new Error('Wallet top-up account is temporarily unavailable.')
     }
 
     // Staff-only accounts (not admins) cannot use the bank transfer top-up.
@@ -142,7 +142,6 @@ serve(async (req) => {
       : VALID_BANKS
     let response: Response | null = null
     let result: Record<string, any> | null = null
-    let lastMessage = 'Unable to create your bank transfer account. Please try again.'
 
     for (const bank of BANKS_TO_TRY) {
       const createBody = {
@@ -167,17 +166,16 @@ serve(async (req) => {
         console.log(`PocketFi account created with bank=${bank}`)
         break
       }
-      lastMessage = result?.message || result?.error || lastMessage
-      console.error(`PocketFi create failed for bank=${bank}:`, JSON.stringify(result))
+      console.error(`PocketFi create failed for bank=${bank}, status=${response.status}`)
     }
 
     if (!response || !response.ok || result?.status === false) {
-      return json({ success: false, message: lastMessage, error: lastMessage }, 400)
+      return json({ success: false, message: 'Wallet top-up account is temporarily unavailable.', error: 'provider_unavailable' }, 400)
     }
 
     const bankEntry = result?.banks?.[0]
     if (!bankEntry?.accountNumber) {
-      console.error('PocketFi returned no account:', JSON.stringify(result))
+      console.error('PocketFi returned no account number')
       throw new Error('PocketFi did not return an account number.')
     }
 
@@ -193,7 +191,7 @@ serve(async (req) => {
     })
 
     if (saveAccountError) {
-      console.error('Failed to save PocketFi account:', JSON.stringify(saveAccountError))
+      console.error('Failed to save PocketFi account')
       throw new Error('Bank account was created, but could not be saved. Contact support before creating another account.')
     }
 
@@ -203,9 +201,17 @@ serve(async (req) => {
       data: { accountNumber, accountName, bankName },
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to set up bank transfer account'
-    const status = message === 'Unauthorized' || message === 'Missing authorization header' ? 401 : 400
-    console.error('Create PocketFi account error:', message)
+    const originalMessage = error instanceof Error ? error.message : ''
+    const message = originalMessage === 'Unauthorized' || originalMessage === 'Missing authorization header'
+      ? 'Unauthorized'
+      : originalMessage === 'Bank transfer top-ups are only available to customer accounts.'
+        ? originalMessage
+        : originalMessage === 'Bank account was created, but could not be saved. Contact support before creating another account.'
+          ? originalMessage
+        : 'Wallet top-up account is temporarily unavailable.'
+    const status = message === 'Unauthorized' ? 401
+      : message === 'Bank transfer top-ups are only available to customer accounts.' ? 403 : 503
+    console.error('Create PocketFi account request failed')
     return json({ success: false, message, error: message }, status)
   }
 })

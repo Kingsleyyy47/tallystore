@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { User } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { linkRevenueIdentity } from '@/lib/revenue-os'
+import { clearPaymentStorage } from '@/lib/paymentStorage'
 
 interface AuthContextType {
   user: User | null
@@ -26,7 +27,6 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
-const ADMIN_EMAIL = 'wisdomthedev@gmail.com'
 const INTERNAL_REVENUE_USER_KEY = 'tallystore_internal_revenue_user'
 
 function writeInternalRevenueUserFlag(isInternal: boolean) {
@@ -59,16 +59,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     writeInternalRevenueUserFlag(isAdmin || isStaff)
   }, [isAdmin, isStaff])
 
-  const checkAdminStatus = useCallback(async (userId: string, userEmail?: string) => {
+  const checkAdminStatus = useCallback(async (userId: string) => {
     setWalletLoading(true)
-    const isWisdomAdmin = userEmail?.toLowerCase() === ADMIN_EMAIL
 
     try {
       // Keep a reference to the query Promise so we can attach a background
       // handler if the timeout fires before the DB responds.
       const profilePromise = supabase
         .from('profiles')
-        .select('is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason')
+        .select('is_admin, is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason')
         .eq('id', userId)
         .single()
 
@@ -80,9 +79,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (error) {
         // Timeout fired — resolve auth immediately so the spinner clears.
-        setIsAdmin(isWisdomAdmin)
+        setIsAdmin(false)
         setIsStaff(false)
-        writeInternalRevenueUserFlag(isWisdomAdmin)
+        writeInternalRevenueUserFlag(false)
         setWalletBalance(0)
         setAccountSuspended(false)
         setSuspensionReason(null)
@@ -93,10 +92,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // and re-navigate staff/admin who were wrongly sent to /dashboard.
         profilePromise.then(({ data: bgData, error: bgError }) => {
           if (!bgError && bgData) {
-            const nextIsStaff = !isWisdomAdmin && !!bgData.is_staff
-            setIsAdmin(isWisdomAdmin)
+            const nextIsAdmin = !!bgData.is_admin
+            const nextIsStaff = !nextIsAdmin && !!bgData.is_staff
+            setIsAdmin(nextIsAdmin)
             setIsStaff(nextIsStaff)
-            writeInternalRevenueUserFlag(isWisdomAdmin || nextIsStaff)
+            writeInternalRevenueUserFlag(nextIsAdmin || nextIsStaff)
             setWalletBalance(bgData.wallet_balance || 0)
             setAccountSuspended(Boolean(bgData.account_suspended))
             setSuspensionReason(bgData.suspension_reason || null)
@@ -105,36 +105,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             // Re-route if ProtectedRoute sent them to the wrong page
             if (nextIsStaff && window.location.pathname === '/dashboard') {
               window.location.replace('/staff-admin')
-            } else if (isWisdomAdmin && window.location.pathname === '/dashboard') {
+            } else if (nextIsAdmin && window.location.pathname === '/dashboard') {
               window.location.replace('/admin')
             }
           }
         }).catch(() => {})
 
-        return { isAdmin: isWisdomAdmin, isStaff: false }
+        return { isAdmin: false, isStaff: false }
       }
 
-      const nextIsStaff = !isWisdomAdmin && !!data?.is_staff
-      setIsAdmin(isWisdomAdmin)
+      const nextIsAdmin = !!data?.is_admin
+      const nextIsStaff = !nextIsAdmin && !!data?.is_staff
+      setIsAdmin(nextIsAdmin)
       setIsStaff(nextIsStaff)
-      writeInternalRevenueUserFlag(isWisdomAdmin || nextIsStaff)
+      writeInternalRevenueUserFlag(nextIsAdmin || nextIsStaff)
       setWalletBalance(data?.wallet_balance || 0)
       setAccountSuspended(Boolean(data?.account_suspended))
       setSuspensionReason(data?.suspension_reason || null)
       setWalletReviewRequired(Boolean(data?.wallet_review_required))
       setWalletReviewReason(data?.wallet_review_reason || null)
-      return { isAdmin: isWisdomAdmin, isStaff: nextIsStaff }
+      return { isAdmin: nextIsAdmin, isStaff: nextIsStaff }
     } catch (error) {
       console.error('Error checking admin status:', error)
-      setIsAdmin(isWisdomAdmin)
+      setIsAdmin(false)
       setIsStaff(false)
-      writeInternalRevenueUserFlag(isWisdomAdmin)
+      writeInternalRevenueUserFlag(false)
       setWalletBalance(0)
       setAccountSuspended(false)
       setSuspensionReason(null)
       setWalletReviewRequired(false)
       setWalletReviewReason(null)
-      return { isAdmin: isWisdomAdmin, isStaff: false }
+      return { isAdmin: false, isStaff: false }
     } finally {
       setWalletLoading(false)
     }
@@ -149,7 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const profileLoadKey = `${sessionUser.id}:${sessionUser.email ?? ''}`
         if (lastProfileLoadKey.current !== profileLoadKey) {
           lastProfileLoadKey.current = profileLoadKey
-          const roleStatus = await checkAdminStatus(sessionUser.id, sessionUser.email)
+          const roleStatus = await checkAdminStatus(sessionUser.id)
           linkRevenueIdentity(sessionUser.id, {
             auth_provider: sessionUser.app_metadata?.provider || 'email',
             email_domain: sessionUser.email?.split('@')[1] || null,
@@ -159,6 +160,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } else {
         lastProfileLoadKey.current = null
+        clearPaymentStorage()
         setIsAdmin(false)
         setIsStaff(false)
         setWalletBalance(0)
@@ -341,6 +343,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut()
+    clearPaymentStorage()
     setIsAdmin(false)
     setIsStaff(false)
     setAccountSuspended(false)

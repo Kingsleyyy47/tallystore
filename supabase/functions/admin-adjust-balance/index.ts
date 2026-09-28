@@ -6,12 +6,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const ADMIN_EMAIL = 'wisdomthedev@gmail.com';
-
-async function sha256Hex(value: string) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
-}
 
 async function applyWalletTransaction(
   supabaseAdmin: any,
@@ -49,101 +43,6 @@ async function applyWalletTransaction(
   return result
 }
 
-function cleanDeviceText(value: unknown, max = 500) {
-  return Array.from(String(value || '')).filter((char) => {
-    const code = char.charCodeAt(0)
-    return code >= 32 && code !== 127
-  }).join('').trim().slice(0, max)
-}
-
-async function upsertFraudDeviceBans(
-  supabaseAdmin: any,
-  targetUserId: string,
-  adminUserId: string,
-  reason: string,
-) {
-  const { data: visits, error } = await supabaseAdmin
-    .from('site_visits')
-    .select('ip_address, user_agent, created_at')
-    .eq('user_id', targetUserId)
-    .eq('ip_source', 'edge')
-    .order('created_at', { ascending: false })
-    .limit(50)
-
-  if (error) {
-    console.warn(`Could not load site visits for fraud bans: ${error.message}`)
-    return { ipBans: 0, deviceBans: 0 }
-  }
-
-  const ipAddresses = new Set<string>()
-  const userAgents = new Map<string, string>()
-
-  for (const visit of visits || []) {
-    const ip = cleanDeviceText(visit.ip_address, 80)
-    if (ip) ipAddresses.add(ip)
-
-    const userAgent = cleanDeviceText(visit.user_agent, 500)
-    if (userAgent) {
-      const hash = await sha256Hex(userAgent)
-      if (!userAgents.has(hash)) userAgents.set(hash, userAgent.slice(0, 220))
-    }
-  }
-
-  let ipBans = 0
-  let deviceBans = 0
-
-  for (const ipAddress of ipAddresses) {
-    const { data: existing } = await supabaseAdmin
-      .from('fraud_device_bans')
-      .select('id')
-      .eq('active', true)
-      .eq('banned_user_id', targetUserId)
-      .eq('ip_address', ipAddress)
-      .maybeSingle()
-
-    if (existing?.id) continue
-
-    const { error: insertError } = await supabaseAdmin
-      .from('fraud_device_bans')
-      .insert({
-        banned_user_id: targetUserId,
-        created_by: adminUserId,
-        ip_address: ipAddress,
-        reason,
-      })
-
-    if (!insertError) ipBans += 1
-    else console.warn(`Could not insert fraud IP ban ${ipAddress}: ${insertError.message}`)
-  }
-
-  for (const [userAgentHash, excerpt] of userAgents) {
-    const { data: existing } = await supabaseAdmin
-      .from('fraud_device_bans')
-      .select('id')
-      .eq('active', true)
-      .eq('banned_user_id', targetUserId)
-      .eq('user_agent_hash', userAgentHash)
-      .maybeSingle()
-
-    if (existing?.id) continue
-
-    const { error: insertError } = await supabaseAdmin
-      .from('fraud_device_bans')
-      .insert({
-        banned_user_id: targetUserId,
-        created_by: adminUserId,
-        user_agent_hash: userAgentHash,
-        user_agent_excerpt: excerpt,
-        reason,
-      })
-
-    if (!insertError) deviceBans += 1
-    else console.warn(`Could not insert fraud device ban: ${insertError.message}`)
-  }
-
-  return { ipBans, deviceBans }
-}
-
 async function transactionsHaveIdempotencyKey(supabaseAdmin: any) {
   const { error } = await supabaseAdmin
     .from('transactions')
@@ -153,304 +52,85 @@ async function transactionsHaveIdempotencyKey(supabaseAdmin: any) {
   return !(error && /idempotency_key/i.test(error.message || ''))
 }
 
-function getTransactionMetadata(row: any) {
-  return row?.metadata && typeof row.metadata === 'object' ? row.metadata : {}
+type WalletFinancialTruth = {
+  user_id: string
+  account_suspended: boolean
+  wallet_review_required: boolean
+  wallet_review_reason: string | null
+  spending_blocked: boolean
+  evidence_complete: boolean
+  integrity_status: string
+  stored_wallet_balance: number
+  trusted_book_balance: number
+  confirmed_spendable: number
+  quarantined_excess: number
+  spend_exposure: number
 }
 
-function isBalanceNeutralAdminRepair(row: any) {
-  const metadata = getTransactionMetadata(row)
-  const balanceBefore = Number(row?.balance_before || 0)
-  const balanceAfter = Number(row?.balance_after || 0)
-  return (
-    String(metadata.source || '') === 'admin-ledger-repair' ||
-    String(metadata.balance_unchanged || '').toLowerCase() === 'true' ||
-    String(metadata.requires_owner_evidence || '').toLowerCase() === 'true' ||
-    balanceAfter <= balanceBefore
-  )
-}
-
-const WALLET_FUNDING_ENFORCEMENT_CUTOFF = '2026-09-19T00:00:00.000Z'
-
-function isLegacyGrandfatheredCredit(row: any) {
-  const createdAt = new Date(row?.created_at || '').getTime()
-  const amount = Number(row?.amount || 0)
-  const type = String(row?.type || '').toLowerCase().replace(/[\s-]+/g, '_')
-  if (!Number.isFinite(createdAt) || createdAt >= Date.parse(WALLET_FUNDING_ENFORCEMENT_CUTOFF) || amount <= 0) {
-    return false
+function requiredTruthAmount(value: unknown, field: string): number {
+  if ((typeof value !== 'number' && typeof value !== 'string') ||
+    value === '' || !Number.isFinite(Number(value))) {
+    throw new Error(`Wallet financial truth is missing ${field}`)
   }
-  if (type === 'admin_credit' && isBalanceNeutralAdminRepair(row)) return false
-
-  return [
-    'topup',
-    'top_up',
-    'wallet_topup',
-    'wallet_deposit',
-    'deposit',
-    'credit',
-    'admin_credit',
-    'staff_credit',
-    'promotion_credit',
-    'correction_credit',
-  ].includes(type)
+  return Number(value)
 }
 
-function isWalletDebitType(type: string) {
-  return [
-    'purchase',
-    'admin_debit',
-    'staff_debit',
-    'debit',
-    'withdrawal',
-    'chargeback',
-    'correction_debit',
-  ].includes(type)
-}
-
-function getTrustedPrincipalDebitAmount(row: any, metadata: any) {
-  if (String(metadata.trusted_principal_authorized || '').toLowerCase() !== 'true') return 0
-  const trustedAmount = Number(metadata.trusted_principal_debit_amount || 0)
-  if (!Number.isFinite(trustedAmount) || trustedAmount <= 0) return 0
-  return Math.min(Math.abs(Number(row.amount || 0)), trustedAmount)
-}
-
-function getWalletDebitEvidence(row: any) {
-  const type = String(row.type || '').toLowerCase()
-  if (!isWalletDebitType(type)) return null
-
-  const metadata = getTransactionMetadata(row)
-  const trustedDebitAmount = getTrustedPrincipalDebitAmount(row, metadata)
-  if (trustedDebitAmount <= 0) return null
-
-  const debitId = String(row.id || row.transaction_id || row.idempotency_key || '').trim()
-  if (!debitId) return null
+async function loadWalletFinancialTruth(supabaseAdmin: any, userId: string): Promise<WalletFinancialTruth> {
+  const { data, error } = await supabaseAdmin.rpc('wallet_financial_truth_internal', {
+    p_user_id: userId,
+  })
+  if (error) throw new Error(`Wallet financial truth unavailable: ${error.message}`)
+  if (!data || typeof data !== 'object' || Array.isArray(data) ||
+    data.user_id !== userId ||
+    typeof data.account_suspended !== 'boolean' ||
+    typeof data.wallet_review_required !== 'boolean' ||
+    (data.wallet_review_reason !== null && typeof data.wallet_review_reason !== 'string') ||
+    typeof data.spending_blocked !== 'boolean' ||
+    typeof data.evidence_complete !== 'boolean' ||
+    typeof data.integrity_status !== 'string') {
+    throw new Error('Wallet financial truth is incomplete')
+  }
 
   return {
-    id: debitId,
-    amount: trustedDebitAmount,
-    idempotencyKey: String(row.idempotency_key || '').trim(),
-    reference: String(row.reference || '').trim(),
-    sourceOrderTable: String(metadata.source_order_table || '').trim(),
-    sourceOrderIds: [
-      metadata.source_order_id,
-      metadata.order_id,
-      metadata.transaction_id,
-    ].map((value) => String(value || '').trim()).filter(Boolean),
+    user_id: data.user_id,
+    account_suspended: data.account_suspended,
+    wallet_review_required: data.wallet_review_required,
+    wallet_review_reason: data.wallet_review_reason,
+    spending_blocked: data.spending_blocked,
+    evidence_complete: data.evidence_complete,
+    integrity_status: data.integrity_status,
+    stored_wallet_balance: requiredTruthAmount(data.stored_wallet_balance, 'stored_wallet_balance'),
+    trusted_book_balance: requiredTruthAmount(data.trusted_book_balance, 'trusted_book_balance'),
+    confirmed_spendable: requiredTruthAmount(data.confirmed_spendable, 'confirmed_spendable'),
+    quarantined_excess: requiredTruthAmount(data.quarantined_excess, 'quarantined_excess'),
+    spend_exposure: requiredTruthAmount(data.spend_exposure, 'spend_exposure'),
   }
 }
 
-function hasApprovedAdminCreditEvidence(row: any, metadata: any) {
-  const createdBy = String(row.created_by || '').trim()
-  return Boolean(createdBy)
-    && String(metadata.approved_by || '').trim() === createdBy
-    && String(metadata.approval_reference || '').trim().length >= 8
-    && String(metadata.reason || '').trim().length >= 3
+function isAutomaticExcessReview(truth: WalletFinancialTruth, profile: any): boolean {
+  if (!truth.wallet_review_required || truth.integrity_status !== 'quarantined_excess' ||
+    truth.quarantined_excess <= 0 || profile.wallet_reviewed_by != null) return false
+
+  const reason = truth.wallet_review_reason || ''
+  return reason.startsWith('Auto-suspended: displayed wallet balance ') ||
+    (reason.startsWith('Wallet frozen: requested purchase ') &&
+      reason.includes(' exceeds backed available funds ')) ||
+    reason.startsWith('Wallet financial review: quarantined displayed excess ')
 }
 
-function findLinkedTrustedDebit(refund: any, trustedDebits: Map<string, NonNullable<ReturnType<typeof getWalletDebitEvidence>>>) {
-  const metadata = getTransactionMetadata(refund)
-  const directId = String(metadata.source_debit_transaction_id || '').trim()
-  if (directId && trustedDebits.has(directId)) return trustedDebits.get(directId) || null
-
-  const sourceKey = String(metadata.source_debit_idempotency_key || metadata.original_purchase_idempotency_key || '').trim()
-  if (sourceKey) {
-    return Array.from(trustedDebits.values()).find((debit) => debit.idempotencyKey && debit.idempotencyKey === sourceKey) || null
+function unsuspendBlockReason(truth: WalletFinancialTruth, profile: any): string | null {
+  if (!truth.evidence_complete) return 'EVIDENCE_INCOMPLETE'
+  if (!['consistent', 'quarantined_excess'].includes(truth.integrity_status) ||
+    truth.trusted_book_balance < 0 || truth.spend_exposure > 0) {
+    return 'SEVERE_INTEGRITY_REVIEW'
   }
-
-  const sourceOrderId = String(metadata.source_order_id || metadata.order_id || metadata.transaction_id || '').trim()
-  const sourceOrderTable = String(metadata.source_order_table || '').trim()
-  if (sourceOrderId) {
-    return Array.from(trustedDebits.values()).find((debit) => {
-      if (sourceOrderTable && debit.sourceOrderTable && debit.sourceOrderTable !== sourceOrderTable) return false
-      return debit.sourceOrderIds.includes(sourceOrderId)
-    }) || null
+  if (truth.wallet_review_required && !isAutomaticExcessReview(truth, profile)) {
+    return 'WALLET_REVIEW_HOLD'
   }
-
-  const originalReference = String(metadata.original_reference || '').trim()
-  if (originalReference) {
-    return Array.from(trustedDebits.values()).find((debit) => debit.reference && debit.reference === originalReference) || null
-  }
-
+  // Suspension itself sets spending_blocked; check for independent blockers.
+  if (!truth.account_suspended && truth.spending_blocked) return 'SPENDING_BLOCKED'
+  if (truth.account_suspended && !truth.spending_blocked) return 'FINANCIAL_STATE_INCONSISTENT'
   return null
-}
-
-async function calculateWalletBacking(supabaseAdmin: any, userId: string) {
-  const hasTransactionIdempotencyKey = await transactionsHaveIdempotencyKey(supabaseAdmin)
-  const transactionSelect = hasTransactionIdempotencyKey
-    ? 'id, user_id, type, amount, status, balance_type, reference, metadata, created_by, external_payment_id, balance_before, balance_after, idempotency_key'
-    : 'id, user_id, type, amount, status, balance_type, reference, metadata, created_by, external_payment_id, balance_before, balance_after'
-  const [
-    { data: rows, error },
-    { data: pendingPayments, error: pendingError },
-    { data: pocketfiWebhookLogs, error: pocketfiLogError },
-  ] = await Promise.all([
-    supabaseAdmin
-      .from('transactions')
-      .select(transactionSelect)
-      .eq('user_id', userId)
-      .or('balance_type.eq.wallet,balance_type.is.null'),
-    supabaseAdmin
-      .from('pending_payments')
-      .select('user_id, transaction_reference, ercas_reference, amount, status')
-      .eq('user_id', userId),
-    supabaseAdmin
-      .from('pocketfi_webhook_logs')
-      .select('id, matched_user_id, processed, verified_amount_ngn, verified_reference')
-      .eq('matched_user_id', userId),
-  ])
-
-  if (error) {
-    throw new Error(`Could not calculate wallet backing: ${error.message}`)
-  }
-  if (pendingError && !['42P01', '42703', 'PGRST204', 'PGRST200'].includes(pendingError.code || '')) {
-    throw new Error(`Could not load pending payment evidence: ${pendingError.message}`)
-  }
-  if (pocketfiLogError && !['42P01', '42703', 'PGRST204', 'PGRST200'].includes(pocketfiLogError.code || '')) {
-    throw new Error(`Could not load PocketFi webhook evidence: ${pocketfiLogError.message}`)
-  }
-
-  let trustedCredits = 0
-  let previousCompletedDebits = 0
-  let completedRefunds = 0
-  let linkedEligibleRefunds = 0
-  const trustedDebits = new Map<string, NonNullable<ReturnType<typeof getWalletDebitEvidence>>>()
-  const completedRefundRows: any[] = []
-  const approvingActorIds = Array.from(new Set(
-    (rows || [])
-      .filter((row: any) => String(row.type || '').toLowerCase() === 'admin_credit' && row.created_by)
-      .map((row: any) => String(row.created_by))
-  ))
-  let adminActorIds = new Set<string>()
-  if (approvingActorIds.length) {
-    const { data: adminActors, error: adminActorError } = await supabaseAdmin
-      .from('profiles')
-      .select('id')
-      .in('id', approvingActorIds)
-      .eq('is_admin', true)
-
-    if (adminActorError) {
-      throw new Error(`Could not verify admin credit actors: ${adminActorError.message}`)
-    }
-    adminActorIds = new Set((adminActors || []).map((row: any) => String(row.id)))
-  }
-
-  for (const row of rows || []) {
-    const status = String(row.status || 'completed').toLowerCase()
-    if (status !== 'completed') continue
-
-    const type = String(row.type || '').toLowerCase()
-    const amount = Number(row.amount || 0)
-    const balanceBefore = Number(row.balance_before || 0)
-    const balanceAfter = Number(row.balance_after || 0)
-    const metadata = getTransactionMetadata(row)
-    const isBalanceNeutralAdminRepair = (
-      String(metadata.source || '') === 'admin-ledger-repair' ||
-      String(metadata.balance_unchanged || '').toLowerCase() === 'true' ||
-      String(metadata.requires_owner_evidence || '').toLowerCase() === 'true' ||
-      balanceAfter <= balanceBefore
-    )
-    if (amount > 0) {
-      if (
-        (
-          [
-            'topup',
-            'top_up',
-            'top-up',
-            'wallet_topup',
-            'wallet_deposit',
-            'deposit',
-          ].includes(type) &&
-          isVerifiedGatewayCredit(row, pendingPayments || [], pocketfiWebhookLogs || [])
-        ) ||
-        isLegacyGrandfatheredCredit(row)
-      ) {
-        trustedCredits += amount
-      } else if (
-        type === 'admin_credit'
-        && adminActorIds.has(String(row.created_by || ''))
-        && hasApprovedAdminCreditEvidence(row, metadata)
-        && !isBalanceNeutralAdminRepair
-      ) {
-        trustedCredits += amount
-      } else if (['refund', 'purchase_refund', 'auto_refund'].includes(type)) {
-        completedRefunds += amount
-        completedRefundRows.push(row)
-      }
-    }
-
-    if (isWalletDebitType(type)) {
-      previousCompletedDebits += Math.abs(amount)
-      const trustedDebit = getWalletDebitEvidence(row)
-      if (trustedDebit) trustedDebits.set(trustedDebit.id, trustedDebit)
-    }
-  }
-
-  const trustedDebitCapacity = Math.min(previousCompletedDebits, trustedCredits)
-  const refundedByOriginal = new Map<string, number>()
-  for (const refund of completedRefundRows) {
-    const original = findLinkedTrustedDebit(refund, trustedDebits)
-    if (!original) continue
-
-    const alreadyRefunded = refundedByOriginal.get(original.id) || 0
-    const refundableRemaining = Math.max(original.amount - alreadyRefunded, 0)
-    const eligibleAmount = Math.min(Number(refund.amount || 0), refundableRemaining)
-    refundedByOriginal.set(original.id, alreadyRefunded + eligibleAmount)
-  }
-  linkedEligibleRefunds = Array.from(refundedByOriginal.values()).reduce((sum, amount) => sum + amount, 0)
-  const eligibleRefunds = Math.min(linkedEligibleRefunds, trustedDebitCapacity)
-  const trustedConsumedSpend = Math.max(trustedDebitCapacity - eligibleRefunds, 0)
-  const backedAvailable = Math.max(trustedCredits - trustedConsumedSpend, 0)
-
-  return {
-    trustedCredits,
-    previousCompletedDebits,
-    completedRefunds,
-    linkedEligibleRefunds,
-    eligibleRefunds,
-    trustedConsumedSpend,
-    backedAvailable,
-  }
-}
-
-function toCents(value: unknown) {
-  return Math.round(Number(value || 0) * 100)
-}
-
-function isVerifiedGatewayCredit(row: any, pendingPayments: any[], pocketfiWebhookLogs: any[]) {
-  const amount = Number(row.amount || 0)
-  const externalPaymentId = String(row.external_payment_id || '').trim()
-  const reference = String(row.reference || '').trim()
-  const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata : {}
-  const provider = String(metadata.provider || '').toLowerCase()
-  const verifiedAmount = Number(metadata.verified_amount_ngn || 0)
-
-  if (!externalPaymentId || amount <= 0 || toCents(verifiedAmount) !== toCents(amount)) return false
-
-  if (['ercaspay', 'ercas'].includes(provider)) {
-    const localRefs = [reference, externalPaymentId].filter(Boolean)
-    return pendingPayments.some((payment: any) => {
-      const paymentRefs = [
-        String(payment.transaction_reference || '').trim(),
-        String(payment.ercas_reference || '').trim(),
-      ].filter(Boolean)
-      return String(payment.user_id || '') === String(row.user_id || '') &&
-        String(payment.status || 'pending').toLowerCase() === 'credited' &&
-        toCents(payment.amount) === toCents(amount) &&
-        localRefs.some((localRef) => paymentRefs.includes(localRef))
-    })
-  }
-
-  if (provider === 'pocketfi') {
-    const webhookLogId = String(metadata.webhook_log_id || '').trim()
-    return Boolean(webhookLogId) && pocketfiWebhookLogs.some((log: any) =>
-      String(log.id || '') === webhookLogId &&
-      String(log.matched_user_id || '') === String(row.user_id || '') &&
-      Boolean(log.processed) === true &&
-      toCents(log.verified_amount_ngn) === toCents(amount) &&
-      [reference, externalPaymentId].filter(Boolean).includes(String(log.verified_reference || '').trim())
-    )
-  }
-
-  return false
 }
 
 serve(async (req) => {
@@ -485,8 +165,9 @@ serve(async (req) => {
       throw new Error('Unauthorized');
     }
 
-    if (user.email?.toLowerCase() !== ADMIN_EMAIL) {
-      console.error(`Admin access denied for ${user.email}`);
+    const ownerUserId = Deno.env.get('TALLYSTORE_OWNER_USER_ID')?.trim();
+    if (!ownerUserId || user.id !== ownerUserId) {
+      console.error('Owner-only wallet adjustment denied');
       throw new Error('Admin access required');
     }
 
@@ -497,14 +178,14 @@ serve(async (req) => {
     );
 
     // Verify admin status in database
-    const { data: adminProfile } = await supabaseAdmin
+    const { data: adminProfile, error: adminProfileError } = await supabaseAdmin
       .from('profiles')
-      .select('is_admin')
+      .select('is_admin, account_suspended')
       .eq('id', user.id)
       .single();
 
-    if (!adminProfile?.is_admin) {
-      console.error(`❌ User ${user.email} is not marked as admin in database`);
+    if (adminProfileError || adminProfile?.is_admin !== true || adminProfile.account_suspended === true) {
+      console.error('Owner wallet adjustment denied: current admin role unavailable');
       throw new Error('Admin access required');
     }
 
@@ -594,7 +275,7 @@ serve(async (req) => {
 
       const { data: targetProfile, error: profileError } = await supabaseAdmin
         .from('profiles')
-        .select('id, email, wallet_balance, is_staff, is_admin, account_suspended')
+        .select('id, email, wallet_balance, is_staff, is_admin, account_suspended, wallet_review_required, wallet_review_reason, wallet_reviewed_by')
         .eq('id', targetUserId)
         .single();
 
@@ -606,27 +287,34 @@ serve(async (req) => {
         throw new Error('Suspension controls are only available for customer accounts');
       }
 
-      let unsuspendReview: Awaited<ReturnType<typeof calculateWalletBacking>> | null = null;
+      let unsuspendReview: WalletFinancialTruth | null = null;
       if (!isSuspending) {
-        unsuspendReview = await calculateWalletBacking(supabaseAdmin, targetUserId);
-        const storedWalletBalance = Number(targetProfile.wallet_balance || 0);
-        const tolerance = 1;
+        unsuspendReview = await loadWalletFinancialTruth(supabaseAdmin, targetUserId);
+        if (unsuspendReview.account_suspended !== Boolean(targetProfile.account_suspended) ||
+          unsuspendReview.wallet_review_required !== Boolean(targetProfile.wallet_review_required) ||
+          unsuspendReview.wallet_review_reason !== (targetProfile.wallet_review_reason ?? null) ||
+          unsuspendReview.stored_wallet_balance !== Number(targetProfile.wallet_balance || 0)) {
+          throw new Error('Wallet financial truth changed during admin review');
+        }
 
-        if (unsuspendReview.backedAvailable < -tolerance || storedWalletBalance > unsuspendReview.backedAvailable + tolerance) {
+        const blockReason = unsuspendBlockReason(unsuspendReview, targetProfile);
+        if (blockReason) {
           return new Response(
             JSON.stringify({
               success: false,
               error: 'Wallet review is still required before unsuspending this account.',
               code: 'WALLET_REVIEW_REQUIRED',
+              review_reason_code: blockReason,
               target_user_id: targetUserId,
               target_email: targetProfile.email,
-              wallet_balance: storedWalletBalance,
-              backed_available: unsuspendReview.backedAvailable,
-              trusted_credits: unsuspendReview.trustedCredits,
-              previous_completed_debits: unsuspendReview.previousCompletedDebits,
-              completed_refunds: unsuspendReview.completedRefunds,
-              linked_eligible_refunds: unsuspendReview.linkedEligibleRefunds,
-              eligible_refunds: unsuspendReview.eligibleRefunds,
+              wallet_balance: unsuspendReview.stored_wallet_balance,
+              confirmed_spendable: unsuspendReview.confirmed_spendable,
+              trusted_book_balance: unsuspendReview.trusted_book_balance,
+              quarantined_excess: unsuspendReview.quarantined_excess,
+              integrity_status: unsuspendReview.integrity_status,
+              evidence_complete: unsuspendReview.evidence_complete,
+              spending_blocked: unsuspendReview.spending_blocked,
+              wallet_review_required: unsuspendReview.wallet_review_required,
             }),
             {
               status: 409,
@@ -647,9 +335,9 @@ serve(async (req) => {
         throw new Error(`Failed to ${isSuspending ? 'suspend' : 'unsuspend'} account: ${updateError.message}`);
       }
 
-      const banResult = isSuspending
-        ? await upsertFraudDeviceBans(supabaseAdmin, targetUserId, user.id, cleanSuspendReason)
-        : { ipBans: 0, deviceBans: 0 };
+      // Visits use client-controllable headers. Do not turn them into shared
+      // IP/device bans when suspending an account.
+      const banResult = { ipBans: 0, deviceBans: 0 };
 
       if (!isSuspending) {
         const { error: banUpdateError } = await supabaseAdmin

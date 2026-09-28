@@ -14,6 +14,7 @@ import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
 import {
   getMyStaffPermissions,
+  searchStaffCustomers,
   submitPendingAction,
   type PermissionMap,
   type PermissionKey,
@@ -21,9 +22,9 @@ import {
 import {
   supabase,
   getAppSetting,
+  getManagedProductGroups,
   getAllProductGroups,
   getCategories,
-  searchUsers,
   getDiscountCodes,
   parseCSV,
   SITE_FORMATS,
@@ -196,7 +197,7 @@ export default function StaffAdminPage() {
   type StaffSmsOrder = {
     id: string; reference: string; service_name: string; status: string
     price_ngn: number; created_at: string; cancelled_at?: string; refunded_at?: string
-    messages?: any[]; order_type: string; provider_request_id?: string
+    has_code: boolean; order_type: string; provider_request_id?: string
     profiles?: { email?: string; full_name?: string }
   }
   const [smsOrders, setSmsOrders] = useState<StaffSmsOrder[]>([])
@@ -231,8 +232,13 @@ export default function StaffAdminPage() {
 
       const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_cancel_sms_order', order_id: orderId } })
       if (error) throw error
+      if (data?.code === 'SMS_OUTCOME_REVIEW_REQUIRED' || data?.review_required) {
+        toast({ title: 'SMS outcome review required', description: 'No refund has been confirmed for this order.' })
+        await loadSmsOrders()
+        return
+      }
       if (!data?.success) throw new Error(data?.error || 'Failed to cancel order')
-      toast({ title: 'Order cancelled & refunded' })
+      toast({ title: data?.data?.refunded_at ? 'Order cancelled and refunded' : 'Order outcome needs review' })
       await loadSmsOrders()
     } catch (err: any) {
       toast({ title: 'Cancel failed', description: err.message, variant: 'destructive' })
@@ -423,7 +429,7 @@ export default function StaffAdminPage() {
       getAppSetting('referral_commission_pct').then(v => setReferralPct(v || '5'))
     }
     if (can(perms, 'setting_ercas')) {
-      getAppSetting('ercas_enabled').then(v => setErcasEnabled(v !== 'false'))
+      getAppSetting('ercas_enabled').then(v => setErcasEnabled(v === 'true'))
     }
     if (can(perms, 'setting_support_links')) {
       Promise.all([
@@ -440,7 +446,7 @@ export default function StaffAdminPage() {
     }
     if (can(perms, 'tab_products') || can(perms, 'tab_templates') || can(perms, 'tab_add_product') || can(perms, 'tab_bulk_upload')) {
       setLoadingProducts(true)
-      Promise.all([getAllProductGroups(), getCategories()]).then(([pg, cat]) => {
+      Promise.all([can(perms, 'tab_products') ? getManagedProductGroups() : getAllProductGroups(), getCategories()]).then(([pg, cat]) => {
         setProductGroups(pg)
         setCategories(cat)
         setLoadingProducts(false)
@@ -862,7 +868,7 @@ export default function StaffAdminPage() {
       )
       if (!res.success) throw new Error(res.error || 'Failed to submit action')
       if (res.applied) {
-        const updatedProductGroups = await getAllProductGroups()
+        const updatedProductGroups = await (can(perms, 'tab_products') ? getManagedProductGroups() : getAllProductGroups())
         setProductGroups(updatedProductGroups)
         toast({ title: 'Account added' })
       } else {
@@ -912,7 +918,7 @@ export default function StaffAdminPage() {
       if (res.applied) {
           const result = { success: true, accountsCreated: res.accountsCreated || parsed.length }
           setBulkResult(result)
-          const updatedProductGroups = await getAllProductGroups()
+          const updatedProductGroups = await (can(perms, 'tab_products') ? getManagedProductGroups() : getAllProductGroups())
           setProductGroups(updatedProductGroups)
           const updatedProduct = updatedProductGroups.find(pg => pg.id === bulkPgId)
 
@@ -1029,7 +1035,7 @@ export default function StaffAdminPage() {
       if (!res.success) throw new Error(res.error || 'Failed to submit action')
       if (res.applied) {
         toast({ title: 'Product updated' })
-        const pg = await getAllProductGroups()
+        const pg = await getManagedProductGroups()
         setProductGroups(pg)
         setEditingPg(null)
       } else {
@@ -1050,10 +1056,13 @@ export default function StaffAdminPage() {
 
   // ── Users ─────────────────────────────────────────────────────────────────
   async function handleSearchUsers() {
-    if (!userQuery.trim()) return
+    if (userQuery.trim().length < 3) {
+      toast({ variant: 'destructive', title: 'Search requires at least 3 characters' })
+      return
+    }
     setSearchingUsers(true)
     try {
-      const results = await searchUsers(userQuery)
+      const results = await searchStaffCustomers(userQuery)
       setUsers(results)
     } catch (error) {
       toast({
@@ -2222,7 +2231,7 @@ export default function StaffAdminPage() {
                             const pending = isPending(order)
                             const minsPending = Math.floor((now - new Date(order.created_at).getTime()) / 60000)
                             const isStale = pending && minsPending >= 5
-                            const hasCode = order.messages && order.messages.length > 0
+                            const hasCode = order.has_code
                             return (
                               <tr key={order.id} className={`text-sm ${isStale && !hasCode ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>
                                 <td className="py-2 pr-4">
@@ -2249,7 +2258,9 @@ export default function StaffAdminPage() {
                                 <td className="py-2 pr-4">
                                   {order.refunded_at
                                     ? <span className="text-xs text-emerald-600">✓ Refunded</span>
-                                    : <span className="text-xs text-muted-foreground">—</span>}
+                                    : order.status === 'cancelled'
+                                      ? <span className="text-xs text-amber-600">Refund review</span>
+                                      : <span className="text-xs text-muted-foreground">—</span>}
                                 </td>
                                 <td className="py-2">
                                   {pending && (
@@ -2258,7 +2269,7 @@ export default function StaffAdminPage() {
                                       onClick={() => staffCancelSmsOrder(order.id)}>
                                       {smsOrdersCancellingId === order.id
                                         ? <Loader2 className="h-3 w-3 animate-spin" />
-                                        : 'Cancel & Refund'}
+                                        : 'Cancel order'}
                                     </Button>
                                   )}
                                 </td>

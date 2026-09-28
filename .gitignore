@@ -1,7 +1,12 @@
 # Environment variables - never commit these
 .env
 .env.local
-.env.*.local
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
 
 # Logs
 logs

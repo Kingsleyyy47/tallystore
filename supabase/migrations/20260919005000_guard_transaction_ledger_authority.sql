@@ -28,7 +28,7 @@ USING (
     SELECT 1
     FROM public.profiles p
     WHERE p.id = auth.uid()
-      AND (p.is_admin = true OR p.email = 'admin@tallystore.org')
+      AND COALESCE(p.is_admin, false) = true
   )
 );
 

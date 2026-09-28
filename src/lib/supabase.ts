@@ -10,6 +10,186 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
+export type AdminWalletFinancialTruth = {
+  user_id: string
+  verified_gateway_deposits: number
+  approved_admin_credits: number
+  legacy_approved_principal: number
+  legacy_first_recorded_debit_at: string | null
+  legacy_first_recorded_funding_at: string | null
+  legacy_spend_before_recorded_funding: boolean
+  trusted_principal: number
+  completed_debits: number
+  completed_purchases: number
+  eligible_refunds: number
+  completed_refunds: number
+  net_consumed_spend: number
+  spend_exposure: number
+  active_reservations: number
+  withdrawals: number
+  chargebacks: number
+  trusted_book_balance: number
+  confirmed_spendable: number
+  expected_ledger_balance: number
+  stored_wallet_balance: number
+  explained_difference: number
+  unexplained_difference: number
+  quarantined_excess: number
+  integrity_status: string
+  evidence_complete: boolean
+  spending_blocked: boolean
+  account_suspended: boolean
+  wallet_review_required: boolean
+  wallet_review_reason?: string | null
+}
+
+export type AdminWalletFinancialTruthPageRow = {
+  user_id: string
+  email: string | null
+  full_name: string | null
+  is_staff: boolean
+  is_admin: boolean
+  account_suspended: boolean
+  wallet_review_required: boolean
+  suspension_reason: string | null
+  suspended_at: string | null
+  truth: AdminWalletFinancialTruth
+}
+
+export type AdminCrossWalletPaymentConflict = {
+  payment_identity: string
+  wallet_ids: string[]
+  funding_rows: number
+}
+
+export type AdminFraudVisitTelemetry = {
+  user_id: string
+  ip_address: string | null
+  ip_source: string | null
+  observed_at: string | null
+  user_agent: string | null
+  ip_country: string | null
+  ip_region: string | null
+  ip_city: string | null
+  ip_isp: string | null
+  ip_addresses: string[]
+}
+
+const FINANCIAL_TRUTH_AMOUNTS = [
+  'verified_gateway_deposits', 'approved_admin_credits', 'legacy_approved_principal',
+  'trusted_principal', 'completed_debits', 'completed_purchases', 'eligible_refunds',
+  'completed_refunds', 'net_consumed_spend', 'spend_exposure',
+  'active_reservations', 'withdrawals', 'chargebacks',
+  'trusted_book_balance', 'confirmed_spendable', 'expected_ledger_balance',
+  'stored_wallet_balance', 'explained_difference', 'unexplained_difference',
+  'quarantined_excess',
+] as const
+
+function parseAdminWalletFinancialTruth(value: unknown): AdminWalletFinancialTruth {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Canonical wallet financial truth is unavailable.')
+  }
+  const record = value as Record<string, unknown>
+  if (typeof record.user_id !== 'string' || !record.user_id ||
+      typeof record.integrity_status !== 'string' || !record.integrity_status ||
+      typeof record.evidence_complete !== 'boolean' ||
+      typeof record.spending_blocked !== 'boolean' ||
+      typeof record.account_suspended !== 'boolean' ||
+      typeof record.wallet_review_required !== 'boolean') {
+    throw new Error('Canonical wallet financial truth is incomplete.')
+  }
+  const parsed: Record<string, unknown> = { ...record }
+  for (const field of FINANCIAL_TRUTH_AMOUNTS) {
+    const amount = record[field]
+    if ((typeof amount !== 'number' && typeof amount !== 'string') ||
+        amount === '' || !Number.isFinite(Number(amount))) {
+      throw new Error(`Canonical wallet financial truth is missing ${field}.`)
+    }
+    parsed[field] = Number(amount)
+  }
+  return parsed as AdminWalletFinancialTruth
+}
+
+export async function getAdminWalletFinancialTruth(userId: string): Promise<AdminWalletFinancialTruth> {
+  const { data, error } = await supabase.rpc('get_admin_wallet_financial_truth', { p_user_id: userId })
+  if (error) throw new Error(`Canonical wallet financial truth failed: ${error.message}`)
+  const truth = parseAdminWalletFinancialTruth(data)
+  if (truth.user_id !== userId) throw new Error('Canonical wallet financial truth returned the wrong customer.')
+  return truth
+}
+
+export async function getAdminWalletFinancialTruthPage(afterUserId: string | null): Promise<AdminWalletFinancialTruthPageRow[]> {
+  const { data, error } = await supabase.rpc('get_admin_wallet_financial_truth_page', {
+    p_after_user_id: afterUserId,
+    p_limit: 100,
+  })
+  if (error) throw new Error(`Canonical wallet financial truth page failed: ${error.message}`)
+  if (!Array.isArray(data)) throw new Error('Canonical wallet financial truth page is unavailable.')
+  return data.map((value: unknown) => {
+    if (!value || typeof value !== 'object') throw new Error('Canonical wallet financial truth page is malformed.')
+    const row = value as Record<string, unknown>
+    if (typeof row.user_id !== 'string' || !row.user_id ||
+        typeof row.is_staff !== 'boolean' ||
+        typeof row.is_admin !== 'boolean' ||
+        typeof row.account_suspended !== 'boolean' ||
+        typeof row.wallet_review_required !== 'boolean') {
+      throw new Error('Canonical wallet financial truth page is incomplete.')
+    }
+    const truth = parseAdminWalletFinancialTruth(row.truth)
+    if (truth.user_id !== row.user_id) throw new Error('Canonical wallet financial truth page has a customer mismatch.')
+    return { ...row, truth } as AdminWalletFinancialTruthPageRow
+  })
+}
+
+export async function getAdminCrossWalletPaymentConflictsPage(
+  afterPaymentIdentity: string | null,
+): Promise<AdminCrossWalletPaymentConflict[]> {
+  const { data, error } = await supabase.rpc('get_admin_cross_wallet_payment_conflicts_page', {
+    p_after_payment_identity: afterPaymentIdentity,
+    p_limit: 100,
+  })
+  if (error) throw new Error(`Cross-wallet payment evidence failed: ${error.message}`)
+  if (!Array.isArray(data)) throw new Error('Cross-wallet payment evidence is unavailable.')
+  return data.map((value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Cross-wallet payment evidence is malformed.')
+    }
+    const row = value as Record<string, unknown>
+    if (typeof row.payment_identity !== 'string' || !row.payment_identity ||
+        !Array.isArray(row.wallet_ids) || row.wallet_ids.length < 2 ||
+        !row.wallet_ids.every((id) => typeof id === 'string' && id) ||
+        !Number.isSafeInteger(Number(row.funding_rows)) || Number(row.funding_rows) < 2) {
+      throw new Error('Cross-wallet payment evidence is incomplete.')
+    }
+    return {
+      payment_identity: row.payment_identity,
+      wallet_ids: row.wallet_ids,
+      funding_rows: Number(row.funding_rows),
+    }
+  })
+}
+
+export async function getAdminFraudLatestVisits(userIds: string[]): Promise<AdminFraudVisitTelemetry[]> {
+  if (userIds.length === 0) return []
+  if (userIds.length > 100) throw new Error('Fraud visit telemetry page is too large.')
+  const { data, error } = await supabase.rpc('get_admin_fraud_latest_visits', { p_user_ids: userIds })
+  if (error) throw new Error(`Fraud visit telemetry failed: ${error.message}`)
+  if (!Array.isArray(data)) throw new Error('Fraud visit telemetry is unavailable.')
+  const requested = new Set(userIds)
+  return data.map((value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Fraud visit telemetry is malformed.')
+    }
+    const row = value as Record<string, unknown>
+    if (typeof row.user_id !== 'string' || !requested.has(row.user_id) ||
+        !Array.isArray(row.ip_addresses) ||
+        !row.ip_addresses.every((ip: unknown) => typeof ip === 'string')) {
+      throw new Error('Fraud visit telemetry contains an unexpected customer or IP list.')
+    }
+    return row as AdminFraudVisitTelemetry
+  })
+}
+
 // Test database connection and setup
 export async function testAuthConnection(): Promise<{ success: boolean; message: string }> {
   try {
@@ -149,6 +329,9 @@ export interface ProductGroup {
   quantity_discount_tiers?: QuantityDiscountTier[]
 }
 
+export const PUBLIC_PRODUCT_GROUP_COLUMNS =
+  'id,category_id,name,description,price,features,stock_count,availability_status,is_sellable,is_active,created_at,quantity_discount_tiers'
+
 export interface QuantityDiscountTier {
   min_qty: number
   discount_pct: number
@@ -273,7 +456,7 @@ export async function getAllProductGroups(): Promise<ProductGroup[]> {
         setTimeout(() => resolve({ data: null, error: new Error('getAllProductGroups timeout') }), 12000)
       )
       const { data, error } = await Promise.race([
-        supabase.from('product_groups').select('*').eq('is_active', true).order('name'),
+        supabase.from('product_groups').select(PUBLIC_PRODUCT_GROUP_COLUMNS).eq('is_active', true).order('name'),
         timeout,
       ])
       if (error) { console.error('Supabase error:', error); throw error }
@@ -289,6 +472,20 @@ export async function getAllProductGroups(): Promise<ProductGroup[]> {
   })()
 
   return _pgInflight
+}
+
+export async function getManagedProductGroups(): Promise<ProductGroup[]> {
+  const { data, error } = await supabase.rpc('get_managed_product_groups')
+  if (error) throw new Error('Managed product catalog is unavailable.')
+  if (!Array.isArray(data)) throw new Error('Managed product catalog is incomplete.')
+  return data as ProductGroup[]
+}
+
+export async function getManagedProductGroup(productGroupId: string): Promise<ProductGroup | null> {
+  const { data, error } = await supabase.rpc('get_managed_product_group', { p_id: productGroupId })
+  if (error) throw new Error('Managed product details are unavailable.')
+  if (!Array.isArray(data)) throw new Error('Managed product details are incomplete.')
+  return (data[0] as ProductGroup | undefined) || null
 }
 
 export async function testConnection() {
@@ -379,7 +576,7 @@ export async function createProductGroup(productGroup: Omit<ProductGroup, 'id' |
     const { data, error } = await supabase
       .from('product_groups')
       .insert([productGroup])
-      .select()
+      .select(PUBLIC_PRODUCT_GROUP_COLUMNS)
       .single()
 
     if (error) {
@@ -400,7 +597,7 @@ export async function updateProductGroup(id: string, updates: Partial<ProductGro
       .from('product_groups')
       .update(updates)
       .eq('id', id)
-      .select()
+      .select(PUBLIC_PRODUCT_GROUP_COLUMNS)
       .single()
 
     if (error) {
@@ -419,7 +616,7 @@ export async function deleteProductGroup(id: string): Promise<boolean> {
   try {
     // First check if there are any orders referencing this product group
     const { data: orders, error: ordersError } = await supabase
-      .from('orders')
+      .from('orders_safe_history' as any)
       .select('id')
       .eq('product_group_id', id)
       .limit(1)
@@ -523,6 +720,8 @@ export interface IndividualAccount {
   created_at: string
   sold_at?: string
 }
+
+export type PublicAccount = Pick<IndividualAccount, 'id' | 'product_group_id' | 'status' | 'created_at'>
 
 export interface PurchasedAccountCredentials {
   username?: string
@@ -709,7 +908,7 @@ export async function getAvailableAccountIdsByProductGroup(): Promise<Record<str
 // popularity while profile rows stay hidden from customer browsers.
 export async function getTopSellingProductGroupIds(limit: number = 8): Promise<string[]> {
   try {
-    const { data, error } = await supabase.rpc('get_customer_top_product_groups', {
+    const { data, error } = await supabase.rpc('get_public_top_product_group_ids', {
       p_limit: limit,
     })
 
@@ -744,8 +943,8 @@ export async function getUserPurchaseHistory(userId: string): Promise<{
 
   try {
     const { data, error } = await supabase
-      .from('orders')
-      .select('product_group_id, account_details, created_at, product_groups(category_id)')
+      .from('orders_safe_history' as any)
+      .select('product_group_id, account_details, created_at, product_groups')
       .eq('user_id', userId)
       .eq('status', 'completed')
       .order('created_at', { ascending: false })
@@ -834,7 +1033,7 @@ export async function computeAndUpsertTrendSuggestions(options?: {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
     const { data: orders, error } = await supabase
-      .from('orders')
+      .from('orders_safe_history' as any)
       .select('product_group_id, user_id, account_details, created_at, status')
       .eq('status', 'completed')
       .gte('created_at', fourteenDaysAgo)
@@ -992,12 +1191,7 @@ export async function acceptSuggestion(id: string): Promise<ProductGroup | null>
 
     const template = suggestion.based_on_product_group_id
       ? await (async () => {
-          const { data } = await supabase
-            .from('product_groups')
-            .select('*')
-            .eq('id', suggestion.based_on_product_group_id)
-            .single()
-          return data
+          return getManagedProductGroup(suggestion.based_on_product_group_id)
         })()
       : null
 
@@ -1096,11 +1290,7 @@ export async function updateProductGroupStock(productGroupId: string): Promise<b
       return false
     }
 
-    const { data: productGroup } = await supabase
-      .from('product_groups')
-      .select('is_active,is_sellable,availability_status,auto_fulfill_enabled,muabanvia_product_id,shopclone_product_id,shopviaclone_product_id')
-      .eq('id', productGroupId)
-      .maybeSingle()
+    const productGroup = await getManagedProductGroup(productGroupId)
 
     const nextStock = count || 0
     const hasLiveProvider = Boolean(
@@ -1144,7 +1334,7 @@ export async function getProductGroupsByCategory(categoryId: string): Promise<Pr
   try {
     const { data, error } = await supabase
       .from('product_groups')
-      .select('*')
+      .select(PUBLIC_PRODUCT_GROUP_COLUMNS)
       .eq('category_id', categoryId)
       .eq('is_active', true)
       .order('created_at', { ascending: false })
@@ -1636,11 +1826,11 @@ export async function updateUserWalletBalance(
 }
 
 // Get available account for purchase
-export async function getAvailableAccount(productGroupId: string): Promise<IndividualAccount | null> {
+export async function getAvailableAccount(productGroupId: string): Promise<PublicAccount | null> {
   try {
     const { data, error } = await supabase
       .from('individual_accounts_public')
-      .select('id, product_group_id, username, status, created_at')
+      .select('id, product_group_id, status, created_at')
       .eq('product_group_id', productGroupId)
       .eq('status', 'available')
       .limit(1)
@@ -1816,11 +2006,11 @@ export async function verifyAndCreditWalletSecure(
 
 // Get multiple available accounts for bulk purchase
 // NOTE: This function is deprecated - accounts are now fetched server-side only
-export async function getAvailableAccounts(productGroupId: string, quantity: number): Promise<IndividualAccount[]> {
+export async function getAvailableAccounts(productGroupId: string, quantity: number): Promise<PublicAccount[]> {
   try {
     const { data, error } = await supabase
       .from('individual_accounts_public')
-      .select('id, product_group_id, username, status, created_at')
+      .select('id, product_group_id, status, created_at')
       .eq('product_group_id', productGroupId)
       .eq('status', 'available')
       .limit(quantity)
@@ -1889,11 +2079,8 @@ function sanitizeOrderHistoryCredentialVisibility(order: any) {
 export async function getUserOrders(userId: string): Promise<any[]> {
   try {
     const { data, error } = await supabase
-      .from('orders')
-      .select(`
-        *,
-        product_groups(name, categories(name))
-      `)
+      .from('orders_safe_history' as any)
+      .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
 
@@ -1910,7 +2097,7 @@ export async function getUserOrders(userId: string): Promise<any[]> {
 }
 
 // Get user transactions
-export async function getUserTransactions(userId: string): Promise<any[]> {
+export async function getUserTransactions(userId: string, throwOnError = false): Promise<any[]> {
   try {
     const { data, error } = await supabase
       .from('transactions')
@@ -1920,12 +2107,14 @@ export async function getUserTransactions(userId: string): Promise<any[]> {
 
     if (error) {
       console.error('Error fetching user transactions:', error)
+      if (throwOnError) throw error
       return []
     }
 
     return data || []
   } catch (error) {
     console.error('Error getting user transactions:', error)
+    if (throwOnError) throw error
     return []
   }
 }
@@ -1942,16 +2131,16 @@ export async function recordTopUpTransaction(
 }
 
 // Get individual account by ID. Reads from individual_accounts_public (a
-// safe view exposing only id/product_group_id/username/status/created_at)
+// safe view; request only non-credential fields here)
 // since this is used for pre-purchase browsing (Product Detail / Checkout
 // preview) where the actual credentials must never be fetched client-side.
 // Run supabase/migrations/20260624000000_add_individual_accounts_public_view.sql
 // in Supabase for this view to exist.
-export async function getIndividualAccountById(accountId: string): Promise<IndividualAccount | null> {
+export async function getIndividualAccountById(accountId: string): Promise<PublicAccount | null> {
   try {
     const { data, error } = await supabase
       .from('individual_accounts_public')
-      .select('*')
+      .select('id, product_group_id, status, created_at')
       .eq('id', accountId)
       .eq('status', 'available')
       .single()
@@ -1973,7 +2162,7 @@ export async function getProductGroupById(productGroupId: string): Promise<Produ
   try {
     const { data, error } = await supabase
       .from('product_groups')
-      .select('*, categories(name)')
+      .select(`${PUBLIC_PRODUCT_GROUP_COLUMNS}, categories(name)`)
       .eq('id', productGroupId)
       .eq('is_active', true)
       .single()
@@ -2012,12 +2201,16 @@ export async function getCategoryById(categoryId: string): Promise<Category | nu
   }
 }
 
+// New profile columns must not become browser-visible through admin search by default.
+const ADMIN_USER_SEARCH_COLUMNS =
+  'id,email,full_name,created_at,updated_at,wallet_balance,is_admin,is_staff,account_suspended,suspension_reason,suspended_at,wallet_review_required'
+
 // Get all users for admin dashboard
 export async function getAllUsers(): Promise<Profile[]> {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('*')
+      .select(ADMIN_USER_SEARCH_COLUMNS)
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -2045,6 +2238,17 @@ export async function getUserCount(): Promise<number> {
     return Number(data || 0)
   } catch (error) {
     console.error('Error getting customer count:', error)
+    return 0
+  }
+}
+
+export async function getPublicOrderCount(): Promise<number> {
+  try {
+    const { data, error } = await supabase.rpc('get_public_customer_order_count')
+    if (error) throw error
+    return Number(data || 0)
+  } catch (error) {
+    console.error('Error counting public orders:', error)
     return 0
   }
 }
@@ -2100,7 +2304,7 @@ export async function searchUsers(query: string) {
       await runSearch(
         supabase
           .from('profiles')
-          .select('*')
+          .select(ADMIN_USER_SEARCH_COLUMNS)
           .eq('id', cleanedQuery)
           .limit(1),
       )
@@ -2108,9 +2312,9 @@ export async function searchUsers(query: string) {
 
     const likeQuery = cleanedQuery.replace(/[%_]/g, '\\$&')
     await Promise.all([
-      runSearch(supabase.from('profiles').select('*').ilike('email', `%${likeQuery}%`).limit(50)),
-      runSearch(supabase.from('profiles').select('*').ilike('full_name', `%${likeQuery}%`).limit(50)),
-      runSearch(supabase.from('profiles').select('*').eq('pocketfi_account_number', cleanedQuery).limit(50)),
+      runSearch(supabase.from('profiles').select(ADMIN_USER_SEARCH_COLUMNS).ilike('email', `%${likeQuery}%`).limit(50)),
+      runSearch(supabase.from('profiles').select(ADMIN_USER_SEARCH_COLUMNS).ilike('full_name', `%${likeQuery}%`).limit(50)),
+      runSearch(supabase.from('profiles').select(ADMIN_USER_SEARCH_COLUMNS).eq('pocketfi_account_number', cleanedQuery).limit(50)),
     ])
 
     if (rowsById.size === 0 && searchErrors.length >= 3) {
@@ -2366,18 +2570,8 @@ export async function adminSuspendUser(userId: string, reason: string): Promise<
 export async function getUserOrdersAdmin(userId: string) {
   try {
     const { data, error } = await supabase
-      .from('orders')
-      .select(`
-        *,
-        product_groups (
-          name,
-          price,
-          category_id,
-          categories (
-            name
-          )
-        )
-      `)
+      .from('orders_safe_history' as any)
+      .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
 
@@ -2511,18 +2705,12 @@ export async function getReferralStats(userId: string): Promise<{
       .eq('referrer_id', userId)
       .order('created_at', { ascending: false })
 
-    // Same RLS issue as applyReferralOnSignup: counting OTHER users whose
-    // referred_by = me is a cross-user read that profiles RLS silently
-    // blocks (returns 0, no error). Use the referral_lookup view instead.
-    const { count: totalReferred } = await supabase
-      .from('referral_lookup')
-      .select('*', { count: 'exact', head: true })
-      .eq('referred_by', userId)
+    const { data: totalReferred } = await supabase.rpc('get_my_referral_count')
 
     return {
       referralCode: profile?.referral_code || null,
       referralBalance: profile?.referral_balance || 0,
-      totalReferred: totalReferred || 0,
+      totalReferred: Number(totalReferred || 0),
       earnings: earnings || []
     }
   } catch (error) {
@@ -2594,7 +2782,7 @@ export async function getGlobalActivityFeed(limit = 12): Promise<GlobalActivityI
       created_at: string
     }>).map((row) => ({
       kind: row.kind,
-      maskedName: row.masked_name,
+      maskedName: 'Customer',
       amount: Number(row.amount) || 0,
       label: row.label,
       createdAt: row.created_at,
@@ -2657,10 +2845,7 @@ export interface DiscountCode {
 
 export async function getDiscountCodes(): Promise<DiscountCode[]> {
   try {
-    const { data, error } = await supabase
-      .from('discount_codes')
-      .select('*')
-      .order('created_at', { ascending: false })
+    const { data, error } = await supabase.rpc('get_managed_discount_codes')
     if (error) {
       console.error('❌ Error fetching discount codes:', error)
       return []
@@ -2714,44 +2899,23 @@ export async function setDiscountCodeActive(id: string, isActive: boolean): Prom
 export async function previewDiscountCode(
   code: string,
   productGroupId: string,
-  categoryId: string | null,
+  _categoryId: string | null,
   orderTotal?: number,
 ): Promise<{ valid: boolean; percentOff?: number; error?: string }> {
   if (!DISCOUNTS_ENABLED) return { valid: false, error: 'Discount codes are temporarily unavailable' }
   if (!code.trim()) return { valid: false, error: 'Enter a code' }
   try {
-    const { data, error } = await supabase
-      .from('discount_codes')
-      .select('*')
-      .eq('code', code.trim().toUpperCase())
-      .eq('is_active', true)
-      .maybeSingle()
-
-    if (error || !data) return { valid: false, error: 'Invalid or expired code' }
-    if (data.expires_at && new Date(data.expires_at) < new Date()) {
-      return { valid: false, error: 'This code has expired' }
+    const { data, error } = await supabase.rpc('preview_discount_code', {
+      p_code: code.trim().toUpperCase(),
+      p_product_group_id: productGroupId,
+      p_order_total: orderTotal ?? null,
+    })
+    if (error || data?.valid !== true) return { valid: false, error: 'Invalid or expired code' }
+    const percentOff = Number(data.percent_off)
+    if (!Number.isFinite(percentOff) || percentOff < 1 || percentOff > 100) {
+      return { valid: false, error: 'Invalid or expired code' }
     }
-    if (data.max_uses && data.used_count >= data.max_uses) {
-      return { valid: false, error: 'This code has reached its usage limit' }
-    }
-    if (data.product_group_id && data.product_group_id !== productGroupId) {
-      return { valid: false, error: 'This code is not valid for this product' }
-    }
-    if (data.category_id && !data.product_group_id && data.category_id !== categoryId) {
-      return { valid: false, error: 'This code is not valid for this category' }
-    }
-    // Reward codes are user-specific — verify the current user owns this code
-    if (data.user_id) {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user || user.id !== data.user_id) {
-        return { valid: false, error: 'This code is not valid for your account' }
-      }
-    }
-    // Reward codes have a maximum order amount
-    if (data.max_order_amount && orderTotal !== undefined && orderTotal > data.max_order_amount) {
-      return { valid: false, error: `This code is only valid for orders up to ₦${data.max_order_amount.toLocaleString('en-NG')}` }
-    }
-    return { valid: true, percentOff: data.percent_off }
+    return { valid: true, percentOff }
   } catch (error) {
     console.error('❌ Failed to preview discount code:', error)
     return { valid: false, error: 'Failed to validate code' }

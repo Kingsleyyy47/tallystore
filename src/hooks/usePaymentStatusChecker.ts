@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { verifyAndCreditWalletSecure, checkTransactionByReference } from '@/lib/supabase';
 import { useAuth } from '@/contexts/SimpleAuth';
 import { useToast } from '@/hooks/use-toast';
+import { getPaymentStorageItem, removePaymentStorageItem, setPaymentStorageItem } from '@/lib/paymentStorage';
 
 // Ercas Pay has a server-side "verify and credit" edge function the client can call
 // directly. PocketFi credits the wallet via webhook-pocketfi instead, so
@@ -33,7 +34,7 @@ export function usePaymentStatusChecker() {
         return;
       }
 
-      const pendingTopup = localStorage.getItem('pending_topup');
+      const pendingTopup = getPaymentStorageItem('pending_topup');
       
       if (!pendingTopup || !user?.id) return;
 
@@ -44,7 +45,7 @@ export function usePaymentStatusChecker() {
         
         // Stop checking after 30 minutes
         if (timeSinceInitiation > 30 * 60 * 1000) {
-          localStorage.removeItem('pending_topup');
+          removePaymentStorageItem('pending_topup');
           return;
         }
 
@@ -54,9 +55,9 @@ export function usePaymentStatusChecker() {
         }
         
         // Check if this transaction was already processed
-        const processedTransactions = JSON.parse(localStorage.getItem('processed_transactions') || '[]');
+        const processedTransactions = JSON.parse(getPaymentStorageItem('processed_transactions') || '[]');
         if (processedTransactions.includes(transactionRef)) {
-          localStorage.removeItem('pending_topup');
+          removePaymentStorageItem('pending_topup');
           return;
         }
         
@@ -74,11 +75,11 @@ export function usePaymentStatusChecker() {
           await refreshWalletBalance();
           
           // Mark transaction as processed
-          const processedTransactions = JSON.parse(localStorage.getItem('processed_transactions') || '[]');
+          const processedTransactions = JSON.parse(getPaymentStorageItem('processed_transactions') || '[]');
           processedTransactions.push(transactionRef);
-          localStorage.setItem('processed_transactions', JSON.stringify(processedTransactions));
+          setPaymentStorageItem('processed_transactions', JSON.stringify(processedTransactions));
           
-          localStorage.removeItem('pending_topup');
+          removePaymentStorageItem('pending_topup');
           
           toast({
             title: result.already_processed ? "Payment Already Processed! ✅" : "Payment Successful! 🎉",
@@ -101,7 +102,7 @@ export function usePaymentStatusChecker() {
           // Still pending - keep checking
         } else {
           // Payment failed - clean up
-          localStorage.removeItem('pending_topup');
+          removePaymentStorageItem('pending_topup');
           
           toast({
             title: "Payment Failed",
@@ -121,7 +122,7 @@ export function usePaymentStatusChecker() {
         console.error('Error checking payment status:', error);
       } finally {
         // Remove from processing set if we have the reference
-        const pendingTopupData = localStorage.getItem('pending_topup');
+        const pendingTopupData = getPaymentStorageItem('pending_topup');
         if (pendingTopupData) {
           try {
             const transaction = JSON.parse(pendingTopupData);
@@ -152,7 +153,7 @@ export function usePaymentStatusChecker() {
   // Also check when window gets focus (user returns from payment tab)
   useEffect(() => {
     const handleFocus = () => {
-      const pendingTopup = localStorage.getItem('pending_topup');
+      const pendingTopup = getPaymentStorageItem('pending_topup');
       if (pendingTopup && user?.id) {
         // Check immediately when user returns
         setTimeout(async () => {
@@ -171,9 +172,9 @@ export function usePaymentStatusChecker() {
             }
             
             // Check if this transaction was already processed
-            const processedTransactions = JSON.parse(localStorage.getItem('processed_transactions') || '[]');
+            const processedTransactions = JSON.parse(getPaymentStorageItem('processed_transactions') || '[]');
             if (processedTransactions.includes(transactionRef)) {
-              localStorage.removeItem('pending_topup');
+              removePaymentStorageItem('pending_topup');
               return;
             }
             
@@ -190,11 +191,11 @@ export function usePaymentStatusChecker() {
               await refreshWalletBalance();
               
               // Mark transaction as processed
-              const processedTxs = JSON.parse(localStorage.getItem('processed_transactions') || '[]');
+              const processedTxs = JSON.parse(getPaymentStorageItem('processed_transactions') || '[]');
               processedTxs.push(transactionRef);
-              localStorage.setItem('processed_transactions', JSON.stringify(processedTxs));
+              setPaymentStorageItem('processed_transactions', JSON.stringify(processedTxs));
               
-              localStorage.removeItem('pending_topup');
+              removePaymentStorageItem('pending_topup');
               
               toast({
                 title: result.already_processed ? "Payment Already Processed! ✅" : "Payment Successful! 🎉",

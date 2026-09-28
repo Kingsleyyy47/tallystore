@@ -20,8 +20,11 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "security:wallet": "node scripts/security-wallet-check.mjs",
+    "security:leaks": "node scripts/security-leak-check.mjs",
+    "security:history-leaks": "node scripts/security-history-leak-audit.mjs",
     "security:wallet:adapters": "node scripts/wallet-provider-adapter-test.mjs",
     "security:wallet:admin-ui": "node scripts/wallet-admin-ui-model-test.mjs",
+    "security:wallet:fraud-ui": "node scripts/fraud-review-ui-test.mjs",
     "security:wallet:admin-review": "node scripts/wallet-admin-review-decision-test.mjs",
     "security:wallet:customer-ui": "node scripts/wallet-customer-ui-model-test.mjs",
     "security:wallet:db-concurrency": "node scripts/wallet-db-concurrency-runner.mjs",
@@ -112,6 +115,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@eslint/js": "^9.32.0",
     "@tailwindcss/typography": "^0.5.16",
     "@types/node": "^22.16.5",

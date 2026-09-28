@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Users, ShoppingBag, LayoutGrid, ShieldCheck } from 'lucide-react'
-import { getUserCount, getAdminSalesStats, getCategories, getAllProductGroups, formatCount } from '@/lib/supabase'
+import { getUserCount, getPublicOrderCount, getCategories, getAllProductGroups, formatCount } from '@/lib/supabase'
 
 interface Stat {
   label: string
@@ -17,9 +17,9 @@ export default function StatsBar() {
 
     const loadStats = async () => {
       try {
-        const [userCount, salesStats, categories, productGroups] = await Promise.all([
+        const [userCount, orderCount, categories, productGroups] = await Promise.all([
           getUserCount(),
-          getAdminSalesStats(),
+          getPublicOrderCount(),
           getCategories(),
           getAllProductGroups(),
         ])
@@ -29,7 +29,7 @@ export default function StatsBar() {
         const availableAccounts = productGroups.reduce((sum, product) => sum + Number(product.stock_count || 0), 0)
         setStats([
           { label: 'Active Users', value: formatCount(userCount), icon: Users },
-          { label: 'Orders Delivered', value: formatCount(salesStats.totalSales), icon: ShoppingBag },
+          { label: 'Orders Delivered', value: formatCount(orderCount), icon: ShoppingBag },
           { label: 'Categories', value: formatCount(categories.length), icon: LayoutGrid },
           { label: 'Accounts Available', value: formatCount(availableAccounts), icon: ShieldCheck },
         ])

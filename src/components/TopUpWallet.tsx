@@ -14,6 +14,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useExchangeRate } from '@/hooks/useExchangeRate';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { cn } from '@/lib/utils';
+import { setPaymentStorageItem } from '@/lib/paymentStorage';
 
 interface TopUpWalletProps {
   onSuccess?: () => void;
@@ -297,7 +298,7 @@ export function TopUpWallet({
         }
 
         // Store transaction reference for verification later
-        localStorage.setItem('pending_topup', JSON.stringify({
+        setPaymentStorageItem('pending_topup', JSON.stringify({
           transactionReference: response.data.transactionReference,
           amount: topUpAmount,
           timestamp: Date.now(),

@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import { canonicalCryptoAmount, sameCryptoTopupRequest } from '../_shared/crypto-topup-request.mjs';
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -542,7 +543,7 @@ function getPurchaseGuardUserAgent(req?: Request | null) {
   }).join('').trim().slice(0, 500)
 }
 
-async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
+async function assertFraudDeviceNotBanned(admin: any, userId: string, req?: Request | null) {
   const ipAddress = getPurchaseGuardIp(req)
   const userAgent = getPurchaseGuardUserAgent(req)
   const userAgentHash = userAgent ? await purchaseGuardSha256Hex(userAgent) : null
@@ -552,6 +553,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('ip_address', ipAddress)
       .limit(1)
 
@@ -565,6 +567,7 @@ async function assertFraudDeviceNotBanned(admin: any, req?: Request | null) {
       .from('fraud_device_bans')
       .select('id')
       .eq('active', true)
+      .eq('banned_user_id', userId)
       .eq('user_agent_hash', userAgentHash)
       .limit(1)
 
@@ -593,7 +596,7 @@ export async function assertPurchasingCustomer(admin: any, userId: string, req?:
     throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
   }
 
-  await assertFraudDeviceNotBanned(admin, req)
+  await assertFraudDeviceNotBanned(admin, userId, req)
 }
 
 const corsHeaders = {
@@ -681,7 +684,6 @@ serve(async (req) => {
         JSON.stringify({
           success: false,
           error: 'Server configuration error',
-          error_details: 'Missing SUPABASE_URL or SUPABASE_ANON_KEY',
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -713,18 +715,11 @@ serve(async (req) => {
     } = await supabaseClient.auth.getUser(token);
 
     if (userError || !user) {
-      console.error('❌ User authentication failed:', userError);
+      console.error('User authentication failed.');
       return new Response(
         JSON.stringify({
           success: false,
           error: 'Unauthorized',
-          error_details: userError?.message || 'User authentication failed',
-          debug_info: {
-            token_length: token.length,
-            auth_header_prefix: authHeader.substring(0, 10),
-            has_user: !!user,
-            error_code: userError?.status,
-          }
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -743,13 +738,12 @@ serve(async (req) => {
     let requestBody;
     try {
       requestBody = await req.json();
-    } catch (parseError: any) {
-      console.error('❌ Failed to parse request body:', parseError);
+    } catch {
+      console.error('Could not parse crypto order request body.');
       return new Response(
         JSON.stringify({
           success: false,
           error: 'Invalid request body',
-          error_details: parseError.message,
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -777,7 +771,7 @@ serve(async (req) => {
         JSON.stringify({
           success: false,
           error: 'Missing required fields: crypto_type, crypto_amount',
-          error_details: `Received: crypto_type=${crypto_type}, crypto_amount=${crypto_amount}`,
+          error_details: 'Choose a supported cryptocurrency and enter an amount.',
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -805,7 +799,8 @@ serve(async (req) => {
     const MINIMUM_USD = 20;
     
     console.log(`📊 Validating minimum amount for ${crypto_type}...`);
-    const userAmount = parseFloat(crypto_amount);
+    const canonicalAmount = canonicalCryptoAmount(crypto_amount);
+    const userAmount = canonicalAmount === null ? NaN : Number(canonicalAmount);
     if (!Number.isFinite(userAmount) || userAmount <= 0) {
       return new Response(
         JSON.stringify({
@@ -846,13 +841,12 @@ serve(async (req) => {
       if (!Number.isFinite(authoritativeUsdAmount) || authoritativeUsdAmount <= 0) {
         throw new Error('Invalid provider estimate');
       }
-    } catch (error: any) {
+    } catch {
       console.error('❌ Could not verify provider crypto price.');
       return new Response(
         JSON.stringify({
           success: false,
           error: 'Could not verify live crypto rate',
-          error_details: error.message,
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -881,37 +875,51 @@ serve(async (req) => {
     if (!clientIdempotencyKey || clientIdempotencyKey.length < 10) {
       throw new Error('Valid idempotency_key is required');
     }
-    const safeIdempotencyKey = clientIdempotencyKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 96);
-    if (safeIdempotencyKey.length < 10) throw new Error('Valid idempotency_key is required');
+    if (!/^[a-zA-Z0-9_-]{10,96}$/.test(clientIdempotencyKey)) {
+      throw new Error('Valid idempotency_key is required');
+    }
+    const safeIdempotencyKey = clientIdempotencyKey;
 
-    // Deterministic reference prevents duplicate provider orders on frontend retry.
-    const orderReference = `TALLY-${safeIdempotencyKey}`;
+    // Bind new provider references to this project and wallet. Check old
+    // references too so an existing retry cannot create a second payment.
+    const orderReference = `TALLY2-${await sha256Hex(`crypto-topup:${supabaseUrl}:${user.id}:${safeIdempotencyKey}`)}`;
+    const legacyReference = `TALLY-${safeIdempotencyKey}`;
 
     const { data: existingTransaction, error: existingError } = await supabaseAdmin
       .from('crypto_transactions')
-      .select('*')
+      .select('id,crypto_type,crypto_amount,naira_amount,nowpayments_network,transaction_type,payment_provider,nowpayments_payment_id,nowpayments_pay_address,deposit_address,outcome_amount,outcome_currency,nowpayments_payin_extra_id,nowpayments_smart_contract,expiration_date,expires_at,status,payment_reference')
       .eq('user_id', user.id)
-      .eq('payment_reference', orderReference)
-      .maybeSingle();
+      .in('payment_reference', [orderReference, legacyReference])
+      .limit(2);
     if (existingError) throw new Error(existingError.message);
-    if (existingTransaction) {
+    if (existingTransaction && existingTransaction.length > 1) {
+      throw new Error('Conflicting existing crypto payments require review');
+    }
+    const existingPayment = existingTransaction?.[0];
+    if (existingPayment) {
+      if (!sameCryptoTopupRequest(existingPayment, { crypto_type, crypto_amount, network })) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Idempotency key is already used for a different crypto payment.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 },
+        );
+      }
       return new Response(
         JSON.stringify({
           success: true,
           idempotency_hit: true,
-          transaction_id: existingTransaction.id,
-          naira_amount: Number(existingTransaction.naira_amount || 0),
+          transaction_id: existingPayment.id,
+          naira_amount: Number(existingPayment.naira_amount || 0),
           payment_details: {
-            payment_id: existingTransaction.nowpayments_payment_id,
-            pay_address: existingTransaction.nowpayments_pay_address || existingTransaction.deposit_address,
-            pay_amount: existingTransaction.outcome_amount,
-            pay_currency: existingTransaction.outcome_currency || crypto_type?.toLowerCase(),
-            payin_extra_id: existingTransaction.nowpayments_payin_extra_id,
-            network: existingTransaction.nowpayments_network,
-            smart_contract: existingTransaction.nowpayments_smart_contract,
-            expiration_date: existingTransaction.expiration_date || existingTransaction.expires_at,
-            payment_status: existingTransaction.status,
-            qr_code_data: `${existingTransaction.outcome_currency || crypto_type?.toLowerCase()}:${existingTransaction.nowpayments_pay_address || existingTransaction.deposit_address}${existingTransaction.nowpayments_payin_extra_id ? `?dt=${existingTransaction.nowpayments_payin_extra_id}` : ''}`,
+            payment_id: existingPayment.nowpayments_payment_id,
+            pay_address: existingPayment.nowpayments_pay_address || existingPayment.deposit_address,
+            pay_amount: existingPayment.outcome_amount,
+            pay_currency: existingPayment.outcome_currency || crypto_type?.toLowerCase(),
+            payin_extra_id: existingPayment.nowpayments_payin_extra_id,
+            network: existingPayment.nowpayments_network,
+            smart_contract: existingPayment.nowpayments_smart_contract,
+            expiration_date: existingPayment.expiration_date || existingPayment.expires_at,
+            payment_status: existingPayment.status,
+            qr_code_data: `${existingPayment.outcome_currency || crypto_type?.toLowerCase()}:${existingPayment.nowpayments_pay_address || existingPayment.deposit_address}${existingPayment.nowpayments_payin_extra_id ? `?dt=${existingPayment.nowpayments_payin_extra_id}` : ''}`,
           },
           message: 'Existing payment returned for this attempt.',
         }),
@@ -929,13 +937,12 @@ serve(async (req) => {
       const resolvedRate = await getNgnUsdRate(supabaseAdmin);
       usdToNgn = resolvedRate.rate;
       usdToNgnSource = resolvedRate.source;
-    } catch (forexError: any) {
-      console.error('❌ Failed to fetch forex rate:', forexError);
+    } catch {
+      console.error('Could not load crypto exchange rate.');
       return new Response(
         JSON.stringify({
           success: false,
           error: 'Failed to fetch exchange rate',
-          error_details: forexError.message,
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -976,7 +983,7 @@ serve(async (req) => {
         is_fixed_rate: true, // Lock rate for 20 minutes
         is_fee_paid_by_user: true, // User pays the NowPayments processing fee (prevents "partially_paid" status)
       });
-    } catch (nowpaymentsError: any) {
+    } catch {
       console.error('❌ NowPayments API error while creating crypto sell payment.');
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
@@ -988,19 +995,18 @@ serve(async (req) => {
           payment_reference: orderReference,
           idempotency_key: safeIdempotencyKey,
           crypto_type: crypto_type.toUpperCase(),
-          crypto_amount: parseFloat(crypto_amount),
+          crypto_amount: userAmount,
           naira_amount: serverNairaAmount,
           client_display_naira_amount: displayNairaAmount ? Number(displayNairaAmount) : null,
           network: network || null,
           provider: 'nowpayments',
-          error: nowpaymentsError?.message || nowpaymentsError?.toString(),
+          error: 'Provider payment creation failed',
         },
       });
       return new Response(
         JSON.stringify({
           success: false,
           error: 'Failed to create crypto payment. Please try again or contact support.',
-          error_details: nowpaymentsError?.message || nowpaymentsError?.toString(),
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -1015,7 +1021,7 @@ serve(async (req) => {
       .insert({
         user_id: user.id,
         crypto_type: crypto_type.toUpperCase(),
-        crypto_amount: parseFloat(crypto_amount),
+        crypto_amount: userAmount,
         naira_amount: serverNairaAmount,
         exchange_rate: serverExchangeRate, // Required field
         deposit_address: payment.pay_address, // Required field
@@ -1064,7 +1070,7 @@ serve(async (req) => {
         nowpayments_payment_id: payment.payment_id,
         nowpayments_purchase_id: payment.purchase_id,
         crypto_type: crypto_type.toUpperCase(),
-        crypto_amount: parseFloat(crypto_amount),
+        crypto_amount: userAmount,
         naira_amount: serverNairaAmount,
         client_display_naira_amount: displayNairaAmount ? Number(displayNairaAmount) : null,
         usd_amount: parseFloat(authoritativeUsdAmount.toFixed(2)),
@@ -1090,7 +1096,7 @@ serve(async (req) => {
         nowpayments_payment_id: payment.payment_id,
         nowpayments_purchase_id: payment.purchase_id,
         crypto_type: crypto_type.toUpperCase(),
-        crypto_amount: parseFloat(crypto_amount),
+        crypto_amount: userAmount,
         naira_amount: serverNairaAmount,
         client_display_naira_amount: displayNairaAmount ? Number(displayNairaAmount) : null,
         usd_amount: parseFloat(authoritativeUsdAmount.toFixed(2)),
@@ -1134,17 +1140,24 @@ serve(async (req) => {
       }
     );
   } catch (error: any) {
-    console.error('❌ Error in create-crypto-sell-order:', error?.message || 'Unknown error');
+    console.error('Crypto order request failed.');
+    const publicClientErrors = new Set([
+      'This device or network has been blocked from purchasing. Please contact support.',
+      'Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.',
+      'Purchasing is paused while this wallet is under security review. Please contact support.',
+      'Valid idempotency_key is required',
+    ]);
+    const message = error instanceof Error ? error.message : '';
+    const clientError = publicClientErrors.has(message);
     
     return new Response(
       JSON.stringify({
         success: false,
-        error: error?.message || 'An unexpected error occurred',
-        error_details: error?.toString(),
+        error: clientError ? message : 'Crypto order is temporarily unavailable.',
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 400,
+        status: clientError ? 400 : 500,
       }
     );
   }

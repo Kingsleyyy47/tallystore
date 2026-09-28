@@ -235,7 +235,7 @@ export default function CryptoWithdrawal({ source = 'crypto' }: CryptoWithdrawal
           source,
           bank_code: bankCode,
           bank_name: selectedBank?.name || null,
-          reason: error?.message || 'bank_validation_failed',
+          reason: 'bank_validation_failed',
         },
       });
       

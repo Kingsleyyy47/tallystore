@@ -108,11 +108,11 @@ serve(async (req) => {
 
     const { data: adminProfile } = await supabaseAdmin
       .from('profiles')
-      .select('is_admin')
+      .select('is_admin, account_suspended')
       .eq('id', user.id)
       .single()
 
-    if (!adminProfile?.is_admin) {
+    if (!adminProfile?.is_admin || adminProfile.account_suspended === true) {
       return json({ success: false, error: 'Admin access required' }, 403)
     }
 
@@ -190,7 +190,7 @@ serve(async (req) => {
         const fulfillResult = await fulfillResponse.json().catch(() => null) as any
 
         if (!fulfillResponse.ok || fulfillResult?.status !== 'success') {
-          throw new Error(fulfillResult?.msg || fulfillResult?.message || fulfillResult?.error || `${provider.name} could not fulfill the request`)
+          throw new Error('Provider purchase was not confirmed')
         }
 
         const fulfilledAccounts = parseFulfilledAccounts(fulfillResult?.data ?? [], remaining)
@@ -216,15 +216,14 @@ serve(async (req) => {
           .select('id')
 
         if (insertError || !insertedAccounts) {
-          throw new Error(insertError?.message || 'Failed to record purchased accounts')
+          throw new Error('Failed to record purchased accounts')
         }
 
         remaining -= insertedAccounts.length
         totalBought += insertedAccounts.length
         attempts.push({ provider: provider.name, success: true, fulfilled: insertedAccounts.length })
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error'
-        attempts.push({ provider: provider.name, success: false, message })
+      } catch {
+        attempts.push({ provider: provider.name, success: false, message: 'Provider purchase was not safely completed; review supplier outcome' })
       }
     }
 
@@ -250,9 +249,8 @@ serve(async (req) => {
     }
 
     return json({ success: true, bought: totalBought, requested: quantity, attempts })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Manual restock failed'
-    console.error('manual-restock error:', message)
-    return json({ success: false, error: message }, 500)
+  } catch {
+    console.error('manual-restock failed; review server-side operation status')
+    return json({ success: false, error: 'Manual restock failed; review operation status' }, 500)
   }
 })
