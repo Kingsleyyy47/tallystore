@@ -8,7 +8,6 @@ import { AuthProvider } from '@/contexts/SimpleAuth'
 import { CurrencyProvider } from '@/contexts/CurrencyContext'
 import { ProtectedRoute, PublicRoute } from '@/components/SimpleProtectedRoute'
 import InstallPromptBanner from '@/components/InstallPromptBanner'
-import UpdatePromptBanner from '@/components/UpdatePromptBanner'
 import AnnouncementBanner from '@/components/AnnouncementBanner'
 import MaintenancePage from '@/components/MaintenancePage'
 import GlobalPaymentChecker from '@/components/GlobalPaymentChecker'
@@ -21,29 +20,6 @@ import VisitorTracker from '@/components/VisitorTracker'
 const MAINTENANCE_MODE = false;
 // Local dev bypass: maintenance only shows in production
 const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-
-// Version tracking for cache busting. Vite injects a new build version for
-// each production build, so returning users are forced onto the deployed bundle
-// instead of staying on stale cached assets.
-const APP_BUILD_VERSION = __APP_BUILD_VERSION__;
-
-// Track the loaded build version. The service worker owns cache updates; this
-// only forces one settling reload after a returning browser receives a new
-// bundle, without unregistering the worker that keeps updates flowing.
-if (typeof window !== 'undefined' && !isLocalDev) {
-  const lastVersion = localStorage.getItem('app_version');
-  if (lastVersion !== APP_BUILD_VERSION) {
-    localStorage.setItem('app_version', APP_BUILD_VERSION);
-
-    if (lastVersion) {
-      const reloadKey = `app_version_reload:${APP_BUILD_VERSION}`;
-      if (sessionStorage.getItem(reloadKey) !== 'done') {
-        sessionStorage.setItem(reloadKey, 'done');
-        setTimeout(() => window.location.reload(), 100);
-      }
-    }
-  }
-}
 
 // Pages
 import Index from "./pages/Index";
@@ -102,7 +78,6 @@ const App = () => {
           <AnnouncementBanner />
           <LoginWelcomeDialog />
           <InstallPromptBanner />
-          <UpdatePromptBanner />
           <AuthProvider>
           <CurrencyProvider>
             <VisitorTracker />

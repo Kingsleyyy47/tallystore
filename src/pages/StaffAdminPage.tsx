@@ -115,6 +115,7 @@ export default function StaffAdminPage() {
 
   const [perms, setPerms] = useState<PermissionMap>({} as PermissionMap)
   const [loadingPerms, setLoadingPerms] = useState(true)
+  const [permissionLoadError, setPermissionLoadError] = useState<string | null>(null)
 
   // Stats
   const [userCount, setUserCount] = useState(0)
@@ -312,12 +313,20 @@ export default function StaffAdminPage() {
   const [croPromotionMonthlyBudgetDraft, setCroPromotionMonthlyBudgetDraft] = useState('0')
 
   // ── Load permissions ─────────────────────────────────────────────────────
-  useEffect(() => {
-    getMyStaffPermissions().then(p => {
-      setPerms(p)
+  const loadPermissions = useCallback(async () => {
+    setLoadingPerms(true)
+    setPermissionLoadError(null)
+    try {
+      setPerms(await getMyStaffPermissions())
+    } catch (error) {
+      setPerms({} as PermissionMap)
+      setPermissionLoadError(error instanceof Error ? error.message : 'Staff permissions could not be loaded')
+    } finally {
       setLoadingPerms(false)
-    })
+    }
   }, [])
+
+  useEffect(() => { void loadPermissions() }, [loadPermissions])
 
   const loadSmsProducts = useCallback(async () => {
     if (!can(perms, 'tab_sms_products')) return
@@ -1134,6 +1143,20 @@ export default function StaffAdminPage() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    )
+  }
+
+  if (permissionLoadError) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Navbar />
+        <div className="container mx-auto px-6 py-32 text-center">
+          <h2 className="mb-2 text-xl font-semibold">Permissions unavailable</h2>
+          <p className="mb-4 text-muted-foreground">{permissionLoadError}</p>
+          <Button onClick={() => void loadPermissions()}>Retry</Button>
+        </div>
+        <Footer />
       </div>
     )
   }

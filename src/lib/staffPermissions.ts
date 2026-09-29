@@ -61,7 +61,8 @@ export async function getMyStaffPermissions(): Promise<PermissionMap> {
     .select('permission_key, is_enabled, auto_approve')
 
   const map: PermissionMap = {} as PermissionMap
-  if (error || !data) return map
+  if (error) throw error
+  if (!data) throw new Error('Staff permissions could not be loaded')
 
   for (const row of data) {
     map[row.permission_key as PermissionKey] = row as StaffPermission

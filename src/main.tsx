@@ -4,36 +4,9 @@ import App from './App.tsx'
 import './index.css'
 import { registerSW } from 'virtual:pwa-register'
 
-// Register service worker for PWA functionality.
-// When a genuine new version is detected, the page reloads automatically —
-// but ONLY once per new version, and ONLY after a 5-minute cooldown between
-// update checks. This stops the "reload on every tab switch" behaviour while
-// keeping seamless auto-updates for real deploys.
-let updateSW: ((reloadPage?: boolean) => Promise<void>) | null = null;
-let reloadingForUpdate = false;
-
-const applyUpdate = async () => {
-  if (reloadingForUpdate) return;
-  reloadingForUpdate = true;
-  try {
-    if (updateSW) await updateSW(true);
-    else window.location.reload();
-  } catch {
-    window.location.reload();
-  }
-};
-
-updateSW = registerSW({
+// The PWA plugin reloads once when a new service worker activates.
+registerSW({
   immediate: true,
-
-  onNeedRefresh() {
-    // A real new version was found — auto-reload once.
-    // Also dispatch the banner event in case the reload is delayed.
-    window.dispatchEvent(
-      new CustomEvent('pwa-update-available', { detail: { update: applyUpdate } }),
-    );
-    void applyUpdate();
-  },
 
   onRegisteredSW(_swUrl, registration) {
     if (!registration) return;
@@ -62,11 +35,6 @@ updateSW = registerSW({
     window.addEventListener('focus', throttledCheck);
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) throttledCheck();
-    });
-
-    // When the new SW takes control, apply the update.
-    navigator.serviceWorker?.addEventListener('controllerchange', () => {
-      void applyUpdate();
     });
   },
 

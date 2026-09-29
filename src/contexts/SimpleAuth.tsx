@@ -14,6 +14,8 @@ interface AuthContextType {
   resendConfirmation: (email: string) => Promise<{ success: boolean; error?: string }>
   isAdmin: boolean
   isStaff: boolean
+  roleLookupError: string | null
+  retryRoleLookup: () => Promise<void>
   walletBalance: number
   walletLoading: boolean
   accountSuspended: boolean
@@ -39,6 +41,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState(false)
   const [isStaff, setIsStaff] = useState(false)
+  const [roleLookupError, setRoleLookupError] = useState<string | null>(null)
   const [walletBalance, setWalletBalance] = useState(0)
   const [walletLoading, setWalletLoading] = useState(true)
   const [accountSuspended, setAccountSuspended] = useState(false)
@@ -61,6 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const checkAdminStatus = useCallback(async (userId: string) => {
     setWalletLoading(true)
+    setRoleLookupError(null)
 
     try {
       // Keep a reference to the query Promise so we can attach a background
@@ -78,7 +82,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data, error } = await Promise.race([profilePromise, timeoutPromise])
 
       if (error) {
-        // Timeout fired — resolve auth immediately so the spinner clears.
+        // A failed lookup is not evidence that the account lacks its role.
+        setRoleLookupError('Account permissions could not be verified. Please retry.')
         setIsAdmin(false)
         setIsStaff(false)
         writeInternalRevenueUserFlag(false)
@@ -91,9 +96,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // The original query is still in-flight. When it lands, update state
         // and re-navigate staff/admin who were wrongly sent to /dashboard.
         profilePromise.then(({ data: bgData, error: bgError }) => {
-          if (!bgError && bgData) {
-            const nextIsAdmin = !!bgData.is_admin
-            const nextIsStaff = !nextIsAdmin && !!bgData.is_staff
+          if (!bgError && bgData && lastProfileLoadKey.current?.startsWith(`${userId}:`)) {
+            setRoleLookupError(null)
+            const nextIsAdmin = bgData.is_admin === true
+            const nextIsStaff = !nextIsAdmin && bgData.is_staff === true
             setIsAdmin(nextIsAdmin)
             setIsStaff(nextIsStaff)
             writeInternalRevenueUserFlag(nextIsAdmin || nextIsStaff)
@@ -114,8 +120,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { isAdmin: false, isStaff: false }
       }
 
-      const nextIsAdmin = !!data?.is_admin
-      const nextIsStaff = !nextIsAdmin && !!data?.is_staff
+      const nextIsAdmin = data?.is_admin === true
+      setRoleLookupError(null)
+      const nextIsStaff = !nextIsAdmin && data?.is_staff === true
       setIsAdmin(nextIsAdmin)
       setIsStaff(nextIsStaff)
       writeInternalRevenueUserFlag(nextIsAdmin || nextIsStaff)
@@ -127,6 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { isAdmin: nextIsAdmin, isStaff: nextIsStaff }
     } catch (error) {
       console.error('Error checking admin status:', error)
+      setRoleLookupError('Account permissions could not be verified. Please retry.')
       setIsAdmin(false)
       setIsStaff(false)
       writeInternalRevenueUserFlag(false)
@@ -160,6 +168,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } else {
         lastProfileLoadKey.current = null
+        setRoleLookupError(null)
         clearPaymentStorage()
         setIsAdmin(false)
         setIsStaff(false)
@@ -187,6 +196,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => subscription.unsubscribe()
   }, [checkAdminStatus])
+
+  const retryRoleLookup = useCallback(async () => {
+    if (!user) return
+    setLoading(true)
+    try {
+      await checkAdminStatus(user.id)
+    } finally {
+      setLoading(false)
+    }
+  }, [user, checkAdminStatus])
 
   // ── Real-time wallet balance subscription ────────────────────────────────────
   // Listens for UPDATE events on the logged-in user's profiles row so the
@@ -388,6 +407,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     resendConfirmation,
     isAdmin,
     isStaff,
+    roleLookupError,
+    retryRoleLookup,
     walletBalance,
     walletLoading,
     accountSuspended,
