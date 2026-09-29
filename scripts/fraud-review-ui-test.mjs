@@ -54,7 +54,7 @@ assert.equal(zero.trustedAvailable, 0)
 
 assert.equal(context.classify(profile({ integrity_status: 'payment_identity_conflict' })).reviewType, 'duplicate_deposit')
 assert.match(source, /fraudReviewFilter === 'excess' && row\.reviewType === 'quarantined_excess'/)
-assert.match(source, /row\.truth\.spending_blocked \? 'blocked' : 'permitted up to confirmed spendable'/)
+assert.match(source, /row\.truth\.spending_blocked \? 'blocked' : 'permitted up to the current purchase limit'/)
 assert.match(source, /fraudFilterCounts\.duplicate}<\/p>\s*<p className="text-xs text-muted-foreground">Payment conflicts/)
 assert.match(source, /fraudReviewFilter === 'unblock' && row\.truth\.spending_blocked/)
 assert.match(source, /fraudReviewFilter === 'review' && row\.walletReviewRequired/)

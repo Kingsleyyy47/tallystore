@@ -237,7 +237,22 @@ Apply migrations in timestamp order. At minimum, this incident patch includes:
 20260925023000_restrict_suspended_admin_telemetry_reads.sql
 20260925024000_restrict_suspended_admin_financial_history.sql
 20260925025000_restrict_suspended_admin_revenue_reads.sql
+20260928000000_record_approved_historical_admin_funding.sql
+20260928001000_allow_reviewed_historical_wallet_deficits.sql
+20260928002000_stop_automatic_fraud_holds.sql
 ```
+
+The final `20260928002000` migration is an emergency policy change. It stops
+automatic wallet-review writes, releases system-generated review holds, and
+uses the stored balance for purchases by customers with pre-cutoff wallet
+activity/profile history and recorded
+funding. New customers and customers with no recorded funding remain limited
+by canonical confirmed funds; manual account suspensions and reviewer-set
+wallet holds still apply. It does
+not insert credits, change wallet balances, or establish the provenance of
+historical gaps. Deploy the matching Edge and web builds; old builds may still
+check retired device bans or wallet-review flags. See
+`2026-09-28-legacy-purchase-policy.md` for the owner verification sequence.
 
 These older replay migrations were also touched so a not-yet-applied database
 does not briefly clear wallet holds before the hardened evaluator and rescan

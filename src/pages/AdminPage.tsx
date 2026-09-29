@@ -79,6 +79,9 @@ import {
   processBulkAccountUpload,
   getAllUsers,
   searchUsers,
+  getCustomerBalancePage,
+  type CustomerBalanceRow,
+  type CustomerBalanceSort,
   getUserTransactions,
   getUserOrdersAdmin,
   getAdminWalletFinancialTruth,
@@ -155,7 +158,8 @@ const ADMIN_TABS = [
   { value: 'discount-codes', label: 'Discount Codes' },
   { value: 'categories', label: 'Categories' },
   { value: 'users', label: 'Users' },
-  { value: 'fraud', label: 'Fraud' },
+  { value: 'balance', label: 'Balance' },
+  { value: 'fraud', label: 'Account Holds' },
   { value: 'sales', label: 'Sales' },
   { value: 'histories', label: 'Transactions' },
   { value: 'email', label: 'Email' },
@@ -506,6 +510,15 @@ function formatAdminNaira(value?: number | null) {
   return `₦${amount.toLocaleString('en-NG', { maximumFractionDigits: 2 })}`
 }
 
+function formatRegistrationTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Unknown'
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    timeZone: 'Europe/London', timeZoneName: 'short',
+  }).format(date)
+}
+
 function parseAdminUserAgent(userAgent?: string | null) {
   const ua = String(userAgent || '')
   const lower = ua.toLowerCase()
@@ -715,6 +728,15 @@ export default function AdminPage() {
   const [users, setUsers] = useState<any[]>([])
   const [userSearchQuery, setUserSearchQuery] = useState('')
   const [isSearching, setIsSearching] = useState(false)
+  const [balanceRows, setBalanceRows] = useState<CustomerBalanceRow[]>([])
+  const [balanceTotal, setBalanceTotal] = useState(0)
+  const [balancePage, setBalancePage] = useState(0)
+  const [balanceSort, setBalanceSort] = useState<CustomerBalanceSort>('balance_desc')
+  const [balanceEmailInput, setBalanceEmailInput] = useState('')
+  const [balanceEmailFilter, setBalanceEmailFilter] = useState('')
+  const [balanceReload, setBalanceReload] = useState(0)
+  const [balanceLoading, setBalanceLoading] = useState(false)
+  const [balanceError, setBalanceError] = useState<string | null>(null)
   const [selectedUser, setSelectedUser] = useState<any>(null)
   const [viewUserOpen, setViewUserOpen] = useState(false)
   const [userFinancialTruth, setUserFinancialTruth] = useState<AdminWalletFinancialTruth | null>(null)
@@ -2814,6 +2836,7 @@ export default function AdminPage() {
         }
 
         if (!reviewType) continue
+        if (!suspended && !walletReviewRequired && !truth.spending_blocked) continue
         if (duplicateTopupReferences.length > 0 && reviewType !== 'duplicate_deposit') {
           reason += ' Shared external payment identity also needs provider review.'
         }
@@ -2922,6 +2945,27 @@ export default function AdminPage() {
       void loadFraudReview()
     }
   }, [adminTab, loadFraudReview])
+
+  useEffect(() => {
+    if (adminTab !== 'balance') return
+    let current = true
+    setBalanceLoading(true)
+    setBalanceError(null)
+    void getCustomerBalancePage(balancePage, 50, balanceSort, balanceEmailFilter)
+      .then(({ rows, total }) => {
+        if (!current) return
+        setBalanceRows(rows)
+        setBalanceTotal(total)
+      })
+      .catch((error: unknown) => {
+        if (!current) return
+        setBalanceRows([])
+        setBalanceTotal(0)
+        setBalanceError(error instanceof Error ? error.message : 'Customer balances could not be loaded.')
+      })
+      .finally(() => { if (current) setBalanceLoading(false) })
+    return () => { current = false }
+  }, [adminTab, balancePage, balanceSort, balanceEmailFilter, balanceReload])
 
   const filteredFraudRows = useMemo(() => {
     const query = fraudSearchQuery.trim().toLowerCase()
@@ -4448,8 +4492,8 @@ export default function AdminPage() {
           }
 
           toast({
-            title: 'Ledger credit recorded',
-            description: `Recorded ₦${amount.toLocaleString()} as historical admin credit. Wallet balance was not changed.`,
+            title: 'Historical ledger note recorded',
+            description: `Recorded ₦${amount.toLocaleString()} for investigation only. Wallet balance and trusted spendable funds were not changed.`,
           })
 
           setAdjustBalanceOpen(false)
@@ -6619,9 +6663,9 @@ export default function AdminPage() {
                       className="mt-0.5"
                     />
                     <span>
-                      <span className="font-medium">Record missing credit only</span>
+                      <span className="font-medium">Record historical ledger note only</span>
                       <span className="mt-1 block text-xs text-muted-foreground">
-                        Use this when the wallet was already topped up before, but the transaction history is missing. This does not add money again.
+                        This preserves a claim for investigation. It does not approve funding, change the balance, or unblock spending.
                       </span>
                     </span>
                   </label>
@@ -6682,7 +6726,7 @@ export default function AdminPage() {
                       )}
                       {ledgerOnlyCredit && (
                         <p className="text-xs text-muted-foreground">
-                          A completed admin_credit transaction will be recorded for history and fraud review only.
+                          A balance-neutral admin_credit note will appear in history. It is not trusted funding.
                         </p>
                       )}
                     </div>
@@ -6895,8 +6939,8 @@ export default function AdminPage() {
                           ['Withdrawals', 'withdrawals'],
                           ['Chargebacks', 'chargebacks'],
                           ['Trusted book balance', 'trusted_book_balance'],
-                          ['Confirmed spendable', 'confirmed_spendable'],
-                          ['Expected ledger balance', 'expected_ledger_balance'],
+                          ['Current purchase limit', 'confirmed_spendable'],
+                          ['Expected balance after reviewed credits', 'expected_ledger_balance'],
                           ['Stored wallet balance', 'stored_wallet_balance'],
                           ['Explained difference', 'explained_difference'],
                           ['Unexplained difference', 'unexplained_difference'],
@@ -6907,9 +6951,26 @@ export default function AdminPage() {
                             <dd className="shrink-0 font-medium tabular-nums">{formatAdminNaira(userFinancialTruth[key])}</dd>
                           </div>
                         ))}
+                        {typeof userFinancialTruth.recorded_transaction_balance === 'number' && (
+                          <div className="flex justify-between gap-3 border-b py-1">
+                            <dt className="text-muted-foreground">Recorded transaction total before recovery</dt>
+                            <dd className="shrink-0 font-medium tabular-nums">{formatAdminNaira(userFinancialTruth.recorded_transaction_balance)}</dd>
+                          </div>
+                        )}
+                        {typeof userFinancialTruth.approved_historical_admin_credits === 'number' && (
+                          <div className="flex justify-between gap-3 border-b py-1">
+                            <dt className="text-muted-foreground">Of which: reviewed historical admin credits</dt>
+                            <dd className="shrink-0 font-medium tabular-nums">{formatAdminNaira(userFinancialTruth.approved_historical_admin_credits)}</dd>
+                          </div>
+                        )}
                       </dl>
+                      {userFinancialTruth.authorization_basis === 'legacy_recorded_funding_stored_balance' && (
+                        <p className="text-xs text-muted-foreground">
+                          Legacy funded account: purchases use the stored wallet balance, less active holds. Historical credit provenance remains under review.
+                        </p>
+                      )}
                       <p className="text-xs text-muted-foreground">
-                        Spending {userFinancialTruth.spending_blocked ? 'blocked' : 'permitted up to confirmed spendable'}; account {userFinancialTruth.account_suspended ? 'suspended' : 'active'}; wallet review {userFinancialTruth.wallet_review_required ? 'required' : 'not required'}. Activity below is history, not a financial total.
+                        Spending {userFinancialTruth.spending_blocked ? 'blocked' : 'permitted up to the current purchase limit'}; account {userFinancialTruth.account_suspended ? 'suspended' : 'active'}; wallet review {userFinancialTruth.wallet_review_required ? 'required' : 'not required'}. Activity below is history, not a financial total.
                       </p>
                     </>
                   )}
@@ -8256,6 +8317,85 @@ export default function AdminPage() {
               </Card>
             </TabsContent>
 
+            <TabsContent value="balance" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Customer Balances</CardTitle>
+                  <p className="text-sm text-muted-foreground">Stored wallet balances. Open a customer to see verified funding and confirmed spendable funds.</p>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                      aria-label="Filter customer balances by email"
+                      placeholder="Filter by email"
+                      value={balanceEmailInput}
+                      onChange={(event) => setBalanceEmailInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          setBalancePage(0)
+                          setBalanceEmailFilter(balanceEmailInput.trim())
+                        }
+                      }}
+                      className="min-w-[200px] flex-1"
+                    />
+                    <Button variant="outline" onClick={() => { setBalancePage(0); setBalanceEmailFilter(balanceEmailInput.trim()); setBalanceReload((value) => value + 1) }}>
+                      <Search className="mr-2 h-4 w-4" /> Search
+                    </Button>
+                    <Select value={balanceSort} onValueChange={(value) => { setBalancePage(0); setBalanceSort(value as CustomerBalanceSort) }}>
+                      <SelectTrigger className="w-[190px]" aria-label="Sort customer balances"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="balance_desc">Highest balance</SelectItem>
+                        <SelectItem value="balance_asc">Lowest balance</SelectItem>
+                        <SelectItem value="joined_newest">Newest registered</SelectItem>
+                        <SelectItem value="joined_oldest">Oldest registered</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button variant="outline" size="icon" aria-label="Refresh customer balances" title="Refresh customer balances" onClick={() => setBalanceReload((value) => value + 1)}>
+                      <RefreshCw className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  {balanceError && <p role="alert" className="text-sm text-destructive">{balanceError}</p>}
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader><TableRow>
+                        <TableHead>Customer</TableHead>
+                        <TableHead className="text-right">Stored balance</TableHead>
+                        <TableHead>Registered (London)</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Details</TableHead>
+                      </TableRow></TableHeader>
+                      <TableBody>
+                        {!balanceLoading && !balanceError && balanceRows.length === 0 && (
+                          <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">No customers found.</TableCell></TableRow>
+                        )}
+                        {balanceLoading && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Loading balances...</TableCell></TableRow>}
+                        {!balanceLoading && !balanceError && balanceRows.map((customer) => (
+                          <TableRow key={customer.id}>
+                            <TableCell>
+                              <div className="font-medium">{customer.full_name || 'Unnamed customer'}</div>
+                              <div className="text-sm text-muted-foreground">{customer.email || customer.id}</div>
+                            </TableCell>
+                            <TableCell className="text-right font-mono tabular-nums">{formatAdminNaira(customer.wallet_balance)}</TableCell>
+                            <TableCell className="whitespace-nowrap text-sm">{formatRegistrationTime(customer.created_at)}</TableCell>
+                            <TableCell>{customer.account_suspended ? <Badge variant="destructive">Suspended</Badge> : customer.wallet_review_required ? <Badge variant="outline">Wallet review</Badge> : <Badge variant="secondary">Active</Badge>}</TableCell>
+                            <TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => handleViewUser(customer)}><Eye className="mr-1 h-4 w-4" /> View</Button></TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+                    <span>{balanceTotal.toLocaleString()} customers</span>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" disabled={balanceLoading || balancePage === 0} onClick={() => setBalancePage((page) => page - 1)}>Previous</Button>
+                      <span>Page {balancePage + 1} of {Math.max(1, Math.ceil(balanceTotal / 50))}</span>
+                      <Button variant="outline" size="sm" disabled={balanceLoading || (balancePage + 1) * 50 >= balanceTotal} onClick={() => setBalancePage((page) => page + 1)}>Next</Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
             {/* Fraud Review */}
             <TabsContent value="fraud" className="space-y-6">
               <Card>
@@ -8264,7 +8404,7 @@ export default function AdminPage() {
                     <div>
                       <CardTitle className="flex items-center gap-2">
                         <Shield className="h-5 w-5 text-primary" />
-                        Fraud Review
+                        Account Holds
                       </CardTitle>
                       <p className="text-muted-foreground">
                         Accounts flagged by canonical wallet integrity, review holds, or watchlist checks.
@@ -8435,13 +8575,19 @@ export default function AdminPage() {
                               <TableCell>
                                 <div className="min-w-[180px] text-sm">
                                   <p>Trusted principal: {formatAdminNaira(row.trustedCredits)}</p>
+                                  <p>Approved admin credits: {formatAdminNaira(row.truth.approved_admin_credits)}</p>
+                                  {typeof row.truth.approved_historical_admin_credits === 'number' && row.truth.approved_historical_admin_credits > 0 && (
+                                    <p className="text-xs text-muted-foreground">
+                                      Of which owner-reviewed historical: {formatAdminNaira(row.truth.approved_historical_admin_credits)}
+                                    </p>
+                                  )}
                                   {row.completedRefunds > 0 && (
                                     <p className="text-xs text-emerald-600">
                                       Eligible refund restore: {formatAdminNaira(row.eligibleRefunds)} / {formatAdminNaira(row.completedRefunds)}
                                     </p>
                                   )}
-                                  <p>Confirmed spendable: {formatAdminNaira(row.trustedAvailable)}</p>
-                                  <p className="text-xs text-muted-foreground">Spending {row.truth.spending_blocked ? 'blocked' : 'permitted up to confirmed spendable'}</p>
+                                  <p>Current purchase limit: {formatAdminNaira(row.trustedAvailable)}</p>
+                                  <p className="text-xs text-muted-foreground">Spending {row.truth.spending_blocked ? 'blocked' : 'permitted up to the current purchase limit'}</p>
                                   <p>Active holds: {formatAdminNaira(row.truth.active_reservations)}</p>
                                   <p>Debits net refunds: {formatAdminNaira(row.netSpend)}</p>
                                   <p className="text-xs text-muted-foreground">Quarantined: {formatAdminNaira(row.truth.quarantined_excess)}</p>

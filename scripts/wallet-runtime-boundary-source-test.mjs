@@ -652,54 +652,9 @@ const fraudBanGuardPaths = [
 ]
 for (const path of fraudBanGuardPaths) {
   const source = read(path)
-  const start = source.indexOf('async function assertFraudDeviceNotBanned(')
-  const end = source.indexOf('\n}\n', start)
-  assert(start >= 0 && end > start, `${path} must retain the fraud ban guard`)
-  const guard = source.slice(start, end + 2)
-  assert((guard.match(/\.eq\('banned_user_id', userId\)/g) || []).length === 2,
-    `${path} must bind both IP and user-agent ban queries to the current customer`)
-  assert(source.includes('await assertFraudDeviceNotBanned(admin, userId, req)'),
-    `${path} must pass the authenticated customer ID to the ban guard`)
+  assert(!source.includes('await assertFraudDeviceNotBanned(admin, userId, req)'),
+    `${path} must not use the retired fraud device ban as a purchase gate`)
 }
-
-const processSource = read(fraudBanGuardPaths[0])
-const guardStart = processSource.indexOf('async function assertFraudDeviceNotBanned(')
-const guardEnd = processSource.indexOf('\n}\n', guardStart)
-const fraudBanContext = {
-  getPurchaseGuardIp: () => '1.2.3.4',
-  getPurchaseGuardUserAgent: () => 'shared-browser',
-  purchaseGuardSha256Hex: async () => 'shared-hash',
-}
-runInNewContext(ts.transpileModule(
-  `${processSource.slice(guardStart, guardEnd + 2)}\nglobalThis.checkFraudBan = assertFraudDeviceNotBanned`,
-  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
-).outputText, fraudBanContext)
-function fraudBanAdmin(rows) {
-  return {
-    from(table) {
-      nodeAssert.equal(table, 'fraud_device_bans')
-      const filters = []
-      return {
-        select() { return this },
-        eq(key, value) { filters.push([key, value]); return this },
-        async limit() {
-          return { data: rows.filter((row) => filters.every(([key, value]) => row[key] === value)), error: null }
-        },
-      }
-    },
-  }
-}
-const otherCustomerBan = {
-  id: 'ban-1', banned_user_id: 'other-user', active: true,
-  ip_address: '1.2.3.4', user_agent_hash: 'shared-hash',
-}
-await fraudBanContext.checkFraudBan(fraudBanAdmin([otherCustomerBan]), 'current-user', null)
-await nodeAssert.rejects(
-  fraudBanContext.checkFraudBan(fraudBanAdmin([
-    { ...otherCustomerBan, banned_user_id: 'current-user' },
-  ]), 'current-user', null),
-  /blocked from purchasing/,
-)
 
 const browserOrders = read('src/lib/supabase.ts')
 const dashboardOrders = read('src/pages/Dashboard.tsx')
@@ -742,6 +697,6 @@ console.log(JSON.stringify({
     'browser discount preview and staff listing use role-scoped RPCs instead of direct table reads',
     'revenue/admin-alert logging helpers cannot dispatch suppliers, reveal value, or throw delivery-changing errors',
     'current worker-like functions cannot dispatch suppliers from stale status/recovery/admin messages',
-    'fraud IP and user-agent bans are account-bound across all purchase guards',
+    'retired fraud device bans no longer gate customer purchases',
   ],
 }, null, 2))

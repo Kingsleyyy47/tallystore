@@ -14,6 +14,7 @@ export type AdminWalletFinancialTruth = {
   user_id: string
   verified_gateway_deposits: number
   approved_admin_credits: number
+  approved_historical_admin_credits?: number
   legacy_approved_principal: number
   legacy_first_recorded_debit_at: string | null
   legacy_first_recorded_funding_at: string | null
@@ -30,7 +31,9 @@ export type AdminWalletFinancialTruth = {
   chargebacks: number
   trusted_book_balance: number
   confirmed_spendable: number
+  authorization_basis?: string
   expected_ledger_balance: number
+  recorded_transaction_balance?: number
   stored_wallet_balance: number
   explained_difference: number
   unexplained_difference: number
@@ -106,6 +109,22 @@ function parseAdminWalletFinancialTruth(value: unknown): AdminWalletFinancialTru
       throw new Error(`Canonical wallet financial truth is missing ${field}.`)
     }
     parsed[field] = Number(amount)
+  }
+  if (record.approved_historical_admin_credits !== undefined) {
+    const recovered = record.approved_historical_admin_credits
+    if ((typeof recovered !== 'number' && typeof recovered !== 'string') ||
+        recovered === '' || !Number.isFinite(Number(recovered))) {
+      throw new Error('Canonical wallet financial truth has an invalid historical admin credit total.')
+    }
+    parsed.approved_historical_admin_credits = Number(recovered)
+  }
+  if (record.recorded_transaction_balance !== undefined) {
+    const recorded = record.recorded_transaction_balance
+    if ((typeof recorded !== 'number' && typeof recorded !== 'string') ||
+        recorded === '' || !Number.isFinite(Number(recorded))) {
+      throw new Error('Canonical wallet financial truth has an invalid recorded transaction total.')
+    }
+    parsed.recorded_transaction_balance = Number(recorded)
   }
   return parsed as AdminWalletFinancialTruth
 }
@@ -2204,6 +2223,40 @@ export async function getCategoryById(categoryId: string): Promise<Category | nu
 // New profile columns must not become browser-visible through admin search by default.
 const ADMIN_USER_SEARCH_COLUMNS =
   'id,email,full_name,created_at,updated_at,wallet_balance,is_admin,is_staff,account_suspended,suspension_reason,suspended_at,wallet_review_required'
+
+export type CustomerBalanceSort = 'balance_desc' | 'balance_asc' | 'joined_newest' | 'joined_oldest'
+export type CustomerBalanceRow = Pick<Profile, 'id' | 'wallet_balance' | 'created_at' | 'is_admin' | 'is_staff' | 'account_suspended' | 'wallet_review_required'> & {
+  email: string | null
+  full_name: string | null
+}
+
+export async function getCustomerBalancePage(
+  page: number,
+  pageSize: number,
+  sort: CustomerBalanceSort,
+  emailFilter = '',
+): Promise<{ rows: CustomerBalanceRow[]; total: number }> {
+  const orderByBalance = sort.startsWith('balance_')
+  let query = supabase
+    .from('profiles')
+    .select(ADMIN_USER_SEARCH_COLUMNS, { count: 'exact' })
+    .or('is_admin.eq.false,is_admin.is.null')
+    .or('is_staff.eq.false,is_staff.is.null')
+
+  const filter = emailFilter.trim().replace(/[%_]/g, '\\$&')
+  if (filter) query = query.ilike('email', `%${filter}%`)
+
+  const { data, count, error } = await query
+    .order(orderByBalance ? 'wallet_balance' : 'created_at', {
+      ascending: sort === 'balance_asc' || sort === 'joined_oldest',
+      nullsFirst: false,
+    })
+    .order('id', { ascending: true })
+    .range(page * pageSize, (page + 1) * pageSize - 1)
+
+  if (error) throw error
+  return { rows: (data || []) as CustomerBalanceRow[], total: count || 0 }
+}
 
 // Get all users for admin dashboard
 export async function getAllUsers(): Promise<Profile[]> {

@@ -1,5 +1,16 @@
 # Wallet Security Incident Final Report
 
+> Policy update (28 September 2026): The owner directed removal of broad
+> automatic fraud holds after legitimate customers were blocked. Migration
+> `20260928002000` stops the automatic hold writer and releases system-generated
+> reviews. Pre-cutoff customers with recorded funding can spend their stored
+> wallet balance, less holds; new customers and customers with no recorded
+> funding remain limited by confirmed funds. Manual account suspensions remain.
+> This is a deliberate legacy risk exception, not proof that every historical
+> balance increase was verified. See `2026-09-28-legacy-purchase-policy.md`.
+> It is repository-only until the owner applies and verifies the migration and
+> deploys matching Edge/Vercel builds.
+
 > Policy update (24 September 2026): This report predates the canonical
 > financial-truth changes. Its full-freeze-on-excess statements are superseded
 > by `financial-truth-contract.md`. Repository code now denies spend beyond
@@ -286,7 +297,7 @@ admin absolute-plus-relative date display, refund conservation staging
 coverage including completed loose-refund history denial, referral-to-wallet UI
 pause coverage, and chargeback debt staging coverage.
 
-The local suite currently runs 86 repository-local checks, including the
+The local suite currently runs 88 repository-local checks, including the
 reachable Git-history source exposure audit and `npx deno`
 type checks for all 37 local Supabase Edge Function entrypoints, guarded
 DB-concurrency runner help/self-test, guarded DB-security runner help/self-test,
@@ -296,7 +307,7 @@ fillable-evidence generation, provider-evidence validator self-test,
 deployed-version evidence generation, fillable deployed-version evidence
 generation, and a deployed-version validator self-test.
 The incident
-completion audit dynamically confirms 71 local wallet-security scripts are
+completion audit dynamically confirms 72 local wallet-security scripts are
 represented in the repository, parses all 80 regression-matrix rows, and reports
 the remaining proof gaps explicitly. Staging SQL rows, patch/runtime rows,
 provider rows, concurrency rows, and production-owner rows still require

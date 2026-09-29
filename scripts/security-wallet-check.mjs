@@ -292,18 +292,23 @@ check('future public functions are not browser-executable by default', () => {
   assert(src.includes('Intended public RPCs must receive explicit grants'), 'migration must document explicit grants for intended public RPCs')
 })
 
-check('wallet purchases use canonical backed funds and decline without automatic suspension', () => {
+check('wallet purchases use canonical funds policy and decline without automatic suspension', () => {
   const src = read('supabase/migrations/20260919001000_enforce_backed_wallet_purchases.sql')
   const trigger = read('supabase/migrations/20260919015000_enforce_trusted_principal_transaction_guard.sql')
   const fraudEvidence = read('supabase/migrations/20260919004000_harden_fraud_credit_evidence.sql')
   const canonical = read('supabase/migrations/20260924006000_wallet_financial_truth.sql')
   const canonicalReview = read('supabase/migrations/20260924007000_use_financial_truth_for_review.sql')
   const canonicalGates = read('supabase/migrations/20260924008000_route_wallet_gates_through_financial_truth.sql')
+  const legacyPolicy = read('supabase/migrations/20260928002000_stop_automatic_fraud_holds.sql')
   const ledgerEvaluatorDefinitions = migrationFilesContaining('CREATE OR REPLACE FUNCTION public.evaluate_customer_ledger_suspension(')
   assert(
-    ledgerEvaluatorDefinitions.at(-1) === '20260924007000_use_financial_truth_for_review.sql',
-    `canonical evaluator must be the final migration definition, got ${ledgerEvaluatorDefinitions.at(-1) || 'none'}`,
+    ledgerEvaluatorDefinitions.at(-1) === '20260928002000_stop_automatic_fraud_holds.sql',
+    `read-only evaluator must be the final migration definition, got ${ledgerEvaluatorDefinitions.at(-1) || 'none'}`,
   )
+  assert(legacyPolicy.includes("'authorization_basis', 'no_recorded_funding'"),
+    'accounts without recorded funding must have zero purchase capacity')
+  assert(legacyPolicy.includes("'spending_blocked', (v_truth->>'account_suspended')::boolean OR v_manual_review"),
+    'automatic fraud review must not become a purchase hold; manual review remains enforceable')
   assert(canonicalReview.includes('public.wallet_financial_truth_internal(target_user_id)'), 'review decisions must use canonical financial truth')
   assert(canonicalGates.includes('v_financial_truth := public.wallet_financial_truth_internal(p_user_id)'), 'wallet engine purchase decisions must use canonical financial truth')
   assert(canonicalGates.includes("v_scan := public.wallet_financial_truth_internal(p_user_id)"), 'reservations must use canonical financial truth')
@@ -1962,9 +1967,7 @@ check('mapped purchase routes check current suspension before debit or dispatch'
     ['supabase/functions/smsbus/index.ts', read('supabase/functions/smsbus/index.ts')],
     ['supabase/functions/telegram-stars/index.ts', read('supabase/functions/telegram-stars/index.ts')],
   ]) {
-    assert(src.includes('fraud_device_bans'), `${path} must check active fraud IP/device bans before purchase`)
-    assert(src.includes(".eq('active', true)") || src.includes('.eq("active", true)'), `${path} fraud ban lookup must require active bans`)
-    assert(src.includes('user_agent_hash'), `${path} must check device/user-agent hash bans before purchase`)
+    assert(!src.includes('fraud_device_bans'), `${path} must not retain the retired fraud device-ban gate`)
     assert(src.includes('account_suspended'), `${path} must load current account suspension state before purchase`)
   }
   const productGuard = product.indexOf('await assertPurchasingCustomer(supabaseAdmin, user.id, req)')

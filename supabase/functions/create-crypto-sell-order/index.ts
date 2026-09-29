@@ -543,44 +543,11 @@ function getPurchaseGuardUserAgent(req?: Request | null) {
   }).join('').trim().slice(0, 500)
 }
 
-async function assertFraudDeviceNotBanned(admin: any, userId: string, req?: Request | null) {
-  const ipAddress = getPurchaseGuardIp(req)
-  const userAgent = getPurchaseGuardUserAgent(req)
-  const userAgentHash = userAgent ? await purchaseGuardSha256Hex(userAgent) : null
-
-  if (ipAddress) {
-    const { data, error } = await admin
-      .from('fraud_device_bans')
-      .select('id')
-      .eq('active', true)
-      .eq('banned_user_id', userId)
-      .eq('ip_address', ipAddress)
-      .limit(1)
-
-    if (!error && data && data.length > 0) {
-      throw new Error('This device or network has been blocked from purchasing. Please contact support.')
-    }
-  }
-
-  if (userAgentHash) {
-    const { data, error } = await admin
-      .from('fraud_device_bans')
-      .select('id')
-      .eq('active', true)
-      .eq('banned_user_id', userId)
-      .eq('user_agent_hash', userAgentHash)
-      .limit(1)
-
-    if (!error && data && data.length > 0) {
-      throw new Error('This device or network has been blocked from purchasing. Please contact support.')
-    }
-  }
-}
 
 export async function assertPurchasingCustomer(admin: any, userId: string, req?: Request | null) {
   const { data: profile, error } = await admin
     .from('profiles')
-    .select('is_staff, is_admin, account_suspended, wallet_review_required')
+    .select('is_staff, is_admin, account_suspended')
     .eq('id', userId)
     .single()
 
@@ -592,11 +559,10 @@ export async function assertPurchasingCustomer(admin: any, userId: string, req?:
     throw new Error('Staff and admin accounts can browse and check out, but only customer accounts can complete purchases.')
   }
 
-  if (profile?.account_suspended || profile?.wallet_review_required) {
+  if (profile?.account_suspended) {
     throw new Error('Purchasing is paused while this wallet is under security review. Please contact support.')
   }
 
-  await assertFraudDeviceNotBanned(admin, userId, req)
 }
 
 const corsHeaders = {

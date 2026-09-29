@@ -123,6 +123,8 @@ const protectedTables = [
   'api_partner_customers',
   'api_partner_webhook_deliveries',
   'wallet_security_events',
+  'wallet_historical_admin_funding',
+  'wallet_historical_review_resolutions',
   'admin_alerts',
   'staff_permissions',
 ]
@@ -288,6 +290,17 @@ for (const match of functionBlocks) {
       'alert acknowledgement trigger must observe the invoking database role')
     assert(/SET\s+search_path\s*=\s*''/i.test(block),
       'alert acknowledgement trigger must pin an empty search_path')
+    continue
+  }
+
+  if ([
+    'guard_historical_wallet_evidence_immutable',
+    'resolve_reviewed_historical_admin_funding',
+  ].includes(functionName)) {
+    assert(/SECURITY\s+INVOKER/i.test(block),
+      `${functionName} must use the invoking owner's privileges`)
+    assert(/SET\s+search_path\s*=\s*''/i.test(block),
+      `${functionName} must pin an empty search_path`)
     continue
   }
 
