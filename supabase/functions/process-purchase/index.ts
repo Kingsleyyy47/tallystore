@@ -373,8 +373,15 @@ function publicPurchaseError(message: string) {
   if (message.includes('discount_order_amount_invalid')) {
     return 'Price changed. Please refresh and try again.'
   }
-  if (message.includes('WALLET_UNBACKED_FUNDS') || message.includes('WALLET_REVIEW_REQUIRED')) {
+  if (message.includes('WALLET_UNBACKED_FUNDS') || message.includes('WALLET_REVIEW_REQUIRED') ||
+      message.includes('wallet_review_required') || message.includes('product_purchase_wallet_not_active')) {
     return 'Purchasing is paused while this wallet is under security review. Please contact support.'
+  }
+  if (message.includes('insufficient_trusted_available_funds')) {
+    return 'Insufficient verified funds for purchase'
+  }
+  if (message.includes('financial_state_unavailable') || message.includes('Could not verify wallet funds for purchase')) {
+    return 'Wallet verification is temporarily unavailable. Please try again later.'
   }
   return 'Purchase is temporarily unavailable. Please try again or contact support.'
 }

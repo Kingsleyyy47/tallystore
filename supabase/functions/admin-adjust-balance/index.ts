@@ -165,12 +165,6 @@ serve(async (req) => {
       throw new Error('Unauthorized');
     }
 
-    const ownerUserId = Deno.env.get('TALLYSTORE_OWNER_USER_ID')?.trim();
-    if (!ownerUserId || user.id !== ownerUserId) {
-      console.error('Owner-only wallet adjustment denied');
-      throw new Error('Admin access required');
-    }
-
     // Initialize admin client (bypasses RLS)
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
@@ -191,6 +185,11 @@ serve(async (req) => {
 
     // Parse request body
     const body = await req.json();
+    const ownerUserId = Deno.env.get('TALLYSTORE_OWNER_USER_ID')?.trim();
+    if (body?.action !== 'suspend_user' && (!ownerUserId || user.id !== ownerUserId)) {
+      console.error('Owner-only wallet adjustment denied');
+      throw new Error('Owner approval required');
+    }
     const hasTransactionIdempotencyKey = await transactionsHaveIdempotencyKey(supabaseAdmin);
 
     if (body?.action === 'record_ledger_credit') {

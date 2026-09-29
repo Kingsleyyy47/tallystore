@@ -45,6 +45,7 @@ const commands = [
   ['node', ['scripts/wallet-customer-ui-model-test.mjs'], 'customer UI transaction display model'],
   ['node', ['scripts/wallet-admin-review-decision-test.mjs'], 'admin review/approved credit decision model'],
   ['node', ['scripts/wallet-migration-safety-test.mjs'], 'incident migration static safety'],
+  ['node', ['scripts/wallet-legacy-cutoff-grant-pglite-test.mjs'], 'private cutoff and customer order-history permissions'],
   ['node', ['scripts/wallet-financial-truth-source-test.mjs'], 'canonical financial truth source/model checks'],
   ['node', ['scripts/wallet-financial-truth-pglite-test.mjs'], 'canonical financial truth isolated PostgreSQL execution'],
   ['node', ['scripts/wallet-historical-admin-funding-pglite-test.mjs'], 'owner-approved historical admin funding recovery'],

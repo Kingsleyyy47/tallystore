@@ -56,9 +56,13 @@ export type StaffCustomerSearchRow = {
 
 /** Fetch all permissions for the currently logged-in staff user. */
 export async function getMyStaffPermissions(): Promise<PermissionMap> {
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+  if (authError || !user) throw new Error('Sign in to verify staff permissions')
+
   const { data, error } = await supabase
     .from('staff_permissions')
     .select('permission_key, is_enabled, auto_approve')
+    .eq('user_id', user.id)
 
   const map: PermissionMap = {} as PermissionMap
   if (error) throw error

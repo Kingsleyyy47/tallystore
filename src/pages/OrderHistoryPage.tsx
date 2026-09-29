@@ -31,6 +31,7 @@ import Footer from '@/components/Footer'
 import WalletBalanceWidget from '@/components/WalletBalanceWidget'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useAuth } from '@/contexts/SimpleAuth'
+import { isPurchasingPausedByProfile } from '@/lib/walletReviewPolicy'
 import { useCurrency } from '@/contexts/CurrencyContext'
 import { detectAccountFormat, SITE_FORMAT_HEADERS } from '@/lib/supabase'
 import { getUserOrders } from '@/lib/supabase'
@@ -358,9 +359,10 @@ export default function OrderHistoryPage() {
     suspensionReason,
     walletReviewRequired,
     walletReviewReason,
+    walletReviewedBy,
   } = useAuth()
-  const purchasingPaused = accountSuspended || walletReviewRequired
-  const purchasingPauseReason = suspensionReason || walletReviewReason
+  const purchasingPaused = isPurchasingPausedByProfile(accountSuspended, walletReviewRequired, walletReviewedBy)
+  const purchasingPauseReason = accountSuspended ? suspensionReason : walletReviewedBy ? walletReviewReason : null
   const { formatPrice } = useCurrency()
   const { toast } = useToast()
   

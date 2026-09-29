@@ -22,6 +22,7 @@ interface AuthContextType {
   suspensionReason: string | null
   walletReviewRequired: boolean
   walletReviewReason: string | null
+  walletReviewedBy: string | null
   refreshWalletBalance: () => Promise<void>
   showBalances: boolean
   toggleBalanceVisibility: () => void
@@ -48,6 +49,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [suspensionReason, setSuspensionReason] = useState<string | null>(null)
   const [walletReviewRequired, setWalletReviewRequired] = useState(false)
   const [walletReviewReason, setWalletReviewReason] = useState<string | null>(null)
+  const [walletReviewedBy, setWalletReviewedBy] = useState<string | null>(null)
   const [showBalances, setShowBalances] = useState(() => {
     if (typeof window === 'undefined') return true
     return localStorage.getItem('show_balances') !== 'false'
@@ -67,11 +69,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setRoleLookupError(null)
 
     try {
-      // Keep a reference to the query Promise so we can attach a background
-      // handler if the timeout fires before the DB responds.
       const profilePromise = supabase
         .from('profiles')
-        .select('is_admin, is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason')
+        .select('is_admin, is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason, wallet_reviewed_by')
         .eq('id', userId)
         .single()
 
@@ -92,30 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSuspensionReason(null)
         setWalletReviewRequired(false)
         setWalletReviewReason(null)
-
-        // The original query is still in-flight. When it lands, update state
-        // and re-navigate staff/admin who were wrongly sent to /dashboard.
-        profilePromise.then(({ data: bgData, error: bgError }) => {
-          if (!bgError && bgData && lastProfileLoadKey.current?.startsWith(`${userId}:`)) {
-            setRoleLookupError(null)
-            const nextIsAdmin = bgData.is_admin === true
-            const nextIsStaff = !nextIsAdmin && bgData.is_staff === true
-            setIsAdmin(nextIsAdmin)
-            setIsStaff(nextIsStaff)
-            writeInternalRevenueUserFlag(nextIsAdmin || nextIsStaff)
-            setWalletBalance(bgData.wallet_balance || 0)
-            setAccountSuspended(Boolean(bgData.account_suspended))
-            setSuspensionReason(bgData.suspension_reason || null)
-            setWalletReviewRequired(Boolean(bgData.wallet_review_required))
-            setWalletReviewReason(bgData.wallet_review_reason || null)
-            // Re-route if ProtectedRoute sent them to the wrong page
-            if (nextIsStaff && window.location.pathname === '/dashboard') {
-              window.location.replace('/staff-admin')
-            } else if (nextIsAdmin && window.location.pathname === '/dashboard') {
-              window.location.replace('/admin')
-            }
-          }
-        }).catch(() => {})
+        setWalletReviewedBy(null)
 
         return { isAdmin: false, isStaff: false }
       }
@@ -131,6 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSuspensionReason(data?.suspension_reason || null)
       setWalletReviewRequired(Boolean(data?.wallet_review_required))
       setWalletReviewReason(data?.wallet_review_reason || null)
+      setWalletReviewedBy(data?.wallet_reviewed_by || null)
       return { isAdmin: nextIsAdmin, isStaff: nextIsStaff }
     } catch (error) {
       console.error('Error checking admin status:', error)
@@ -143,6 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSuspensionReason(null)
       setWalletReviewRequired(false)
       setWalletReviewReason(null)
+      setWalletReviewedBy(null)
       return { isAdmin: false, isStaff: false }
     } finally {
       setWalletLoading(false)
@@ -175,6 +154,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setWalletBalance(0)
         setAccountSuspended(false)
         setSuspensionReason(null)
+        setWalletReviewRequired(false)
+        setWalletReviewReason(null)
+        setWalletReviewedBy(null)
         setWalletLoading(false)
         writeInternalRevenueUserFlag(false)
       }
@@ -230,6 +212,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             suspension_reason?: string | null
             wallet_review_required?: boolean
             wallet_review_reason?: string | null
+            wallet_reviewed_by?: string | null
           }
           const newBalance = nextProfile.wallet_balance
           if (typeof newBalance === 'number') {
@@ -246,6 +229,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
           if ('wallet_review_reason' in nextProfile) {
             setWalletReviewReason(nextProfile.wallet_review_reason || null)
+          }
+          if ('wallet_reviewed_by' in nextProfile) {
+            setWalletReviewedBy(nextProfile.wallet_reviewed_by || null)
           }
         }
       )
@@ -367,6 +353,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsStaff(false)
     setAccountSuspended(false)
     setSuspensionReason(null)
+    setWalletReviewRequired(false)
+    setWalletReviewReason(null)
+    setWalletReviewedBy(null)
   }
 
   const resendConfirmation = async (email: string) => {
@@ -415,6 +404,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     suspensionReason,
     walletReviewRequired,
     walletReviewReason,
+    walletReviewedBy,
     refreshWalletBalance,
     showBalances,
     toggleBalanceVisibility,

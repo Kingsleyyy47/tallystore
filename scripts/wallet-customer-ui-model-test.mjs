@@ -3,10 +3,15 @@ import {
   getWalletTransactionTitle as realTitle,
   isBalanceNeutralLedgerEvidence,
 } from '../src/lib/walletTransactions.ts'
+import { isPurchasingPausedByProfile } from '../src/lib/walletReviewPolicy.ts'
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
+
+assert(!isPurchasingPausedByProfile(false, true, null), 'automatic review flag must not falsely show purchasing paused')
+assert(isPurchasingPausedByProfile(false, true, '22222222-2222-4222-8222-222222222222'), 'manual review hold must show purchasing paused')
+assert(isPurchasingPausedByProfile(true, false, null), 'account suspension must show purchasing paused')
 
 function normalizeTransactionType(value) {
   return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
