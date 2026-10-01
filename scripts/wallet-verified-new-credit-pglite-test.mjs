@@ -4,9 +4,12 @@ import { PGlite } from '@electric-sql/pglite'
 
 const db = new PGlite()
 const migration = readFileSync(new URL('../supabase/migrations/20261001007000_freeze_legacy_allowance_require_verified_new_credits.sql', import.meta.url), 'utf8')
+const reviewedMigration = readFileSync(new URL('../supabase/migrations/20261001008000_review_owner_confirmed_legacy_wallet_allowance.sql', import.meta.url), 'utf8')
 const existing = '11111111-1111-4111-8111-111111111111'
 const exhausted = '22222222-2222-4222-8222-222222222222'
 const newcomer = '33333333-3333-4333-8333-333333333333'
+const owner = 'c1396bda-86e2-4dfc-94bb-0d95469d1d36'
+const reviewed = '54299aee-1e4a-4e02-b335-94eea91ede70'
 
 async function truth(id) {
   const { rows } = await db.query('SELECT public.wallet_financial_truth_internal($1::uuid) AS value', [id])
@@ -25,7 +28,9 @@ try {
     CREATE TABLE public.profiles (
       id uuid PRIMARY KEY, wallet_balance numeric NOT NULL DEFAULT 0,
       wallet_review_required boolean NOT NULL DEFAULT false,
-      wallet_reviewed_by uuid
+      wallet_reviewed_by uuid, email text, is_admin boolean NOT NULL DEFAULT false,
+      is_staff boolean NOT NULL DEFAULT false,
+      account_suspended boolean NOT NULL DEFAULT false
     );
     CREATE TABLE public.transactions (
       id uuid PRIMARY KEY, user_id uuid NOT NULL
@@ -54,7 +59,9 @@ try {
         'trusted_available_before_holds', p.wallet_balance,
         'confirmed_spendable', GREATEST(p.wallet_balance - f.reservations, 0),
         'account_suspended', false,
-        'spending_blocked', false
+        'spending_blocked', false,
+        'evidence_complete', true,
+        'duplicate_payment_identities', 0
       ) INTO v_truth
       FROM public.profiles p JOIN public.wallet_test_facts f ON f.user_id = p.id
       WHERE p.id = p_user_id;
@@ -92,10 +99,21 @@ try {
       RETURN jsonb_build_object('success', true);
     END;
     $$;
+    CREATE FUNCTION public.guard_historical_wallet_evidence_immutable()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'Historical wallet evidence is append-only';
+    END;
+    $$;
     INSERT INTO public.profiles (id, wallet_balance) VALUES
       ('${existing}', 100), ('${exhausted}', 0);
+    INSERT INTO public.profiles (id, wallet_balance, email) VALUES
+      ('${reviewed}', 57268, 'tallystoreorg@gmail.com');
+    INSERT INTO public.profiles (id, is_admin, email) VALUES
+      ('${owner}', true, 'wisdomthedev@gmail.com');
     INSERT INTO public.wallet_test_facts (user_id, gateway, debits) VALUES
-      ('${existing}', 0, 0), ('${exhausted}', 0, 500);
+      ('${existing}', 0, 0), ('${exhausted}', 0, 500),
+      ('${reviewed}', 0, 1614622);
     INSERT INTO public.transactions (id, user_id) VALUES
       ('44444444-4444-4444-8444-444444444444', '${exhausted}');
   `)
@@ -106,7 +124,7 @@ try {
   assert.equal(Number((await truth(existing)).confirmed_spendable), 100)
   assert.equal(Number((await truth(exhausted)).confirmed_spendable), 0)
   const { rows: snapshotRows } = await db.query('SELECT count(*)::integer AS count FROM public.wallet_legacy_spend_allowance_snapshot')
-  assert.equal(snapshotRows[0].count, 2)
+  assert.equal(snapshotRows[0].count, 3)
 
   // A direct, unverified balance increase never raises the available amount.
   await db.exec(`UPDATE public.profiles SET wallet_balance = 150 WHERE id = '${existing}'`)
@@ -147,7 +165,31 @@ try {
   const { rows: held } = await db.query('SELECT public.get_my_wallet_available() AS amount')
   assert.equal(Number(held[0].amount), 0)
 
-  console.log('Verified new-credit policy: snapshot, unverified increase, provider increase, debit, refund, later payment, new account, engine denial, and manual hold passed')
+  // Only the owner-confirmed balance already present at the snapshot is
+  // released. Later unverified increases remain unavailable.
+  await db.exec(`UPDATE public.wallet_legacy_spend_allowance_snapshot
+    SET baseline_available = 0 WHERE user_id = '${reviewed}'`)
+  assert.equal(Number((await truth(reviewed)).confirmed_spendable), 0)
+  await db.exec('BEGIN')
+  await db.exec(reviewedMigration)
+  await db.exec('COMMIT')
+  assert.equal(Number((await truth(reviewed)).confirmed_spendable), 57268)
+  const { rows: approvals } = await db.query('SELECT count(*)::integer AS count FROM public.wallet_legacy_spend_approvals')
+  assert.equal(approvals[0].count, 1)
+  await db.exec(`UPDATE public.profiles SET wallet_balance = 57368 WHERE id = '${reviewed}'`)
+  assert.equal(Number((await truth(reviewed)).confirmed_spendable), 57268)
+  await db.exec(`UPDATE public.wallet_test_facts SET debits = 1615622 WHERE user_id = '${reviewed}'`)
+  await db.exec(`UPDATE public.profiles SET wallet_balance = 56368 WHERE id = '${reviewed}'`)
+  assert.equal(Number((await truth(reviewed)).confirmed_spendable), 56268)
+  await db.exec(`UPDATE public.wallet_test_facts SET gateway = 500 WHERE user_id = '${reviewed}'`)
+  await db.exec(`UPDATE public.profiles SET wallet_balance = 56868 WHERE id = '${reviewed}'`)
+  assert.equal(Number((await truth(reviewed)).confirmed_spendable), 56768)
+  await assert.rejects(
+    db.exec('UPDATE public.wallet_legacy_spend_approvals SET evidence_note = evidence_note'),
+    /append-only/,
+  )
+
+  console.log('Verified new-credit policy and owner-reviewed legacy allowance: snapshot, unverified increase, provider increase, debit, refund, later payment, new account, engine denial, manual hold, capped historical release, and immutable audit passed')
 } finally {
   await db.close()
 }
