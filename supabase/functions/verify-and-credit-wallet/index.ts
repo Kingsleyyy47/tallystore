@@ -703,15 +703,18 @@ serve(async (req) => {
 
     const amount = transaction.amount;
     const ercasRef = transaction.ercs_reference;
+    // Ercas verification calls these ercs_reference and tx_reference.  The
+    // camel-case names are retained for older response shapes.
     const providerTransactionReference = firstProviderIdentity(transaction, [
-      'transactionReference', 'transaction_reference',
+      'ercs_reference', 'ercsReference', 'transactionReference', 'transaction_reference',
     ]);
     const providerPaymentReference = firstProviderIdentity(transaction, [
-      'paymentReference', 'payment_reference',
+      'tx_reference', 'txReference', 'paymentReference', 'payment_reference',
     ]);
     if (
-      (providerTransactionReference && providerTransactionReference !== pendingPayment.transaction_reference) ||
-      (providerPaymentReference && providerPaymentReference !== pendingPayment.ercas_reference)
+      !providerTransactionReference ||
+      providerTransactionReference !== pendingPayment.transaction_reference ||
+      (pendingPayment.ercas_reference && providerPaymentReference !== pendingPayment.ercas_reference)
     ) {
       await markPendingPaymentVerificationFailed(
         supabaseAdmin,
