@@ -24,7 +24,8 @@ try {
       SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid
     $$;
     CREATE TABLE public.profiles (
-      id uuid PRIMARY KEY, is_staff boolean DEFAULT false, is_admin boolean DEFAULT false
+      id uuid PRIMARY KEY, is_staff boolean DEFAULT false, is_admin boolean DEFAULT false,
+      account_suspended boolean DEFAULT false
     );
     CREATE TABLE public.staff_permissions (
       user_id uuid, permission_key text, is_enabled boolean DEFAULT false
@@ -59,6 +60,18 @@ try {
   await db.query('RESET ROLE')
 
   await db.exec(migration('20260924017000_restrict_public_sales_aggregates.sql'))
+  await db.exec(`
+    CREATE FUNCTION public.is_admin_profile() RETURNS boolean LANGUAGE sql STABLE
+      SECURITY DEFINER SET search_path = '' AS $$
+      SELECT EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid()
+        AND COALESCE(p.is_admin, false) AND NOT COALESCE(p.account_suspended, false))
+      $$;
+    CREATE FUNCTION public.is_admin() RETURNS boolean LANGUAGE sql STABLE
+      SECURITY DEFINER SET search_path = '' AS $$ SELECT false $$;
+    CREATE FUNCTION public.can_read_wallet_legacy_funding() RETURNS boolean LANGUAGE sql STABLE
+      SECURITY DEFINER SET search_path = '' AS $$ SELECT false $$;
+  `)
+  await db.exec(migration('20261001016000_require_active_privileged_helpers.sql'))
   for (const role of ['anon', 'authenticated']) {
     const writeGrant = await db.query(
       `SELECT has_table_privilege('${role}', 'public.staff_permissions', 'INSERT')
@@ -91,11 +104,24 @@ try {
   const staffStats = await db.query('SELECT * FROM public.get_customer_sales_stats()')
   assert.equal(Number(staffStats.rows[0].total_revenue), 3000)
   await db.query('RESET ROLE')
+  await db.exec(`UPDATE public.profiles SET account_suspended = true WHERE id = '${staff}'`)
+  await db.query('SET ROLE authenticated')
+  await denied('SELECT * FROM public.get_customer_sales_stats()')
+  await db.query('RESET ROLE')
 
   await db.query(`SELECT set_config('request.jwt.claim.sub', '${admin}', false)`)
   await db.query('SET ROLE authenticated')
   const adminStats = await db.query('SELECT * FROM public.get_customer_sales_stats()')
   assert.equal(Number(adminStats.rows[0].total_sales), 2)
+  await db.query('RESET ROLE')
+  await db.exec(`UPDATE public.profiles SET account_suspended = true WHERE id = '${admin}'`)
+  await db.query('SET ROLE authenticated')
+  const suspendedAdmin = await db.query(
+    'SELECT public.is_admin() AS admin, public.can_read_wallet_legacy_funding() AS can_read',
+  )
+  assert.equal(suspendedAdmin.rows[0].admin, false)
+  assert.equal(suspendedAdmin.rows[0].can_read, false)
+  await denied('SELECT * FROM public.get_customer_sales_stats()')
   await db.query('RESET ROLE')
 
   console.log('Public sales aggregate privilege scenarios passed in isolated PostgreSQL (not Supabase staging).')
