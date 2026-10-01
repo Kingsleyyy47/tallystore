@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { ngnMinorUnits } from '../_shared/ngn-amount.mjs';
+import { matchesErcasCheckout } from '../_shared/ercas-payment-identity.mjs';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
 async function applyWalletTransaction(
@@ -703,19 +704,7 @@ serve(async (req) => {
 
     const amount = transaction.amount;
     const ercasRef = transaction.ercs_reference;
-    // Ercas verification calls these ercs_reference and tx_reference.  The
-    // camel-case names are retained for older response shapes.
-    const providerTransactionReference = firstProviderIdentity(transaction, [
-      'ercs_reference', 'ercsReference', 'transactionReference', 'transaction_reference',
-    ]);
-    const providerPaymentReference = firstProviderIdentity(transaction, [
-      'tx_reference', 'txReference', 'paymentReference', 'payment_reference',
-    ]);
-    if (
-      !providerTransactionReference ||
-      providerTransactionReference !== pendingPayment.transaction_reference ||
-      (pendingPayment.ercas_reference && providerPaymentReference !== pendingPayment.ercas_reference)
-    ) {
+    if (!matchesErcasCheckout(transaction, pendingPayment)) {
       await markPendingPaymentVerificationFailed(
         supabaseAdmin,
         pendingPayment,

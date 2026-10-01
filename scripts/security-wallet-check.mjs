@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { ngnMinorUnits } from '../supabase/functions/_shared/ngn-amount.mjs'
+import { matchesErcasCheckout } from '../supabase/functions/_shared/ercas-payment-identity.mjs'
 
 const root = process.cwd()
 
@@ -1575,9 +1576,8 @@ check('browser payment success pages cannot create wallet credit', () => {
   assert(verifier.includes('expectedMinor !== verifiedMinor'), 'verifier must compare exact provider amount to server-created pending amount')
   assert(verifier.includes("import { ngnMinorUnits } from '../_shared/ngn-amount.mjs'"), 'verifier must use the tested minor-unit parser')
   assertOrder(verifier, 'expectedMinor !== verifiedMinor', 'const creditResult = await applyWalletTransaction', 'amount mismatch must be rejected before wallet credit')
-  assert(verifier.includes('providerTransactionReference !== pendingPayment.transaction_reference'), 'provider transaction reference must match server checkout')
-  assert(verifier.includes('providerPaymentReference !== pendingPayment.ercas_reference'), 'provider payment reference must match server checkout')
-  assertOrder(verifier, 'providerTransactionReference !== pendingPayment.transaction_reference', 'const creditResult = await applyWalletTransaction', 'provider identity mismatch must be rejected before wallet credit')
+  assert(verifier.includes('if (!matchesErcasCheckout(transaction, pendingPayment))'), 'provider response must match the server checkout')
+  assertOrder(verifier, 'if (!matchesErcasCheckout(transaction, pendingPayment))', 'const creditResult = await applyWalletTransaction', 'provider identity mismatch must be rejected before wallet credit')
   assert(verifier.includes("if (!verifyResponse.ok) throw new Error('ercas_verify_http_unavailable')"), 'HTTP verification failure must not be credited')
   assert(verifier.includes('verifyResult?.requestSuccessful !== true'), 'provider verification envelope must succeed before credit')
 })
@@ -1783,6 +1783,16 @@ check('JWT-disabled Edge Functions have explicit internal authorization boundari
   assert(visitGrant.includes('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.site_visits'), 'browser roles must not write visit evidence directly')
   assert(!read('src/components/VisitorTracker.tsx').includes(".from('site_visits'"), 'browser visit tracking must not fall back to direct evidence insertion')
   assert(!read('supabase/functions/admin-adjust-balance/index.ts').includes('upsertFraudDeviceBans('), 'account suspension must not generate IP/device bans from unverified visit headers')
+})
+
+check('Ercas checkout identity matches live response fields before credit', () => {
+  const pending = { transaction_reference: 'ER|checkout-1', ercas_reference: 'TALLY-payment-1' }
+  const liveShape = { status: 'SUCCESSFUL', ercs_reference: 'ER|checkout-1', tx_reference: 'TALLY-payment-1' }
+  assert(matchesErcasCheckout(liveShape, pending), 'matching Ercas payment must remain creditable')
+  assert(!matchesErcasCheckout({ ...liveShape, ercs_reference: 'ER|someone-else' }, pending), 'different checkout must not credit')
+  assert(!matchesErcasCheckout({ ...liveShape, tx_reference: 'TALLY-someone-else' }, pending), 'different merchant reference must not credit')
+  assert(!matchesErcasCheckout({ status: 'SUCCESSFUL', amount: '1000' }, pending), 'payment without identity must not credit')
+  assert(matchesErcasCheckout({ ercs_reference: 'ER|checkout-1' }, { ...pending, ercas_reference: null }), 'older checkout without a merchant reference remains recoverable')
 })
 
 check('paused paid surfaces fail closed by default', () => {
