@@ -5,6 +5,7 @@ import { PGlite } from '@electric-sql/pglite'
 const db = new PGlite()
 const migration = readFileSync(new URL('../supabase/migrations/20261001007000_freeze_legacy_allowance_require_verified_new_credits.sql', import.meta.url), 'utf8')
 const reviewedMigration = readFileSync(new URL('../supabase/migrations/20261001008000_review_owner_confirmed_legacy_wallet_allowance.sql', import.meta.url), 'utf8')
+const fundingNoticeMigration = readFileSync(new URL('../supabase/migrations/20261001009000_explain_unverified_recorded_wallet_amount.sql', import.meta.url), 'utf8')
 const existing = '11111111-1111-4111-8111-111111111111'
 const exhausted = '22222222-2222-4222-8222-222222222222'
 const newcomer = '33333333-3333-4333-8333-333333333333'
@@ -28,7 +29,7 @@ try {
     CREATE TABLE public.profiles (
       id uuid PRIMARY KEY, wallet_balance numeric NOT NULL DEFAULT 0,
       wallet_review_required boolean NOT NULL DEFAULT false,
-      wallet_reviewed_by uuid, email text, is_admin boolean NOT NULL DEFAULT false,
+      wallet_reviewed_by uuid, is_admin boolean NOT NULL DEFAULT false,
       is_staff boolean NOT NULL DEFAULT false,
       account_suspended boolean NOT NULL DEFAULT false
     );
@@ -107,10 +108,10 @@ try {
     $$;
     INSERT INTO public.profiles (id, wallet_balance) VALUES
       ('${existing}', 100), ('${exhausted}', 0);
-    INSERT INTO public.profiles (id, wallet_balance, email) VALUES
-      ('${reviewed}', 57268, 'tallystoreorg@gmail.com');
-    INSERT INTO public.profiles (id, is_admin, email) VALUES
-      ('${owner}', true, 'wisdomthedev@gmail.com');
+    INSERT INTO public.profiles (id, wallet_balance) VALUES
+      ('${reviewed}', 57268);
+    INSERT INTO public.profiles (id, is_admin) VALUES
+      ('${owner}', true);
     INSERT INTO public.wallet_test_facts (user_id, gateway, debits) VALUES
       ('${existing}', 0, 0), ('${exhausted}', 0, 500),
       ('${reviewed}', 0, 1614622);
@@ -170,10 +171,16 @@ try {
   await db.exec(`UPDATE public.wallet_legacy_spend_allowance_snapshot
     SET baseline_available = 0 WHERE user_id = '${reviewed}'`)
   assert.equal(Number((await truth(reviewed)).confirmed_spendable), 0)
+  await db.exec(fundingNoticeMigration)
+  await db.exec(`SELECT set_config('request.jwt.claim.sub', '${reviewed}', false)`)
+  const { rows: noticeBefore } = await db.query('SELECT public.my_wallet_funding_needs_review() AS needed')
+  assert.equal(noticeBefore[0].needed, true)
   await db.exec('BEGIN')
   await db.exec(reviewedMigration)
   await db.exec('COMMIT')
   assert.equal(Number((await truth(reviewed)).confirmed_spendable), 57268)
+  const { rows: noticeAfter } = await db.query('SELECT public.my_wallet_funding_needs_review() AS needed')
+  assert.equal(noticeAfter[0].needed, false)
   const { rows: approvals } = await db.query('SELECT count(*)::integer AS count FROM public.wallet_legacy_spend_approvals')
   assert.equal(approvals[0].count, 1)
   await db.exec(`UPDATE public.profiles SET wallet_balance = 57368 WHERE id = '${reviewed}'`)
@@ -188,8 +195,13 @@ try {
     db.exec('UPDATE public.wallet_legacy_spend_approvals SET evidence_note = evidence_note'),
     /append-only/,
   )
+  await db.exec("SELECT set_config('request.jwt.claim.sub', '', false)")
+  await assert.rejects(
+    db.query('SELECT public.my_wallet_funding_needs_review() AS needed'),
+    /Authentication required/,
+  )
 
-  console.log('Verified new-credit policy and owner-reviewed legacy allowance: snapshot, unverified increase, provider increase, debit, refund, later payment, new account, engine denial, manual hold, capped historical release, and immutable audit passed')
+  console.log('Verified new-credit policy, owner-reviewed legacy allowance, and customer funding notice: snapshot, unverified increase, provider increase, debit, refund, later payment, new account, engine denial, manual hold, capped historical release, immutable audit, and own-account notice passed')
 } finally {
   await db.close()
 }

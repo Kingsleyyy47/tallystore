@@ -32,7 +32,7 @@ import { PaymentVerificationCard } from '@/components/PaymentVerificationCard'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
 import { useToast } from '@/hooks/use-toast'
-import { getUserTransactions } from '@/lib/supabase'
+import { getUserTransactions, supabase } from '@/lib/supabase'
 import { trackRevenueEvent } from '@/lib/revenue-os'
 import {
   classifyWalletTransaction,
@@ -107,6 +107,21 @@ export default function WalletPage() {
   const [transactions, setTransactions] = useState<any[]>([])
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(false)
   const [activeTab, setActiveTab] = useState<WalletTab>('all')
+  const [recordedBalanceNeedsReview, setRecordedBalanceNeedsReview] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    setRecordedBalanceNeedsReview(false)
+    if (!user?.id || walletLoading) return () => { active = false }
+
+    void supabase.rpc('my_wallet_funding_needs_review').then(({ data, error }) => {
+      if (error) throw error
+      if (active) setRecordedBalanceNeedsReview(data === true)
+    }).catch((error) => {
+      console.error('Could not check recorded wallet funding status:', error)
+    })
+    return () => { active = false }
+  }, [user?.id, walletBalance, walletLoading])
 
   const loadTransactions = useCallback(async () => {
     if (!user?.id) return
@@ -406,6 +421,18 @@ export default function WalletPage() {
                 </Link>
               </div>
             </div>
+
+            {recordedBalanceNeedsReview && (
+              <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-500/40 dark:bg-amber-950/20 dark:text-amber-100">
+                <p className="font-bold">Recorded wallet amount needs funding review</p>
+                <p className="mt-2">
+                  An older amount recorded in your wallet is not yet available for purchases because its funding cannot be confirmed from our records. Your account is not suspended. If you paid, or an admin topped up your wallet earlier, send support the date, amount, and payment receipt or reference.
+                </p>
+                <Link to="/support" onClick={() => handleWalletSupportClick('wallet_recorded_funding_review')} className="mt-3 inline-block font-bold underline">
+                  Contact support
+                </Link>
+              </div>
+            )}
 
             <PaymentVerificationCard />
 
