@@ -506,7 +506,15 @@ check('approved admin credits require a server-side approving actor and explicit
 
   const manageStaff = read('supabase/functions/manage-staff/index.ts')
   assert(manageStaff.includes('p_created_by: params.createdBy || null'), 'manage-staff wrapper must pass createdBy into wallet engine')
-  assert(manageStaff.includes("if (!isAdmin && actionType === 'adjust_balance')"), 'staff balance adjustments must require admin review')
+  assert(manageStaff.includes('const autoApprove = isAdmin') && manageStaff.includes('if (!autoApprove)'),
+    'all staff mutations, including balance adjustments, must require admin review')
+  assert(manageStaff.includes('{ user_id, permission_key, is_enabled: enableNow, auto_approve: false }'),
+    'staff permissions must never enable automatic mutation approval')
+  const emailFunction = read('supabase/functions/email/index.ts')
+  const smsFunction = read('supabase/functions/smsbus/index.ts')
+  assert(emailFunction.includes('if (requireAutoApprove) {') &&
+    (smsFunction.match(/if \(requireAutoApprove\) \{/g) || []).length >= 2,
+    'staff must not bypass review through direct email or SMS routes')
   assert(manageStaff.includes("const transactionType = amount > 0 ? 'admin_credit' : 'admin_debit'"), 'approved staff balance increases must post as admin_credit')
   assert(manageStaff.includes('Admin approval is required before staff balance credits can become spendable'), 'staff credits must fail without admin approval evidence')
   assert(manageStaff.includes('createdBy: approvingAdminId || pendingAction.staff_id || undefined'), 'staff adjustment credits must carry approving admin actor when positive')

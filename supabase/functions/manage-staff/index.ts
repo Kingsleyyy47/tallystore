@@ -1636,21 +1636,16 @@ async function submitStaffAction(admin: any, user: any, body: Record<string, any
   const isAdmin = profile.is_admin === true
   if (!isAdmin && profile.is_staff !== true) return json({ error: 'Forbidden — staff only' }, 403)
 
-  let autoApprove = true
+  const autoApprove = isAdmin
   if (!isAdmin) {
     const { data: permission, error: permissionError } = await admin
       .from('staff_permissions')
-      .select('is_enabled, auto_approve')
+      .select('is_enabled')
       .eq('user_id', user.id)
       .eq('permission_key', permissionKey)
       .maybeSingle()
     if (permissionError) return json({ error: 'Could not check staff permission' }, 500)
     if (!permission?.is_enabled) return json({ error: 'Permission is not enabled' }, 403)
-    autoApprove = permission.auto_approve !== false
-  }
-
-  if (!isAdmin && actionType === 'adjust_balance') {
-    autoApprove = false
   }
 
   const pendingRow = {
@@ -1786,7 +1781,7 @@ serve(async (req) => {
 
     // ── Set a single permission ──────────────────────────────────────────
     if (action === 'set_permission') {
-      const { user_id, permission_key, is_enabled, auto_approve } = body
+      const { user_id, permission_key, is_enabled } = body
       if (!user_id || !permission_key) return json({ error: 'user_id and permission_key required' }, 400)
       if (!STAFF_PERMISSION_KEYS.has(String(permission_key))) {
         return json({ error: 'Unknown staff permission' }, 400)
@@ -1799,21 +1794,13 @@ serve(async (req) => {
       if (targetError || !target || target.is_staff !== true || target.is_admin === true || target.account_suspended === true) {
         return json({ error: 'Permissions can only be changed for an active staff account' }, 403)
       }
-      const { data: currentPermission, error: currentPermissionError } = await admin
-        .from('staff_permissions')
-        .select('is_enabled')
-        .eq('user_id', user_id)
-        .eq('permission_key', permission_key)
-        .maybeSingle()
-      if (currentPermissionError) return json({ error: 'Could not check staff permission' }, 500)
       const enableNow = is_enabled === true
-      // Enabling a permission always starts in review mode, even if an old
-      // browser build still sends auto_approve=true with the first toggle.
-      const shouldAutoApprove = enableNow && currentPermission?.is_enabled === true && auto_approve === true
+      // All staff mutations require owner review, including requests from an
+      // older browser that still sends auto_approve=true.
       const { error } = await admin
         .from('staff_permissions')
         .upsert(
-          { user_id, permission_key, is_enabled: enableNow, auto_approve: shouldAutoApprove },
+          { user_id, permission_key, is_enabled: enableNow, auto_approve: false },
           { onConflict: 'user_id,permission_key' }
         )
       if (error) return json({ error: 'Could not change staff permission' }, 500)

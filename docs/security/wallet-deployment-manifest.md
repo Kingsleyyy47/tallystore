@@ -732,8 +732,15 @@ Later production security migrations must also be tracked in order:
 `20261001001000_remove_implicit_staff_database_access.sql`,
 `20261001002000_link_legacy_smm_refunds.sql`,
 `20261001003000_verified_historical_pocketfi_recovery.sql`,
-`20261001004000_verified_missing_ercas_funding.sql`, and
-`20261001005000_schedule_verified_payment_recovery.sql`.
+`20261001004000_verified_missing_ercas_funding.sql`,
+`20261001005000_schedule_verified_payment_recovery.sql`, and
+`20261001006000_require_staff_owner_review.sql`.
+
+Migration `06000` forces every staff permission into review mode and adds a
+database constraint against restoring automatic approval. Deploy the matching
+`manage-staff`, `email`, and `smsbus` functions and browser build before
+creating another staff account. Staff may submit permitted changes; the owner
+must approve each change before it takes effect.
 
 ## Supabase Edge Functions To Deploy
 

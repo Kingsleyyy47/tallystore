@@ -804,13 +804,13 @@ async function requireSmsProductAccess(admin: SupabaseAdmin, userId: string, req
 
   const { data: permission } = await admin
     .from('staff_permissions')
-    .select('is_enabled, auto_approve')
+    .select('is_enabled')
     .eq('user_id', userId)
     .eq('permission_key', 'tab_sms_products')
     .maybeSingle()
 
   if (!permission?.is_enabled) throw new Error('SMS product permission required')
-  if (requireAutoApprove && permission.auto_approve === false) {
+  if (requireAutoApprove) {
     throw new Error('SMS product changes require approval')
   }
 }
@@ -823,13 +823,13 @@ async function requireStaffPermission(admin: SupabaseAdmin, userId: string, perm
 
   const { data: permission } = await admin
     .from('staff_permissions')
-    .select('is_enabled, auto_approve')
+    .select('is_enabled')
     .eq('user_id', userId)
     .eq('permission_key', permissionKey)
     .maybeSingle()
 
   if (!permission?.is_enabled) throw new Error('Staff permission required')
-  if (requireAutoApprove && permission.auto_approve === false) {
+  if (requireAutoApprove) {
     throw new Error('This staff action requires approval')
   }
 }

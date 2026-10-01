@@ -268,13 +268,13 @@ async function requireAdminOrStaffPermission(
 
   const { data: permission } = await admin
     .from("staff_permissions")
-    .select("is_enabled, auto_approve")
+    .select("is_enabled")
     .eq("user_id", user.id)
     .eq("permission_key", permissionKey)
     .maybeSingle();
 
   if (!permission?.is_enabled) throw new Error("Forbidden: staff permission required");
-  if (requireAutoApprove && permission.auto_approve === false) {
+  if (requireAutoApprove) {
     throw new Error("Forbidden: staff action requires approval");
   }
 

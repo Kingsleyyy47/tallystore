@@ -1861,14 +1861,10 @@ export default function AdminPage() {
   const handleToggleStaffPerm = async (
     userId: string,
     permKey: string,
-    field: 'is_enabled' | 'auto_approve',
     value: boolean,
   ) => {
-    setSavingStaffPerm(`${userId}-${permKey}-${field}`)
-    const current = staffPermissionsMap[userId]?.[permKey] || { is_enabled: false, auto_approve: false }
-    const updated = { ...current, [field]: value }
-    // Newly enabled permissions require owner approval for actions by default.
-    if (field === 'is_enabled' && value === true) updated.auto_approve = false
+    setSavingStaffPerm(`${userId}-${permKey}-is_enabled`)
+    const updated = { is_enabled: value, auto_approve: false }
     try {
       const { data, error } = await supabase.functions.invoke('manage-staff', {
         body: {
@@ -10958,7 +10954,7 @@ export default function AdminPage() {
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" /> Staff Permissions</CardTitle>
-                  <p className="text-muted-foreground text-sm">Toggle what each staff member can see and do. "Auto-approve" means changes apply instantly; off means they go into the pending queue above.</p>
+                  <p className="text-muted-foreground text-sm">Choose what each staff member can view or submit. Every staff change requires your approval before it takes effect.</p>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {staffUsers.length === 0 ? (
@@ -11013,7 +11009,7 @@ export default function AdminPage() {
                                             {/* Enable/Disable */}
                                             <button
                                               className="flex items-center gap-1 text-xs"
-                                              onClick={() => handleToggleStaffPerm(su.id, p.key, 'is_enabled', !perm.is_enabled)}
+                                              onClick={() => handleToggleStaffPerm(su.id, p.key, !perm.is_enabled)}
                                               disabled={!!savingStaffPerm?.startsWith(savingKey)}
                                             >
                                               {perm.is_enabled
@@ -11023,24 +11019,10 @@ export default function AdminPage() {
                                                 {perm.is_enabled ? 'On' : 'Off'}
                                               </span>
                                             </button>
-                                            {/* Auto / Needs Approval — only shown when permission is enabled */}
                                             {perm.is_enabled && (
-                                              <button
-                                                className={`flex items-center gap-1 text-xs border rounded px-2 py-0.5 transition-colors ${
-                                                  perm.auto_approve
-                                                    ? 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-400'
-                                                    : 'border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-900/20 dark:text-orange-400'
-                                                }`}
-                                                onClick={() => handleToggleStaffPerm(su.id, p.key, 'auto_approve', !perm.auto_approve)}
-                                                disabled={!!savingStaffPerm?.startsWith(savingKey)}
-                                                title={perm.auto_approve
-                                                  ? 'Auto: actions apply immediately. Click to require your approval first.'
-                                                  : 'Needs Approval: actions go to your queue before going live. Click to allow immediately.'}
-                                              >
-                                                {perm.auto_approve
-                                                  ? <><CheckCircle2 className="h-3 w-3" /> Auto</>
-                                                  : <><Clock className="h-3 w-3" /> Needs Approval</>}
-                                              </button>
+                                              <span className="flex items-center gap-1 rounded border border-orange-300 bg-orange-50 px-2 py-0.5 text-xs text-orange-700 dark:border-orange-700 dark:bg-orange-900/20 dark:text-orange-400">
+                                                <Clock className="h-3 w-3" /> Needs Approval
+                                              </span>
                                             )}
                                           </div>
                                         </div>
