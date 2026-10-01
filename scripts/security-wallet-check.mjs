@@ -769,9 +769,11 @@ check('owner-only financial and staff actions require server identity and curren
     assert(source.includes('is_admin'), `${name} must check the current database admin role`)
     assert(!/[a-z0-9._%+-]+@(?:gmail|yahoo|outlook|hotmail|boxfi)\.[a-z]{2,}/i.test(source), `${name} must not publish a personal owner email`)
   }
-  assert(adjustment.includes("body?.action !== 'suspend_user' && (!ownerUserId || user.id !== ownerUserId)"), 'only suspension may bypass the owner-only finance check')
-  assert(adjustment.indexOf("adminProfile?.is_admin !== true") < adjustment.indexOf("body?.action !== 'suspend_user'"), 'suspension requires current database admin role before owner exception')
-  assert(adjustment.includes("body?.action === 'suspend_user' || body?.action === 'unsuspend_user'"), 'suspension exception must reach the guarded customer-only action')
+  assert(adjustment.includes('if (!ownerUserId || user.id !== ownerUserId)'), 'every wallet and suspension action requires the owner')
+  assert(adjustment.indexOf("adminProfile?.is_admin !== true") < adjustment.indexOf('if (!ownerUserId || user.id !== ownerUserId)'), 'owner must also have the current database admin role')
+  assert(adjustment.includes("body?.action === 'suspend_user' || body?.action === 'unsuspend_user'"), 'customer suspension must reach the guarded action')
+  assert(adjustment.includes('cleanSuspendReason.length < 20'), 'suspension requires a specific reason')
+  assert(adjustment.includes('body.evidence_reviewed !== true'), 'suspension requires evidence review confirmation')
 })
 
 check('direct ledger writes are skipped and audited', () => {

@@ -771,7 +771,9 @@ export default function AdminPage() {
   const fraudInitialScanStartedRef = useRef(false)
   const [fraudSearchQuery, setFraudSearchQuery] = useState('')
   const [fraudReviewFilter, setFraudReviewFilter] = useState<'all' | 'overspent' | 'excess' | 'suspended' | 'unblock' | 'review' | 'duplicate' | 'watchlist' | 'internal'>('all')
-  const [fraudSuspendingUserId, setFraudSuspendingUserId] = useState<string | null>(null)
+  const [suspensionTarget, setSuspensionTarget] = useState<{ id: string; email: string } | null>(null)
+  const [suspensionReason, setSuspensionReason] = useState('')
+  const [suspensionEvidenceReviewed, setSuspensionEvidenceReviewed] = useState(false)
   const [fraudUnsuspendingUserId, setFraudUnsuspendingUserId] = useState<string | null>(null)
 
   // Website-wide activity histories
@@ -2814,7 +2816,7 @@ export default function AdminPage() {
           reason = 'Payment identity conflict in canonical wallet evidence.'
         } else if (truth.integrity_status === 'quarantined_excess') {
           reviewType = 'quarantined_excess'
-          reason = `Unbacked displayed excess of ${formatAdminNaira(truth.quarantined_excess)} is quarantined. Backed funds remain subject to account and wallet review state.`
+          reason = `Displayed wallet exceeds recorded backing by ${formatAdminNaira(truth.quarantined_excess)}. Verify historical funding before deciding on any account action.`
         } else if (integrityIssue) {
           reviewType = suspended ? 'suspended_risk' : 'overspent'
           reason = `Wallet integrity: ${truth.integrity_status.replace(/_/g, ' ')}.`
@@ -2838,7 +2840,9 @@ export default function AdminPage() {
         }
 
         if (!reviewType) continue
-        if (!suspended && !walletReviewRequired && !truth.spending_blocked) continue
+        if (truth.confirmed_spendable > Math.max(0, truth.trusted_book_balance)) {
+          reason += ` Legacy purchase policy currently permits ${formatAdminNaira(truth.confirmed_spendable)} despite recorded backing of ${formatAdminNaira(Math.max(0, truth.trusted_book_balance))}.`
+        }
         if (duplicateTopupReferences.length > 0 && reviewType !== 'duplicate_deposit') {
           reason += ' Shared external payment identity also needs provider review.'
         }
@@ -4606,27 +4610,27 @@ export default function AdminPage() {
     }
   }
 
-  const handleSuspendSelectedUser = async () => {
-    if (!selectedUser) return
-    const reason = 'Manual fraud review: admin suspended account after suspicious spend/deposit mismatch.'
+  const handleConfirmSuspendUser = async () => {
+    const target = suspensionTarget
+    const reason = suspensionReason.trim()
+    if (!target || reason.length < 20 || !suspensionEvidenceReviewed) return
     try {
       setIsSuspendingUser(true)
-      await adminSuspendUser(selectedUser.id, reason)
+      await adminSuspendUser(target.id, reason, suspensionEvidenceReviewed)
 
-      const nextUser = {
-        ...selectedUser,
-        account_suspended: true,
-        suspension_reason: reason,
-        suspended_at: new Date().toISOString(),
-      }
-      setSelectedUser(nextUser)
-      setUsers(prev => prev.map(u => u.id === selectedUser.id ? nextUser : u))
-      if (viewUserOpen) loadUserFinancialTruth(selectedUser.id)
       await loadFraudReview()
+      setUsers(prev => prev.map(u => u.id === target.id ? { ...u, account_suspended: true, suspension_reason: reason, suspended_at: new Date().toISOString() } : u))
+      if (selectedUser?.id === target.id) {
+        setSelectedUser((prev: any) => prev ? { ...prev, account_suspended: true, suspension_reason: reason, suspended_at: new Date().toISOString() } : prev)
+        if (viewUserOpen) loadUserFinancialTruth(target.id)
+      }
+      setSuspensionTarget(null)
+      setSuspensionReason('')
+      setSuspensionEvidenceReviewed(false)
 
       toast({
         title: 'Account suspended',
-        description: `${selectedUser.email || 'Customer'} cannot purchase now.`,
+        description: `${target.email} cannot purchase now.`,
       })
     } catch (error: any) {
       toast({
@@ -4636,34 +4640,6 @@ export default function AdminPage() {
       })
     } finally {
       setIsSuspendingUser(false)
-    }
-  }
-
-  const handleSuspendFraudUser = async (row: FraudReviewRow) => {
-    const reason = row.reason || 'Manual fraud review: admin suspended account from Fraud section.'
-    try {
-      setFraudSuspendingUserId(row.userId)
-      await adminSuspendUser(row.userId, reason)
-
-      await loadFraudReview()
-      setUsers(prev => prev.map(u => u.id === row.userId ? { ...u, account_suspended: true, suspension_reason: reason, suspended_at: new Date().toISOString() } : u))
-      if (selectedUser?.id === row.userId) {
-        setSelectedUser((prev: any) => prev ? { ...prev, account_suspended: true, suspension_reason: reason, suspended_at: new Date().toISOString() } : prev)
-        if (viewUserOpen) loadUserFinancialTruth(row.userId)
-      }
-
-      toast({
-        title: 'Account suspended',
-        description: `${row.email} cannot purchase now.`,
-      })
-    } catch (error: any) {
-      toast({
-        title: 'Suspend failed',
-        description: error.message || 'Could not suspend this account',
-        variant: 'destructive',
-      })
-    } finally {
-      setFraudSuspendingUserId(null)
     }
   }
 
@@ -6617,6 +6593,55 @@ export default function AdminPage() {
             </div>
           )}
 
+          <Dialog
+            open={Boolean(suspensionTarget)}
+            onOpenChange={(open) => {
+              if (!open && !isSuspendingUser) {
+                setSuspensionTarget(null)
+                setSuspensionReason('')
+                setSuspensionEvidenceReviewed(false)
+              }
+            }}
+          >
+            <DialogContent className="max-w-md w-[95vw] sm:w-full">
+              <DialogHeader>
+                <DialogTitle>Suspend customer account</DialogTitle>
+                <DialogDescription className="break-words">
+                  Review the payment and wallet evidence for {suspensionTarget?.email} before blocking purchases.
+                  An integrity signal alone does not establish misconduct.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-2">
+                <Label htmlFor="customer-suspension-reason">Specific reason and evidence</Label>
+                <Textarea
+                  id="customer-suspension-reason"
+                  value={suspensionReason}
+                  onChange={(event) => setSuspensionReason(event.target.value)}
+                  placeholder="Describe the verified payment, transaction, or account evidence"
+                  rows={4}
+                />
+                <p className="text-xs text-muted-foreground">Enter at least 20 characters. This reason is stored with the suspension.</p>
+              </div>
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="customer-suspension-evidence-reviewed"
+                  checked={suspensionEvidenceReviewed}
+                  onCheckedChange={(checked) => setSuspensionEvidenceReviewed(checked === true)}
+                />
+                <Label htmlFor="customer-suspension-evidence-reviewed" className="text-sm leading-snug">
+                  I checked the payment and transaction evidence for this account.
+                </Label>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => { setSuspensionTarget(null); setSuspensionEvidenceReviewed(false) }} disabled={isSuspendingUser}>Cancel</Button>
+                <Button type="button" variant="destructive" onClick={handleConfirmSuspendUser} disabled={isSuspendingUser || suspensionReason.trim().length < 20 || !suspensionEvidenceReviewed}>
+                  {isSuspendingUser && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Suspend account
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           {/* Balance Adjustment Modal */}
           <Dialog open={adjustBalanceOpen} onOpenChange={setAdjustBalanceOpen}>
             <DialogContent className="max-w-md w-[95vw] sm:w-full">
@@ -6829,7 +6854,11 @@ export default function AdminPage() {
                               type="button"
                               size="sm"
                               variant="destructive"
-                              onClick={handleSuspendSelectedUser}
+                              onClick={() => {
+                                setSuspensionReason('')
+                                setSuspensionEvidenceReviewed(false)
+                                setSuspensionTarget({ id: selectedUser.id, email: selectedUser.email || 'Customer' })
+                              }}
                               disabled={isSuspendingUser}
                             >
                               {isSuspendingUser ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserX className="mr-2 h-4 w-4" />}
@@ -8445,11 +8474,11 @@ export default function AdminPage() {
                         </div>
                         <div className="rounded-lg border p-3">
                           <p className="text-2xl font-bold">{fraudRows.filter(row => row.reviewType === 'overspent' || row.reviewType === 'suspended_risk').length}</p>
-                          <p className="text-xs text-muted-foreground">Blocking integrity risk</p>
+                          <p className="text-xs text-muted-foreground">Integrity signals to review</p>
                         </div>
                         <div className="rounded-lg border p-3">
                           <p className="text-2xl font-bold">{fraudFilterCounts.excess}</p>
-                          <p className="text-xs text-muted-foreground">Excess quarantined</p>
+                          <p className="text-xs text-muted-foreground">Unexplained wallet differences</p>
                         </div>
                         <div className="rounded-lg border p-3">
                           <p className="text-2xl font-bold">{fraudFilterCounts.duplicate}</p>
@@ -8565,7 +8594,7 @@ export default function AdminPage() {
                                 ) : row.reviewType === 'watchlist' ? (
                                   <Badge variant="outline">Monitor</Badge>
                                 ) : row.reviewType === 'quarantined_excess' ? (
-                                  <Badge variant="outline">Excess quarantined</Badge>
+                                  <Badge variant="outline">Wallet difference</Badge>
                                 ) : row.reviewType === 'duplicate_deposit' && row.truth.integrity_status !== 'payment_identity_conflict' ? (
                                   <Badge variant="outline">Payment ID review</Badge>
                                 ) : (
@@ -8592,7 +8621,10 @@ export default function AdminPage() {
                                   <p className="text-xs text-muted-foreground">Spending {row.truth.spending_blocked ? 'blocked' : 'permitted up to the current purchase limit'}</p>
                                   <p>Active holds: {formatAdminNaira(row.truth.active_reservations)}</p>
                                   <p>Debits net refunds: {formatAdminNaira(row.netSpend)}</p>
-                                  <p className="text-xs text-muted-foreground">Quarantined: {formatAdminNaira(row.truth.quarantined_excess)}</p>
+                                  <p className="text-xs text-muted-foreground">Displayed above recorded backing: {formatAdminNaira(row.truth.quarantined_excess)}</p>
+                                  {row.trustedAvailable > Math.max(0, row.truth.trusted_book_balance) && (
+                                    <p className="text-xs font-medium text-amber-700">Legacy policy permits spending above recorded backing.</p>
+                                  )}
                                   <p className="text-xs text-muted-foreground">Unexplained: {formatAdminNaira(row.truth.unexplained_difference)}</p>
                                   <p className={row.exposure > 1 ? 'font-semibold text-destructive' : 'text-muted-foreground'}>
                                     Difference: {formatAdminNaira(Math.max(row.exposure, 0))}
@@ -8704,10 +8736,14 @@ export default function AdminPage() {
                                       type="button"
                                       size="sm"
                                       variant="destructive"
-                                      onClick={() => handleSuspendFraudUser(row)}
-                                      disabled={fraudSuspendingUserId === row.userId}
+                                      onClick={() => {
+                                        setSuspensionReason('')
+                                        setSuspensionEvidenceReviewed(false)
+                                        setSuspensionTarget({ id: row.userId, email: row.email })
+                                      }}
+                                      disabled={isSuspendingUser}
                                     >
-                                      {fraudSuspendingUserId === row.userId ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserX className="mr-2 h-4 w-4" />}
+                                      <UserX className="mr-2 h-4 w-4" />
                                       Suspend
                                     </Button>
                                   )}

@@ -2584,13 +2584,14 @@ export async function adminUnsuspendUser(userId: string): Promise<{ success: boo
   }
 }
 
-export async function adminSuspendUser(userId: string, reason: string): Promise<{ success: boolean }> {
+export async function adminSuspendUser(userId: string, reason: string, evidenceReviewed: boolean): Promise<{ success: boolean }> {
   try {
     const { data, error } = await supabase.functions.invoke('admin-adjust-balance', {
       body: {
         action: 'suspend_user',
         target_user_id: userId,
         reason,
+        evidence_reviewed: evidenceReviewed,
       },
     })
 

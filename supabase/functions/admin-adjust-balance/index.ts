@@ -186,7 +186,7 @@ serve(async (req) => {
     // Parse request body
     const body = await req.json();
     const ownerUserId = Deno.env.get('TALLYSTORE_OWNER_USER_ID')?.trim();
-    if (body?.action !== 'suspend_user' && (!ownerUserId || user.id !== ownerUserId)) {
+    if (!ownerUserId || user.id !== ownerUserId) {
       console.error('Owner-only wallet adjustment denied');
       throw new Error('Owner approval required');
     }
@@ -268,8 +268,11 @@ serve(async (req) => {
       }
       const isSuspending = body.action === 'suspend_user';
       const cleanSuspendReason = String(body.reason || '').trim();
-      if (isSuspending && cleanSuspendReason.length < 3) {
-        throw new Error('A suspension reason with at least 3 characters is required');
+      if (isSuspending && cleanSuspendReason.length < 20) {
+        throw new Error('A specific suspension reason with at least 20 characters is required');
+      }
+      if (isSuspending && body.evidence_reviewed !== true) {
+        throw new Error('Confirm that payment and transaction evidence was reviewed');
       }
 
       const { data: targetProfile, error: profileError } = await supabaseAdmin

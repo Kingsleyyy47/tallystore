@@ -43,7 +43,7 @@ const excess = context.classify(profile({
 assert.equal(excess.reviewType, 'quarantined_excess')
 assert.equal(excess.trustedAvailable, 70000, 'positive excess must not erase backed spendable funds')
 assert.equal(excess.exposure, 30000)
-assert.equal(excess.reason.includes('quarantined'), true)
+assert.match(excess.reason, /Verify historical funding/)
 
 const zero = context.classify(profile({
   stored_wallet_balance: 500000, quarantined_excess: 500000,
@@ -88,11 +88,19 @@ assert.equal(context.classify(profile({ integrity_status: 'quarantined_excess' }
 assert.match(source, /getAdminWalletFinancialTruthPage\(afterUserId\)/)
 const loaderStart = source.indexOf('  const loadFraudReview = useCallback')
 const loaderEnd = source.indexOf('  useEffect(() => {', loaderStart)
+assert.doesNotMatch(source.slice(loaderStart, loaderEnd), /if \(!suspended && !walletReviewRequired && !truth\.spending_blocked\) continue/,
+  'active financial anomalies must remain visible to the owner')
+assert.match(source.slice(loaderStart, loaderEnd), /Legacy purchase policy currently permits/)
 assert.doesNotMatch(source.slice(loaderStart, loaderEnd),
   /\.from\(['"](?:pending_payments|pocketfi_webhook_logs|transactions)['"]\)/)
 assert.match(source, /setFraudRows\(\[\]\)\s+setFraudLastLoadedAt\(null\)/)
 assert.match(source, /fraudError \? null : fraudLoading \|\| !fraudLastLoadedAt/)
 assert.doesNotMatch(source, /can purchase again\./, 'clearing an account suspension does not guarantee wallet authorization')
 assert.equal((source.match(/Wallet review and confirmed funds still govern purchases\./g) || []).length, 2)
+assert.match(source, /const reason = suspensionReason\.trim\(\)/)
+assert.match(source, /if \(!target \|\| reason\.length < 20 \|\| !suspensionEvidenceReviewed\) return/)
+assert.match(source, /Specific reason and evidence/)
+assert.match(source, /I checked the payment and transaction evidence for this account/)
+assert.doesNotMatch(source, /Manual fraud review: admin suspended account/)
 
 console.log('Fraud Review canonical classification checks passed (no database execution).')
