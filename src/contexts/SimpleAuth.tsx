@@ -55,6 +55,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return localStorage.getItem('show_balances') !== 'false'
   })
   const lastProfileLoadKey = useRef<string | null>(null)
+  const roleLookupSequence = useRef(0)
+  const lastRoleCheckAt = useRef(0)
 
   useEffect(() => {
     localStorage.setItem('show_balances', showBalances ? 'true' : 'false')
@@ -65,6 +67,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [isAdmin, isStaff])
 
   const checkAdminStatus = useCallback(async (userId: string) => {
+    const lookupSequence = ++roleLookupSequence.current
     setWalletLoading(true)
     setRoleLookupError(null)
 
@@ -80,6 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       )
 
       const { data, error } = await Promise.race([profilePromise, timeoutPromise])
+      if (lookupSequence !== roleLookupSequence.current) return { isAdmin: false, isStaff: false }
 
       if (error) {
         // A failed lookup is not evidence that the account lacks its role.
@@ -98,6 +102,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const nextIsAdmin = data?.is_admin === true
+      lastRoleCheckAt.current = Date.now()
       setRoleLookupError(null)
       const nextIsStaff = !nextIsAdmin && data?.is_staff === true
       setIsAdmin(nextIsAdmin)
@@ -111,6 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setWalletReviewedBy(data?.wallet_reviewed_by || null)
       return { isAdmin: nextIsAdmin, isStaff: nextIsStaff }
     } catch (error) {
+      if (lookupSequence !== roleLookupSequence.current) return { isAdmin: false, isStaff: false }
       console.error('Error checking admin status:', error)
       setRoleLookupError('Account permissions could not be verified. Please retry.')
       setIsAdmin(false)
@@ -124,29 +130,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setWalletReviewedBy(null)
       return { isAdmin: false, isStaff: false }
     } finally {
-      setWalletLoading(false)
+      if (lookupSequence === roleLookupSequence.current) setWalletLoading(false)
     }
   }, [])
 
   useEffect(() => {
     const syncSession = async (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
       const sessionUser = session?.user ?? null
-      setUser(sessionUser)
 
       if (sessionUser) {
         const profileLoadKey = `${sessionUser.id}:${sessionUser.email ?? ''}`
         if (lastProfileLoadKey.current !== profileLoadKey) {
           lastProfileLoadKey.current = profileLoadKey
+          // Hide the previous account's workspace before the new role lookup.
+          setLoading(true)
+          setIsAdmin(false)
+          setIsStaff(false)
+          setRoleLookupError(null)
+          setUser(sessionUser)
           const roleStatus = await checkAdminStatus(sessionUser.id)
-          linkRevenueIdentity(sessionUser.id, {
-            auth_provider: sessionUser.app_metadata?.provider || 'email',
-            email_domain: sessionUser.email?.split('@')[1] || null,
-            internal_user: roleStatus.isAdmin || roleStatus.isStaff,
-            role: roleStatus.isAdmin ? 'admin' : roleStatus.isStaff ? 'staff' : 'customer',
-          })
+          if (lastProfileLoadKey.current === profileLoadKey) {
+            linkRevenueIdentity(sessionUser.id, {
+              auth_provider: sessionUser.app_metadata?.provider || 'email',
+              email_domain: sessionUser.email?.split('@')[1] || null,
+              internal_user: roleStatus.isAdmin || roleStatus.isStaff,
+              role: roleStatus.isAdmin ? 'admin' : roleStatus.isStaff ? 'staff' : 'customer',
+            })
+            setLoading(false)
+          }
+          return
         }
+        setUser(sessionUser)
       } else {
+        roleLookupSequence.current += 1
         lastProfileLoadKey.current = null
+        lastRoleCheckAt.current = 0
+        setUser(null)
         setRoleLookupError(null)
         clearPaymentStorage()
         setIsAdmin(false)
@@ -159,9 +178,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setWalletReviewedBy(null)
         setWalletLoading(false)
         writeInternalRevenueUserFlag(false)
+        setLoading(false)
       }
-
-      setLoading(false)
     }
 
     // Get initial session
@@ -179,13 +197,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe()
   }, [checkAdminStatus])
 
+  useEffect(() => {
+    if (!user) return
+    const recheckOnFocus = async () => {
+      if (Date.now() - lastRoleCheckAt.current < 30_000) return
+      const profileLoadKey = `${user.id}:${user.email ?? ''}`
+      if (lastProfileLoadKey.current !== profileLoadKey) return
+      setLoading(true)
+      try {
+        await checkAdminStatus(user.id)
+      } finally {
+        if (lastProfileLoadKey.current === profileLoadKey) setLoading(false)
+      }
+    }
+    window.addEventListener('focus', recheckOnFocus)
+    return () => window.removeEventListener('focus', recheckOnFocus)
+  }, [user, checkAdminStatus])
+
   const retryRoleLookup = useCallback(async () => {
     if (!user) return
+    const profileLoadKey = `${user.id}:${user.email ?? ''}`
     setLoading(true)
     try {
       await checkAdminStatus(user.id)
     } finally {
-      setLoading(false)
+      if (lastProfileLoadKey.current === profileLoadKey) setLoading(false)
     }
   }, [user, checkAdminStatus])
 

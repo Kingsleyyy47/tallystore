@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS staff_permissions (
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   permission_key TEXT NOT NULL,
   is_enabled BOOLEAN NOT NULL DEFAULT false,
-  auto_approve BOOLEAN NOT NULL DEFAULT true,
+  auto_approve BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(user_id, permission_key)

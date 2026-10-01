@@ -12,6 +12,13 @@ const publicEnvNames = new Set([
   'VITE_APP_BUILD_VERSION',
 ])
 const personalEmailPattern = /[a-z0-9._%+-]+@(?!example\.(?:com|test|invalid)\b|email\.com\b|tallystore\.org\b)[a-z0-9.-]+\.[a-z]{2,}/i
+const browserSecretPatterns = [
+  [/\b[0-9]{1,20}\|[A-Za-z0-9]{40}(?:[a-fA-F0-9]{8})?\b/, 'Sanctum-shaped bearer token'],
+  [/\bECRS-(?:TEST|LIVE)-[A-Za-z0-9]{16,}\b/, 'Ercas key'],
+  [/\bsb_secret_[A-Za-z0-9_-]{20,}\b/, 'Supabase secret key'],
+  [/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9_-]{20,}\b/, 'provider secret key'],
+  [/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/, 'private key'],
+]
 
 const tracked = execFileSync('git', ['ls-files', '--cached', '-z'], { cwd: root })
   .toString('utf8').split('\0').filter(Boolean)
@@ -78,17 +85,22 @@ const browserFiles = [...walk('src'), ...walk('public'), 'index.html']
 for (const file of browserFiles) {
   const content = readFileSync(join(root, file), 'utf8')
   if (personalEmailPattern.test(content)) errors.push(`personal email address in browser source: ${file}`)
+  for (const [pattern, description] of browserSecretPatterns) {
+    if (pattern.test(content)) errors.push(`${description} in browser source: ${file}`)
+  }
   for (const match of content.matchAll(/\bVITE_[A-Z0-9_]+\b/g)) {
     if (!publicEnvNames.has(match[0])) errors.push(`unapproved browser environment name ${match[0]} in ${file}`)
   }
 }
 
-const outputFiles = walk('dist').filter((file) => /\.(?:js|html|json|map)$/.test(file))
+const outputFiles = [...walk('dist'), ...walk('dev-dist')]
+  .filter((file) => /\.(?:js|html|json|map)$/.test(file))
 for (const file of outputFiles) {
   const content = readFileSync(join(root, file), 'utf8')
   if (personalEmailPattern.test(content)) errors.push(`personal email address in browser build: ${file}`)
-  if (/\bsb_secret_[A-Za-z0-9_-]{20,}\b/.test(content)) errors.push(`Supabase secret-shaped value in browser build: ${file}`)
-  if (/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9_-]{20,}\b/.test(content)) errors.push(`provider secret-shaped value in browser build: ${file}`)
+  for (const [pattern, description] of browserSecretPatterns) {
+    if (pattern.test(content)) errors.push(`${description} in browser build: ${file}`)
+  }
   for (const [name, value] of values) {
     if (publicEnvNames.has(name) || value.length < 16) continue
     if (content.includes(value)) errors.push(`local server credential ${name} appears in browser build: ${file}`)

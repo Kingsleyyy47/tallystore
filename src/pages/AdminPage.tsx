@@ -1838,6 +1838,7 @@ export default function AdminPage() {
       return
     }
     loadStaffUsers()
+    setStaffPermissionsMap(prev => { const next = { ...prev }; delete next[userId]; return next })
     setStaffSearchResults(prev => prev.map(u => u.id === userId ? { ...u, is_staff: true } : u))
     toast({ title: 'Staff role granted' })
   }
@@ -1851,6 +1852,7 @@ export default function AdminPage() {
       return
     }
     loadStaffUsers()
+    setStaffPermissionsMap(prev => { const next = { ...prev }; delete next[userId]; return next })
     toast({ title: 'Staff role revoked' })
   }
 
@@ -1861,10 +1863,10 @@ export default function AdminPage() {
     value: boolean,
   ) => {
     setSavingStaffPerm(`${userId}-${permKey}-${field}`)
-    const current = staffPermissionsMap[userId]?.[permKey] || { is_enabled: false, auto_approve: true }
+    const current = staffPermissionsMap[userId]?.[permKey] || { is_enabled: false, auto_approve: false }
     const updated = { ...current, [field]: value }
-    // Enabling a permission always sets auto_approve = true so staff can act immediately
-    if (field === 'is_enabled' && value === true) updated.auto_approve = true
+    // Newly enabled permissions require owner approval for actions by default.
+    if (field === 'is_enabled' && value === true) updated.auto_approve = false
     try {
       const { data, error } = await supabase.functions.invoke('manage-staff', {
         body: {
@@ -10963,7 +10965,7 @@ export default function AdminPage() {
                                   <div key={group} className="p-3 space-y-2">
                                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{group}</p>
                                     {groupPerms.map(p => {
-                                      const perm = userPerms[p.key] || { is_enabled: false, auto_approve: true }
+                                      const perm = userPerms[p.key] || { is_enabled: false, auto_approve: false }
                                       const savingKey = `${su.id}-${p.key}`
                                       return (
                                         <div key={p.key} className="flex items-center justify-between py-1">

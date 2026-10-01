@@ -552,7 +552,7 @@ export default function StaffAdminPage() {
     setLoadingPending(true)
     const { data } = await supabase
       .from('staff_pending_actions')
-      .select('*')
+      .select('id,staff_id,action_label,status,created_at')
       .eq('staff_id', user.id)
       .order('created_at', { ascending: false })
       .limit(30)
