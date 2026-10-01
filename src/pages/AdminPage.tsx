@@ -4417,7 +4417,7 @@ export default function AdminPage() {
     setAdjustmentReason('')
     setAdjustmentReference('')
     setAdjustmentType('add')
-    setLedgerOnlyCredit(false)
+    setLedgerOnlyCredit(true)
     setAdjustBalanceOpen(true)
   }
 
@@ -4465,6 +4465,15 @@ export default function AdminPage() {
       toast({
         title: 'Credit repair only',
         description: 'Ledger repair records missing credits only. Use deduct funds or record chargeback to debit a balance.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (adjustmentType === 'add' && !ledgerOnlyCredit) {
+      toast({
+        title: 'Verified payment required',
+        description: 'New wallet funds can only come from a verified Ercas or PocketFi payment.',
         variant: 'destructive',
       })
       return
@@ -6664,14 +6673,14 @@ export default function AdminPage() {
                     value={adjustmentType}
                     onValueChange={(value: 'add' | 'subtract' | 'chargeback') => {
                       setAdjustmentType(value)
-                      if (value !== 'add') setLedgerOnlyCredit(false)
+                      setLedgerOnlyCredit(value === 'add')
                     }}
                   >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="add">Add Funds (Credit)</SelectItem>
+                      <SelectItem value="add">Record Historical Credit Note</SelectItem>
                       <SelectItem value="subtract">Deduct Funds (Debit)</SelectItem>
                       <SelectItem value="chargeback">Record Chargeback</SelectItem>
                     </SelectContent>
@@ -6679,19 +6688,14 @@ export default function AdminPage() {
                 </div>
 
                 {adjustmentType === 'add' && (
-                  <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
-                    <Checkbox
-                      checked={ledgerOnlyCredit}
-                      onCheckedChange={(checked) => setLedgerOnlyCredit(Boolean(checked))}
-                      className="mt-0.5"
-                    />
+                  <div className="flex items-start gap-3 rounded-lg border p-3 text-sm">
                     <span>
                       <span className="font-medium">Record historical ledger note only</span>
                       <span className="mt-1 block text-xs text-muted-foreground">
                         This preserves a claim for investigation. It does not approve funding, change the balance, or unblock spending.
                       </span>
                     </span>
-                  </label>
+                  </div>
                 )}
 
                 {/* Amount Input */}
@@ -6721,7 +6725,7 @@ export default function AdminPage() {
                 <div className="space-y-2">
                   <Label>Reason (Required)</Label>
                   <Textarea
-                    placeholder={adjustmentType === 'chargeback' ? 'e.g., Provider payment reversal reference and evidence...' : 'e.g., Fix, Refund for order #123, Manual top-up...'}
+                    placeholder={adjustmentType === 'chargeback' ? 'e.g., Provider payment reversal reference and evidence...' : adjustmentType === 'add' ? 'e.g., Historical funding claim and date for review...' : 'e.g., Correction or documented debit...'}
                     value={adjustmentReason}
                     onChange={(e) => setAdjustmentReason(e.target.value)}
                     rows={3}
@@ -6736,8 +6740,8 @@ export default function AdminPage() {
                       <p>
                         Current: ₦{(selectedUser?.wallet_balance || 0).toLocaleString()}
                       </p>
-                      <p className={adjustmentType === 'add' ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
-                        {adjustmentType === 'add' ? '+' : '-'}₦{parseFloat(adjustmentAmount || '0').toLocaleString()}
+                      <p className={adjustmentType === 'add' ? 'text-muted-foreground font-medium' : 'text-red-600 font-medium'}>
+                        {adjustmentType === 'add' ? 'Historical note: ' : '-₦'}{adjustmentType === 'add' ? '₦' : ''}{parseFloat(adjustmentAmount || '0').toLocaleString()}
                       </p>
                       <p className="font-bold border-t pt-1 mt-1">
                         {ledgerOnlyCredit ? `Balance stays: ₦${(selectedUser?.wallet_balance || 0).toLocaleString()}` : `New Balance: ₦${calculateNewBalance()}`}

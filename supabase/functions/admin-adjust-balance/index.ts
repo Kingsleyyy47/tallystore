@@ -502,6 +502,10 @@ serve(async (req) => {
       throw new Error('balance_type must be "wallet" or "crypto"');
     }
 
+    if (balance_type === 'wallet' && adjustment_amount > 0) {
+      throw new Error('Wallet credits require a verified Ercas or PocketFi payment');
+    }
+
     if (cleanReason.length < 3) {
       throw new Error('A reason with at least 3 characters is required');
     }

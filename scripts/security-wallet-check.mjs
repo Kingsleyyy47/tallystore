@@ -2041,7 +2041,8 @@ check('mapped purchase routes check current suspension before debit or dispatch'
 check('frozen customers keep read-only order history and support access', () => {
   const auth = read('src/contexts/SimpleAuth.tsx')
   assert(auth.includes('accountSuspended: boolean'), 'auth context must expose account suspension state')
-  assert(auth.includes("select('is_admin, is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason, wallet_reviewed_by')"), 'auth context must load role, account, and wallet-review state with profile')
+  assert(auth.includes("select('is_admin, is_staff, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason, wallet_reviewed_by')"), 'auth context must load role, account, and wallet-review state with profile')
+  assert(auth.includes("supabase.rpc('get_my_wallet_available')"), 'auth context must show the server-authorized purchase balance')
   assert(auth.includes('setAccountSuspended(Boolean(data?.account_suspended))'), 'auth context must update account suspension state')
 
   const protectedRoute = read('src/components/SimpleProtectedRoute.tsx')

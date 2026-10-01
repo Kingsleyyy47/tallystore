@@ -1810,18 +1810,17 @@ export async function processBulkAccountUpload(
 // Get user's wallet balance
 export async function getUserWalletBalance(userId: string): Promise<number> {
   try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('wallet_balance')
-      .eq('id', userId)
-      .single()
+    const { data: session } = await supabase.auth.getUser()
+    if (session.user?.id !== userId) return 0
+    const { data, error } = await supabase.rpc('get_my_wallet_available')
 
     if (error) {
       console.error('Error fetching wallet balance:', error)
       return 0
     }
 
-    return data?.wallet_balance || 0
+    const amount = Number(data)
+    return Number.isFinite(amount) && amount >= 0 ? amount : 0
   } catch (error) {
     console.error('Error getting wallet balance:', error)
     return 0

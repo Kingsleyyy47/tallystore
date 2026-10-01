@@ -49,6 +49,7 @@ const commands = [
   ['node', ['scripts/wallet-financial-truth-source-test.mjs'], 'canonical financial truth source/model checks'],
   ['node', ['scripts/wallet-financial-truth-pglite-test.mjs'], 'canonical financial truth isolated PostgreSQL execution'],
   ['node', ['scripts/wallet-historical-admin-funding-pglite-test.mjs'], 'owner-approved historical admin funding recovery'],
+  ['node', ['scripts/wallet-verified-new-credit-pglite-test.mjs'], 'verified new-credit purchase allowance'],
   ['node', ['scripts/wallet-admin-credit-demotion-pglite-test.mjs'], 'approved admin credit and refund survive approver demotion'],
   ['node', ['scripts/wallet-pglite-policy-test.mjs'], 'isolated PostgreSQL policy and refund-link migration checks'],
   ['node', ['scripts/wallet-profile-read-policy-pglite-test.mjs'], 'profile RLS recursion and caller-bound admin read scope'],

@@ -37,6 +37,22 @@ function writeInternalRevenueUserFlag(isInternal: boolean) {
   localStorage.setItem(INTERNAL_REVENUE_USER_KEY, isInternal ? 'true' : 'false')
 }
 
+async function readAvailableWalletBalance(): Promise<number> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('wallet balance query timeout')), 6000)
+  )
+  const { data, error } = await Promise.race([
+    supabase.rpc('get_my_wallet_available'),
+    timeout,
+  ])
+  if (error) throw error
+  const amount = Number(data)
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error('Verified wallet balance is unavailable')
+  }
+  return amount
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
@@ -68,13 +84,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const checkAdminStatus = useCallback(async (userId: string) => {
     const lookupSequence = ++roleLookupSequence.current
+    let walletRequestStarted = false
     setWalletLoading(true)
     setRoleLookupError(null)
 
     try {
       const profilePromise = supabase
         .from('profiles')
-        .select('is_admin, is_staff, wallet_balance, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason, wallet_reviewed_by')
+        .select('is_admin, is_staff, account_suspended, suspension_reason, wallet_review_required, wallet_review_reason, wallet_reviewed_by')
         .eq('id', userId)
         .single()
 
@@ -108,7 +125,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsAdmin(nextIsAdmin)
       setIsStaff(nextIsStaff)
       writeInternalRevenueUserFlag(nextIsAdmin || nextIsStaff)
-      setWalletBalance(data?.wallet_balance || 0)
+      walletRequestStarted = true
+      void readAvailableWalletBalance().then((available) => {
+        if (lookupSequence === roleLookupSequence.current) setWalletBalance(available)
+      }).catch((balanceError) => {
+        console.error('Error checking verified wallet balance:', balanceError)
+        if (lookupSequence === roleLookupSequence.current) setWalletBalance(0)
+      }).finally(() => {
+        if (lookupSequence === roleLookupSequence.current) setWalletLoading(false)
+      })
       setAccountSuspended(Boolean(data?.account_suspended))
       setSuspensionReason(data?.suspension_reason || null)
       setWalletReviewRequired(Boolean(data?.wallet_review_required))
@@ -130,7 +155,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setWalletReviewedBy(null)
       return { isAdmin: false, isStaff: false }
     } finally {
-      if (lookupSequence === roleLookupSequence.current) setWalletLoading(false)
+      if (!walletRequestStarted && lookupSequence === roleLookupSequence.current) {
+        setWalletLoading(false)
+      }
     }
   }, [])
 
@@ -250,9 +277,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             wallet_review_reason?: string | null
             wallet_reviewed_by?: string | null
           }
-          const newBalance = nextProfile.wallet_balance
-          if (typeof newBalance === 'number') {
-            setWalletBalance(newBalance)
+          if (typeof nextProfile.wallet_balance === 'number') {
+            void readAvailableWalletBalance().then((available) => {
+              if (lastProfileLoadKey.current?.startsWith(`${user.id}:`)) {
+                setWalletBalance(available)
+              }
+            }).catch((error) => {
+              console.error('Error refreshing verified wallet balance:', error)
+              if (lastProfileLoadKey.current?.startsWith(`${user.id}:`)) {
+                setWalletBalance(0)
+              }
+            })
           }
           if (typeof nextProfile.account_suspended === 'boolean') {
             setAccountSuspended(nextProfile.account_suspended)
@@ -288,19 +323,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setWalletLoading(true)
 
     try {
-      const timeoutPromise = new Promise<{ data: null; error: Error }>(resolve =>
-        setTimeout(() => resolve({ data: null, error: new Error('wallet balance refresh timeout') }), 6000)
-      )
-      const { data, error } = await Promise.race([
-        supabase.from('profiles').select('wallet_balance').eq('id', user.id).single(),
-        timeoutPromise,
-      ])
-
-      if (!error && data) {
-        setWalletBalance(data.wallet_balance || 0)
+      const available = await readAvailableWalletBalance()
+      if (lastProfileLoadKey.current?.startsWith(`${user.id}:`)) {
+        setWalletBalance(available)
       }
     } catch (error) {
       console.error('Error refreshing wallet balance:', error)
+      if (lastProfileLoadKey.current?.startsWith(`${user.id}:`)) {
+        setWalletBalance(0)
+      }
     } finally {
       setWalletLoading(false)
     }

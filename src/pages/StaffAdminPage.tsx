@@ -276,7 +276,6 @@ export default function StaffAdminPage() {
   const [searchingUsers, setSearchingUsers] = useState(false)
   const [adjustUserId, setAdjustUserId] = useState('')
   const [adjustAmount, setAdjustAmount] = useState('')
-  const [adjustType, setAdjustType] = useState<'add' | 'subtract'>('add')
   const [adjustReason, setAdjustReason] = useState('')
   const [adjusting, setAdjusting] = useState(false)
 
@@ -1087,7 +1086,7 @@ export default function StaffAdminPage() {
   async function handleAdjustBalance() {
     if (!adjustUserId || !adjustAmount) return
     const amount = parseFloat(adjustAmount)
-    if (isNaN(amount)) return
+    if (!Number.isFinite(amount) || amount <= 0) return
     const cleanReason = adjustReason.trim()
     if (cleanReason.length < 3) {
       toast({
@@ -1109,9 +1108,9 @@ export default function StaffAdminPage() {
     setAdjusting(true)
     try {
       const key: PermissionKey = 'action_adjust_balance'
-      const label = `${adjustType === 'add' ? 'Add' : 'Subtract'} ₦${amount.toLocaleString()} ${adjustType === 'add' ? 'to' : 'from'} ${targetUser?.email || adjustUserId}`
+      const label = `Subtract ₦${amount.toLocaleString()} from ${targetUser?.email || adjustUserId}`
       const res = await submitPendingAction(key, 'adjust_balance', label, {
-        user_id: adjustUserId, amount: adjustType === 'add' ? amount : -amount, reason: cleanReason,
+        user_id: adjustUserId, amount: -amount, reason: cleanReason,
       })
       if (res.success) {
         toast({ title: res.applied ? 'Balance adjusted' : 'Submitted for approval' })
@@ -1908,10 +1907,7 @@ export default function StaffAdminPage() {
                         </div>
                         {adjustUserId === u.id && can(perms, 'action_adjust_balance') && (
                           <div className="mt-3 space-y-2 border-t pt-3">
-                            <div className="flex gap-2">
-                              <Button size="sm" variant={adjustType === 'add' ? 'default' : 'outline'} onClick={() => setAdjustType('add')}>Add</Button>
-                              <Button size="sm" variant={adjustType === 'subtract' ? 'default' : 'outline'} onClick={() => setAdjustType('subtract')}>Subtract</Button>
-                            </div>
+                            <p className="text-xs text-muted-foreground">Only debits can be submitted for owner approval. Wallet credits require verified Ercas or PocketFi payment.</p>
                             <Input type="number" placeholder="Amount (₦)" value={adjustAmount} onChange={e => setAdjustAmount(e.target.value)} />
                             <Input placeholder="Reason (optional)" value={adjustReason} onChange={e => setAdjustReason(e.target.value)} />
                             <div className="flex gap-2">

@@ -1251,6 +1251,10 @@ function requireAllowedStaffAction(pendingAction: any) {
     throw new Error('Action is not allowed for this staff permission')
   }
 
+  if (action === 'adjust_balance' && Number(d.amount) > 0) {
+    throw new Error('Wallet credits require a verified Ercas or PocketFi payment')
+  }
+
   if (action === 'upsert_setting') {
     const key = String(d.setting_key || '').trim()
     const allowedKeys = STAFF_SETTING_KEYS_BY_PERMISSION[permissionKey] || []
@@ -1549,6 +1553,7 @@ async function applyStaffAction(admin: any, pendingAction: any) {
     const amount = Number(d.amount)
     const reason = String(d.reason || '').trim()
     if (!userId || !Number.isFinite(amount) || amount === 0) throw new Error('Valid user and amount required')
+    if (amount > 0) throw new Error('Wallet credits require a verified Ercas or PocketFi payment')
     if (reason.length < 3) throw new Error('A reason with at least 3 characters is required')
     const { data: profile, error: loadError } = await admin
       .from('profiles')

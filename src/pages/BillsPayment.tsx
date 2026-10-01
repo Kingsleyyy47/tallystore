@@ -240,15 +240,11 @@ export default function BillsPayment() {
         return;
       }
 
-      const { data: profile, error } = await supabase
-        .from('profiles')
-        .select('wallet_balance')
-        .eq('id', user.id)
-        .single();
+      const { data: available, error } = await supabase.rpc('get_my_wallet_available');
 
       if (error) throw error;
 
-      setWalletBalance(profile?.wallet_balance || 0);
+      setWalletBalance(Number(available) || 0);
     } catch (error) {
       console.error('Error fetching balance:', error);
       toast({
