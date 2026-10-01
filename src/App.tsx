@@ -76,9 +76,9 @@ const App = () => {
           <Toaster />
           <Sonner />
           <AnnouncementBanner />
-          <LoginWelcomeDialog />
           <InstallPromptBanner />
           <AuthProvider>
+          <LoginWelcomeDialog />
           <CurrencyProvider>
             <VisitorTracker />
             <GlobalPaymentChecker />

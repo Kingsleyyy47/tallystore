@@ -174,7 +174,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
+    let disposed = false
+    const pendingSessionTimers = new Set<ReturnType<typeof setTimeout>>()
     const syncSession = async (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
+      if (disposed) return
       const sessionUser = session?.user ?? null
 
       if (sessionUser) {
@@ -190,7 +193,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setWalletBalanceUnavailable(false)
           setUser(sessionUser)
           const roleStatus = await checkAdminStatus(sessionUser.id)
-          if (lastProfileLoadKey.current === profileLoadKey) {
+          if (!disposed && lastProfileLoadKey.current === profileLoadKey) {
             linkRevenueIdentity(sessionUser.id, {
               auth_provider: sessionUser.app_metadata?.provider || 'email',
               email_domain: sessionUser.email?.split('@')[1] || null,
@@ -224,19 +227,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      void syncSession(session)
-    })
-
-    // Listen for auth changes
+    // INITIAL_SESSION supplies the stored session. The callback itself must
+    // return synchronously: a Supabase query inside it can deadlock auth.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        await syncSession(session)
+      (_event, session) => {
+        const timer = window.setTimeout(() => {
+          pendingSessionTimers.delete(timer)
+          if (!disposed) void syncSession(session)
+        }, 0)
+        pendingSessionTimers.add(timer)
       }
     )
 
-    return () => subscription.unsubscribe()
+    return () => {
+      disposed = true
+      roleLookupSequence.current += 1
+      pendingSessionTimers.forEach((timer) => window.clearTimeout(timer))
+      subscription.unsubscribe()
+    }
   }, [checkAdminStatus])
 
   useEffect(() => {

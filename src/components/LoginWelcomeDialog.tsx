@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { X, MessageCircle, Radio } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/contexts/SimpleAuth'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
 
 const SESSION_KEY_PREFIX = 'login_welcome_shown:'
@@ -23,33 +23,20 @@ function TelegramIcon({ className }: { className?: string }) {
 
 export default function LoginWelcomeDialog() {
   const [open, setOpen] = useState(false)
-  const [userId, setUserId] = useState<string | null>(null)
+  const { user, loading, roleLookupError, isAdmin, isStaff } = useAuth()
   const settings = useSupportSettings()
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session?.user) {
-        const uid = session.user.id
-        const key = SESSION_KEY_PREFIX + uid
-        if (sessionStorage.getItem(key) !== 'seen') {
-          setUserId(uid)
-          timerRef.current = setTimeout(() => setOpen(true), 800)
-        }
-      }
-      if (event === 'SIGNED_OUT') {
-        setOpen(false)
-        setUserId(null)
-      }
-    })
-    return () => {
-      subscription.unsubscribe()
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  }, [])
+    setOpen(false)
+    if (!user || loading || roleLookupError || isAdmin || isStaff) return
+    if (sessionStorage.getItem(SESSION_KEY_PREFIX + user.id) === 'seen') return
+
+    const timer = window.setTimeout(() => setOpen(true), 800)
+    return () => window.clearTimeout(timer)
+  }, [user?.id, loading, roleLookupError, isAdmin, isStaff])
 
   const dismiss = () => {
-    if (userId) sessionStorage.setItem(SESSION_KEY_PREFIX + userId, 'seen')
+    if (user) sessionStorage.setItem(SESSION_KEY_PREFIX + user.id, 'seen')
     setOpen(false)
   }
 
