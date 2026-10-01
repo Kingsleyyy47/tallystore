@@ -318,7 +318,7 @@ function isRevenueRelevantSmmOrder(order: Pick<SmmOrder, 'status'>) {
 
 export default function SocialBoostPage() {
   const navigate = useNavigate();
-  const { user, walletBalance, refreshWalletBalance, showBalances, isStaff, isAdmin } = useAuth();
+  const { user, walletBalance, walletLoading, walletBalanceUnavailable, refreshWalletBalance, showBalances, isStaff, isAdmin } = useAuth();
   const { recommendations: recs } = useRecommendations({ limit: 3 });
   const { formatPrice } = useCurrency();
   const { toast } = useToast();
@@ -662,7 +662,7 @@ export default function SocialBoostPage() {
     if (fields.includes('keywords') && !keywords.trim()) return false;
     if (fields.includes('answer_number') && !answerNumber) return false;
     if (fields.includes('groups') && !groups.trim()) return false;
-    if (calculateTotal() > walletBalance) return false;
+    if (!walletLoading && !walletBalanceUnavailable && calculateTotal() > walletBalance) return false;
     return true;
   };
 
@@ -837,15 +837,16 @@ export default function SocialBoostPage() {
                       <p className="text-[10px] sm:text-xs text-muted-foreground hidden sm:block">TallyStore Wallet</p>
                     </div>
                   </div>
-                  {loadingWallet ? (
+                  {loadingWallet || walletLoading ? (
                     <div className="h-7 sm:h-8 w-24 sm:w-32 bg-muted animate-pulse rounded" />
                   ) : (
                     <p className="text-lg sm:text-xl md:text-2xl font-bold text-green-700 dark:text-green-400 shrink-0">
-                      {showBalances ? formatPrice(walletBalance) : '***'}
+                      {walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(walletBalance) : '***'}
                     </p>
                   )}
                 </div>
-                {!loadingWallet && walletBalance < 1000 && <Button size="sm" variant="outline" onClick={() => navigate('/wallet')} className="mt-2 sm:mt-3 w-full text-xs sm:text-sm h-8 sm:h-9">Top Up Wallet</Button>}
+                {walletBalanceUnavailable && !walletLoading && <Button size="sm" variant="outline" onClick={() => void refreshWalletBalance()} className="mt-2 sm:mt-3 w-full text-xs sm:text-sm h-8 sm:h-9">Retry balance check</Button>}
+                {!loadingWallet && !walletLoading && !walletBalanceUnavailable && walletBalance < 1000 && <Button size="sm" variant="outline" onClick={() => navigate('/wallet')} className="mt-2 sm:mt-3 w-full text-xs sm:text-sm h-8 sm:h-9">Top Up Wallet</Button>}
               </CardContent>
             </Card>
 
@@ -1112,7 +1113,7 @@ export default function SocialBoostPage() {
                             const qty = parseInt(quantity) || 0;
                             const isQuantityInvalid = SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type) &&
                               (qty < selectedService.min_quantity || qty > selectedService.max_quantity);
-                            const isBalanceInsufficient = calculateTotal() > walletBalance;
+                            const isBalanceInsufficient = !walletLoading && !walletBalanceUnavailable && calculateTotal() > walletBalance;
                             const isLinkInvalid = requiredFields.includes('link') && selectedService.service_type !== 'Subscriptions' && (!link || linkError);
                             
                             return (
@@ -1120,9 +1121,11 @@ export default function SocialBoostPage() {
                                 onClick={handleSubmitOrder} 
                                 className={`w-full h-11 sm:h-12 md:h-14 text-sm sm:text-base md:text-lg ${isQuantityInvalid ? 'bg-orange-500 hover:bg-orange-600' : ''}`} 
                                 size="lg" 
-                                disabled={submitting || !isFormValid()}
+                                disabled={submitting || walletLoading || loadingWallet || !isFormValid()}
                               >
-                                {submitting ? (
+                                {walletLoading || loadingWallet ? (
+                                  <><Loader2 className="w-4 h-4 sm:w-5 sm:h-5 mr-2 animate-spin" />Checking Wallet...</>
+                                ) : submitting ? (
                                   <><Loader2 className="w-4 h-4 sm:w-5 sm:h-5 mr-2 animate-spin" />Processing...</>
                                 ) : isQuantityInvalid ? (
                                   <><AlertCircle className="w-4 h-4 sm:w-5 sm:h-5 mr-1.5" />Enter Valid Quantity (Min: {selectedService.min_quantity})</>

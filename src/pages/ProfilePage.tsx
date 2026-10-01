@@ -23,7 +23,7 @@ import {
 } from '@/components/RevampLayout'
 
 export default function ProfilePage() {
-  const { user, walletBalance, showBalances } = useAuth()
+  const { user, walletBalance, walletLoading, walletBalanceUnavailable, showBalances } = useAuth()
   const { formatPrice } = useCurrency()
   const { toast } = useToast()
   const [transactions, setTransactions] = useState<any[]>([])
@@ -182,7 +182,7 @@ export default function ProfilePage() {
             <div className="mt-6 grid gap-3 text-sm">
               <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3 dark:bg-white/[0.035]">
                 <span className="text-slate-600 dark:text-slate-400">Wallet Balance</span>
-                <strong className="text-purple-700 dark:text-purple-300">{showBalances ? formatPrice(walletBalance) : '***'}</strong>
+                <strong className="text-purple-700 dark:text-purple-300">{walletLoading ? 'Checking...' : walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(walletBalance) : '***'}</strong>
               </div>
               <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3 dark:bg-white/[0.035]">
                 <span className="text-slate-600 dark:text-slate-400">Total Spent</span>

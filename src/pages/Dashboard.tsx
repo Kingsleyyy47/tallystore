@@ -144,7 +144,7 @@ const actionItems = [
 ]
 
 export default function Dashboard() {
-  const { user, walletBalance, walletLoading, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
+  const { user, walletBalance, walletLoading, walletBalanceUnavailable, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
   const { recommendations: recs } = useRecommendations({ limit: 3 })
   const { currency, formatPrice } = useCurrency()
   const [transactions, setTransactions] = useState<DashboardTransaction[]>([])
@@ -432,7 +432,7 @@ export default function Dashboard() {
                     {walletLoading ? (
                       <span className="inline-block h-9 w-40 animate-pulse rounded-lg bg-white/20" />
                     ) : (
-                      showBalances ? formatPrice(walletBalance) : '***'
+                      walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(walletBalance) : '***'
                     )}
                   </div>
                   <p className="mt-2 text-xs font-bold text-purple-100/85 sm:text-sm">Available Balance</p>

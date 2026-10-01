@@ -51,7 +51,7 @@ export function TopUpWallet({
   const [pocketfiError, setPocketfiError] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
-  const { user, walletBalance, refreshWalletBalance, showBalances } = useAuth();
+  const { user, walletBalance, walletLoading, walletBalanceUnavailable, refreshWalletBalance, showBalances } = useAuth();
   const { toast } = useToast();
   const { ngnToUsd } = useExchangeRate();
   const { formatPrice } = useCurrency();
@@ -116,13 +116,13 @@ export function TopUpWallet({
   // Snapshot the current balance once the account panel is up, so we know what to compare
   // against while polling for the webhook's credit.
   useEffect(() => {
-    if (isOpen && gateway === 'pocketfi' && pocketfiAccount && pocketfiBaselineBalance === null) {
+    if (isOpen && gateway === 'pocketfi' && pocketfiAccount && pocketfiBaselineBalance === null && !walletLoading && !walletBalanceUnavailable) {
       setPocketfiBaselineBalance(walletBalance);
     }
     if (!isOpen || gateway !== 'pocketfi') {
       setPocketfiBaselineBalance(null);
     }
-  }, [isOpen, gateway, pocketfiAccount]);
+  }, [isOpen, gateway, pocketfiAccount, pocketfiBaselineBalance, walletBalance, walletLoading, walletBalanceUnavailable]);
 
   // PocketFi has no client-side transaction reference to verify — the webhook credits the
   // wallet server-side whenever a transfer lands. Poll the wallet balance while this panel
@@ -142,6 +142,8 @@ export function TopUpWallet({
   useEffect(() => {
     if (
       pocketfiBaselineBalance !== null &&
+      !walletLoading &&
+      !walletBalanceUnavailable &&
       walletBalance > pocketfiBaselineBalance &&
       gateway === 'pocketfi'
     ) {
@@ -154,7 +156,7 @@ export function TopUpWallet({
       setPocketfiBaselineBalance(walletBalance);
       onSuccess?.();
     }
-  }, [walletBalance, pocketfiBaselineBalance, gateway, showBalances, formatPrice, onSuccess, toast]);
+  }, [walletBalance, walletLoading, walletBalanceUnavailable, pocketfiBaselineBalance, gateway, showBalances, formatPrice, onSuccess, toast]);
 
   const handleCopy = async (value: string, field: string) => {
     try {

@@ -18,6 +18,7 @@ interface AuthContextType {
   retryRoleLookup: () => Promise<void>
   walletBalance: number
   walletLoading: boolean
+  walletBalanceUnavailable: boolean
   accountSuspended: boolean
   suspensionReason: string | null
   walletReviewRequired: boolean
@@ -61,6 +62,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [roleLookupError, setRoleLookupError] = useState<string | null>(null)
   const [walletBalance, setWalletBalance] = useState(0)
   const [walletLoading, setWalletLoading] = useState(true)
+  const [walletBalanceUnavailable, setWalletBalanceUnavailable] = useState(false)
   const [accountSuspended, setAccountSuspended] = useState(false)
   const [suspensionReason, setSuspensionReason] = useState<string | null>(null)
   const [walletReviewRequired, setWalletReviewRequired] = useState(false)
@@ -86,6 +88,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const lookupSequence = ++roleLookupSequence.current
     let walletRequestStarted = false
     setWalletLoading(true)
+    setWalletBalanceUnavailable(false)
     setRoleLookupError(null)
 
     try {
@@ -109,6 +112,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsStaff(false)
         writeInternalRevenueUserFlag(false)
         setWalletBalance(0)
+        setWalletBalanceUnavailable(true)
         setAccountSuspended(false)
         setSuspensionReason(null)
         setWalletReviewRequired(false)
@@ -127,10 +131,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       writeInternalRevenueUserFlag(nextIsAdmin || nextIsStaff)
       walletRequestStarted = true
       void readAvailableWalletBalance().then((available) => {
-        if (lookupSequence === roleLookupSequence.current) setWalletBalance(available)
+        if (lookupSequence === roleLookupSequence.current) {
+          setWalletBalance(available)
+          setWalletBalanceUnavailable(false)
+        }
       }).catch((balanceError) => {
         console.error('Error checking verified wallet balance:', balanceError)
-        if (lookupSequence === roleLookupSequence.current) setWalletBalance(0)
+        if (lookupSequence === roleLookupSequence.current) {
+          setWalletBalance(0)
+          setWalletBalanceUnavailable(true)
+        }
       }).finally(() => {
         if (lookupSequence === roleLookupSequence.current) setWalletLoading(false)
       })
@@ -148,6 +158,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsStaff(false)
       writeInternalRevenueUserFlag(false)
       setWalletBalance(0)
+      setWalletBalanceUnavailable(true)
       setAccountSuspended(false)
       setSuspensionReason(null)
       setWalletReviewRequired(false)
@@ -174,6 +185,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setIsAdmin(false)
           setIsStaff(false)
           setRoleLookupError(null)
+          setWalletBalance(0)
+          setWalletBalanceUnavailable(false)
           setUser(sessionUser)
           const roleStatus = await checkAdminStatus(sessionUser.id)
           if (lastProfileLoadKey.current === profileLoadKey) {
@@ -198,6 +211,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsAdmin(false)
         setIsStaff(false)
         setWalletBalance(0)
+        setWalletBalanceUnavailable(false)
         setAccountSuspended(false)
         setSuspensionReason(null)
         setWalletReviewRequired(false)
@@ -281,11 +295,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             void readAvailableWalletBalance().then((available) => {
               if (lastProfileLoadKey.current?.startsWith(`${user.id}:`)) {
                 setWalletBalance(available)
+                setWalletBalanceUnavailable(false)
               }
             }).catch((error) => {
               console.error('Error refreshing verified wallet balance:', error)
               if (lastProfileLoadKey.current?.startsWith(`${user.id}:`)) {
                 setWalletBalance(0)
+                setWalletBalanceUnavailable(true)
               }
             })
           }
@@ -316,6 +332,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshWalletBalance = useCallback(async () => {
     if (!user) {
       setWalletBalance(0)
+      setWalletBalanceUnavailable(false)
       setWalletLoading(false)
       return
     }
@@ -326,14 +343,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const available = await readAvailableWalletBalance()
       if (lastProfileLoadKey.current?.startsWith(`${user.id}:`)) {
         setWalletBalance(available)
+        setWalletBalanceUnavailable(false)
       }
     } catch (error) {
       console.error('Error refreshing wallet balance:', error)
       if (lastProfileLoadKey.current?.startsWith(`${user.id}:`)) {
         setWalletBalance(0)
+        setWalletBalanceUnavailable(true)
       }
     } finally {
-      setWalletLoading(false)
+      if (lastProfileLoadKey.current?.startsWith(`${user.id}:`)) {
+        setWalletLoading(false)
+      }
     }
   }, [user])
 
@@ -467,6 +488,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     retryRoleLookup,
     walletBalance,
     walletLoading,
+    walletBalanceUnavailable,
     accountSuspended,
     suspensionReason,
     walletReviewRequired,

@@ -15,7 +15,7 @@ export default function WalletBalanceWidget({
   showRefresh = false,
   size = 'md' 
 }: WalletBalanceWidgetProps) {
-  const { walletBalance, walletLoading, refreshWalletBalance, isAdmin, showBalances, toggleBalanceVisibility } = useAuth()
+  const { walletBalance, walletLoading, walletBalanceUnavailable, refreshWalletBalance, isAdmin, showBalances, toggleBalanceVisibility } = useAuth()
   const { formatPrice } = useCurrency()
 
   // Don't show for admin users
@@ -45,7 +45,7 @@ export default function WalletBalanceWidget({
             {walletLoading ? (
               <Loader2 className="h-5 w-5 animate-spin inline" />
             ) : (
-              <>{showBalances ? formatPrice(walletBalance || 0) : '***'}</>
+              <>{walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(walletBalance || 0) : '***'}</>
             )}
           </span>
         </div>

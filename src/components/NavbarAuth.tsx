@@ -55,7 +55,7 @@ export default function Navbar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [showInstallDialog, setShowInstallDialog] = useState(false)
   const [announcementVisible, setAnnouncementVisible] = useState(true)
-  const { user, signOut, isAdmin, isStaff, walletBalance, walletLoading, showBalances } = useAuth()
+  const { user, signOut, isAdmin, isStaff, walletBalance, walletLoading, walletBalanceUnavailable, showBalances } = useAuth()
   const { currency, toggleCurrency, formatPrice } = useCurrency()
   const { canInstall, isInstalled, isAndroid, isIOS, installApp } = usePWAInstall()
   const { toast } = useToast()
@@ -304,7 +304,7 @@ export default function Navbar() {
                     {walletLoading ? (
                       <span className="inline-block h-4 w-16 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
                     ) : (
-                      <>{showBalances ? formatPrice(profileDisplay.wallet_balance || 0) : '***'}</>
+                      <>{walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(profileDisplay.wallet_balance || 0) : '***'}</>
                     )}
                   </Link>
                 )}
@@ -489,7 +489,7 @@ export default function Navbar() {
                         {walletLoading ? (
                           <span className="inline-block h-4 w-16 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
                         ) : (
-                          <>Balance: {showBalances ? formatPrice(profileDisplay.wallet_balance || 0) : '***'}</>
+                          <>Balance: {walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(profileDisplay.wallet_balance || 0) : '***'}</>
                         )}
                       </div>
                     )}

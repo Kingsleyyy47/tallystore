@@ -76,7 +76,7 @@ function normalizePurchasedCredentials(
 export default function CheckoutPage() {
   const location = useLocation()
   const navigate = useNavigate()
-  const { user, walletBalance, refreshWalletBalance, showBalances, isStaff, isAdmin } = useAuth()
+  const { user, walletBalance, walletLoading, walletBalanceUnavailable, refreshWalletBalance, showBalances, isStaff, isAdmin } = useAuth()
   const { formatPrice } = useCurrency()
   const { toast } = useToast()
   
@@ -493,8 +493,9 @@ export default function CheckoutPage() {
     )
   }
 
-  const canAfford = walletBalance >= totalAmount
-  const insufficientFunds = !canAfford
+  const walletBalanceReady = !walletLoading && !walletBalanceUnavailable
+  const canAfford = walletBalanceReady && walletBalance >= totalAmount
+  const insufficientFunds = walletBalanceReady && walletBalance < totalAmount
   const balanceAfter = walletBalance - totalAmount
 
   return (
@@ -568,7 +569,7 @@ export default function CheckoutPage() {
                     Payment details
                   </span>
                   <span className="flex items-center gap-2 text-sm text-muted-foreground">
-                    {showBalances ? formatPrice(walletBalance) : '***'}
+                    {walletLoading ? 'Checking...' : walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(walletBalance) : '***'}
                     <ChevronDown className={`h-4 w-4 transition-transform ${paymentDetailsOpen ? 'rotate-180' : ''}`} />
                   </span>
                 </button>
@@ -577,14 +578,14 @@ export default function CheckoutPage() {
                 <div className="grid grid-cols-2 gap-3 rounded-2xl border bg-muted/30 p-3 text-sm">
                   <div className="min-w-0">
                     <p className="text-xs text-muted-foreground">Wallet balance</p>
-                    <p className={`truncate font-bold ${canAfford ? 'text-green-600' : 'text-red-600'}`}>
-                      {showBalances ? formatPrice(walletBalance) : '***'}
+                    <p className={`truncate font-bold ${!walletBalanceReady ? 'text-muted-foreground' : canAfford ? 'text-green-600' : 'text-red-600'}`}>
+                      {walletLoading ? 'Checking...' : walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(walletBalance) : '***'}
                     </p>
                   </div>
                   <div className="min-w-0 text-right">
                     <p className="text-xs text-muted-foreground">After purchase</p>
                     <p className={`truncate text-xs font-bold ${balanceAfter >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {showBalances ? formatPrice(balanceAfter) : '***'}
+                      {!walletBalanceReady ? '—' : showBalances ? formatPrice(balanceAfter) : '***'}
                     </p>
                   </div>
                 </div>
@@ -637,6 +638,17 @@ export default function CheckoutPage() {
               </CollapsibleContent>
             </Collapsible>
 
+            {walletBalanceUnavailable && !walletLoading && !completedPurchase && (
+              <Alert>
+                <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                  <span>Wallet balance is temporarily unavailable. The server will check your funds before any purchase.</span>
+                  <Button type="button" variant="outline" size="sm" onClick={() => void refreshWalletBalance()}>
+                    Retry balance
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            )}
+
             {insufficientFunds && !completedPurchase && (
               <Alert>
                 <AlertDescription>
@@ -662,11 +674,16 @@ export default function CheckoutPage() {
             ) : (
               <Button
                 onClick={handlePurchase}
-                disabled={purchasing}
+                disabled={purchasing || walletLoading}
                 className="w-full"
                 size="lg"
               >
-                {purchasing ? (
+                {walletLoading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Checking Wallet...
+                  </>
+                ) : purchasing ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Processing...

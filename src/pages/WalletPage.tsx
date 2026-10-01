@@ -100,7 +100,7 @@ const formatDateTime = (value: string) => {
 }
 
 export default function WalletPage() {
-  const { user, walletBalance, walletLoading, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
+  const { user, walletBalance, walletLoading, walletBalanceUnavailable, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
   const { recommendations: recs } = useRecommendations({ limit: 3 })
   const { currency, formatPrice } = useCurrency()
   const { toast } = useToast()
@@ -243,7 +243,7 @@ export default function WalletPage() {
     })
   }
 
-  const walletBalanceDisplay = showBalances ? formatPrice(walletBalance) : '***'
+  const walletBalanceDisplay = walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(walletBalance) : '***'
   const pendingBalanceDisplay = showBalances ? formatPrice(pendingBalance) : '***'
   const totalTopupsDisplay = showBalances ? formatPrice(totalTopups) : '***'
   const totalSpentDisplay = showBalances ? formatPrice(totalSpent) : '***'
@@ -345,6 +345,11 @@ export default function WalletPage() {
                       )}
                     </div>
                     <p className="mt-2 text-xs font-bold text-purple-100/85 sm:text-sm">Available Balance</p>
+                    {walletBalanceUnavailable && !walletLoading && (
+                      <button type="button" className="mt-2 text-xs font-bold text-white underline" onClick={() => void refreshWalletBalance()}>
+                        Retry balance check
+                      </button>
+                    )}
                     <div className="mt-4 max-w-48 sm:mt-5">
                       <TopUpWallet
                         onSuccess={handleTopUpSuccess}
