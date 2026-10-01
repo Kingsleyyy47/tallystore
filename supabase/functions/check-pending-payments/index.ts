@@ -77,7 +77,7 @@ serve(async (req) => {
       .gte('created_at', fortyEightHoursAgo)
       .or(`last_check_at.is.null,last_check_at.lt.${tenMinutesAgo}`)
       .order('created_at', { ascending: true })
-      .limit(50); // Process max 50 at a time
+      .limit(5); // Keep a scheduled run within the Edge execution window.
 
     if (fetchError) {
       console.error('[CHECK-PENDING] Error fetching pending payments:', fetchError);

@@ -726,6 +726,15 @@ supabase db push
 If migrations are applied by SQL editor instead of CLI, preserve the SQL output
 and then run the read-only checks in `wallet-readonly-query-pack.sql`.
 
+Later production security migrations must also be tracked in order:
+`20260929000000_allow_protected_legacy_cutoff_callers.sql`,
+`20261001000000_reset_staff_authority_on_role_change.sql`,
+`20261001001000_remove_implicit_staff_database_access.sql`,
+`20261001002000_link_legacy_smm_refunds.sql`,
+`20261001003000_verified_historical_pocketfi_recovery.sql`,
+`20261001004000_verified_missing_ercas_funding.sql`, and
+`20261001005000_schedule_verified_payment_recovery.sql`.
+
 ## Supabase Edge Functions To Deploy
 
 Run these commands from the repository root with the reviewed project ref.
@@ -812,6 +821,16 @@ above even if a route change looks small.
 `verify-and-credit-wallet` imports the NGN parser; deploy that function to
 replace its former one-kobo amount tolerance, then test exact and mismatched
 provider amounts and returned payment identities in staging.
+
+The `check-pending-payments` Edge function also needs a live scheduler. Before
+applying `20261001005000_schedule_verified_payment_recovery.sql`, store the
+project's Supabase URL in Vault as `tallystore_project_url`, store a random
+token in Vault as `payment_recovery_cron_secret`, and set that same token as the
+Edge secret `PAYMENT_RECOVERY_CRON_SECRET`. The migration schedules a call every
+ten minutes without placing the token in `cron.job`. Confirm the job is active,
+an unauthenticated request is denied, and `cron.job_run_details` reports a
+successful run. The worker retries only checkouts created in the preceding 48
+hours; older pending payments require individual provider and wallet review.
 
 Also verify these existing security-sensitive functions are still deployed with
 the expected config and secrets:
