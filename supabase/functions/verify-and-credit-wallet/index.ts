@@ -426,6 +426,7 @@ serve(async (req) => {
 
     // Determine user: either from JWT or from body (for cron/admin calls)
     let userId: string;
+    let serviceRoleCaller = false;
 
     // Try JWT auth first
     const supabaseUser = createClient(
@@ -451,6 +452,7 @@ serve(async (req) => {
         throw new Error('Unauthorized');
       }
       userId = body_user_id;
+      serviceRoleCaller = true;
     } else {
       throw new Error('Unauthorized');
     }
@@ -514,7 +516,7 @@ serve(async (req) => {
     // someone could submit another successful Ercas reference and claim credit.
     const { data: pendingPayment, error: pendingPaymentError } = await supabaseAdmin
       .from('pending_payments')
-      .select('id, user_id, amount, status, check_count, transaction_reference, ercas_reference')
+      .select('id, user_id, amount, status, check_count, transaction_reference, ercas_reference, created_at')
       .eq('transaction_reference', transaction_reference)
       .eq('user_id', userId)
       .maybeSingle();
@@ -533,6 +535,31 @@ serve(async (req) => {
           error: 'Payment reference was not created for this account.',
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
+      );
+    }
+
+    // Old payments may already be included in a legacy wallet balance even
+    // when their original payment row was never marked credited. Require an
+    // operator reconciliation before a browser can retry such a reference.
+    const { data: recoveredFunding, error: recoveredFundingError } = await supabaseAdmin
+      .from('wallet_missing_gateway_funding')
+      .select('id')
+      .eq('pending_payment_id', pendingPayment.id)
+      .maybeSingle();
+    if (recoveredFundingError) throw new Error('Could not check payment recovery evidence');
+    if (recoveredFunding) {
+      return new Response(
+        JSON.stringify({ success: false, status: 'already_recognized', error: 'This payment is already included in your wallet balance.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 }
+      );
+    }
+
+    const paymentCreatedAt = Date.parse(pendingPayment.created_at);
+    if (!Number.isFinite(paymentCreatedAt)) throw new Error('Invalid payment creation time');
+    if (!serviceRoleCaller && Date.now() - paymentCreatedAt > 48 * 60 * 60 * 1000) {
+      return new Response(
+        JSON.stringify({ success: false, status: 'review_required', error: 'This older payment needs a support review before it can be credited.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 }
       );
     }
 

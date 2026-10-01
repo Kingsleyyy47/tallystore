@@ -831,6 +831,11 @@ ten minutes without placing the token in `cron.job`. Confirm the job is active,
 an unauthenticated request is denied, and `cron.job_run_details` reports a
 successful run. The worker retries only checkouts created in the preceding 48
 hours; older pending payments require individual provider and wallet review.
+`verify-and-credit-wallet` also requires that review for browser retries older
+than 48 hours and rejects payments already recorded in
+`wallet_missing_gateway_funding`. An operator recovery must recheck the Ercas
+payment and the customer's ledger before using the service role path; no
+browser account can bypass the age gate.
 
 Also verify these existing security-sensitive functions are still deployed with
 the expected config and secrets:
