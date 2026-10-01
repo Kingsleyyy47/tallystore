@@ -159,7 +159,7 @@ const ADMIN_TABS = [
   { value: 'categories', label: 'Categories' },
   { value: 'users', label: 'Users' },
   { value: 'balance', label: 'Balance' },
-  { value: 'fraud', label: 'Account Holds' },
+  { value: 'fraud', label: 'Wallet Review' },
   { value: 'sales', label: 'Sales' },
   { value: 'histories', label: 'Transactions' },
   { value: 'email', label: 'Email' },
@@ -416,7 +416,7 @@ type FraudReviewRow = {
   deviceType?: string | null
   deviceOs?: string | null
   deviceBrowser?: string | null
-  reviewType: 'review_unblock' | 'suspended_risk' | 'overspent' | 'quarantined_excess' | 'duplicate_deposit' | 'watchlist'
+  reviewType: 'review_unblock' | 'suspended_risk' | 'overspent' | 'quarantined_excess' | 'duplicate_deposit' | 'watchlist' | 'historical_funding'
   reason: string
 }
 
@@ -770,7 +770,7 @@ export default function AdminPage() {
   const [fraudLastLoadedAt, setFraudLastLoadedAt] = useState<string | null>(null)
   const fraudInitialScanStartedRef = useRef(false)
   const [fraudSearchQuery, setFraudSearchQuery] = useState('')
-  const [fraudReviewFilter, setFraudReviewFilter] = useState<'all' | 'overspent' | 'excess' | 'suspended' | 'unblock' | 'review' | 'duplicate' | 'watchlist' | 'internal'>('all')
+  const [fraudReviewFilter, setFraudReviewFilter] = useState<'all' | 'overspent' | 'excess' | 'suspended' | 'unblock' | 'review' | 'duplicate' | 'watchlist' | 'historical' | 'internal'>('all')
   const [suspensionTarget, setSuspensionTarget] = useState<{ id: string; email: string } | null>(null)
   const [suspensionReason, setSuspensionReason] = useState('')
   const [suspensionEvidenceReviewed, setSuspensionEvidenceReviewed] = useState(false)
@@ -2810,6 +2810,14 @@ export default function AdminPage() {
         if (truth.integrity_status === 'payment_identity_conflict') {
           reviewType = 'duplicate_deposit'
           reason = 'Payment identity conflict in canonical wallet evidence.'
+        } else if (role === 'customer' && !suspended && !walletReviewRequired &&
+          truth.evidence_complete && truth.integrity_status === 'backed_funds_exhausted' &&
+          truth.duplicate_payment_identities === 0 &&
+          truth.stored_wallet_balance > 0 && truth.confirmed_spendable === 0 &&
+          truth.trusted_available_before_holds === 0 &&
+          truth.authorization_basis === 'verified_gateway_required') {
+          reviewType = 'historical_funding'
+          reason = 'An older recorded balance has no confirmed funding evidence. The account is active; review payment receipts or earlier admin top-ups before approving any historical allowance.'
         } else if (truth.integrity_status === 'quarantined_excess') {
           reviewType = 'quarantined_excess'
           reason = `Displayed wallet exceeds recorded backing by ${formatAdminNaira(truth.quarantined_excess)}. Verify historical funding before deciding on any account action.`
@@ -2914,7 +2922,8 @@ export default function AdminPage() {
         duplicate_deposit: 2,
         quarantined_excess: 3,
         review_unblock: 4,
-        watchlist: 5,
+        historical_funding: 5,
+        watchlist: 6,
       }
       setFraudRows(rows.sort((a, b) =>
         rank[a.reviewType] - rank[b.reviewType] ||
@@ -2982,6 +2991,7 @@ export default function AdminPage() {
         (fraudReviewFilter === 'review' && row.walletReviewRequired) ||
         (fraudReviewFilter === 'duplicate' && (row.reviewType === 'duplicate_deposit' || row.duplicateTopupReferences.length > 0)) ||
         (fraudReviewFilter === 'watchlist' && row.reviewType === 'watchlist') ||
+        (fraudReviewFilter === 'historical' && row.reviewType === 'historical_funding') ||
         (fraudReviewFilter === 'internal' && row.role !== 'customer')
 
       if (!tabMatches) return false
@@ -3016,6 +3026,7 @@ export default function AdminPage() {
     review: fraudRows.filter(row => row.walletReviewRequired).length,
     duplicate: fraudRows.filter(row => row.reviewType === 'duplicate_deposit' || row.duplicateTopupReferences.length > 0).length,
     watchlist: fraudRows.filter(row => row.reviewType === 'watchlist').length,
+    historical: fraudRows.filter(row => row.reviewType === 'historical_funding').length,
     internal: fraudRows.filter(row => row.role !== 'customer').length,
   }), [fraudRows])
 
@@ -8435,10 +8446,10 @@ export default function AdminPage() {
                     <div>
                       <CardTitle className="flex items-center gap-2">
                         <Shield className="h-5 w-5 text-primary" />
-                        Account Holds
+                        Wallet Evidence Review
                       </CardTitle>
                       <p className="text-muted-foreground">
-                        Accounts flagged by canonical wallet integrity, review holds, or watchlist checks.
+                        Review account holds, payment conflicts, and historical balances without treating missing records as proof of misuse.
                       </p>
                       {fraudLastLoadedAt && (
                         <p className="mt-1 text-xs text-muted-foreground">
@@ -8448,7 +8459,7 @@ export default function AdminPage() {
                     </div>
                     <Button type="button" variant="outline" onClick={loadFraudReview} disabled={fraudLoading}>
                       {fraudLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                      Scan fraud
+                      Scan wallets
                     </Button>
                   </div>
                 </CardHeader>
@@ -8514,6 +8525,7 @@ export default function AdminPage() {
                             ['review', 'Review flags'],
                             ['duplicate', 'Duplicate'],
                             ['watchlist', 'Watchlist'],
+                            ['historical', 'Funding history'],
                             ['internal', 'Internal'],
                           ].map(([id, label]) => {
                             const filterId = id as typeof fraudReviewFilter
@@ -8534,7 +8546,7 @@ export default function AdminPage() {
                           })}
                         </div>
                         <p className="text-xs text-muted-foreground">
-                          Showing {filteredFraudRows.length} of {fraudRows.length} fraud review item(s).
+                          Showing {filteredFraudRows.length} of {fraudRows.length} wallet review item(s).
                         </p>
                       </div>
                     </>
@@ -8593,6 +8605,8 @@ export default function AdminPage() {
                                   </Badge>
                                 ) : row.reviewType === 'watchlist' ? (
                                   <Badge variant="outline">Monitor</Badge>
+                                ) : row.reviewType === 'historical_funding' ? (
+                                  <Badge variant="outline">Funding history</Badge>
                                 ) : row.reviewType === 'quarantined_excess' ? (
                                   <Badge variant="outline">Wallet difference</Badge>
                                 ) : row.reviewType === 'duplicate_deposit' && row.truth.integrity_status !== 'payment_identity_conflict' ? (

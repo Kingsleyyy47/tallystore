@@ -30,8 +30,10 @@ export type AdminWalletFinancialTruth = {
   withdrawals: number
   chargebacks: number
   trusted_book_balance: number
+  trusted_available_before_holds: number
   confirmed_spendable: number
-  authorization_basis?: string
+  authorization_basis: string
+  duplicate_payment_identities: number
   expected_ledger_balance: number
   recorded_transaction_balance?: number
   stored_wallet_balance: number
@@ -84,6 +86,7 @@ const FINANCIAL_TRUTH_AMOUNTS = [
   'completed_refunds', 'net_consumed_spend', 'spend_exposure',
   'active_reservations', 'withdrawals', 'chargebacks',
   'trusted_book_balance', 'confirmed_spendable', 'expected_ledger_balance',
+  'trusted_available_before_holds', 'duplicate_payment_identities',
   'stored_wallet_balance', 'explained_difference', 'unexplained_difference',
   'quarantined_excess',
 ] as const
@@ -98,7 +101,8 @@ function parseAdminWalletFinancialTruth(value: unknown): AdminWalletFinancialTru
       typeof record.evidence_complete !== 'boolean' ||
       typeof record.spending_blocked !== 'boolean' ||
       typeof record.account_suspended !== 'boolean' ||
-      typeof record.wallet_review_required !== 'boolean') {
+      typeof record.wallet_review_required !== 'boolean' ||
+      typeof record.authorization_basis !== 'string') {
     throw new Error('Canonical wallet financial truth is incomplete.')
   }
   const parsed: Record<string, unknown> = { ...record }
