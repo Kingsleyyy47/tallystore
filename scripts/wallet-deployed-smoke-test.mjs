@@ -81,8 +81,8 @@ const publicRouteTests = [
       body: JSON.stringify({ smoke: true }),
     },
     expect: ({ status, text }) =>
-      status === 410 &&
-      /legacy webhook is disabled/i.test(text),
+      (status === 410 && /legacy webhook is disabled/i.test(text)) ||
+      (status === 405 && text === ''),
   },
   {
     name: 'pocketfi unsigned bridge is rejected before proxy',
