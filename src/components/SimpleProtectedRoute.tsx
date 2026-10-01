@@ -30,7 +30,7 @@ export function ProtectedRoute({ children, redirectTo = '/login', requireRole }:
   }
 
   if (!user) return <Navigate to={redirectTo} replace />
-  if (roleLookupError && (requireRole === 'admin' || requireRole === 'staff')) {
+  if (roleLookupError) {
     return <RoleLookupUnavailable message={roleLookupError} retry={retryRoleLookup} />
   }
 

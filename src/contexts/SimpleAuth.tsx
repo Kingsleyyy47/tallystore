@@ -122,10 +122,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { isAdmin: false, isStaff: false }
       }
 
-      const nextIsAdmin = data?.is_admin === true
+      const activeAccount = data?.account_suspended === false
+      const nextIsAdmin = activeAccount && data?.is_admin === true
       lastRoleCheckAt.current = Date.now()
       setRoleLookupError(null)
-      const nextIsStaff = !nextIsAdmin && data?.is_staff === true
+      const nextIsStaff = activeAccount && !nextIsAdmin && data?.is_staff === true
       setIsAdmin(nextIsAdmin)
       setIsStaff(nextIsStaff)
       writeInternalRevenueUserFlag(nextIsAdmin || nextIsStaff)
@@ -245,15 +246,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const profileLoadKey = `${user.id}:${user.email ?? ''}`
       if (lastProfileLoadKey.current !== profileLoadKey) return
       setLoading(true)
+      const roleCheck = checkAdminStatus(user.id)
+      const pendingSequence = roleLookupSequence.current
       try {
-        await checkAdminStatus(user.id)
+        await roleCheck
       } finally {
-        if (lastProfileLoadKey.current === profileLoadKey) setLoading(false)
+        if (
+          roleLookupSequence.current === pendingSequence &&
+          lastProfileLoadKey.current === profileLoadKey
+        ) setLoading(false)
       }
     }
     window.addEventListener('focus', recheckOnFocus)
-    return () => window.removeEventListener('focus', recheckOnFocus)
-  }, [user, checkAdminStatus])
+    const roleTimer = isAdmin || isStaff
+      ? window.setInterval(() => {
+          if (document.visibilityState === 'visible') void recheckOnFocus()
+        }, 30_000)
+      : null
+    return () => {
+      window.removeEventListener('focus', recheckOnFocus)
+      if (roleTimer !== null) window.clearInterval(roleTimer)
+    }
+  }, [user, isAdmin, isStaff, checkAdminStatus])
 
   const retryRoleLookup = useCallback(async () => {
     if (!user) return
