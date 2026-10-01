@@ -190,6 +190,132 @@ serve(async (req) => {
       console.error('Owner-only wallet adjustment denied');
       throw new Error('Owner approval required');
     }
+
+    if (body?.action === 'recover_ercas_payment') {
+      const targetUserId = String(body.target_user_id || '').trim();
+      const transactionReference = String(body.transaction_reference || '').trim();
+      const reviewNote = String(body.reason || '').trim();
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetUserId)) {
+        throw new Error('A customer account is required');
+      }
+      if (transactionReference.length < 8 || transactionReference.length > 180 || /[\r\n]/.test(transactionReference)) {
+        throw new Error('A valid Ercas transaction reference is required');
+      }
+      if (reviewNote.length < 10 || reviewNote.length > 1000) {
+        throw new Error('A specific recovery reason is required');
+      }
+
+      const { data: targetProfile, error: targetError } = await supabaseAdmin
+        .from('profiles')
+        .select('id, is_admin, is_staff')
+        .eq('id', targetUserId)
+        .maybeSingle();
+      if (targetError || !targetProfile || targetProfile.is_admin || targetProfile.is_staff) {
+        throw new Error('Recovery is available only for customer accounts');
+      }
+      const { data: pendingPayment, error: pendingError } = await supabaseAdmin
+        .from('pending_payments')
+        .select('id, amount, status, transaction_reference, ercas_reference')
+        .eq('user_id', targetUserId)
+        .eq('transaction_reference', transactionReference)
+        .maybeSingle();
+      if (pendingError || !pendingPayment) {
+        throw new Error('No Ercas checkout with that reference belongs to this customer');
+      }
+      if (!['pending', 'credited'].includes(String(pendingPayment.status))) {
+        throw new Error(`Recovery is closed for this payment (${pendingPayment.status})`);
+      }
+
+      const recoveryId = crypto.randomUUID();
+      const { error: requestAuditError } = await supabaseAdmin
+        .from('wallet_security_events')
+        .insert({
+          event_type: 'OWNER_ERCAS_RECOVERY_REQUESTED',
+          severity: 'info',
+          wallet_user_id: targetUserId,
+          actor_user_id: user.id,
+          actor_role: 'owner',
+          source: 'admin-adjust-balance',
+          route: 'recover_ercas_payment',
+          request_id: recoveryId,
+          operation_reference: transactionReference,
+          evidence: {
+            pending_payment_id: pendingPayment.id,
+            recorded_amount_ngn: pendingPayment.amount,
+            review_note: reviewNote,
+          },
+          metadata: { reason: reviewNote, provider: 'ercaspay' },
+          result: 'requested',
+        });
+      if (requestAuditError) throw new Error('Recovery audit is unavailable');
+
+      const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+      const projectUrl = Deno.env.get('SUPABASE_URL') || '';
+      if (!serviceRoleKey || !projectUrl) throw new Error('Payment verifier is unavailable');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 35000);
+      let verifierStatus = 502;
+      let verifierPayload: Record<string, unknown> = {};
+      try {
+        const verifyResponse = await fetch(`${projectUrl}/functions/v1/verify-and-credit-wallet`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${serviceRoleKey}`,
+            apikey: serviceRoleKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            user_id: targetUserId,
+            transaction_reference: pendingPayment.transaction_reference,
+            ercas_reference: pendingPayment.ercas_reference,
+          }),
+        });
+        verifierStatus = verifyResponse.status;
+        const parsed = await verifyResponse.json().catch(() => null);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          verifierPayload = parsed as Record<string, unknown>;
+        }
+      } catch {
+        verifierPayload = { success: false, status: 'unavailable', error: 'Payment verification is temporarily unavailable' };
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      const verified = verifierPayload.success === true;
+      const recoveryStatus = String(verifierPayload.status || (verified ? 'credited' : 'unavailable'));
+      const { error: outcomeAuditError } = await supabaseAdmin
+        .from('wallet_security_events')
+        .insert({
+          event_type: 'OWNER_ERCAS_RECOVERY_RESULT',
+          severity: verified ? 'info' : 'warning',
+          wallet_user_id: targetUserId,
+          actor_user_id: user.id,
+          actor_role: 'owner',
+          source: 'admin-adjust-balance',
+          route: 'recover_ercas_payment',
+          request_id: recoveryId,
+          operation_reference: transactionReference,
+          evidence: { pending_payment_id: pendingPayment.id, verifier_http_status: verifierStatus },
+          metadata: { provider: 'ercaspay', already_processed: verifierPayload.already_processed === true },
+          result: recoveryStatus,
+        });
+      if (outcomeAuditError) console.error('Owner recovery result audit failed');
+
+      return new Response(JSON.stringify({
+        success: verified,
+        status: recoveryStatus,
+        already_processed: verifierPayload.already_processed === true,
+        amount: verified ? Number(verifierPayload.amount || 0) : undefined,
+        new_balance: verified ? Number(verifierPayload.new_balance || 0) : undefined,
+        error: verified ? undefined : String(verifierPayload.error || 'Payment could not be verified'),
+        audit_outcome_recorded: !outcomeAuditError,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: verified ? 200 : verifierStatus >= 400 ? verifierStatus : 200,
+      });
+    }
+
     const hasTransactionIdempotencyKey = await transactionsHaveIdempotencyKey(supabaseAdmin);
 
     if (body?.action === 'record_ledger_credit') {

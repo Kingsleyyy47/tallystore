@@ -2502,6 +2502,53 @@ export async function adminRecordLedgerCredit(
   }
 }
 
+export type AdminErcasRecoveryResult = {
+  success: boolean
+  status?: string
+  alreadyProcessed?: boolean
+  amount?: number
+  newBalance?: number
+  error?: string
+  auditOutcomeRecorded?: boolean
+}
+
+export async function adminRecoverErcasPayment(
+  userId: string,
+  transactionReference: string,
+  reason: string,
+): Promise<AdminErcasRecoveryResult> {
+  const { data, error } = await supabase.functions.invoke('admin-adjust-balance', {
+    body: {
+      action: 'recover_ercas_payment',
+      target_user_id: userId,
+      transaction_reference: transactionReference,
+      reason,
+    },
+  })
+  let result = data as Record<string, unknown> | null
+  if (error) {
+    const context = (error as any)?.context
+    if (context && typeof context.json === 'function') {
+      result = await context.clone().json().catch(() => null)
+    }
+    if (!result || typeof result !== 'object') {
+      throw new Error(error.message || 'Ercas payment recovery failed')
+    }
+  }
+  if (!result || typeof result !== 'object' || typeof result.success !== 'boolean') {
+    throw new Error('Ercas payment recovery response was incomplete')
+  }
+  return {
+    success: result.success,
+    status: typeof result.status === 'string' ? result.status : undefined,
+    alreadyProcessed: result.already_processed === true,
+    amount: Number.isFinite(Number(result.amount)) ? Number(result.amount) : undefined,
+    newBalance: Number.isFinite(Number(result.new_balance)) ? Number(result.new_balance) : undefined,
+    error: typeof result.error === 'string' ? result.error : undefined,
+    auditOutcomeRecorded: result.audit_outcome_recorded === true,
+  }
+}
+
 export async function adminRecordChargeback(
   userId: string,
   amount: number,

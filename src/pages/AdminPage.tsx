@@ -92,6 +92,7 @@ import {
   type AdminWalletFinancialTruthPageRow,
   adminAdjustBalance,
   adminRecordLedgerCredit,
+  adminRecoverErcasPayment,
   adminRecordChargeback,
   adminSuspendUser,
   adminUnsuspendUser,
@@ -749,6 +750,10 @@ export default function AdminPage() {
   const [adjustmentReference, setAdjustmentReference] = useState('')
   const [adjustmentType, setAdjustmentType] = useState<'add' | 'subtract' | 'chargeback'>('add')
   const [ledgerOnlyCredit, setLedgerOnlyCredit] = useState(false)
+  const [recoverPaymentOpen, setRecoverPaymentOpen] = useState(false)
+  const [recoverReference, setRecoverReference] = useState('')
+  const [recoverReason, setRecoverReason] = useState('')
+  const [recoverBusy, setRecoverBusy] = useState(false)
   const [userTransactions, setUserTransactions] = useState<any[]>([])
   const [userActivityError, setUserActivityError] = useState<string | null>(null)
   const [userActivityWarning, setUserActivityWarning] = useState<string | null>(null)
@@ -4352,7 +4357,7 @@ export default function AdminPage() {
           .then(({ data, error }) => error ? { data: [], error } : { data: data || [], error: null }),
         supabase
           .from('wallet_security_events' as any)
-          .select('id, created_at, event_type, severity, source, route, db_function, request_id, idempotency_key, operation_reference, ip_address, user_agent, device_fingerprint, financial_snapshot, result, denial_code, metadata')
+          .select('id, created_at, event_type, severity, source, route, db_function, request_id, idempotency_key, operation_reference, actor_user_id, actor_role, ip_address, user_agent, device_fingerprint, financial_snapshot, result, denial_code, metadata')
           .or(`profile_id.eq.${user.id},wallet_user_id.eq.${user.id}`)
           .order('created_at', { ascending: false })
           .limit(100)
@@ -4430,6 +4435,70 @@ export default function AdminPage() {
     setAdjustmentType('add')
     setLedgerOnlyCredit(true)
     setAdjustBalanceOpen(true)
+  }
+
+  const handleRecoverErcasPayment = async () => {
+    const target = selectedUser
+    const reference = recoverReference.trim()
+    const reason = recoverReason.trim()
+    if (!target?.id || target.is_admin || target.is_staff) {
+      toast({ title: 'Customer account required', variant: 'destructive' })
+      return
+    }
+    if (reference.length < 8 || reason.length < 10) {
+      toast({
+        title: 'Payment details required',
+        description: 'Enter the Ercas transaction reference and a specific support reason.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setRecoverBusy(true)
+    try {
+      const result = await adminRecoverErcasPayment(target.id, reference, reason)
+      if (!result.success) {
+        toast({
+          title: result.status === 'pending' ? 'Payment not confirmed yet' : 'Recovery did not credit the wallet',
+          description: result.error || 'The provider has not confirmed this payment.',
+          variant: result.status === 'pending' ? 'default' : 'destructive',
+        })
+        return
+      }
+
+      if (typeof result.newBalance === 'number') {
+        setUsers(prev => prev.map(customer => customer.id === target.id
+          ? { ...customer, wallet_balance: result.newBalance }
+          : customer))
+        setSelectedUser((current: any) => current?.id === target.id
+          ? { ...current, wallet_balance: result.newBalance }
+          : current)
+      }
+      toast({
+        title: result.alreadyProcessed ? 'Payment already credited' : 'Verified payment recovered',
+        description: result.alreadyProcessed
+          ? 'The wallet already contains this Ercas payment.'
+          : `Ercas confirmed ₦${Number(result.amount || 0).toLocaleString()} for this customer. The payment was credited once.`,
+      })
+      if (!result.auditOutcomeRecorded) {
+        toast({
+          title: 'Check recovery audit',
+          description: 'The payment request was recorded, but the result audit needs review.',
+          variant: 'destructive',
+        })
+      }
+      setRecoverPaymentOpen(false)
+      setRecoverReference('')
+      setRecoverReason('')
+    } catch (error) {
+      toast({
+        title: 'Recovery failed',
+        description: error instanceof Error ? error.message : 'Could not check this Ercas payment.',
+        variant: 'destructive',
+      })
+    } finally {
+      setRecoverBusy(false)
+    }
   }
 
   // Submit balance adjustment
@@ -6658,6 +6727,47 @@ export default function AdminPage() {
             </DialogContent>
           </Dialog>
 
+          <Dialog open={recoverPaymentOpen} onOpenChange={(open) => !recoverBusy && setRecoverPaymentOpen(open)}>
+            <DialogContent className="max-w-md w-[95vw] sm:w-full">
+              <DialogHeader>
+                <DialogTitle>Recover Verified Ercas Payment</DialogTitle>
+                <DialogDescription className="break-words">
+                  Check a missed payment for {selectedUser?.email}. The checkout must belong to this customer, and Ercas must confirm its amount before the wallet can be credited.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Ercas transaction reference</Label>
+                  <Input
+                    placeholder="ER|..."
+                    value={recoverReference}
+                    onChange={(event) => setRecoverReference(event.target.value)}
+                    disabled={recoverBusy}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Reason for recovery</Label>
+                  <Textarea
+                    placeholder="Support ticket, customer receipt, and why this payment needs another check"
+                    value={recoverReason}
+                    onChange={(event) => setRecoverReason(event.target.value)}
+                    rows={3}
+                    disabled={recoverBusy}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  This action never uses an amount entered by an admin. It records your request and credits only a provider-confirmed payment once.
+                </p>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setRecoverPaymentOpen(false)} disabled={recoverBusy}>Cancel</Button>
+                <Button onClick={handleRecoverErcasPayment} disabled={recoverBusy || recoverReference.trim().length < 8 || recoverReason.trim().length < 10}>
+                  {recoverBusy ? 'Verifying...' : 'Verify and Recover'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           {/* Balance Adjustment Modal */}
           <Dialog open={adjustBalanceOpen} onOpenChange={setAdjustBalanceOpen}>
             <DialogContent className="max-w-md w-[95vw] sm:w-full">
@@ -7060,12 +7170,18 @@ export default function AdminPage() {
                                   <p className="text-muted-foreground">Source</p>
                                   <p className="font-medium">{event.route || event.db_function || event.source || 'Unknown'}</p>
                                 </div>
+                                {event.actor_user_id && (
+                                  <div className="sm:col-span-2">
+                                    <p className="text-muted-foreground">Actor</p>
+                                    <p className="break-all font-mono text-xs">{event.actor_role || 'user'} · {event.actor_user_id}</p>
+                                  </div>
+                                )}
                                 {(event.request_id || event.idempotency_key || event.operation_reference) && (
                                   <div className="sm:col-span-2">
                                     <p className="text-muted-foreground">Reference</p>
-                                    <p className="break-all font-mono text-xs">
-                                      {event.request_id || event.idempotency_key || event.operation_reference}
-                                    </p>
+                                    {event.operation_reference && <p className="break-all font-mono text-xs">Payment: {event.operation_reference}</p>}
+                                    {event.request_id && <p className="break-all font-mono text-xs">Request: {event.request_id}</p>}
+                                    {!event.request_id && event.idempotency_key && <p className="break-all font-mono text-xs">{event.idempotency_key}</p>}
                                   </div>
                                 )}
                                 {(snapshot.suspension_reason || metadata.reason) && (
@@ -7239,6 +7355,15 @@ export default function AdminPage() {
                 <Button variant="outline" onClick={downloadSelectedUserHistoryCsv} disabled={!selectedUser}>
                   <Download className="h-4 w-4 mr-2" />
                   Download CSV
+                </Button>
+                <Button variant="outline" disabled={!selectedUser || selectedUser.is_admin || selectedUser.is_staff}
+                  onClick={() => {
+                    setRecoverReference('')
+                    setRecoverReason('')
+                    setViewUserOpen(false)
+                    setRecoverPaymentOpen(true)
+                  }}>
+                  Recover Ercas Payment
                 </Button>
                 <Button variant="outline" onClick={() => setViewUserOpen(false)}>
                   Close
