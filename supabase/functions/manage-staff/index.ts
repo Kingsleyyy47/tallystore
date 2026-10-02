@@ -1066,6 +1066,7 @@ async function applySmsPendingAction(admin: any, pendingAction: any) {
   const approvingAdminId = pendingAction.reviewed_by || pendingAction.admin_id || null
   const approvalMetadata = {
     approved_by: approvingAdminId,
+    approval_mode: approvingAdminId ? 'owner_review' : 'enabled_staff_auto_approval',
     staff_id: pendingAction.staff_id || null,
     staff_email: pendingAction.staff_email || null,
     pending_action_id: pendingAction.id || null,
@@ -1164,7 +1165,7 @@ async function applySmsPendingAction(admin: any, pendingAction: any) {
     await refundSmsOrderWallet(
       admin,
       order,
-      `Approved staff refund for cancelled SMS order: ${order.reference || order.id}`,
+      `Staff refund for cancelled SMS order: ${order.reference || order.id}`,
       approvalMetadata,
     )
     return
@@ -1192,7 +1193,7 @@ async function applySmsPendingAction(admin: any, pendingAction: any) {
         await refundSmsOrderWallet(
           admin,
           order,
-          `Approved staff auto-refund for stale SMS order: ${order.reference || order.id}`,
+          `Staff refund for stale SMS order: ${order.reference || order.id}`,
           approvalMetadata,
         )
         cancelled += 1
@@ -1641,16 +1642,17 @@ async function submitStaffAction(admin: any, user: any, body: Record<string, any
   const isAdmin = profile.is_admin === true
   if (!isAdmin && profile.is_staff !== true) return json({ error: 'Forbidden — staff only' }, 403)
 
-  const autoApprove = isAdmin
+  let autoApprove = isAdmin
   if (!isAdmin) {
     const { data: permission, error: permissionError } = await admin
       .from('staff_permissions')
-      .select('is_enabled')
+      .select('is_enabled, auto_approve')
       .eq('user_id', user.id)
       .eq('permission_key', permissionKey)
       .maybeSingle()
     if (permissionError) return json({ error: 'Could not check staff permission' }, 500)
     if (!permission?.is_enabled) return json({ error: 'Permission is not enabled' }, 403)
+    autoApprove = permission.auto_approve === true && permissionKey !== 'action_adjust_balance'
   }
 
   const pendingRow = {
@@ -1672,7 +1674,7 @@ async function submitStaffAction(admin: any, user: any, body: Record<string, any
     ...pendingRow,
     status: 'approved',
     reviewed_at: new Date().toISOString(),
-    reviewed_by: user.id,
+    reviewed_by: isAdmin ? user.id : null,
   }
   const { data: auditRow, error: auditError } = await admin
     .from('staff_pending_actions')
@@ -1682,6 +1684,7 @@ async function submitStaffAction(admin: any, user: any, body: Record<string, any
   if (auditError || !auditRow?.id) return json({ error: 'Could not record approved action' }, 503)
 
   try {
+    if (!isAdmin) await assertQueuedStaffPermission(admin, approvedPendingRow)
     const result = await applyStaffAction(admin, { ...approvedPendingRow, id: auditRow.id })
     return json({ success: true, queued: false, applied: true, ...result })
   } catch (error) {
@@ -1800,12 +1803,12 @@ serve(async (req) => {
         return json({ error: 'Permissions can only be changed for an active staff account' }, 403)
       }
       const enableNow = is_enabled === true
-      // All staff mutations require owner review, including requests from an
-      // older browser that still sends auto_approve=true.
+      // The server chooses the approval mode. Never trust the browser's
+      // auto_approve value, and never auto-approve a balance adjustment.
       const { error } = await admin
         .from('staff_permissions')
         .upsert(
-          { user_id, permission_key, is_enabled: enableNow, auto_approve: false },
+          { user_id, permission_key, is_enabled: enableNow, auto_approve: enableNow && permission_key !== 'action_adjust_balance' },
           { onConflict: 'user_id,permission_key' }
         )
       if (error) return json({ error: 'Could not change staff permission' }, 500)

@@ -1869,7 +1869,7 @@ export default function AdminPage() {
     value: boolean,
   ) => {
     setSavingStaffPerm(`${userId}-${permKey}-is_enabled`)
-    const updated = { is_enabled: value, auto_approve: false }
+    const updated = { is_enabled: value, auto_approve: value && permKey !== 'action_adjust_balance' }
     try {
       const { data, error } = await supabase.functions.invoke('manage-staff', {
         body: {
@@ -11163,9 +11163,15 @@ export default function AdminPage() {
                                               </span>
                                             </button>
                                             {perm.is_enabled && (
-                                              <span className="flex items-center gap-1 rounded border border-orange-300 bg-orange-50 px-2 py-0.5 text-xs text-orange-700 dark:border-orange-700 dark:bg-orange-900/20 dark:text-orange-400">
-                                                <Clock className="h-3 w-3" /> Needs Approval
-                                              </span>
+                                              perm.auto_approve ? (
+                                                <span className="flex items-center gap-1 rounded border border-green-300 bg-green-50 px-2 py-0.5 text-xs text-green-700 dark:border-green-700 dark:bg-green-900/20 dark:text-green-400">
+                                                  <CheckCircle2 className="h-3 w-3" /> Automatic
+                                                </span>
+                                              ) : (
+                                                <span className="flex items-center gap-1 rounded border border-orange-300 bg-orange-50 px-2 py-0.5 text-xs text-orange-700 dark:border-orange-700 dark:bg-orange-900/20 dark:text-orange-400">
+                                                  <Clock className="h-3 w-3" /> Needs Approval
+                                                </span>
+                                              )
                                             )}
                                           </div>
                                         </div>

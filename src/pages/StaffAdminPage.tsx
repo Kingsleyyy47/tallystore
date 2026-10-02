@@ -102,8 +102,8 @@ type StaffRevenueOsSnapshot = {
 function can(perms: PermissionMap, key: PermissionKey) {
   return perms[key]?.is_enabled === true
 }
-function autoApproves(_perms: PermissionMap, _key: PermissionKey) {
-  return false
+function autoApproves(perms: PermissionMap, key: PermissionKey) {
+  return key !== 'action_adjust_balance' && perms[key]?.is_enabled === true && perms[key]?.auto_approve === true
 }
 function hasSettingsPermission(perms: PermissionMap) {
   return can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas') || can(perms, 'setting_support_links')
