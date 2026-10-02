@@ -97,10 +97,12 @@ BEGIN
   END IF;
 
   PERFORM pg_catalog.set_config('app.tally_wallet_engine_authorized', 'true', true);
+  PERFORM pg_catalog.set_config('app.tally_profile_privileged_authorized', 'true', true);
   UPDATE public.profiles SET wallet_balance = 2357.00, updated_at = now()
   WHERE id = v_customer AND wallet_balance = 1257.00;
   GET DIAGNOSTICS v_changed = ROW_COUNT;
   PERFORM pg_catalog.set_config('app.tally_wallet_engine_authorized', 'false', true);
+  PERFORM pg_catalog.set_config('app.tally_profile_privileged_authorized', 'false', true);
   IF v_changed <> 1 THEN RAISE EXCEPTION 'Profile reconciliation changed concurrently'; END IF;
 
   UPDATE public.wallet_legacy_spend_allowance_snapshot
