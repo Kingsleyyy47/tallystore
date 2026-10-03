@@ -170,6 +170,75 @@ const ADMIN_TABS = [
 
 type AdminTabValue = (typeof ADMIN_TABS)[number]['value']
 
+const MAX_ADMIN_IMPORT_ROWS = 5_000
+
+type AdminImportSummary = {
+  sourceRows: number
+  parsedRows: number
+  validRows: number
+  invalidRows: number
+  duplicateRows: number
+  preview: Array<{ sampleNumber: number; hasLogin: boolean; hasPassword: boolean; hasEmail: boolean }>
+}
+type AdminImportReview = {
+  nonEmptyRows: number
+  formatLabel: string
+  requiresCsvHeader: boolean
+  likelyHeader: boolean
+  withHeader: AdminImportSummary
+  withoutHeader: AdminImportSummary
+}
+
+function getAdminImportLines(text: string): string[] {
+  return text.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+}
+
+function analyzeAdminImport(text: string, formatKey?: string): AdminImportReview {
+  const lines = getAdminImportLines(text)
+  const firstLine = lines[0] || ''
+  const requiresCsvHeader = !formatKey && firstLine.includes(',')
+  const formatLabel = formatKey
+    ? `${SITE_FORMATS[formatKey]?.label || 'Selected'} format`
+    : requiresCsvHeader ? 'Comma-separated CSV' : firstLine.includes('|') ? 'Pipe-separated text' : firstLine.includes(':') ? 'Colon-separated text' : 'Unrecognized text'
+  const headerWords = new Set(['username', 'user', 'login', 'email', 'mail', 'password', 'pass', 'emailpassword', 'mailpassword', 'twofa', 'year'])
+  const firstColumns = firstLine.split(/[,:|\t]/).map(value => value.toLowerCase().replace(/[^a-z0-9]/g, ''))
+  const likelyHeader = firstColumns.length > 1 && firstColumns.filter(value => headerWords.has(value)).length >= 2
+
+  const summarize = (skipHeader: boolean): AdminImportSummary => {
+    const dataLines = skipHeader || requiresCsvHeader ? lines.slice(1) : lines
+    if (lines.length > MAX_ADMIN_IMPORT_ROWS + 1) {
+      return { sourceRows: dataLines.length, parsedRows: 0, validRows: 0, invalidRows: 0, duplicateRows: 0, preview: [] }
+    }
+    const input = skipHeader && !requiresCsvHeader ? dataLines.join('\n') : lines.join('\n')
+    const parsed = parseCSV(input, formatKey) as Array<Record<string, unknown>>
+    const validRows = parsed.filter(row => Boolean(row?.password && (row?.username || row?.email))).length
+    return {
+      sourceRows: dataLines.length,
+      parsedRows: parsed.length,
+      validRows,
+      // Explicit-format parsing can silently drop malformed lines; include them in this count.
+      invalidRows: dataLines.length - validRows,
+      duplicateRows: dataLines.length - new Set(dataLines).size,
+      // Only field presence is retained for the UI. No credential value enters preview state.
+      preview: parsed.slice(0, 3).map((row, index) => ({
+        sampleNumber: index + 1,
+        hasLogin: Boolean(row?.username || row?.email),
+        hasPassword: Boolean(row?.password),
+        hasEmail: Boolean(row?.email),
+      })),
+    }
+  }
+
+  return {
+    nonEmptyRows: lines.length,
+    formatLabel,
+    requiresCsvHeader,
+    likelyHeader,
+    withHeader: summarize(true),
+    withoutHeader: summarize(false),
+  }
+}
+
 const PARTNER_API_INCIDENT_PAUSED = true
 const PARTNER_SECTIONS = [
   { key: 'products', label: 'Products' },
@@ -906,6 +975,35 @@ export default function AdminPage() {
   const [adminTab, setAdminTab] = useState<AdminTabValue>('templates')
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [csvFormat, setCsvFormat] = useState<string>('auto')
+  const [csvSkipHeader, setCsvSkipHeader] = useState(false)
+  const [csvReview, setCsvReview] = useState<AdminImportReview | null>(null)
+  const [csvReviewLoading, setCsvReviewLoading] = useState(false)
+  const [csvReviewError, setCsvReviewError] = useState<string | null>(null)
+  const [csvUploading, setCsvUploading] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    if (!csvFile) {
+      setCsvReview(null)
+      setCsvReviewError(null)
+      setCsvReviewLoading(false)
+      return
+    }
+    setCsvReview(null)
+    setCsvReviewError(null)
+    setCsvReviewLoading(true)
+    csvFile.text().then(text => {
+      if (!active) return
+      const review = analyzeAdminImport(text, csvFormat === 'auto' ? undefined : csvFormat)
+      setCsvReview(review)
+      setCsvSkipHeader(review.requiresCsvHeader || review.likelyHeader)
+    }).catch(() => {
+      if (active) setCsvReviewError('This file could not be read. Select a CSV or TXT file and try again.')
+    }).finally(() => {
+      if (active) setCsvReviewLoading(false)
+    })
+    return () => { active = false }
+  }, [csvFile, csvFormat])
   const [newProduct, setNewProduct] = useState({
     title: '',
     category: '',
@@ -3527,11 +3625,26 @@ export default function AdminPage() {
       return
     }
 
+    if (!csvReview || csvReviewLoading || csvUploading) return
+    const summary = csvSkipHeader ? csvReview.withHeader : csvReview.withoutHeader
+    if (summary.sourceRows > MAX_ADMIN_IMPORT_ROWS) {
+      alert(`Upload at most ${MAX_ADMIN_IMPORT_ROWS.toLocaleString()} rows per file.`)
+      return
+    }
+    if (summary.invalidRows > 0 || summary.validRows === 0) {
+      alert('Correct rows missing a login or password before uploading.')
+      return
+    }
+
+    setCsvUploading(true)
     try {
       const text = await csvFile.text()
-      const csvData = parseCSV(text, csvFormat === 'auto' ? undefined : csvFormat)
+      const lines = getAdminImportLines(text)
+      if (lines.length !== csvReview.nonEmptyRows) throw new Error('File changed during review')
+      const parseInput = csvSkipHeader && !csvReview.requiresCsvHeader ? lines.slice(1).join('\n') : text
+      const csvData = parseCSV(parseInput, csvFormat === 'auto' ? undefined : csvFormat)
 
-      if (csvData.length === 0) {
+      if (csvData.length === 0 || csvData.length !== summary.parsedRows) {
         alert('File is empty or format not recognised — try selecting the format manually')
         return
       }
@@ -3552,9 +3665,10 @@ export default function AdminPage() {
         alert(`Upload failed: ${result.error}`)
       }
 
-    } catch (error) {
-      console.error('Error processing bulk upload file:', error)
+    } catch {
       alert('Failed to process upload file')
+    } finally {
+      setCsvUploading(false)
     }
   }
 
@@ -4289,6 +4403,7 @@ export default function AdminPage() {
 
   const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
+    setCsvReview(null)
     setCsvFile(file || null)
   }
 
@@ -5913,6 +6028,8 @@ export default function AdminPage() {
       alert('Failed to add product')
     }
   }
+
+  const selectedCsvSummary = csvReview ? (csvSkipHeader ? csvReview.withHeader : csvReview.withoutHeader) : null
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
@@ -8038,7 +8155,12 @@ export default function AdminPage() {
                         <button
                           key={key}
                           type="button"
-                          onClick={() => setCsvFormat(key)}
+                          onClick={() => {
+                            if (key !== csvFormat) {
+                              setCsvReview(null)
+                              setCsvFormat(key)
+                            }
+                          }}
                           className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${csvFormat === key ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground'}`}
                         >
                           {label}
@@ -8061,6 +8183,7 @@ export default function AdminPage() {
                     </p>
                     
                     <input
+                      key={csvFile ? `${csvFile.name}-${csvFile.lastModified}` : 'empty'}
                       type="file"
                       accept=".csv,.txt"
                       onChange={handleCsvFileChange}
@@ -8076,6 +8199,63 @@ export default function AdminPage() {
                       </div>
                     )}
                   </div>
+
+                  {csvReviewLoading && <p className="text-sm text-muted-foreground">Checking the file...</p>}
+                  {csvReviewError && <p role="alert" className="text-sm text-destructive">{csvReviewError}</p>}
+                  {csvReview && selectedCsvSummary && (
+                    <div className="space-y-3 rounded-lg border bg-muted/30 p-4 text-sm">
+                      <div>
+                        <p className="font-semibold">Review before adding accounts</p>
+                        <p className="text-xs text-muted-foreground">
+                          {csvReview.formatLabel} · {csvReview.nonEmptyRows.toLocaleString()} non-empty file rows · {selectedCsvSummary.validRows.toLocaleString()} accounts ready
+                        </p>
+                        <p className="text-xs text-muted-foreground">Destination: {productGroups.find(pg => pg.id === selectedTemplate)?.name || 'Select a product template above'}</p>
+                      </div>
+                      {csvReview.nonEmptyRows === 0 && <p role="alert" className="text-xs text-destructive">The file has no non-empty rows.</p>}
+                      <label className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={csvSkipHeader}
+                          disabled={csvReview.requiresCsvHeader}
+                          onChange={event => setCsvSkipHeader(event.target.checked)}
+                          className="mt-1"
+                        />
+                        <span>
+                          Skip first row as a header
+                          <span className="block text-xs text-muted-foreground">
+                            {csvReview.requiresCsvHeader
+                              ? 'Comma-separated CSV requires a header, which is skipped automatically.'
+                              : csvReview.likelyHeader
+                              ? 'The first row looks like column names. Check this choice before uploading.'
+                              : 'Turn this on only if the first row contains column names.'}
+                          </span>
+                        </span>
+                      </label>
+                      {selectedCsvSummary.preview.length > 0 && (
+                        <div>
+                          <p className="mb-1 text-xs font-medium">Sample rows (values hidden)</p>
+                          <ul className="space-y-1 text-xs text-muted-foreground">
+                            {selectedCsvSummary.preview.map(row => (
+                              <li key={row.sampleNumber}>
+                                Sample {row.sampleNumber}: login {row.hasLogin ? 'present' : 'missing'} · password {row.hasPassword ? 'present' : 'missing'} · email {row.hasEmail ? 'present' : 'not provided'}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {selectedCsvSummary.duplicateRows > 0 && (
+                        <p className="text-xs text-amber-700 dark:text-amber-300">
+                          {selectedCsvSummary.duplicateRows.toLocaleString()} repeated file row(s). This form does not remove them; check that they are intentional.
+                        </p>
+                      )}
+                      {selectedCsvSummary.invalidRows > 0 && (
+                        <p role="alert" className="text-xs text-destructive">{selectedCsvSummary.invalidRows.toLocaleString()} row(s) have no login or password. Correct the file before uploading.</p>
+                      )}
+                      {selectedCsvSummary.sourceRows > MAX_ADMIN_IMPORT_ROWS && (
+                        <p role="alert" className="text-xs text-destructive">Maximum {MAX_ADMIN_IMPORT_ROWS.toLocaleString()} rows per file. Split this upload into smaller files.</p>
+                      )}
+                    </div>
+                  )}
 
                   <div className="space-y-4">
                     <h4 className="font-medium">CSV/TXT Format Requirements:</h4>
@@ -8106,11 +8286,11 @@ export default function AdminPage() {
 
                   <Button 
                     onClick={handleCsvUpload} 
-                    disabled={!csvFile || !selectedTemplate}
+                    disabled={csvUploading || csvReviewLoading || !csvFile || !selectedTemplate || !selectedCsvSummary || selectedCsvSummary.validRows === 0 || selectedCsvSummary.invalidRows > 0 || selectedCsvSummary.sourceRows > MAX_ADMIN_IMPORT_ROWS}
                     className="w-full"
                   >
-                    <Upload className="h-4 w-4 mr-2" />
-                    Upload Accounts to Template
+                    {csvUploading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                    Confirm upload to template
                   </Button>
                 </CardContent>
               </Card>
