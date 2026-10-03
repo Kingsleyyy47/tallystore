@@ -119,6 +119,7 @@ import {
 import { format, formatDistanceToNow } from 'date-fns'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
+import { readEmailFunctionError } from '@/lib/emailFunctionError'
 import { cn } from '@/lib/utils'
 import {
   analyzePromotionGuardrails,
@@ -2528,26 +2529,28 @@ export default function AdminPage() {
       try {
         const { data, error } = await supabase.functions.invoke('email/broadcast', { body: { subject: emailSubject, html, dryRun: true } })
         if (error) throw error
+        if (data?.success !== true) throw new Error(data?.error || 'Dry run could not be verified.')
         setDryRunResult(data)
       } catch (err: any) {
-        toast({ title: 'Dry run failed', description: err.message, variant: 'destructive' })
+        toast({ title: 'Dry run failed', description: await readEmailFunctionError(err), variant: 'destructive' })
       } finally {
         setIsBroadcasting(false)
       }
       return
     }
 
-    if (!confirm(`This will email ALL registered users. The emails will be sent automatically in the background — you can close this page. Continue?`)) return
+    if (!confirm('This will email customers who opted in to promotional email. Sending continues in the background after you close this page. Continue?')) return
     setIsBroadcasting(true)
     try {
       const { data, error } = await supabase.functions.invoke('email/broadcast', { body: { subject: emailSubject, html } })
       if (error) throw error
+      if (data?.success !== true || !data?.jobId) throw new Error(data?.error || 'Broadcast was not queued.')
       toast({ title: 'Broadcast queued!', description: data?.message || 'Processing will start within 1 minute.' })
       setEmailMessage('')
       setDryRunResult(null)
       await loadBroadcastJobs()
     } catch (err: any) {
-      toast({ title: 'Broadcast failed', description: err.message, variant: 'destructive' })
+      toast({ title: 'Broadcast failed', description: await readEmailFunctionError(err), variant: 'destructive' })
     } finally {
       setIsBroadcasting(false)
     }

@@ -142,51 +142,45 @@ async function listPromotionConsentedEmails(
 ) {
   const offset = Math.max(0, Math.round(Number(options.offset || 0)));
   const limit = Math.max(0, Math.round(Number(options.limit || 0)));
-  const batchSize = 1000;
-  let profileOffset = 0;
-  let eligibleSeen = 0;
-  let totalRecipients = 0;
-  const recipients: string[] = [];
+  const preferenceBatchSize = 500;
+  const profileBatchSize = 75; // Keep the PostgREST `in` URL well below gateway limits.
+  let preferenceOffset = 0;
+  const eligible: Array<{ id: string; email: string; created_at: string | null }> = [];
 
   while (true) {
-    const { data: profiles, error: profilesError } = await admin
-      .from("profiles")
-      .select("id,email,is_admin,is_staff,created_at")
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(profileOffset, profileOffset + batchSize - 1);
-
-    if (profilesError) throw new Error(profilesError.message);
-    if (!profiles || profiles.length === 0) break;
-
-    const profileIds = profiles.map((profile: any) => profile.id).filter(Boolean);
     const { data: prefs, error: prefsError } = await admin
       .from("customer_communication_preferences")
-      .select("user_id,email_promotions_opt_in")
-      .in("user_id", profileIds);
+      .select("user_id")
+      .eq("email_promotions_opt_in", true)
+      .order("user_id", { ascending: true })
+      .range(preferenceOffset, preferenceOffset + preferenceBatchSize - 1);
 
     if (prefsError) throw new Error(prefsError.message);
-    const optedIn = new Set((prefs || [])
-      .filter((pref: any) => pref.email_promotions_opt_in === true)
-      .map((pref: any) => String(pref.user_id)));
+    if (!prefs || prefs.length === 0) break;
 
-    for (const profile of profiles as any[]) {
-      if (profile.is_admin || profile.is_staff) continue;
-      if (!optedIn.has(String(profile.id))) continue;
-      if (!isValidEmail(profile.email)) continue;
-
-      totalRecipients += 1;
-      if (limit > 0 && eligibleSeen >= offset && recipients.length < limit) {
-        recipients.push(profile.email);
+    const profileIds = prefs.map((pref: any) => pref.user_id).filter(Boolean);
+    for (let i = 0; i < profileIds.length; i += profileBatchSize) {
+      const { data: profiles, error: profilesError } = await admin
+        .from("profiles")
+        .select("id,email,is_admin,is_staff,created_at")
+        .in("id", profileIds.slice(i, i + profileBatchSize));
+      if (profilesError) throw new Error(profilesError.message);
+      for (const profile of profiles || []) {
+        if (profile.is_admin || profile.is_staff || !isValidEmail(profile.email)) continue;
+        eligible.push({ id: profile.id, email: profile.email, created_at: profile.created_at });
       }
-      eligibleSeen += 1;
     }
 
-    if (profiles.length < batchSize) break;
-    profileOffset += batchSize;
+    if (prefs.length < preferenceBatchSize) break;
+    preferenceOffset += preferenceBatchSize;
   }
 
-  return { recipients, totalRecipients };
+  // Preserve the previous send order for queued jobs, which use an offset.
+  eligible.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "") || a.id.localeCompare(b.id));
+  return {
+    recipients: limit > 0 ? eligible.slice(offset, offset + limit).map((profile) => profile.email) : [],
+    totalRecipients: eligible.length,
+  };
 }
 
 /** Verify the caller is an admin. Returns user id or throws. */

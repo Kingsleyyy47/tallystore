@@ -452,40 +452,36 @@ function normalizeEmail(value: unknown) {
 }
 
 async function countPromotionConsentedCustomers(admin: any) {
-  const batchSize = 1000
+  const preferenceBatchSize = 500
+  const profileBatchSize = 75
   let offset = 0
   let total = 0
 
   while (true) {
-    const { data: profiles, error: profilesError } = await admin
-      .from('profiles')
-      .select('id,email,is_admin,is_staff,created_at')
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-      .range(offset, offset + batchSize - 1)
-    if (profilesError) throw new Error(profilesError.message)
-    if (!profiles || profiles.length === 0) break
-
-    const profileIds = profiles.map((profile: any) => profile.id).filter(Boolean)
     const { data: prefs, error: prefsError } = await admin
       .from('customer_communication_preferences')
-      .select('user_id,email_promotions_opt_in')
-      .in('user_id', profileIds)
+      .select('user_id')
+      .eq('email_promotions_opt_in', true)
+      .order('user_id', { ascending: true })
+      .range(offset, offset + preferenceBatchSize - 1)
     if (prefsError) throw new Error(prefsError.message)
+    if (!prefs || prefs.length === 0) break
 
-    const optedIn = new Set((prefs || [])
-      .filter((pref: any) => pref.email_promotions_opt_in === true)
-      .map((pref: any) => String(pref.user_id)))
-
-    for (const profile of profiles as any[]) {
-      if (profile.is_admin || profile.is_staff) continue
-      if (!optedIn.has(String(profile.id))) continue
-      if (!normalizeEmail(profile.email)) continue
-      total += 1
+    const profileIds = prefs.map((pref: any) => pref.user_id).filter(Boolean)
+    for (let i = 0; i < profileIds.length; i += profileBatchSize) {
+      const { data: profiles, error: profilesError } = await admin
+        .from('profiles')
+        .select('id,email,is_admin,is_staff')
+        .in('id', profileIds.slice(i, i + profileBatchSize))
+      if (profilesError) throw new Error(profilesError.message)
+      for (const profile of profiles || []) {
+        if (profile.is_admin || profile.is_staff || !normalizeEmail(profile.email)) continue
+        total += 1
+      }
     }
 
-    if (profiles.length < batchSize) break
-    offset += batchSize
+    if (prefs.length < preferenceBatchSize) break
+    offset += preferenceBatchSize
   }
 
   return total
