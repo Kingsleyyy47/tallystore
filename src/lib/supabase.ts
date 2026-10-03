@@ -835,6 +835,19 @@ export async function getIndividualAccounts(productGroupId?: string): Promise<In
   }
 }
 
+export async function getIndividualAccountsPage(page: number, pageSize = 100): Promise<IndividualAccount[]> {
+  const from = Math.max(0, page) * pageSize
+  const { data, error } = await supabase
+    .from('individual_accounts')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, from + pageSize - 1)
+
+  if (error) throw error
+  return data || []
+}
+
 // Get total count of individual accounts (for admin dashboard stats)
 export async function getIndividualAccountsCount(): Promise<number> {
   try {

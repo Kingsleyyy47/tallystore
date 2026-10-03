@@ -29,7 +29,6 @@ BEGIN
   SELECT * INTO v_snapshot FROM public.wallet_legacy_spend_allowance_snapshot
     WHERE user_id = v_customer FOR UPDATE;
   IF v_profile.id IS DISTINCT FROM v_customer
-    OR v_profile.email IS DISTINCT FROM 'samsonspax5@gmail.com'
     OR v_profile.is_admin IS TRUE OR v_profile.is_staff IS TRUE
     OR v_profile.account_suspended IS TRUE OR v_profile.wallet_review_required IS TRUE
     OR v_profile.wallet_balance IS DISTINCT FROM 1257.00

@@ -1,21 +1,17 @@
 import { useState, useEffect } from 'react';
 import { RefreshCw, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { clearPwaUpdate, subscribePwaUpdate } from '@/lib/pwaUpdate';
 
 export default function UpdatePromptBanner() {
   const [show, setShow] = useState(false);
-  const [doUpdate, setDoUpdate] = useState<(() => void) | null>(null);
+  const [doUpdate, setDoUpdate] = useState<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
-    const handler = (e: Event) => {
-      const { update } = (e as CustomEvent).detail ?? {};
-      if (typeof update === 'function') {
-        setDoUpdate(() => update);
-        setShow(true);
-      }
-    };
-    window.addEventListener('pwa-update-available', handler);
-    return () => window.removeEventListener('pwa-update-available', handler);
+    return subscribePwaUpdate((update) => {
+      setDoUpdate(() => update);
+      setShow(true);
+    });
   }, []);
 
   if (!show) return null;
@@ -29,10 +25,8 @@ export default function UpdatePromptBanner() {
         className="h-7 px-3 text-xs"
         onClick={() => {
           setShow(false);
-          // Activate the new service worker, then hard-reload to guarantee
-          // the browser fetches fresh assets rather than serving from cache.
-          doUpdate?.();
-          setTimeout(() => window.location.reload(), 300);
+          clearPwaUpdate();
+          void doUpdate?.();
         }}
       >
         Update

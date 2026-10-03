@@ -8,6 +8,7 @@ import { AuthProvider } from '@/contexts/SimpleAuth'
 import { CurrencyProvider } from '@/contexts/CurrencyContext'
 import { ProtectedRoute, PublicRoute } from '@/components/SimpleProtectedRoute'
 import InstallPromptBanner from '@/components/InstallPromptBanner'
+import UpdatePromptBanner from '@/components/UpdatePromptBanner'
 import AnnouncementBanner from '@/components/AnnouncementBanner'
 import MaintenancePage from '@/components/MaintenancePage'
 import GlobalPaymentChecker from '@/components/GlobalPaymentChecker'
@@ -77,6 +78,7 @@ const App = () => {
           <Sonner />
           <AnnouncementBanner />
           <InstallPromptBanner />
+          <UpdatePromptBanner />
           <AuthProvider>
           <LoginWelcomeDialog />
           <CurrencyProvider>

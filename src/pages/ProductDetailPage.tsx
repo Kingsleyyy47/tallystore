@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -76,38 +76,30 @@ export default function ProductDetailPage() {
   // Check if user is logged in
   const isLoggedIn = !!user
 
-  const loadProductData = useCallback(async () => {
+  const loadSequence = useRef(0)
+  const inFlightProductId = useRef<string | null>(null)
+  const lastLoadedProductId = useRef<string | null>(null)
+  const lastLoadAt = useRef(0)
+
+  const loadProductData = useCallback(async (showPageLoader = false) => {
     if (!productId) return
+    if (inFlightProductId.current === productId) return
+    const sequence = ++loadSequence.current
+    inFlightProductId.current = productId
 
     try {
-      setLoading(true)
-      setError(null)
+      if (showPageLoader) {
+        setLoading(true)
+        setError(null)
+      }
 
-      const [
-        accountData,
-        categoriesData,
-        productGroupsData,
-        accountMapData,
-        topSellingData,
-        favoriteIds,
-        restockedData,
-        automationSetting,
-        revenueSettings,
-        experiments,
-        actionPlans,
-      ] = await Promise.all([
+      const [accountData, categoriesData, productGroupsData] = await Promise.all([
         getIndividualAccountById(productId),
         getCategories(),
         getAllProductGroups(),
-        getAvailableAccountIdsByProductGroup(),
-        getTopSellingProductGroupIds(12),
-        getFavoriteProductGroupIds(),
-        getRecentlyRestockedProductGroupIds(8),
-        getAppSetting('sales_recommendation_automation_enabled'),
-        loadRevenueOsSettings(),
-        loadRunningCroExperiments(),
-        loadRunningCroActionPlans(),
       ])
+
+      if (sequence !== loadSequence.current) return
 
       if (!accountData) {
         setError('Product not found')
@@ -117,36 +109,69 @@ export default function ProductDetailPage() {
       setAccount(accountData)
 
       const productGroupData = productGroupsData.find((row) => row.id === accountData.product_group_id) || await getProductGroupById(accountData.product_group_id)
+      if (sequence !== loadSequence.current) return
       if (!productGroupData || !isCustomerSellableProduct(productGroupData)) {
         setError('Product is no longer available')
         return
       }
 
       const categoryData = categoriesData.find((row) => row.id === productGroupData.category_id) || await getCategoryById(productGroupData.category_id)
-      const automationEnabled = automationSetting !== 'false' && revenueSettings.enabled
+      if (sequence !== loadSequence.current) return
 
       setProductGroup(productGroupData)
       setCategory(categoryData || null)
       setAllCategories(categoriesData)
       setAllProductGroups(productGroupsData.some((row) => row.id === productGroupData.id) ? productGroupsData : [productGroupData, ...productGroupsData])
-      setAccountMap(accountMapData)
-      setTopSellingIds(automationEnabled ? topSellingData : [])
-      setFavoriteProductIds(automationEnabled ? favoriteIds : [])
-      setRestockedIds(automationEnabled ? restockedData : [])
-      setRecommendationAutomationEnabled(automationEnabled)
-      setRevenueOsSettings(revenueSettings)
-      setRunningCroExperiments(experiments)
-      setRunningCroActionPlans(actionPlans)
+      setLoading(false)
+
+      // Recommendations are optional; show the product as soon as its stock
+      // and price have loaded rather than waiting for personalization.
+      let optionalTimeout: ReturnType<typeof setTimeout> | undefined
+      try {
+        const optionalData = Promise.all([
+          getAvailableAccountIdsByProductGroup(),
+          getTopSellingProductGroupIds(12),
+          getFavoriteProductGroupIds(),
+          getRecentlyRestockedProductGroupIds(8),
+          getAppSetting('sales_recommendation_automation_enabled'),
+          loadRevenueOsSettings(),
+          loadRunningCroExperiments(),
+          loadRunningCroActionPlans(),
+        ])
+        const timeout = new Promise<never>((_, reject) => {
+          optionalTimeout = setTimeout(() => reject(new Error('Recommendation data timed out')), 4000)
+        })
+        const [accountMapData, topSellingData, favoriteIds, restockedData, automationSetting, revenueSettings, experiments, actionPlans] = await Promise.race([optionalData, timeout])
+        if (sequence !== loadSequence.current) return
+        const automationEnabled = automationSetting !== 'false' && revenueSettings.enabled
+        setAccountMap(accountMapData)
+        setTopSellingIds(automationEnabled ? topSellingData : [])
+        setFavoriteProductIds(automationEnabled ? favoriteIds : [])
+        setRestockedIds(automationEnabled ? restockedData : [])
+        setRecommendationAutomationEnabled(automationEnabled)
+        setRevenueOsSettings(revenueSettings)
+        setRunningCroExperiments(experiments)
+        setRunningCroActionPlans(actionPlans)
+      } catch (error) {
+        console.warn('Optional product recommendations unavailable:', error)
+      } finally {
+        if (optionalTimeout) clearTimeout(optionalTimeout)
+      }
     } catch (error) {
       console.error('Error loading product data:', error)
-      setError('Failed to load product data')
+      if (sequence === loadSequence.current && showPageLoader) setError('Failed to load product data')
     } finally {
-      setLoading(false)
+      if (sequence === loadSequence.current) {
+        inFlightProductId.current = null
+        lastLoadedProductId.current = productId
+        lastLoadAt.current = Date.now()
+        setLoading(false)
+      }
     }
   }, [productId])
 
   useEffect(() => {
-    loadProductData()
+    void loadProductData(true)
   }, [loadProductData])
 
   useEffect(() => {
@@ -220,7 +245,9 @@ export default function ProductDetailPage() {
 
   useEffect(() => {
     const refreshVisibleData = () => {
-      if (!loading) loadProductData()
+      if (document.visibilityState !== 'visible') return
+      if (lastLoadedProductId.current === productId && Date.now() - lastLoadAt.current < 3 * 60 * 1000) return
+      void loadProductData(false)
     }
 
     const handleVisibilityChange = () => {
@@ -234,7 +261,7 @@ export default function ProductDetailPage() {
       window.removeEventListener('focus', refreshVisibleData)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [loadProductData, loading])
+  }, [loadProductData, productId])
 
   const croAssignment = useMemo(() => resolveCroAssignment({
     surface: 'product_detail',

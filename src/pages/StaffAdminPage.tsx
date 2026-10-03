@@ -153,6 +153,8 @@ export default function StaffAdminPage() {
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loadingProducts, setLoadingProducts] = useState(false)
+  const [productLoadError, setProductLoadError] = useState<string | null>(null)
+  const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all')
 
   // Add single account
   const [addPgId, setAddPgId] = useState('')
@@ -423,6 +425,29 @@ export default function StaffAdminPage() {
     }
   }, [perms, toast])
 
+  const loadProducts = useCallback(async () => {
+    setLoadingProducts(true)
+    setProductLoadError(null)
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    try {
+      const catalog = Promise.all([
+        can(perms, 'tab_products') ? getManagedProductGroups() : getAllProductGroups(),
+        getCategories(),
+      ])
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Product stock request timed out')), 12000)
+      })
+      const [groups, nextCategories] = await Promise.race([catalog, timeout])
+      setProductGroups(groups)
+      setCategories(nextCategories)
+    } catch (error) {
+      setProductLoadError(error instanceof Error ? error.message : 'Product stock could not be loaded')
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId)
+      setLoadingProducts(false)
+    }
+  }, [perms])
+
   useEffect(() => {
     if (loadingPerms) return
 
@@ -453,12 +478,7 @@ export default function StaffAdminPage() {
       })
     }
     if (can(perms, 'tab_products') || can(perms, 'tab_templates') || can(perms, 'tab_add_product') || can(perms, 'tab_bulk_upload')) {
-      setLoadingProducts(true)
-      Promise.all([can(perms, 'tab_products') ? getManagedProductGroups() : getAllProductGroups(), getCategories()]).then(([pg, cat]) => {
-        setProductGroups(pg)
-        setCategories(cat)
-        setLoadingProducts(false)
-      })
+      void loadProducts()
     }
     if (can(perms, 'tab_discount_codes')) {
       setLoadingCodes(true)
@@ -476,7 +496,7 @@ export default function StaffAdminPage() {
     if (can(perms, 'tab_revenue_os')) {
       loadRevenueOsSnapshot()
     }
-  }, [perms, loadingPerms, loadSmsProducts, loadDepositHistory, loadSalesHistory, loadRevenueOsSnapshot])
+  }, [perms, loadingPerms, loadSmsProducts, loadDepositHistory, loadSalesHistory, loadRevenueOsSnapshot, loadProducts])
 
   const saveRevenueOsControls = async () => {
     if (!can(perms, 'tab_revenue_os')) return
@@ -1264,6 +1284,11 @@ export default function StaffAdminPage() {
     </Card>
   )
 
+  const visibleStockGroups = productGroups.filter(pg => {
+    const stock = Number(pg.stock_count || 0)
+    return stockFilter === 'all' || (stockFilter === 'low' ? stock >= 1 && stock <= 3 : stock <= 0)
+  })
+
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
@@ -1279,6 +1304,13 @@ export default function StaffAdminPage() {
               <TabsTrigger key={t.key} value={t.key}>{t.label}</TabsTrigger>
             ))}
           </TabsList>
+
+          {productLoadError && (
+            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 p-3 text-sm">
+              <span>Product stock could not be loaded: {productLoadError}</span>
+              <Button type="button" size="sm" variant="outline" onClick={() => void loadProducts()} disabled={loadingProducts}>Retry stock</Button>
+            </div>
+          )}
 
           {/* ── Overview / Stats ───────────────────────────────── */}
           {can(perms, 'view_stats') && (
@@ -1533,8 +1565,14 @@ export default function StaffAdminPage() {
                 <CardHeader><CardTitle>Products & Stock</CardTitle></CardHeader>
                 <CardContent>
                   {loadingProducts ? <Loader2 className="h-5 w-5 animate-spin" /> : (
-                    <div className="space-y-2 max-h-[60vh] overflow-y-auto">
-                      {productGroups.map(pg => {
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap gap-2" aria-label="Filter products by stock">
+                        <Button type="button" size="sm" variant={stockFilter === 'all' ? 'default' : 'outline'} onClick={() => setStockFilter('all')}>All ({productGroups.length})</Button>
+                        <Button type="button" size="sm" variant={stockFilter === 'low' ? 'default' : 'outline'} onClick={() => setStockFilter('low')}>Low: 1–3 ({productGroups.filter(pg => Number(pg.stock_count || 0) >= 1 && Number(pg.stock_count || 0) <= 3).length})</Button>
+                        <Button type="button" size="sm" variant={stockFilter === 'out' ? 'default' : 'outline'} onClick={() => setStockFilter('out')}>Out: 0 ({productGroups.filter(pg => Number(pg.stock_count || 0) <= 0).length})</Button>
+                      </div>
+                      <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                      {visibleStockGroups.map(pg => {
                         const cat = categories.find(c => c.id === pg.category_id)
                         return (
                           <div key={pg.id} className="flex items-center justify-between p-3 rounded-lg border text-sm">
@@ -1548,7 +1586,7 @@ export default function StaffAdminPage() {
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
-                              <Badge variant={(pg.stock_count ?? 0) > 0 ? 'default' : 'destructive'}>
+                              <Badge variant={(pg.stock_count ?? 0) <= 0 ? 'destructive' : 'default'}>
                                 {pg.stock_count ?? 0} in stock
                               </Badge>
                               <Button size="sm" variant="outline" onClick={() => openEditPg(pg)}>Edit</Button>
@@ -1556,6 +1594,8 @@ export default function StaffAdminPage() {
                           </div>
                         )
                       })}
+                      {visibleStockGroups.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">No products match this stock filter.</p>}
+                      </div>
                     </div>
                   )}
                 </CardContent>

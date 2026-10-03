@@ -75,6 +75,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const lastProfileLoadKey = useRef<string | null>(null)
   const roleLookupSequence = useRef(0)
   const lastRoleCheckAt = useRef(0)
+  const backgroundRoleCheckInFlight = useRef(false)
 
   useEffect(() => {
     localStorage.setItem('show_balances', showBalances ? 'true' : 'false')
@@ -251,18 +252,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!user) return
     const recheckOnFocus = async () => {
       if (Date.now() - lastRoleCheckAt.current < 30_000) return
+      if (backgroundRoleCheckInFlight.current) return
       const profileLoadKey = `${user.id}:${user.email ?? ''}`
       if (lastProfileLoadKey.current !== profileLoadKey) return
-      setLoading(true)
-      const roleCheck = checkAdminStatus(user.id)
-      const pendingSequence = roleLookupSequence.current
+      // Keep the current page mounted during a same-account role refresh.
+      // Initial login/account changes still use the global loading guard.
+      backgroundRoleCheckInFlight.current = true
       try {
-        await roleCheck
+        await checkAdminStatus(user.id)
       } finally {
-        if (
-          roleLookupSequence.current === pendingSequence &&
-          lastProfileLoadKey.current === profileLoadKey
-        ) setLoading(false)
+        backgroundRoleCheckInFlight.current = false
       }
     }
     window.addEventListener('focus', recheckOnFocus)

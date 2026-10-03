@@ -57,7 +57,7 @@ import AdminAlerts from '@/components/AdminAlerts'
 import { 
   getCategories, 
   getManagedProductGroups,
-  getIndividualAccounts,
+  getIndividualAccountsPage,
   getIndividualAccountsCount,
   createCategory, 
   updateCategory, 
@@ -720,6 +720,10 @@ export default function AdminPage() {
   const [favoriteProductGroupIds, setFavoriteProductGroupIds] = useState<string[]>([])
   const [individualAccounts, setIndividualAccounts] = useState<IndividualAccount[]>([])
   const [individualAccountsCount, setIndividualAccountsCount] = useState<number>(0)
+  const [individualAccountsPage, setIndividualAccountsPage] = useState(0)
+  const [individualAccountsLoading, setIndividualAccountsLoading] = useState(false)
+  const [individualAccountsError, setIndividualAccountsError] = useState<string | null>(null)
+  const [individualAccountsReload, setIndividualAccountsReload] = useState(0)
   const [userCount, setUserCount] = useState<number>(0)
   const [salesStats, setSalesStats] = useState({ totalSales: 0, totalRevenue: 0 })
   const [loading, setLoading] = useState(true)
@@ -2485,23 +2489,26 @@ export default function AdminPage() {
   }, [])
 
   const loadAllData = async () => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
       setLoading(true)
       setError(null)
 
-      const [categoriesData, productGroupsData, accountsData, accountsCountData, userCountData, salesStatsData, favoriteIds] = await Promise.all([
+      const initialData = Promise.all([
         getCategories(),
         getManagedProductGroups(),
-        getIndividualAccounts(),
         getIndividualAccountsCount(),
         getUserCount(),
         getAdminSalesStats(),
         getFavoriteProductGroupIds(),
       ])
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Admin data request timed out')), 15000)
+      })
+      const [categoriesData, productGroupsData, accountsCountData, userCountData, salesStatsData, favoriteIds] = await Promise.race([initialData, timeout])
 
       setCategories(categoriesData)
       setProductGroups(productGroupsData)
-      setIndividualAccounts(accountsData)
       setIndividualAccountsCount(accountsCountData)
       setUserCount(userCountData)
       setSalesStats(salesStatsData)
@@ -2511,9 +2518,23 @@ export default function AdminPage() {
       console.error('❌ Error loading admin data:', err)
       setError('Failed to load admin data')
     } finally {
+      if (timeoutId) clearTimeout(timeoutId)
       setLoading(false)
     }
   }
+
+  // Account credentials are fetched only when the owner opens the inventory tab.
+  useEffect(() => {
+    if (adminTab !== 'products') return
+    let active = true
+    setIndividualAccountsLoading(true)
+    setIndividualAccountsError(null)
+    getIndividualAccountsPage(individualAccountsPage)
+      .then((accounts) => { if (active) setIndividualAccounts(accounts) })
+      .catch(() => { if (active) setIndividualAccountsError('Inventory accounts could not be loaded. Please try again.') })
+      .finally(() => { if (active) setIndividualAccountsLoading(false) })
+    return () => { active = false }
+  }, [adminTab, individualAccountsPage, individualAccountsReload])
 
   const loadAdminHistories = useCallback(async () => {
     setHistoryLoading(true)
@@ -3322,6 +3343,7 @@ export default function AdminPage() {
       const success = await deleteIndividualAccount(accountId)
       if (success) {
         setIndividualAccounts(prev => prev.filter(acc => acc.id !== accountId))
+        setIndividualAccountsCount(prev => Math.max(0, prev - 1))
         // Reload product groups to update stock counts
         const updatedProductGroups = await getManagedProductGroups()
         setProductGroups(updatedProductGroups)
@@ -3577,7 +3599,7 @@ export default function AdminPage() {
     totalProducts: individualAccountsCount,
     totalSales: salesStats.totalSales,
     revenue: salesStats.totalRevenue,
-    lowStock: productGroups.filter(pg => pg.stock_count < 5).length
+    lowStock: productGroups.filter(pg => pg.is_active && Number(pg.stock_count || 0) >= 1 && Number(pg.stock_count || 0) <= 3).length
   }
 
   const historySearchMatches = useCallback((row: AdminHistoryRow, query: string) => {
@@ -5865,7 +5887,7 @@ export default function AdminPage() {
       const createdAccount = await createIndividualAccount(accountData)
       
       if (createdAccount) {
-        setIndividualAccounts(prev => [...prev, createdAccount])
+        setIndividualAccountsCount(prev => prev + 1)
         
         // Reload product groups to get updated stock counts
         const updatedProductGroups = await getManagedProductGroups()
@@ -7771,7 +7793,14 @@ export default function AdminPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
-                    {individualAccounts.length === 0 ? (
+                    {individualAccountsLoading ? (
+                      <div className="flex items-center justify-center py-8 text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Loading inventory accounts...</div>
+                    ) : individualAccountsError ? (
+                      <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 p-4 text-sm">
+                        <span>{individualAccountsError}</span>
+                        <Button type="button" size="sm" variant="outline" onClick={() => setIndividualAccountsReload(value => value + 1)}>Retry</Button>
+                      </div>
+                    ) : individualAccounts.length === 0 ? (
                       <div className="text-center py-8 text-muted-foreground">
                         <ShoppingBag className="h-12 w-12 mx-auto mb-4 opacity-50" />
                         <p>No products found. Add some products using the tabs above.</p>
@@ -7836,6 +7865,15 @@ export default function AdminPage() {
                           </div>
                         )
                       })
+                    )}
+                    {!individualAccountsLoading && !individualAccountsError && individualAccountsCount > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4 text-sm text-muted-foreground">
+                        <span>Showing {(individualAccountsPage * 100 + 1).toLocaleString()}–{(individualAccountsPage * 100 + individualAccounts.length).toLocaleString()} of {individualAccountsCount.toLocaleString()} accounts</span>
+                        <div className="flex gap-2">
+                          <Button type="button" size="sm" variant="outline" disabled={individualAccountsPage === 0} onClick={() => setIndividualAccountsPage(page => page - 1)}>Previous</Button>
+                          <Button type="button" size="sm" variant="outline" disabled={(individualAccountsPage + 1) * 100 >= individualAccountsCount} onClick={() => setIndividualAccountsPage(page => page + 1)}>Next</Button>
+                        </div>
+                      </div>
                     )}
                   </div>
                 </CardContent>

@@ -60,6 +60,7 @@ type SortMode = 'recommended' | 'newest' | 'price-low' | 'price-high' | 'stock'
 const PAGE_SIZE = 12
 const CORE_LOAD_TIMEOUT_MS = 8000
 const OPTIONAL_LOAD_TIMEOUT_MS = 3500
+const VISIBLE_REFRESH_COOLDOWN_MS = 3 * 60 * 1000
 
 const SAFE_REVENUE_OS_SETTINGS: RevenueOsSettings = {
   enabled: false,
@@ -125,8 +126,12 @@ export default function ProductsPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const didTrackInitialFilter = useRef(false)
   const didTrackInitialSort = useRef(false)
+  const loadInFlight = useRef(false)
+  const lastLoadAt = useRef(0)
 
   const loadData = useCallback(async (showPageLoader = false) => {
+    if (loadInFlight.current) return
+    loadInFlight.current = true
     try {
       if (showPageLoader) setLoading(true)
       setRefreshing(true)
@@ -170,6 +175,8 @@ export default function ProductsPage() {
       console.error('Error loading products:', err)
       setError(err instanceof Error ? err.message : 'Failed to load products')
     } finally {
+      lastLoadAt.current = Date.now()
+      loadInFlight.current = false
       setLoading(false)
       setRefreshing(false)
     }
@@ -225,7 +232,9 @@ export default function ProductsPage() {
 
   useEffect(() => {
     const refreshVisibleData = () => {
-      if (!loading) loadData(false)
+      if (document.visibilityState !== 'visible') return
+      if (Date.now() - lastLoadAt.current < VISIBLE_REFRESH_COOLDOWN_MS) return
+      void loadData(false)
     }
 
     const handleVisibilityChange = () => {
@@ -239,7 +248,7 @@ export default function ProductsPage() {
       window.removeEventListener('focus', refreshVisibleData)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [loadData, loading])
+  }, [loadData])
 
   useEffect(() => {
     setCurrentPage(1)
