@@ -22,7 +22,9 @@ let cacheExpiry = 0
 const CACHE_TTL = 5 * 60 * 1000 // 5 min
 
 export function useSupportSettings(): SupportSettings {
-  const [settings, setSettings] = useState<SupportSettings>(cached ?? DEFAULT)
+  const [settings, setSettings] = useState<SupportSettings>(
+    cached && Date.now() < cacheExpiry ? cached : DEFAULT,
+  )
 
   useEffect(() => {
     if (cached && Date.now() < cacheExpiry) {

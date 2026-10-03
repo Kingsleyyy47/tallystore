@@ -1727,16 +1727,17 @@ export default function AdminPage() {
   const handleSaveSupportLinks = async () => {
     setSavingSupportLinks(true)
     try {
-      await Promise.all([
+      const saved = await Promise.all([
         upsertAppSetting('support_whatsapp_url', supportWhatsappUrl.trim()),
         upsertAppSetting('support_telegram_url', supportTelegramUrl.trim()),
         upsertAppSetting('support_channel_url', supportChannelUrl.trim()),
         upsertAppSetting('support_popup_message', supportPopupMessage.trim()),
       ])
+      if (saved.some((ok) => !ok)) throw new Error('One or more support settings could not be saved')
       // Bust the in-memory cache so changes take effect immediately
       const { invalidateSupportSettingsCache } = await import('@/hooks/useSupportSettings')
       invalidateSupportSettingsCache()
-      toast({ title: 'Support links saved' })
+      toast({ title: 'Support links and login announcement saved' })
     } catch (err) {
       toast({ title: 'Failed to save', variant: 'destructive' })
     } finally {
@@ -6053,8 +6054,8 @@ export default function AdminPage() {
             <section className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {/* Support Links Settings */}
               <AdminControlSection
-                title="Support Links"
-                description="Set your WhatsApp, Telegram, and channel URLs. Leave blank to hide a channel. Changes appear site-wide immediately."
+                title="Support Links & Login Announcement"
+                description="Set your support links and the message customers see when they log in. Leave a link blank to hide that channel."
               >
                 {loadingSupportLinks ? (
                   <p className="text-sm text-muted-foreground">Loading...</p>
@@ -6091,18 +6092,20 @@ export default function AdminPage() {
                       />
                     </div>
                     <div>
-                      <Label htmlFor="supportPopup">Login popup message</Label>
+                      <Label htmlFor="supportPopup">Login announcement</Label>
                       <textarea
                         id="supportPopup"
                         rows={3}
-                        placeholder="Message shown in the login welcome popup..."
+                        maxLength={500}
+                        placeholder="Message shown to customers when they log in..."
                         value={supportPopupMessage}
                         onChange={(e) => setSupportPopupMessage(e.target.value)}
                         className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       />
+                      <p className="mt-1 text-xs text-muted-foreground">This updates the login popup. It does not send email.</p>
                     </div>
                     <Button onClick={handleSaveSupportLinks} disabled={savingSupportLinks}>
-                      {savingSupportLinks ? 'Saving...' : 'Save support links'}
+                      {savingSupportLinks ? 'Saving...' : 'Save announcement & links'}
                     </Button>
                   </>
                 )}
@@ -10773,7 +10776,7 @@ export default function AdminPage() {
                         className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
                       >
                         {isBroadcasting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Mail className="h-4 w-4 mr-2" />}
-                        {isDryRun ? 'Dry Run (Preview)' : 'Broadcast to Opted-In Customers'}
+                        {isDryRun ? 'Email dry run' : 'Email opted-in customers'}
                       </Button>
                       <label className="flex items-center gap-1.5 text-xs whitespace-nowrap cursor-pointer">
                         <input type="checkbox" checked={isDryRun} onChange={e => { setIsDryRun(e.target.checked); setDryRunResult(null) }} className="rounded" />

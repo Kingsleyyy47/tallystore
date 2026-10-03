@@ -25,18 +25,19 @@ export default function LoginWelcomeDialog() {
   const [open, setOpen] = useState(false)
   const { user, loading, roleLookupError, isAdmin, isStaff } = useAuth()
   const settings = useSupportSettings()
+  const userId = user?.id
 
   useEffect(() => {
     setOpen(false)
-    if (!user || loading || roleLookupError || isAdmin || isStaff) return
-    if (sessionStorage.getItem(SESSION_KEY_PREFIX + user.id) === 'seen') return
+    if (!userId || loading || settings.loading || roleLookupError || isAdmin || isStaff) return
+    if (sessionStorage.getItem(SESSION_KEY_PREFIX + userId) === settings.popupMessage) return
 
     const timer = window.setTimeout(() => setOpen(true), 800)
     return () => window.clearTimeout(timer)
-  }, [user?.id, loading, roleLookupError, isAdmin, isStaff])
+  }, [userId, loading, settings.loading, settings.popupMessage, roleLookupError, isAdmin, isStaff])
 
   const dismiss = () => {
-    if (user) sessionStorage.setItem(SESSION_KEY_PREFIX + user.id, 'seen')
+    if (userId) sessionStorage.setItem(SESSION_KEY_PREFIX + userId, settings.popupMessage)
     setOpen(false)
   }
 
@@ -70,7 +71,7 @@ export default function LoginWelcomeDialog() {
             <MessageCircle className="h-6 w-6" />
           </div>
           <h2 className="text-2xl font-bold">Stay connected</h2>
-          <p className="mt-2 text-sm leading-relaxed text-white/80">
+          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-white/80">
             {settings.popupMessage}
           </p>
         </div>

@@ -22,12 +22,12 @@ export const PERMISSIONS = [
   { key: 'tab_revenue_os',          label: 'Revenue OS tab',          description: 'View CRO health, data-quality findings, opportunities, and change bounded Revenue OS controls', group: 'Tabs' },
   { key: 'tab_categories',          label: 'Categories tab',         description: 'View, create, and edit product categories', group: 'Tabs' },
   { key: 'tab_users',               label: 'Users tab',              description: 'Search and view user accounts', group: 'Tabs' },
-  { key: 'tab_email',               label: 'Email / Broadcast tab',  description: 'Send emails and broadcasts to users', group: 'Tabs' },
+  { key: 'tab_email',               label: 'Email Broadcast tab',    description: 'Send emails to opted-in customers', group: 'Tabs' },
   // ── Settings sections
   { key: 'setting_rate',            label: 'NGN/USD Rate',           description: 'Override the exchange rate shown to customers', group: 'Settings' },
   { key: 'setting_referral_pct',    label: 'Referral Commission',    description: 'Change the referral reward percentage', group: 'Settings' },
   { key: 'setting_ercas',           label: 'Ercas Pay Toggle',       description: 'Enable or disable the Ercas Pay gateway', group: 'Settings' },
-  { key: 'setting_support_links',   label: 'Support Links',          description: 'Change WhatsApp, Telegram, channel, and login popup support text', group: 'Settings' },
+  { key: 'setting_support_links',   label: 'Support Links & Login Announcement', description: 'Change support links and the message customers see when they log in', group: 'Settings' },
   // ── Specific actions
   { key: 'action_adjust_balance',   label: 'Adjust User Balance',    description: 'Add or subtract wallet balance for a user', group: 'Actions' },
 ] as const

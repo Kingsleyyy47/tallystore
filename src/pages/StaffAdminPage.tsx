@@ -820,12 +820,12 @@ export default function StaffAdminPage() {
         support_popup_message: supportPopupMessage.trim(),
       }
 
-      const res = await submitPendingAction('setting_support_links', 'upsert_settings', 'Update support links', { settings })
+      const res = await submitPendingAction('setting_support_links', 'upsert_settings', 'Update support links and login announcement', { settings })
       if (res.success) {
         if (res.applied) {
         const { invalidateSupportSettingsCache } = await import('@/hooks/useSupportSettings')
         invalidateSupportSettingsCache()
-        toast({ title: 'Support links saved' })
+        toast({ title: 'Support links and login announcement saved' })
       } else {
           toast({ title: 'Submitted for approval' })
           loadMyPending()
@@ -2141,6 +2141,7 @@ export default function StaffAdminPage() {
                     <Mail className="h-5 w-5" />
                     Compose Email
                   </CardTitle>
+                  <p className="text-sm text-muted-foreground">This sends email. The message shown when customers log in is under Settings → Login announcement.</p>
                   {!autoApproves(perms, 'tab_email') && (
                     <Badge variant="outline" className="w-fit flex items-center gap-1">
                       <Clock className="h-3 w-3" /> Requires approval
@@ -2197,7 +2198,7 @@ export default function StaffAdminPage() {
                     <div className="flex items-center gap-2 flex-1">
                       <Button onClick={handleBroadcast} disabled={isBroadcasting || !emailMessage.trim()} className="flex-1">
                         {isBroadcasting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Mail className="h-4 w-4 mr-2" />}
-                        {autoApproves(perms, 'tab_email') ? (isDryRun ? 'Dry Run' : 'Broadcast to Opted-In Customers') : 'Submit Broadcast'}
+                        {autoApproves(perms, 'tab_email') ? (isDryRun ? 'Email dry run' : 'Email opted-in customers') : 'Submit email broadcast'}
                       </Button>
                       {autoApproves(perms, 'tab_email') && (
                         <label className="flex items-center gap-1.5 text-xs whitespace-nowrap cursor-pointer">
@@ -2322,7 +2323,7 @@ export default function StaffAdminPage() {
               {can(perms, 'setting_support_links') && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Support Links</CardTitle>
+                  <CardTitle>Support Links &amp; Login Announcement</CardTitle>
                   {!autoApproves(perms, 'setting_support_links') && <Badge variant="outline" className="w-fit flex items-center gap-1"><Clock className="h-3 w-3" /> Requires approval</Badge>}
                   <p className="text-sm text-muted-foreground">Leave a field blank to hide that channel across the site.</p>
                 </CardHeader>
@@ -2340,17 +2341,19 @@ export default function StaffAdminPage() {
                     <Input placeholder="https://t.me/... or WhatsApp channel" value={supportChannelUrl} onChange={e => setSupportChannelUrl(e.target.value)} className="mt-1" />
                   </div>
                   <div>
-                    <label className="text-sm font-medium">Login popup message</label>
+                    <label className="text-sm font-medium">Login announcement</label>
                     <textarea
                       rows={3}
-                      placeholder="Message shown on login popup..."
+                      maxLength={500}
+                      placeholder="Message shown to customers when they log in..."
                       value={supportPopupMessage}
                       onChange={e => setSupportPopupMessage(e.target.value)}
                       className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
+                    <p className="mt-1 text-xs text-muted-foreground">Shown to customers when they sign in. This does not send email.</p>
                   </div>
                   <Button onClick={handleSaveSupportLinks} disabled={savingSupportLinks} size="sm">
-                    {savingSupportLinks ? <Loader2 className="h-4 w-4 animate-spin" /> : autoApproves(perms, 'setting_support_links') ? 'Save' : 'Submit'}
+                    {savingSupportLinks ? <Loader2 className="h-4 w-4 animate-spin" /> : autoApproves(perms, 'setting_support_links') ? 'Save announcement & links' : 'Submit announcement & links'}
                   </Button>
                 </CardContent>
               </Card>
