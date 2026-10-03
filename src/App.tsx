@@ -2,6 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { lazy, Suspense } from 'react'
 import { Navigate, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import { AuthProvider } from '@/contexts/SimpleAuth'
@@ -24,38 +25,38 @@ const isLocalDev = window.location.hostname === 'localhost' || window.location.h
 
 // Pages
 import Index from "./pages/Index";
-import SimpleLogin from '@/pages/SimpleLogin'
-import SimpleRegister from '@/pages/SimpleRegister'
-import ProductsPage from '@/pages/ProductsPage'
-import CategoryPage from '@/pages/CategoryPage'
-import ProductDetailPage from '@/pages/ProductDetailPage'
-import CheckoutPage from '@/pages/CheckoutPage'
-import ProfilePage from '@/pages/ProfilePage'
-import OrderHistoryPage from '@/pages/OrderHistoryPage'
-import PaymentCallbackPage from '@/pages/PaymentCallbackPage'
-import PaymentSuccessPage from '@/pages/PaymentSuccessPage'
-import WalletPage from '@/pages/WalletPage'
-import Dashboard from '@/pages/Dashboard'
-import ReferralsPage from '@/pages/ReferralsPage'
-import HowItWorksPage from '@/pages/HowItWorksPage'
-import SupportPage from '@/pages/SupportPage'
-import TermsPage from '@/pages/TermsPage'
-import PrivacyPage from '@/pages/PrivacyPage'
-import AboutPage from '@/pages/AboutPage'
-import ContactPage from '@/pages/ContactPage'
-import WebServicesPage from '@/pages/WebServicesPage'
-import AdminPage from '@/pages/AdminPage'
-import StaffAdminPage from '@/pages/StaffAdminPage'
-import EmailConfirmation from '@/pages/EmailConfirmation'
-import ReferralWithdrawal from '@/pages/ReferralWithdrawal'
-import BillsPayment from "./pages/BillsPayment";
-import GiftCardsEsims from "./pages/GiftCardsEsims";
-import SocialBoostPage from "./pages/SocialBoostPage";
-import GetIP from "./pages/GetIP";
-import SmsNumbersPage from "./pages/SmsNumbersPage";
-import TelegramStarsPage from "./pages/TelegramStarsPage";
-import TravelVisaPage from "./pages/TravelVisaPage";
-import NotFound from "./pages/NotFound";
+const SimpleLogin = lazy(() => import('@/pages/SimpleLogin'))
+const SimpleRegister = lazy(() => import('@/pages/SimpleRegister'))
+const ProductsPage = lazy(() => import('@/pages/ProductsPage'))
+const CategoryPage = lazy(() => import('@/pages/CategoryPage'))
+const ProductDetailPage = lazy(() => import('@/pages/ProductDetailPage'))
+const CheckoutPage = lazy(() => import('@/pages/CheckoutPage'))
+const ProfilePage = lazy(() => import('@/pages/ProfilePage'))
+const OrderHistoryPage = lazy(() => import('@/pages/OrderHistoryPage'))
+const PaymentCallbackPage = lazy(() => import('@/pages/PaymentCallbackPage'))
+const PaymentSuccessPage = lazy(() => import('@/pages/PaymentSuccessPage'))
+const WalletPage = lazy(() => import('@/pages/WalletPage'))
+const Dashboard = lazy(() => import('@/pages/Dashboard'))
+const ReferralsPage = lazy(() => import('@/pages/ReferralsPage'))
+const HowItWorksPage = lazy(() => import('@/pages/HowItWorksPage'))
+const SupportPage = lazy(() => import('@/pages/SupportPage'))
+const TermsPage = lazy(() => import('@/pages/TermsPage'))
+const PrivacyPage = lazy(() => import('@/pages/PrivacyPage'))
+const AboutPage = lazy(() => import('@/pages/AboutPage'))
+const ContactPage = lazy(() => import('@/pages/ContactPage'))
+const WebServicesPage = lazy(() => import('@/pages/WebServicesPage'))
+const AdminPage = lazy(() => import('@/pages/AdminPage'))
+const StaffAdminPage = lazy(() => import('@/pages/StaffAdminPage'))
+const EmailConfirmation = lazy(() => import('@/pages/EmailConfirmation'))
+const ReferralWithdrawal = lazy(() => import('@/pages/ReferralWithdrawal'))
+const BillsPayment = lazy(() => import('@/pages/BillsPayment'))
+const GiftCardsEsims = lazy(() => import('@/pages/GiftCardsEsims'))
+const SocialBoostPage = lazy(() => import('@/pages/SocialBoostPage'))
+const GetIP = lazy(() => import('@/pages/GetIP'))
+const SmsNumbersPage = lazy(() => import('@/pages/SmsNumbersPage'))
+const TelegramStarsPage = lazy(() => import('@/pages/TelegramStarsPage'))
+const TravelVisaPage = lazy(() => import('@/pages/TravelVisaPage'))
+const NotFound = lazy(() => import('@/pages/NotFound'))
 
 const queryClient = new QueryClient();
 
@@ -85,6 +86,7 @@ const App = () => {
             <VisitorTracker />
             <GlobalPaymentChecker />
             <ChatWidget />
+            <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading page...</div>}>
             <Routes>
               {/* Public Routes */}
               <Route path="/" element={<Index />} />
@@ -294,6 +296,7 @@ const App = () => {
               {/* Catch all route */}
               <Route path="*" element={<NotFound />} />
             </Routes>
+            </Suspense>
             <MobileBottomNav />
           </CurrencyProvider>
           </AuthProvider>
