@@ -121,6 +121,7 @@ export default function ProductsPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
+  const [showAllCategories, setShowAllCategories] = useState(false)
   const [activeCollection, setActiveCollection] = useState<ProductCollection>('popular')
   const [sortMode, setSortMode] = useState<SortMode>('recommended')
   const [currentPage, setCurrentPage] = useState(1)
@@ -324,7 +325,7 @@ export default function ProductsPage() {
       .filter((entry) => entry.count > 0)
       .sort((a, b) => b.count - a.count || a.category.name.localeCompare(b.category.name))
 
-    return ranked.slice(0, 7)
+    return ranked
   }, [categories, productCountByCategory])
 
   const categoryForProduct = useCallback(
@@ -641,6 +642,7 @@ export default function ProductsPage() {
   }
 
   const handleProductView = (productGroup: ProductGroup) => {
+    const category = categoryForProduct(productGroup)
     const isRecommendationShow = !!(
       nextBestAction.selected?.product.id === productGroup.id &&
       ['SHOW_REQUESTED_PRODUCT', 'SHOW_ALTERNATIVE', 'SHOW_UPGRADE', 'SHOW_DOWNGRADE', 'SHOW_COMPLEMENT', 'SHOW_TRENDING', 'POST_PURCHASE_RECOMMENDATION'].includes(nextBestAction.action)
@@ -657,6 +659,9 @@ export default function ProductsPage() {
       variantId: croAssignment.variantId,
       metadata: { sortMode, selectedCategory, assignmentMode: croAssignment.mode },
       eventId: `${productClickType}:${Date.now()}:products_grid:${productGroup.id}:${nextBestAction.action || 'none'}`,
+    })
+    navigate('/checkout', {
+      state: { productGroup, category, quantity: 1, croAssignment },
     })
   }
 
@@ -703,10 +708,10 @@ export default function ProductsPage() {
         <section className="mb-7">
           <div className="mb-4 flex items-center justify-between">
             <h1 className="text-xl font-black tracking-normal">Browse Categories</h1>
-            <Link to="/products" className="hidden items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 sm:inline-flex">
-              View all categories
+            {categoryChips.length > 7 && <button type="button" onClick={() => setShowAllCategories((current) => !current)} className="hidden items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 sm:inline-flex">
+              {showAllCategories ? 'Show fewer categories' : 'View all categories'}
               <ArrowRight className="h-4 w-4" />
-            </Link>
+            </button>}
           </div>
 
           <div className="grid min-w-0 grid-cols-[repeat(5,minmax(0,1fr))] gap-1.5 sm:grid-cols-4 sm:gap-3 lg:grid-cols-8">
@@ -728,14 +733,19 @@ export default function ProductsPage() {
               </span>
             </button>
 
-            {categoryChips.slice(0, 3).map(({ category, count }) => {
+            {categoryChips.map(({ category, count }, index) => {
               const active = selectedCategory === category.id
+              const visibility = showAllCategories || index < 3
+                ? 'flex'
+                : index < 7
+                  ? 'hidden sm:flex'
+                  : 'hidden'
               return (
                 <button
                   key={category.id}
                   type="button"
                   onClick={() => setSelectedCategory(category.id)}
-                  className={`flex min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border px-1 py-2 text-center transition sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
+                  className={`${visibility} min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border px-1 py-2 text-center transition sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
                     active
                       ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
                       : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
@@ -750,44 +760,25 @@ export default function ProductsPage() {
               )
             })}
 
-            {categoryChips.slice(3).map(({ category, count }) => {
-              const active = selectedCategory === category.id
-              return (
-                <button
-                  key={category.id}
-                  type="button"
-                  onClick={() => setSelectedCategory(category.id)}
-                  className={`hidden min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border px-1 py-2 text-center transition sm:flex sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
-                    active
-                      ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
-                      : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
-                  }`}
-                >
-                  <CategoryLogo name={category.name} className="h-7 w-7 sm:h-9 sm:w-9" iconClassName={active ? 'h-6 w-6 text-white sm:h-7 sm:w-7' : 'h-6 w-6 sm:h-7 sm:w-7'} />
-                  <span className="min-w-0 max-w-full">
-                    <strong className="block max-w-full break-words text-[9px] leading-tight sm:text-sm">{category.name}</strong>
-                    <small className={active ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{count}</small>
-                  </span>
-                </button>
-              )
-            })}
-
-            <Link
-              to="/products"
-              className="flex min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-1 py-2 text-center transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left"
+            {categoryChips.length > 3 && <button
+              type="button"
+              onClick={() => setShowAllCategories((current) => !current)}
+              aria-expanded={showAllCategories}
+              aria-label={showAllCategories ? 'Show fewer categories' : 'Show more categories'}
+              className={`${categoryChips.length <= 7 && !showAllCategories ? 'sm:hidden' : 'sm:flex'} flex min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-1 py-2 text-center transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left`}
             >
               <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-slate-100 dark:bg-white/10 sm:h-9 sm:w-9">
                 <MoreHorizontal className="h-4 w-4 sm:h-5 sm:w-5" />
               </span>
               <span className="min-w-0 max-w-full">
-                <strong className="block max-w-full break-words text-[10px] leading-tight sm:text-sm">More</strong>
-                <small className="text-slate-500 dark:text-slate-400">{Math.max(0, categories.length - categoryChips.length)}</small>
+                <strong className="block max-w-full break-words text-[10px] leading-tight sm:text-sm">{showAllCategories ? 'Less' : 'More'}</strong>
+                {!showAllCategories && <small className="text-slate-500 dark:text-slate-400"><span className="sm:hidden">{categoryChips.length - 3}</span><span className="hidden sm:inline">{Math.max(0, categoryChips.length - 7)}</span></small>}
               </span>
-            </Link>
+            </button>}
           </div>
         </section>
 
-        <section className="mb-8">
+        <section className="mb-8 hidden lg:block">
           <div className="mb-3 flex min-w-0 items-center gap-3">
             <div className="grid min-w-0 flex-1 grid-cols-3 items-center gap-1">
               {([
@@ -853,21 +844,11 @@ export default function ProductsPage() {
               </Badge>
             </div>
 
-            <div className="grid min-w-0 gap-2.5 sm:grid-cols-[auto_minmax(210px,1fr)_160px_auto] sm:gap-3 lg:min-w-[620px]">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => loadData(false)}
-                disabled={refreshing}
-                className="h-10 min-w-0 rounded-lg"
-              >
-                {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                Refresh Stock
-              </Button>
-
-              <div className="relative min-w-0">
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2.5 sm:grid-cols-[minmax(210px,1fr)_160px_auto_auto] sm:gap-3 lg:min-w-[620px]">
+              <div className="relative col-span-2 min-w-0 sm:col-span-1">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <Input
+                  aria-label="Search products"
                   placeholder="Search products..."
                   value={searchTerm}
                   onChange={(event) => setSearchTerm(event.target.value)}
@@ -876,6 +857,7 @@ export default function ProductsPage() {
               </div>
 
               <select
+                aria-label="Sort products"
                 value={sortMode}
                 onChange={(event) => setSortMode(event.target.value as SortMode)}
                 className="h-10 min-w-0 rounded-lg border border-slate-200 bg-white/85 px-3 text-sm font-semibold outline-none dark:border-white/10 dark:bg-[#080d15]"
@@ -888,13 +870,24 @@ export default function ProductsPage() {
               </select>
 
               <div className="flex items-center gap-2">
-                <Button variant={viewMode === 'grid' ? 'default' : 'outline'} size="icon" onClick={() => setViewMode('grid')} className="h-10 w-10 rounded-lg">
+                <Button aria-label="Grid view" aria-pressed={viewMode === 'grid'} variant={viewMode === 'grid' ? 'default' : 'outline'} size="icon" onClick={() => setViewMode('grid')} className="h-10 w-10 rounded-lg">
                   <Grid className="h-4 w-4" />
                 </Button>
-                <Button variant={viewMode === 'list' ? 'default' : 'outline'} size="icon" onClick={() => setViewMode('list')} className="h-10 w-10 rounded-lg">
+                <Button aria-label="List view" aria-pressed={viewMode === 'list'} variant={viewMode === 'list' ? 'default' : 'outline'} size="icon" onClick={() => setViewMode('list')} className="h-10 w-10 rounded-lg">
                   <List className="h-4 w-4" />
                 </Button>
               </div>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => loadData(false)}
+                disabled={refreshing}
+                className="col-span-2 h-10 min-w-0 rounded-lg sm:col-span-1"
+              >
+                {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Refresh Stock
+              </Button>
             </div>
           </div>
 
@@ -918,7 +911,7 @@ export default function ProductsPage() {
               ) : (
                 <div className={`grid min-w-0 ${
                   viewMode === 'grid'
-                    ? 'grid-cols-[repeat(2,minmax(0,1fr))] gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4'
+                    ? 'grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4'
                     : 'grid-cols-1 gap-4'
                 }`}>
                   {pageProductGroups.map((productGroup) => {

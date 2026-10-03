@@ -109,6 +109,72 @@ function hasSettingsPermission(perms: PermissionMap) {
   return can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas') || can(perms, 'setting_support_links')
 }
 
+const MAX_STAFF_BULK_ROWS = 5_000
+
+type BulkRowPreview = { sampleNumber: number; hasLogin: boolean; hasPassword: boolean; hasEmail: boolean }
+type BulkImportSummary = {
+  sourceRows: number
+  parsedRows: number
+  validRows: number
+  invalidRows: number
+  duplicateRows: number
+  preview: BulkRowPreview[]
+}
+type BulkImportReview = {
+  nonEmptyRows: number
+  requiresCsvHeader: boolean
+  likelyHeader: boolean
+  withoutHeader: BulkImportSummary
+  withHeader: BulkImportSummary
+}
+
+function getBulkLines(text: string): string[] {
+  return text.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+}
+
+function buildBulkImportReview(text: string, formatKey?: string): BulkImportReview {
+  const lines = getBulkLines(text)
+  const firstLine = lines[0] || ''
+  // The existing parser treats comma-delimited files as CSV and consumes their first row as column names.
+  const requiresCsvHeader = !formatKey && firstLine.includes(',')
+  const headerWords = new Set(['username', 'user', 'login', 'email', 'mail', 'password', 'pass', 'emailpassword', 'mailpassword', 'twofa', 'year'])
+  const firstColumns = firstLine.split(/[,:|\t]/).map(value => value.toLowerCase().replace(/[^a-z0-9]/g, ''))
+  const likelyHeader = firstColumns.length > 1 && firstColumns.filter(value => headerWords.has(value)).length >= 2
+
+  const summarize = (skipHeader: boolean): BulkImportSummary => {
+    const dataLines = skipHeader || requiresCsvHeader ? lines.slice(1) : lines
+    if (lines.length > MAX_STAFF_BULK_ROWS + 1) {
+      return { sourceRows: dataLines.length, parsedRows: 0, validRows: 0, invalidRows: 0, duplicateRows: 0, preview: [] }
+    }
+    const input = skipHeader && !requiresCsvHeader ? dataLines.join('\n') : lines.join('\n')
+    const parsed = parseCSV(input, formatKey) as Array<Record<string, unknown>>
+    const validRows = parsed.filter(row => Boolean(row?.password && (row?.username || row?.email))).length
+    return {
+      sourceRows: dataLines.length,
+      parsedRows: parsed.length,
+      validRows,
+      // Some parser modes drop malformed rows. Count those as invalid too.
+      invalidRows: dataLines.length - validRows,
+      duplicateRows: dataLines.length - new Set(dataLines).size,
+      // Show field presence only. Account values and credentials never enter the preview state.
+      preview: parsed.slice(0, 3).map((row, index) => ({
+        sampleNumber: index + 1,
+        hasLogin: Boolean(row?.username || row?.email),
+        hasPassword: Boolean(row?.password),
+        hasEmail: Boolean(row?.email),
+      })),
+    }
+  }
+
+  return {
+    nonEmptyRows: lines.length,
+    requiresCsvHeader,
+    likelyHeader,
+    withoutHeader: summarize(false),
+    withHeader: summarize(true),
+  }
+}
+
 export default function StaffAdminPage() {
   const { user } = useAuth()
   const { toast } = useToast()
@@ -169,7 +235,35 @@ export default function StaffAdminPage() {
   const [bulkUploading, setBulkUploading] = useState(false)
   const [bulkResult, setBulkResult] = useState<{ success: boolean; accountsCreated: number; error?: string; pending?: boolean } | null>(null)
   const [bulkFormat, setBulkFormat] = useState<string>('auto')
+  const [bulkSkipHeader, setBulkSkipHeader] = useState(false)
+  const [bulkReview, setBulkReview] = useState<BulkImportReview | null>(null)
+  const [bulkReviewLoading, setBulkReviewLoading] = useState(false)
+  const [bulkReviewError, setBulkReviewError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    let active = true
+    if (!csvFile) {
+      setBulkReview(null)
+      setBulkReviewError(null)
+      setBulkReviewLoading(false)
+      return
+    }
+    setBulkReview(null)
+    setBulkReviewError(null)
+    setBulkReviewLoading(true)
+    csvFile.text().then(text => {
+      if (!active) return
+      const review = buildBulkImportReview(text, bulkFormat === 'auto' ? undefined : bulkFormat)
+      setBulkReview(review)
+      setBulkSkipHeader(review.requiresCsvHeader || review.likelyHeader)
+    }).catch(() => {
+      if (active) setBulkReviewError('This file could not be read. Select a CSV or TXT file and try again.')
+    }).finally(() => {
+      if (active) setBulkReviewLoading(false)
+    })
+    return () => { active = false }
+  }, [csvFile, bulkFormat])
 
   // Categories
   const [newCatName, setNewCatName] = useState('')
@@ -918,14 +1012,22 @@ export default function StaffAdminPage() {
 
   // ── Bulk upload ───────────────────────────────────────────────────────────
   async function handleBulkUpload() {
-    if (!csvFile || !bulkPgId) return
+    if (!csvFile || !bulkPgId || !bulkReview || bulkReviewLoading) return
     setBulkUploading(true)
     setBulkResult(null)
     try {
-      const text = await csvFile.text()
-      const parsed = parseCSV(text, bulkFormat === 'auto' ? undefined : bulkFormat)
+      const selectedSummary = bulkSkipHeader ? bulkReview.withHeader : bulkReview.withoutHeader
+      if (selectedSummary.sourceRows > MAX_STAFF_BULK_ROWS) throw new Error(`Upload at most ${MAX_STAFF_BULK_ROWS.toLocaleString()} rows per file.`)
+      if (selectedSummary.invalidRows > 0) throw new Error(`${selectedSummary.invalidRows} row(s) lack a login or password. Correct the file before uploading.`)
+      if (selectedSummary.validRows === 0) throw new Error('No valid accounts found. Check the file format and header setting.')
 
-      if (parsed.length === 0) {
+      const text = await csvFile.text()
+      const lines = getBulkLines(text)
+      if (lines.length !== bulkReview.nonEmptyRows) throw new Error('The file changed during review. Select it again before uploading.')
+      const parseInput = bulkSkipHeader && !bulkReview.requiresCsvHeader ? lines.slice(1).join('\n') : text
+      const parsed = parseCSV(parseInput, bulkFormat === 'auto' ? undefined : bulkFormat)
+
+      if (parsed.length === 0 || parsed.length !== selectedSummary.parsedRows) {
         const result = { success: false, accountsCreated: 0, error: 'File is empty or format not recognised — try selecting the format manually' }
         setBulkResult(result)
         toast({ variant: 'destructive', title: 'Upload failed', description: result.error })
@@ -1288,6 +1390,7 @@ export default function StaffAdminPage() {
     const stock = Number(pg.stock_count || 0)
     return stockFilter === 'all' || (stockFilter === 'low' ? stock >= 1 && stock <= 3 : stock <= 0)
   })
+  const selectedBulkSummary = bulkReview ? (bulkSkipHeader ? bulkReview.withHeader : bulkReview.withoutHeader) : null
 
   return (
     <div className="min-h-screen bg-background">
@@ -1664,7 +1767,13 @@ export default function StaffAdminPage() {
                               <button
                                 key={key}
                                 type="button"
-                                onClick={() => setBulkFormat(key)}
+                                onClick={() => {
+                                  if (key !== bulkFormat) {
+                                    setBulkReview(null)
+                                    setBulkFormat(key)
+                                    setBulkResult(null)
+                                  }
+                                }}
                                 className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${bulkFormat === key ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground'}`}
                               >
                                 {label}
@@ -1684,10 +1793,64 @@ export default function StaffAdminPage() {
                           ref={fileInputRef}
                           type="file"
                           accept=".csv,.txt"
-                          onChange={e => setCsvFile(e.target.files?.[0] || null)}
+                          onChange={e => { setBulkReview(null); setBulkResult(null); setCsvFile(e.target.files?.[0] || null) }}
                           className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-primary file:text-primary-foreground hover:file:cursor-pointer"
                         />
                       </div>
+                      {bulkReviewLoading && <p className="text-sm text-muted-foreground">Checking the file...</p>}
+                      {bulkReviewError && <p role="alert" className="text-sm text-destructive">{bulkReviewError}</p>}
+                      {bulkReview && selectedBulkSummary && (
+                        <div className="space-y-3 rounded-lg border bg-muted/30 p-4 text-sm">
+                          <div>
+                            <p className="font-semibold">Review inventory before upload</p>
+                            <p className="text-xs text-muted-foreground">{bulkReview.nonEmptyRows.toLocaleString()} non-empty file rows · {selectedBulkSummary.validRows.toLocaleString()} accounts ready</p>
+                            <p className="text-xs text-muted-foreground">Destination: {productGroups.find(pg => pg.id === bulkPgId)?.name || 'Select a product above'}</p>
+                          </div>
+                          {bulkReview.nonEmptyRows === 0 && <p role="alert" className="text-xs text-destructive">The file has no non-empty rows.</p>}
+                          <label className="flex items-start gap-2">
+                            <input
+                              type="checkbox"
+                              checked={bulkSkipHeader}
+                              disabled={bulkReview.requiresCsvHeader}
+                              onChange={e => setBulkSkipHeader(e.target.checked)}
+                              className="mt-1"
+                            />
+                            <span>
+                              Skip first row as a header
+                              <span className="block text-xs text-muted-foreground">
+                                {bulkReview.requiresCsvHeader
+                                  ? 'Comma-separated CSV needs a header; it is skipped automatically.'
+                                  : bulkReview.likelyHeader
+                                  ? 'The first row looks like column names. Check this choice before uploading.'
+                                  : 'Turn this on only when the first row contains column names.'}
+                              </span>
+                            </span>
+                          </label>
+                          {selectedBulkSummary.preview.length > 0 && (
+                            <div>
+                              <p className="mb-1 text-xs font-medium">Sample rows (values hidden)</p>
+                              <ul className="space-y-1 text-xs text-muted-foreground">
+                                {selectedBulkSummary.preview.map(row => (
+                                  <li key={row.sampleNumber}>
+                                    Sample {row.sampleNumber}: login {row.hasLogin ? 'present' : 'missing'} · password {row.hasPassword ? 'present' : 'missing'} · email {row.hasEmail ? 'present' : 'not provided'}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {selectedBulkSummary.duplicateRows > 0 && (
+                            <p className="text-xs text-amber-700 dark:text-amber-300">
+                              {selectedBulkSummary.duplicateRows.toLocaleString()} repeated file row(s). This form does not remove them; check that they are intentional.
+                            </p>
+                          )}
+                          {selectedBulkSummary.invalidRows > 0 && (
+                            <p role="alert" className="text-xs text-destructive">{selectedBulkSummary.invalidRows.toLocaleString()} row(s) have no login or password. Correct the file before uploading.</p>
+                          )}
+                          {selectedBulkSummary.sourceRows > MAX_STAFF_BULK_ROWS && (
+                            <p role="alert" className="text-xs text-destructive">Maximum {MAX_STAFF_BULK_ROWS.toLocaleString()} rows per file. Split this upload into smaller files.</p>
+                          )}
+                        </div>
+                      )}
                       {bulkResult && (
                         <div className={`p-3 rounded-lg text-sm ${
                           bulkResult.pending
@@ -1703,9 +1866,9 @@ export default function StaffAdminPage() {
                             : `Upload failed: ${bulkResult.error || 'No accounts were added.'}`}
                         </div>
                       )}
-                      <Button onClick={handleBulkUpload} disabled={bulkUploading || !csvFile || !bulkPgId}>
+                      <Button onClick={handleBulkUpload} disabled={bulkUploading || bulkReviewLoading || !csvFile || !bulkPgId || !selectedBulkSummary || selectedBulkSummary.validRows === 0 || selectedBulkSummary.invalidRows > 0 || selectedBulkSummary.sourceRows > MAX_STAFF_BULK_ROWS}>
                         {bulkUploading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
-                        Upload
+                        Confirm upload
                       </Button>
                     </>
                   )}

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { CheckCircle, CreditCard, Wallet, Loader2, Copy, Download, ChevronDown } from 'lucide-react'
+import { CheckCircle, CreditCard, Wallet, Loader2, Copy, Download, ChevronDown, Minus, Plus } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import NavbarAuth from '@/components/NavbarAuth'
@@ -14,6 +14,7 @@ import {
   processPurchaseSecure,
   getIndividualAccountById,
   getProductGroupById,
+  getCategoryById,
   computeDiscountedTotal,
   previewDiscountCode,
   DISCOUNTS_ENABLED,
@@ -81,14 +82,21 @@ export default function CheckoutPage() {
   const { toast } = useToast()
   
   // Get data from navigation state - supports both single and bulk purchases
-  const { accountId, productGroup: navigationProductGroup, category, quantity = 1, isBulkPurchase = false, croAssignment = null } = location.state || {}
+  const { accountId: navigationAccountId, productGroup: navigationProductGroup, category: navigationCategory, croAssignment = null } = location.state || {}
+  const checkoutParams = new URLSearchParams(location.search)
+  const productId = navigationProductGroup?.id || checkoutParams.get('product')
+  const accountId = navigationAccountId || checkoutParams.get('account')
+  const requestedQuantity = Number(location.state?.quantity ?? checkoutParams.get('quantity') ?? 1)
+  const [quantity, setQuantity] = useState(() => Number.isSafeInteger(requestedQuantity) && requestedQuantity > 0 ? requestedQuantity : 1)
+  const [category, setCategory] = useState(navigationCategory || null)
   
   const [account, setAccount] = useState<PublicAccount | null>(null)
   const [checkoutProductGroup, setCheckoutProductGroup] = useState<ProductGroup | null>(null)
   const [loading, setLoading] = useState(true)
   const [purchasing, setPurchasing] = useState(false)
+  const [serverInsufficientFunds, setServerInsufficientFunds] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState('wallet')
-  const [paymentDetailsOpen, setPaymentDetailsOpen] = useState(false)
+  const [paymentDetailsOpen, setPaymentDetailsOpen] = useState(true)
   const [credentialsModalOpen, setCredentialsModalOpen] = useState(false)
   const [purchasedCredentials, setPurchasedCredentials] = useState<PurchasedAccountCredentials[]>([])
   const [completedPurchase, setCompletedPurchase] = useState<{
@@ -120,7 +128,28 @@ export default function CheckoutPage() {
     : tierTotal
   const codeDiscountAmount = appliedCode ? tierTotal - totalAmount : 0
 
-  const isBulk = quantity > 1 || isBulkPurchase
+  const isBulk = quantity > 1
+  const maxQuantity = Number(productGroup?.stock_count) > 0 ? Number(productGroup.stock_count) : 10
+
+  const changeQuantity = (next: number) => {
+    if (purchasing || completedPurchase) return
+    setQuantity(Math.max(1, Math.min(maxQuantity, next)))
+    setAppliedCode(null)
+    setCodeError('')
+    setServerInsufficientFunds(false)
+  }
+
+  // Keep only public product/account identifiers in the URL so a checkout can
+  // survive refresh or a return from wallet funding. Never put credentials here.
+  useEffect(() => {
+    if (!productId) return
+    const url = new URL(window.location.href)
+    url.searchParams.set('product', productId)
+    url.searchParams.set('quantity', String(quantity))
+    if (accountId && quantity === 1) url.searchParams.set('account', accountId)
+    else url.searchParams.delete('account')
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  }, [accountId, productId, quantity])
 
   const copyCredential = async (value: string, label: string) => {
     if (!value) return
@@ -183,7 +212,7 @@ export default function CheckoutPage() {
     setCheckingCode(true)
     setCodeError('')
     try {
-      const result = await previewDiscountCode(codeInput.trim(), productGroup.id, category?.id || null, tierTotal)
+      const result = await previewDiscountCode(codeInput.trim(), productGroup.id, productGroup.category_id, tierTotal)
       if (result.valid && result.percentOff) {
         setAppliedCode({ code: codeInput.trim().toUpperCase(), percentOff: result.percentOff })
         setCodeError('')
@@ -208,12 +237,15 @@ export default function CheckoutPage() {
   useEffect(() => {
     const loadData = async () => {
       // For bulk purchases, we only need productGroup. For individual purchases, we need accountId
-      if (!navigationProductGroup?.id) {
+      if (!productId) {
         navigate('/products')
         return
       }
 
-      const latestProductGroup = await getProductGroupById(navigationProductGroup.id)
+      const latestProductGroup = await Promise.race([
+        getProductGroupById(productId),
+        new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 12000)),
+      ]).catch(() => null)
       if (!latestProductGroup || !isCustomerSellableProduct(latestProductGroup)) {
         toast({
           variant: "destructive",
@@ -224,6 +256,12 @@ export default function CheckoutPage() {
         return
       }
       setCheckoutProductGroup(latestProductGroup)
+      const stock = Number(latestProductGroup.stock_count)
+      setQuantity((current) => Math.min(current, stock > 0 ? stock : 10))
+      if (navigationCategory) setCategory(navigationCategory)
+      if (!navigationCategory) {
+        void getCategoryById(latestProductGroup.category_id).then(setCategory).catch(() => setCategory(null))
+      }
       
       // If we have an accountId, load individual account data
       if (accountId) {
@@ -270,7 +308,7 @@ export default function CheckoutPage() {
     }
 
     loadData()
-  }, [accountId, navigationProductGroup?.id, navigate, refreshWalletBalance, toast])
+  }, [accountId, productId, navigationCategory, navigate, refreshWalletBalance, toast])
 
   useEffect(() => {
     if (!productGroup || !user) return
@@ -321,6 +359,7 @@ export default function CheckoutPage() {
     if (blockStaffPurchase(isStaff, isAdmin, toast)) return
 
     setPurchasing(true)
+    setServerInsufficientFunds(false)
     paymentAttemptedRef.current = true
     const idempotencyKey = `purchase_${user.id.substring(0, 8)}_${productGroup.id.substring(0, 8)}_${quantity}_${Date.now()}_${crypto.randomUUID()}`
     
@@ -408,6 +447,8 @@ export default function CheckoutPage() {
         } else if (result.error?.includes('Insufficient wallet balance')) {
           errorTitle = "Insufficient Balance 💰";
           errorDescription = "Please top up your wallet to complete this purchase.";
+          setServerInsufficientFunds(true)
+          void refreshWalletBalance()
         }
         
         toast({
@@ -445,6 +486,8 @@ export default function CheckoutPage() {
         } else if (error.message.includes('Insufficient wallet balance')) {
           errorTitle = "Insufficient Balance 💰";
           errorDescription = "Please top up your wallet to complete this purchase.";
+          setServerInsufficientFunds(true)
+          void refreshWalletBalance()
         } else {
           errorDescription = error.message;
         }
@@ -509,7 +552,9 @@ export default function CheckoutPage() {
               <div className="min-w-0">
                 <div className="mb-2 flex items-center gap-2">
                   {category && <Badge variant="secondary" className="max-w-full truncate">{category.name}</Badge>}
-                  <Badge variant="outline" className="shrink-0 text-green-600">Available</Badge>
+                  <Badge variant="outline" className="shrink-0 text-green-600">
+                    {Number(productGroup.stock_count) > 0 ? `${productGroup.stock_count} in stock` : 'Availability checked at purchase'}
+                  </Badge>
                 </div>
                 <CardTitle className="truncate text-xl font-black sm:text-2xl">{productGroup.name}</CardTitle>
                 <p className="mt-1 truncate text-sm text-muted-foreground">
@@ -530,13 +575,26 @@ export default function CheckoutPage() {
                   <p className="text-xs text-muted-foreground">Price</p>
                   <p className="truncate font-bold">{formatPrice(productGroup.price)}</p>
                 </div>
-                <div>
+                <div className="text-center">
                   <p className="text-xs text-muted-foreground">Quantity</p>
                   <p className="font-bold">{quantity}</p>
                 </div>
                 <div className="min-w-0 text-right">
                   <p className="text-xs text-muted-foreground">Pay</p>
                   <p className="truncate font-bold text-primary">{formatPrice(totalAmount)}</p>
+                </div>
+              </div>
+
+              <div className="mt-3 flex items-center justify-between border-t pt-3">
+                <span className="text-sm font-semibold">How many accounts?</span>
+                <div className="flex items-center gap-1" aria-label="Purchase quantity">
+                  <Button type="button" variant="outline" size="icon" className="h-11 w-11" aria-label="Decrease quantity" disabled={quantity <= 1 || purchasing || !!completedPurchase} onClick={() => changeQuantity(quantity - 1)}>
+                    <Minus className="h-4 w-4" />
+                  </Button>
+                  <span className="min-w-9 text-center font-bold" aria-live="polite">{quantity}</span>
+                  <Button type="button" variant="outline" size="icon" className="h-11 w-11" aria-label="Increase quantity" disabled={quantity >= maxQuantity || purchasing || !!completedPurchase} onClick={() => changeQuantity(quantity + 1)}>
+                    <Plus className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
 
@@ -649,12 +707,13 @@ export default function CheckoutPage() {
               </Alert>
             )}
 
-            {insufficientFunds && !completedPurchase && (
+            {(insufficientFunds || serverInsufficientFunds) && !completedPurchase && (
               <Alert>
-                <AlertDescription>
-                  {showBalances
+                <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                  <span>{insufficientFunds && showBalances
                     ? `You need ${formatPrice(totalAmount - walletBalance)} more to buy this.`
-                    : 'Top up your wallet to continue.'}
+                    : 'Top up your wallet to continue.'}</span>
+                  {serverInsufficientFunds && <Button type="button" variant="outline" size="sm" onClick={() => { setServerInsufficientFunds(false); void refreshWalletBalance() }}>Check balance again</Button>}
                 </AlertDescription>
               </Alert>
             )}
@@ -664,7 +723,7 @@ export default function CheckoutPage() {
                 <CheckCircle className="h-4 w-4 mr-2" />
                 Purchase Complete
               </Button>
-            ) : insufficientFunds ? (
+            ) : insufficientFunds || serverInsufficientFunds ? (
               <Link to="/wallet" className="block">
                 <Button className="w-full" variant="outline" size="lg">
                   <Wallet className="h-4 w-4 mr-2" />
