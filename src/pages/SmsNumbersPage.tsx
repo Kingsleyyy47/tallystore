@@ -25,6 +25,7 @@ import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
@@ -647,6 +648,7 @@ function SmsNumbersSurface() {
   const [areas, setAreas] = useState<SmsRentalArea[]>([])
   const [orders, setOrders] = useState<SmsOrder[]>([])
   const [selectedServiceId, setSelectedServiceId] = useState('')
+  const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [selectedAreaCode, setSelectedAreaCode] = useState('US')
   const [rentalMonths, setRentalMonths] = useState(1)
   const [serviceQuery, setServiceQuery] = useState('')
@@ -791,6 +793,7 @@ function SmsNumbersSurface() {
 
   const selectOtpService = (service: SmsService) => {
     setSelectedServiceId(service.service_id)
+    setPurchaseOpen(true)
     trackRevenueEvent({
       eventType: 'PRODUCT_CLICKED',
       userId: user?.id || null,
@@ -1108,6 +1111,7 @@ function SmsNumbersSurface() {
       revenue_context: getRevenueRequestContext(),
     })
 
+    setPurchaseOpen(false)
     toast.success('OTP number purchased')
     if (typeof result.new_balance === 'number') {
       window.dispatchEvent(new Event('transactionAdded'))
@@ -1302,6 +1306,37 @@ function SmsNumbersSurface() {
       </div>
 
       {activeTab === 'otp' && (
+        <>
+        <Dialog open={purchaseOpen} onOpenChange={(open) => {
+          if (busyAction !== 'buy-otp') setPurchaseOpen(open)
+        }}>
+          <DialogContent className="w-[calc(100%-2rem)] max-w-md rounded-3xl p-5 sm:p-6">
+            <DialogHeader className="pr-7 text-left">
+              <DialogTitle className="text-xl font-black">Buy OTP number</DialogTitle>
+              <DialogDescription>Confirm the service and price before your wallet is charged.</DialogDescription>
+            </DialogHeader>
+            <div className="rounded-2xl bg-slate-100 p-4 dark:bg-muted">
+              <p className="break-words text-lg font-black">{selectedService?.service_name || 'Choose a service'}</p>
+              <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                <span className="text-slate-500 dark:text-muted-foreground">Price per number</span>
+                <strong>{selectedService ? formatNaira(selectedService.price_ngn) : '-'}</strong>
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-3 text-sm">
+                <span className="text-slate-500 dark:text-muted-foreground">Available now</span>
+                <strong>{selectedService ? selectedService.available_count.toLocaleString() : '-'}</strong>
+              </div>
+            </div>
+            <Button
+              type="button"
+              className="h-12 w-full rounded-2xl"
+              disabled={!numbersReady || !selectedService || selectedService.available_count <= 0 || busyAction !== null}
+              onClick={buyOtp}
+            >
+              {busyAction === 'buy-otp' ? <Loader2 className="h-4 w-4 animate-spin" /> : <PhoneCall className="h-4 w-4" />}
+              {selectedService ? `Buy for ${formatNaira(selectedService.price_ngn)}` : 'Buy OTP Number'}
+            </Button>
+          </DialogContent>
+        </Dialog>
         <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <Card className="min-w-0 rounded-[1.75rem] border-0 bg-white shadow-card dark:bg-card">
             <CardContent className="p-5 sm:p-6">
@@ -1446,7 +1481,7 @@ function SmsNumbersSurface() {
               <Button
                 type="button"
                 className="mt-5 h-12 w-full rounded-2xl px-6"
-                disabled={!numbersReady || !selectedService || busyAction === 'buy-otp'}
+                disabled={!numbersReady || !selectedService || selectedService.available_count <= 0 || busyAction !== null}
                 onClick={buyOtp}
               >
                 {busyAction === 'buy-otp' ? <Loader2 className="h-4 w-4 animate-spin" /> : <PhoneCall className="h-4 w-4" />}
@@ -1468,6 +1503,7 @@ function SmsNumbersSurface() {
 
           <SmsMessageSupportCard />
         </div>
+        </>
       )}
 
       {activeTab === 'rental' && (
