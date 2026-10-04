@@ -16,12 +16,10 @@ import {
   RefreshCw,
   Search,
   SlidersHorizontal,
-  Wallet,
   XCircle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import NavbarAuth from '@/components/NavbarAuth'
-import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -145,6 +143,35 @@ type SmsOrder = {
 
 type SmsTab = 'otp' | 'rental' | 'orders'
 type ServiceSort = 'recommended' | 'price_low' | 'stock'
+
+const SMS_SERVICE_ICONS: Record<string, string> = {
+  google: 'google', gmail: 'gmail', whatsapp: 'whatsapp', telegram: 'telegram',
+  facebook: 'facebook', instagram: 'instagram', signal: 'signal',
+  tiktok: 'tiktok', discord: 'discord', snapchat: 'snapchat',
+  netflix: 'netflix', spotify: 'spotify', paypal: 'paypal',
+  amazon: 'amazon', microsoft: 'microsoft', apple: 'apple',
+  twitter: 'x', outlook: 'microsoftoutlook', zoom: 'zoom',
+}
+const SMS_FALLBACK_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z'/%3E%3C/svg%3E"
+
+function SmsServiceIcon({ service, className = '' }: { service: SmsService; className?: string }) {
+  const name = service.service_name.toLowerCase()
+  const slug = Object.entries(SMS_SERVICE_ICONS).find(([term]) => name.includes(term))?.[1]
+  return (
+    <span className={cn('grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-slate-100 dark:bg-white/10', className)}>
+      <img
+        src={slug ? `https://cdn.simpleicons.org/${slug}` : SMS_FALLBACK_ICON}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        className="h-6 w-6 object-contain"
+        onError={(event) => {
+          if (event.currentTarget.src !== SMS_FALLBACK_ICON) event.currentTarget.src = SMS_FALLBACK_ICON
+        }}
+      />
+    </span>
+  )
+}
 
 const SERVICE_SORT_LABELS: Record<ServiceSort, string> = {
   recommended: 'Recommended',
@@ -641,7 +668,7 @@ function SmsMessageSupportCard() {
 }
 
 function SmsNumbersSurface() {
-  const { user, isStaff, isAdmin } = useAuth()
+  const { user, isStaff, isAdmin, walletBalance, walletLoading, walletBalanceUnavailable } = useAuth()
   const [activeTab, setActiveTab] = useState<SmsTab>('otp')
   const [health, setHealth] = useState<SmsApiResponse<never> | null>(null)
   const [services, setServices] = useState<SmsService[]>([])
@@ -686,13 +713,6 @@ function SmsNumbersSurface() {
     const localCount = Math.max(0, ...smsServiceIdentity(service).map((key) => localSmsServiceCounts.get(key) || 0))
     return Math.max(Number(service.personal_buy_count || 0), localCount)
   }, [localSmsServiceCounts])
-
-  const serviceStats = useMemo(() => {
-    const priced = services.filter((service) => Number(service.price_ngn) > 0)
-    const lowest = priced.length ? Math.min(...priced.map((service) => service.price_ngn)) : 0
-    const stock = services.reduce((total, service) => total + Number(service.available_count || 0), 0)
-    return { lowest, stock }
-  }, [services])
 
   const quickServiceTerms = useMemo(() => {
     const seen = new Set<string>()
@@ -769,8 +789,8 @@ function SmsNumbersSurface() {
   }, [serviceQuery, serviceSort])
 
   useEffect(() => {
-    if (!selectedServiceId && services[0]) {
-      setSelectedServiceId(services[0].service_id)
+    if (selectedServiceId && !services.some((service) => service.service_id === selectedServiceId)) {
+      setSelectedServiceId('')
     }
   }, [selectedServiceId, services])
 
@@ -793,7 +813,6 @@ function SmsNumbersSurface() {
 
   const selectOtpService = (service: SmsService) => {
     setSelectedServiceId(service.service_id)
-    setPurchaseOpen(true)
     trackRevenueEvent({
       eventType: 'PRODUCT_CLICKED',
       userId: user?.id || null,
@@ -855,9 +874,6 @@ function SmsNumbersSurface() {
         setServices(serviceResult.data || [])
         setAreas(areaResult.data || [])
 
-        if (serviceResult.data?.[0]) {
-          setSelectedServiceId((current) => current || serviceResult.data?.[0]?.service_id || '')
-        }
       } else {
         setServices([])
         setAreas([])
@@ -1205,63 +1221,61 @@ function SmsNumbersSurface() {
   ].filter((tab): tab is { id: SmsTab; label: string; icon: typeof PhoneCall } => tab !== null)
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-4 sm:space-y-6">
-      <Card className="overflow-hidden rounded-2xl border border-purple-200/70 bg-[radial-gradient(circle_at_88%_20%,rgba(34,211,238,0.22),transparent_12rem),linear-gradient(135deg,#2d145c_0%,#171827_58%,#10131f_100%)] text-white shadow-[0_18px_55px_rgba(88,64,179,0.22)] dark:border-white/10">
-        <CardContent className="relative p-4 sm:p-6">
-          <div className="absolute bottom-0 right-0 h-24 w-40 rounded-tl-full bg-purple-400/10 blur-2xl" />
-          <div className="relative grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-            <div className="min-w-0">
-              <div className="mb-3 flex min-w-0 items-center gap-3">
-                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-white/10 ring-1 ring-white/10 sm:h-12 sm:w-12">
-                  <ReactCountryFlag countryCode="US" svg className="text-2xl" aria-label="United States" />
-                </span>
-                <div className="min-w-0">
-                  <Badge className="mb-1 rounded-full bg-cyan-300/15 px-3 py-1 text-[11px] text-cyan-100 hover:bg-cyan-300/15">
-                    US & Canada
-                  </Badge>
-                  <h1 className="truncate text-2xl font-black tracking-tight sm:text-3xl">US & Canada Numbers</h1>
-                </div>
+    <div className="mx-auto w-full max-w-2xl space-y-5">
+      {activeTab === 'otp' && (
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#8075ff] to-[#6366f1] p-5 text-white shadow-[0_4px_20px_rgba(128,117,255,0.3)]">
+          <div className="absolute -right-8 -top-8 h-28 w-28 rounded-full bg-white/10" />
+          <div className="absolute -bottom-10 -left-5 h-24 w-24 rounded-full bg-white/[0.08]" />
+          <div className="relative space-y-4">
+            <div>
+              <p className="text-sm text-white/90">Available wallet balance</p>
+              {walletLoading ? (
+                <Loader2 className="mt-2 h-6 w-6 animate-spin" />
+              ) : (
+                <h2 className="mt-1 text-3xl font-bold">{walletBalanceUnavailable ? 'Unavailable' : formatNaira(walletBalance)}</h2>
+              )}
+              {user?.email && <p className="mt-1 truncate text-xs text-white/70">{user.email}</p>}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild className="h-10 min-w-28 flex-1 rounded-lg bg-white font-semibold text-[#6c5ff2] hover:bg-white/90 hover:text-[#6c5ff2]">
+                <Link to="/wallet">+ Add Funds</Link>
+              </Button>
+              <Button type="button" className="h-10 min-w-28 flex-1 rounded-lg border border-white/30 bg-white/20 font-semibold text-white hover:bg-white/30" onClick={() => setActiveTab('orders')}>
+                History
+              </Button>
+            </div>
+            {orders.length > 0 && (
+              <div className="space-y-2 border-t border-white/20 pt-3">
+                <p className="text-xs font-medium text-white/70">Recent orders</p>
+                {orders.slice(0, 3).map((order) => (
+                  <div key={order.id} className="flex items-center justify-between gap-2 text-xs">
+                    <span className="min-w-0 truncate font-medium">{order.service_name}</span>
+                    <span className="shrink-0 capitalize text-white/75">{order.status}</span>
+                    <span className="shrink-0 font-semibold">{formatNaira(order.price_ngn)}</span>
+                  </div>
+                ))}
               </div>
-              <p className="max-w-2xl text-sm leading-6 text-slate-200">
-                {rentalsAvailable
-                  ? 'Pick an OTP service, rent a number, or return to active numbers without digging through a long page.'
-                  : 'Pick an OTP service or return to active numbers without digging through a long page.'}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
-              <Button type="button" className="h-10 rounded-xl bg-white px-3 text-xs font-black text-[#5637aa] hover:bg-cyan-50 sm:px-4 sm:text-sm" onClick={loadSmsNumbers}>
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                Refresh
-              </Button>
-              <Button asChild className="h-10 rounded-xl bg-white/10 px-3 text-xs font-black text-white hover:bg-white/15 hover:text-white sm:px-4 sm:text-sm">
-                <Link to="/dashboard">
-                  <ArrowLeft className="h-4 w-4" />
-                  Wallet
-                </Link>
-              </Button>
-            </div>
+            )}
           </div>
+        </div>
+      )}
 
-          <div className="relative mt-4 grid grid-cols-4 gap-1.5 sm:gap-3">
-            {[
-              { icon: Wallet, label: 'Wallet', value: numbersReady ? 'Ready' : 'Paused' },
-              { icon: PhoneCall, label: 'OTP', value: loading ? '...' : services.length.toLocaleString() },
-              { icon: CalendarDays, label: 'Rentals', value: loading ? '...' : areas.length.toLocaleString() },
-              { icon: Inbox, label: 'Mine', value: activeOrders.length.toLocaleString() },
-            ].map((item) => {
-              const Icon = item.icon
-              return (
-                <div key={item.label} className="min-w-0 rounded-xl border border-white/10 bg-white/[0.07] p-2 text-center sm:rounded-2xl sm:p-3">
-                  <Icon className="mx-auto h-4 w-4 text-cyan-200 sm:h-5 sm:w-5" />
-                  <p className="mt-1 truncate text-[10px] font-bold text-slate-300 sm:text-xs">{item.label}</p>
-                  <p className="truncate text-sm font-black sm:text-lg">{item.value}</p>
-                </div>
-              )
-            })}
-          </div>
-        </CardContent>
-      </Card>
+      <div className="flex items-center gap-2">
+        <Button asChild type="button" size="icon" variant="ghost" className="h-9 w-9 shrink-0 rounded-lg" aria-label="Back to dashboard">
+          <Link to="/dashboard"><ArrowLeft className="h-5 w-5" /></Link>
+        </Button>
+        <div className="min-w-0 flex-1">
+          <h1 className="flex items-center gap-2 text-xl font-bold">
+            <ReactCountryFlag countryCode="US" svg className="shrink-0 text-2xl" aria-label="United States" />
+            US &amp; Canada Numbers
+          </h1>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-muted-foreground">Choose a service and get a number for your code.</p>
+        </div>
+        <Button type="button" variant="ghost" className="h-9 shrink-0 rounded-lg px-2 text-xs font-semibold text-[#6c5ff2]" onClick={loadSmsNumbers} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          <span className="hidden sm:inline">Refresh</span>
+        </Button>
+      </div>
 
       {unavailable && (
         <Card className="rounded-[1.75rem] border border-amber-200 bg-amber-50 shadow-card dark:border-amber-500/20 dark:bg-amber-500/10">
@@ -1293,7 +1307,7 @@ function SmsNumbersSurface() {
               className={cn(
                 'h-10 min-w-0 justify-center rounded-xl px-2 text-[11px] font-black sm:h-11 sm:rounded-2xl sm:px-4 sm:text-sm',
                 activeTab === tab.id
-                  ? 'bg-slate-950 text-white shadow-sm hover:bg-slate-900 hover:text-white dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100'
+                  ? 'bg-[#8075ff] text-white shadow-sm hover:bg-[#6c5ff2] hover:text-white'
                   : 'text-slate-700 hover:bg-violet-50 hover:text-slate-950 dark:text-muted-foreground dark:hover:bg-white/10 dark:hover:text-foreground',
               )}
               onClick={() => setActiveTab(tab.id)}
@@ -1310,12 +1324,12 @@ function SmsNumbersSurface() {
         <Dialog open={purchaseOpen} onOpenChange={(open) => {
           if (busyAction !== 'buy-otp') setPurchaseOpen(open)
         }}>
-          <DialogContent className="w-[calc(100%-2rem)] max-w-md rounded-3xl p-5 sm:p-6">
+          <DialogContent className="w-[calc(100%-2rem)] max-w-md rounded-2xl p-5 sm:p-6">
             <DialogHeader className="pr-7 text-left">
-              <DialogTitle className="text-xl font-black">Buy OTP number</DialogTitle>
+              <DialogTitle className="text-xl font-bold">Buy OTP number</DialogTitle>
               <DialogDescription>Confirm the service and price before your wallet is charged.</DialogDescription>
             </DialogHeader>
-            <div className="rounded-2xl bg-slate-100 p-4 dark:bg-muted">
+            <div className="rounded-xl bg-[#8075ff]/[0.08] p-4 dark:bg-[#8075ff]/15">
               <p className="break-words text-lg font-black">{selectedService?.service_name || 'Choose a service'}</p>
               <div className="mt-3 flex items-center justify-between gap-3 text-sm">
                 <span className="text-slate-500 dark:text-muted-foreground">Price per number</span>
@@ -1328,7 +1342,7 @@ function SmsNumbersSurface() {
             </div>
             <Button
               type="button"
-              className="h-12 w-full rounded-2xl"
+              className="h-12 w-full rounded-xl bg-[#8075ff] text-white hover:bg-[#6c5ff2]"
               disabled={!numbersReady || !selectedService || selectedService.available_count <= 0 || busyAction !== null}
               onClick={buyOtp}
             >
@@ -1337,29 +1351,27 @@ function SmsNumbersSurface() {
             </Button>
           </DialogContent>
         </Dialog>
-        <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <Card className="min-w-0 rounded-[1.75rem] border-0 bg-white shadow-card dark:bg-card">
-            <CardContent className="p-5 sm:p-6">
-              <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div className="space-y-5">
+          <Card className="min-w-0 rounded-2xl border-0 bg-white shadow-card dark:bg-card">
+            <CardContent className="p-4 sm:p-5">
+              <div className="flex items-end justify-between gap-3">
                 <div>
-                  <h2 className="text-2xl font-black tracking-tight">Choose a service</h2>
+                  <h2 className="text-xl font-bold tracking-tight">Choose a service</h2>
                   <p className="mt-1 text-sm text-slate-500 dark:text-muted-foreground">
                     {loading ? 'Loading available services...' : `${filteredServices.length.toLocaleString()} matches from ${services.length.toLocaleString()} services`}
                   </p>
                 </div>
-                <Badge variant="outline" className="w-fit rounded-full px-3 py-1">
-                  United States
-                </Badge>
               </div>
 
-              <div className="mt-6 flex min-w-0 flex-col gap-3 lg:flex-row">
+              <div className="mt-4 flex min-w-0 flex-col gap-3 sm:flex-row">
                 <SearchField value={serviceQuery} onChange={setServiceQuery} placeholder={serviceSearchPlaceholder} />
-                <div className="relative lg:w-56">
+                <div className="relative sm:w-44 sm:shrink-0">
                   <SlidersHorizontal className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <select
                     value={serviceSort}
                     onChange={(event) => setServiceSort(event.target.value as ServiceSort)}
-                    className="h-12 w-full appearance-none rounded-2xl border border-slate-200 bg-white pl-11 pr-8 text-sm font-semibold outline-none focus:border-violet-400 dark:border-white/10 dark:bg-background"
+                    aria-label="Sort services"
+                    className="h-12 w-full appearance-none rounded-xl border border-slate-200 bg-white pl-11 pr-8 text-sm font-semibold outline-none focus:border-[#8075ff] dark:border-white/10 dark:bg-background"
                   >
                     {(Object.keys(SERVICE_SORT_LABELS) as ServiceSort[]).map((key) => (
                       <option key={key} value={key}>{SERVICE_SORT_LABELS[key]}</option>
@@ -1368,34 +1380,16 @@ function SmsNumbersSurface() {
                 </div>
               </div>
 
-              {quickServiceTerms.length > 0 && (
-              <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-                {quickServiceTerms.map((term) => (
-                  <Button
-                    key={term}
-                    type="button"
-                    variant={serviceQuery === term ? 'default' : 'outline'}
-                    className="h-9 shrink-0 rounded-full px-4 text-xs"
-                    onClick={() => setServiceQuery(serviceQuery === term ? '' : term)}
-                  >
-                    {term}
-                  </Button>
-                ))}
-              </div>
-              )}
-
-              <div className="mt-5 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <div className="mt-4 space-y-2">
                 {loading && services.length === 0 ? (
                   Array.from({ length: 6 }).map((_, index) => (
-                    <div key={index} className="h-36 animate-pulse rounded-3xl bg-slate-100 dark:bg-muted" />
+                    <div key={index} className="h-20 animate-pulse rounded-xl bg-slate-100 dark:bg-muted" />
                   ))
                 ) : visibleServices.length === 0 ? (
-                  <div className="md:col-span-2 xl:col-span-3">
-                    <EmptyState
-                      title={services.length === 0 ? 'No OTP services available' : 'No service found'}
-                      body={services.length === 0 ? 'No live SMS stock is available for this country right now. Please try again shortly.' : 'Try another app name or clear the search.'}
-                    />
-                  </div>
+                  <EmptyState
+                    title={services.length === 0 ? 'No OTP services available' : 'No service found'}
+                    body={services.length === 0 ? 'No live SMS stock is available for this country right now. Please try again shortly.' : 'Try another app name or clear the search.'}
+                  />
                 ) : visibleServices.map((service) => {
                   const selected = selectedServiceId === service.service_id
                   return (
@@ -1404,31 +1398,25 @@ function SmsNumbersSurface() {
                       type="button"
                       aria-pressed={selected}
                       onClick={() => selectOtpService(service)}
+                      disabled={service.available_count <= 0}
                       className={cn(
-                        'min-w-0 rounded-3xl border p-4 text-left transition hover:-translate-y-0.5 hover:shadow-card',
+                        'flex w-full min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition hover:border-[#8075ff] hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60 sm:p-3.5',
                         selected
-                          ? 'border-violet-400 bg-violet-50 shadow-[0_16px_40px_rgba(91,55,183,0.14)] dark:bg-violet-500/10'
-                          : 'border-slate-100 bg-slate-50 dark:border-white/10 dark:bg-background',
+                          ? 'border-[#8075ff] bg-[#8075ff]/[0.08] dark:bg-[#8075ff]/15'
+                          : 'border-slate-200 bg-white dark:border-white/10 dark:bg-background',
                       )}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-base font-black tracking-tight">{service.service_name}</p>
-                          <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-muted-foreground">
-                            {service.service_code || `ID ${service.project_id}`}
-                          </p>
-                        </div>
-                        <ChevronRight className={cn('h-5 w-5 shrink-0', selected ? 'text-violet-600' : 'text-slate-300')} />
+                      <SmsServiceIcon service={service} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-bold sm:text-base">{service.service_name}</p>
+                        <p className="mt-0.5 text-xs text-slate-500 dark:text-muted-foreground">
+                          {service.available_count.toLocaleString()} available
+                        </p>
                       </div>
-                      <div className="mt-5 flex items-end justify-between gap-3">
-                        <div>
-                          <p className="text-xl font-black">{formatNaira(service.price_ngn)}</p>
-                          <p className="text-xs text-slate-500 dark:text-muted-foreground">per number</p>
-                        </div>
-                        <Badge variant="outline" className="rounded-full bg-white/70 px-3 py-1 dark:bg-white/5">
-                          {service.available_count.toLocaleString()} left
-                        </Badge>
-                      </div>
+                      <span className="shrink-0 rounded-full bg-gradient-to-r from-[#8075ff] to-[#6366f1] px-3 py-1.5 text-sm font-bold text-white">
+                        {formatNaira(service.price_ngn)}
+                      </span>
+                      <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
                     </button>
                   )
                 })}
@@ -1438,7 +1426,7 @@ function SmsNumbersSurface() {
                 <Button
                   type="button"
                   variant="outline"
-                  className="mt-5 h-11 w-full rounded-2xl"
+                  className="mt-4 h-11 w-full rounded-xl"
                   onClick={() => setVisibleServiceCount((count) => count + SERVICE_BATCH_SIZE)}
                 >
                   Show more services
@@ -1447,62 +1435,25 @@ function SmsNumbersSurface() {
             </CardContent>
           </Card>
 
-          <Card className="h-fit rounded-[1.75rem] border-0 bg-white shadow-card dark:bg-card">
-            <CardContent className="p-5 sm:p-6">
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-cyan-100 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-200">
-                <PhoneCall className="h-6 w-6" />
-              </div>
-              <h3 className="mt-5 text-xl font-black tracking-tight">Selected number</h3>
-
-              <div className="mt-5 rounded-3xl bg-slate-100 p-4 dark:bg-muted">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-muted-foreground">
-                  Service
-                </p>
-                <p className="mt-2 break-words text-lg font-black">
-                  {selectedService ? selectedService.service_name : 'Choose a service'}
-                </p>
-              </div>
-
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <div className="rounded-3xl bg-slate-100 p-4 dark:bg-muted">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-muted-foreground">
-                    Price
-                  </p>
-                  <p className="mt-2 text-xl font-black">{selectedService ? formatNaira(selectedService.price_ngn) : '-'}</p>
-                </div>
-                <div className="rounded-3xl bg-slate-100 p-4 dark:bg-muted">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-muted-foreground">
-                    Stock
-                  </p>
-                  <p className="mt-2 text-xl font-black">{selectedService ? selectedService.available_count.toLocaleString() : '-'}</p>
-                </div>
-              </div>
-
-              <Button
-                type="button"
-                className="mt-5 h-12 w-full rounded-2xl px-6"
-                disabled={!numbersReady || !selectedService || selectedService.available_count <= 0 || busyAction !== null}
-                onClick={buyOtp}
-              >
-                {busyAction === 'buy-otp' ? <Loader2 className="h-4 w-4 animate-spin" /> : <PhoneCall className="h-4 w-4" />}
-                Buy OTP Number
-              </Button>
-
-              <div className="mt-5 grid gap-3 text-sm text-slate-600 dark:text-muted-foreground">
-                <div className="flex items-center justify-between gap-3">
-                  <span>Lowest price</span>
-                  <strong className="text-slate-950 dark:text-foreground">{serviceStats.lowest ? formatNaira(serviceStats.lowest) : '-'}</strong>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span>Total stock</span>
-                  <strong className="text-slate-950 dark:text-foreground">{serviceStats.stock.toLocaleString()}</strong>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
           <SmsMessageSupportCard />
         </div>
+        {selectedService && (
+          <>
+            <div className="h-24" aria-hidden="true" />
+            <div className="fixed inset-x-0 bottom-[calc(68px+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white/95 p-3 shadow-[0_-6px_24px_rgba(15,23,42,0.1)] backdrop-blur dark:border-white/10 dark:bg-card/95 md:bottom-0">
+              <div className="mx-auto flex max-w-2xl items-center gap-3">
+                <SmsServiceIcon service={selectedService} className="h-10 w-10" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold">{selectedService.service_name}</p>
+                  <p className="text-xs font-semibold text-[#6c5ff2]">{formatNaira(selectedService.price_ngn)}</p>
+                </div>
+                <Button type="button" className="h-11 shrink-0 rounded-xl bg-[#8075ff] px-5 font-bold text-white hover:bg-[#6c5ff2]" disabled={!numbersReady || selectedService.available_count <= 0 || busyAction !== null} onClick={() => setPurchaseOpen(true)}>
+                  Buy number
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
         </>
       )}
 
@@ -1701,13 +1652,11 @@ export default function SmsNumbersPage() {
     <div className="min-h-screen max-w-full overflow-x-hidden bg-[#f6f7fb] text-slate-950 dark:bg-background dark:text-foreground">
       <NavbarAuth />
 
-      <main className="container mx-auto max-w-full overflow-x-hidden px-4 py-6 sm:px-6 lg:py-10">
-        <PageBreadcrumb items={[{ label: 'US & Canada Numbers' }]} className="mx-auto mb-6 w-full max-w-7xl" />
-
+      <main className="container mx-auto max-w-full overflow-x-hidden px-4 py-5 sm:px-6 lg:py-8">
         <SmsNumbersSurface />
 
         {recs.length > 0 && (
-          <div className="mx-auto mt-10 max-w-7xl">
+          <div className="mx-auto mt-10 max-w-2xl">
             <RecommendationStrip products={recs} surface="sms_numbers_page" actionType="SHOW_ALTERNATIVE" title="Explore more products" />
           </div>
         )}
