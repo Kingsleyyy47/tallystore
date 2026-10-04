@@ -7,6 +7,8 @@ import {
   ChevronRight,
   Clock,
   Copy,
+  Eye,
+  EyeOff,
   Inbox,
   Loader2,
   MessageSquareText,
@@ -33,6 +35,7 @@ import { blockStaffPurchase } from '@/lib/staffPurchaseGuard'
 import { getRevenueRequestContext, getRevenueVisitorId, trackRevenueEvent } from '@/lib/revenue-os'
 import { RecommendationStrip } from '@/components/RecommendationCard'
 import { useRecommendations } from '@/hooks/useRecommendations'
+import { TopUpWallet } from '@/components/TopUpWallet'
 
 function WhatsAppIcon({ className }: { className?: string }) {
   return (
@@ -668,7 +671,7 @@ function SmsMessageSupportCard() {
 }
 
 function SmsNumbersSurface() {
-  const { user, isStaff, isAdmin, walletBalance, walletLoading, walletBalanceUnavailable } = useAuth()
+  const { user, isStaff, isAdmin, walletBalance, walletLoading, walletBalanceUnavailable, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
   const [activeTab, setActiveTab] = useState<SmsTab>('otp')
   const [health, setHealth] = useState<SmsApiResponse<never> | null>(null)
   const [services, setServices] = useState<SmsService[]>([])
@@ -1223,40 +1226,58 @@ function SmsNumbersSurface() {
   return (
     <div className="mx-auto w-full max-w-2xl space-y-5">
       {activeTab === 'otp' && (
-        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#8075ff] to-[#6366f1] p-5 text-white shadow-[0_4px_20px_rgba(128,117,255,0.3)]">
-          <div className="absolute -right-8 -top-8 h-28 w-28 rounded-full bg-white/10" />
-          <div className="absolute -bottom-10 -left-5 h-24 w-24 rounded-full bg-white/[0.08]" />
-          <div className="relative space-y-4">
-            <div>
-              <p className="text-sm text-white/90">Available wallet balance</p>
-              {walletLoading ? (
-                <Loader2 className="mt-2 h-6 w-6 animate-spin" />
-              ) : (
-                <h2 className="mt-1 text-3xl font-bold">{walletBalanceUnavailable ? 'Unavailable' : formatNaira(walletBalance)}</h2>
-              )}
-              {user?.email && <p className="mt-1 truncate text-xs text-white/70">{user.email}</p>}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button asChild className="h-10 min-w-28 flex-1 rounded-lg bg-white font-semibold text-[#6c5ff2] hover:bg-white/90 hover:text-[#6c5ff2]">
-                <Link to="/wallet">+ Add Funds</Link>
-              </Button>
-              <Button type="button" className="h-10 min-w-28 flex-1 rounded-lg border border-white/30 bg-white/20 font-semibold text-white hover:bg-white/30" onClick={() => setActiveTab('orders')}>
-                History
-              </Button>
-            </div>
-            {orders.length > 0 && (
-              <div className="space-y-2 border-t border-white/20 pt-3">
-                <p className="text-xs font-medium text-white/70">Recent orders</p>
-                {orders.slice(0, 3).map((order) => (
-                  <div key={order.id} className="flex items-center justify-between gap-2 text-xs">
-                    <span className="min-w-0 truncate font-medium">{order.service_name}</span>
-                    <span className="shrink-0 capitalize text-white/75">{order.status}</span>
-                    <span className="shrink-0 font-semibold">{formatNaira(order.price_ngn)}</span>
-                  </div>
-                ))}
+        <div className="space-y-3">
+          <article className="relative min-h-[170px] overflow-hidden rounded-xl border border-purple-200/70 bg-[radial-gradient(circle_at_82%_48%,rgba(216,180,254,0.22),transparent_15rem),linear-gradient(135deg,#2d145c_0%,#4c1d95_48%,#1b103d_100%)] p-4 text-white shadow-[0_24px_70px_rgba(126,51,231,0.28)] dark:border-purple-300/20 sm:min-h-[190px] sm:p-5">
+            <div className="absolute -right-12 -top-12 h-48 w-48 rounded-full bg-purple-300/20 blur-2xl" />
+            <div className="absolute bottom-0 left-0 h-14 w-full bg-black/10" />
+
+            <div className="pointer-events-none absolute right-2 top-1/2 h-28 w-32 -translate-y-1/2 sm:right-7 sm:h-36 sm:w-40">
+              <div className="absolute left-8 top-0 h-10 w-16 -rotate-6 rounded-md bg-emerald-100 shadow-lg sm:left-10 sm:h-12 sm:w-20" />
+              <div className="absolute left-12 top-2 h-10 w-16 rotate-3 rounded-md bg-slate-200 shadow-lg sm:left-14 sm:h-12 sm:w-20" />
+              <div className="absolute bottom-3 right-6 h-20 w-24 rounded-[1rem] bg-gradient-to-br from-purple-400 via-purple-700 to-violet-950 shadow-[0_16px_35px_rgba(0,0,0,0.35)] ring-1 ring-white/15 sm:h-24 sm:w-32">
+                <div className="absolute -right-2 top-7 h-10 w-10 rounded-l-xl rounded-r-md bg-purple-500 shadow-lg ring-1 ring-white/15 sm:top-8 sm:h-12 sm:w-12" />
+                <div className="absolute inset-x-4 top-5 grid place-items-center text-4xl font-black text-white/90 sm:text-5xl">T</div>
               </div>
-            )}
-          </div>
+              <span className="absolute bottom-0 right-2 grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-purple-300 to-purple-700 text-xl font-black text-white shadow-xl ring-2 ring-purple-200/40 sm:h-14 sm:w-14 sm:text-2xl">₦</span>
+            </div>
+
+            <div className="relative z-10 max-w-[62%] sm:max-w-[58%]">
+              <div className="flex items-center gap-2 text-xs font-black text-purple-100 sm:text-sm">
+                Your Balance
+                <button type="button" onClick={toggleBalanceVisibility} className="grid h-7 w-7 place-items-center rounded-full text-purple-100 transition hover:bg-white/10 hover:text-white" aria-label={showBalances ? 'Hide balances' : 'Show balances'}>
+                  {showBalances ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+              <div className="mt-3 text-3xl font-black tracking-normal sm:mt-5 sm:text-5xl">
+                {walletLoading ? <span className="inline-block h-9 w-40 animate-pulse rounded-lg bg-white/20" /> : walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatNaira(walletBalance) : '***'}
+              </div>
+              <p className="mt-2 text-xs font-bold text-purple-100/85 sm:text-sm">Available Balance</p>
+              {walletBalanceUnavailable && !walletLoading && (
+                <button type="button" className="mt-2 text-xs font-bold text-white underline" onClick={() => void refreshWalletBalance()}>Retry balance check</button>
+              )}
+              <div className="mt-4 max-w-48 sm:mt-5">
+                <TopUpWallet onSuccess={() => void refreshWalletBalance()} triggerClassName="h-10 w-full rounded-lg bg-purple-500 text-sm font-black text-white hover:bg-purple-400 sm:h-11" triggerChildren={<>Add Funds <Plus className="h-4 w-4" /></>} />
+              </div>
+            </div>
+          </article>
+          {orders.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-card">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h2 className="text-sm font-bold">Recent orders</h2>
+                <Button type="button" variant="link" className="h-auto p-0 text-xs text-purple-600 dark:text-purple-300" onClick={() => setActiveTab('orders')}>History</Button>
+              </div>
+              {orders.slice(0, 3).map((order) => (
+                <div key={order.id} className="flex items-center justify-between gap-2 py-1.5 text-xs">
+                  <span className="min-w-0 flex-1 truncate font-semibold">{order.service_name}</span>
+                  <span className="shrink-0 capitalize text-slate-500 dark:text-muted-foreground">{order.status}</span>
+                  <span className="shrink-0 font-bold">{formatNaira(order.price_ngn)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {orders.length === 0 && (
+            <Button type="button" variant="ghost" className="h-8 px-1 text-xs font-semibold text-purple-600 dark:text-purple-300" onClick={() => setActiveTab('orders')}>View SMS history</Button>
+          )}
         </div>
       )}
 
