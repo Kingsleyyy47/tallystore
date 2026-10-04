@@ -1124,6 +1124,18 @@ async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: 
     return { refunded: true, amount, reference: currentOrder.refund_reference, alreadyRefunded: true }
   }
 
+  const { data: originalDebit, error: originalDebitError } = await admin
+    .from('transactions')
+    .select('id')
+    .eq('user_id', order.user_id)
+    .eq('reference', order.reference)
+    .eq('type', 'purchase')
+    .eq('status', 'completed')
+    .maybeSingle()
+  if (originalDebitError || !originalDebit) {
+    throw new Error('Could not verify original SMS purchase debit for refund')
+  }
+
   await applyWalletTransaction(admin, {
     userId: order.user_id,
     type: 'refund',
@@ -1138,6 +1150,7 @@ async function refundWallet(admin: SupabaseAdmin, order: { id: string; user_id: 
       source_order_table: 'sms_orders',
       order_id: order.id,
       original_reference: order.reference,
+      source_debit_transaction_id: originalDebit.id,
       service_id: order.service_id || null,
     },
   })
@@ -1208,7 +1221,7 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
       .from('sms_orders')
       .update({ status: 'waiting' })
       .eq('id', order.id)
-      .in('status', ['pending', 'active', 'waiting'])
+      .in('status', ['pending', 'processing', 'active', 'waiting'])
       .is('refunded_at', null)
       .select()
       .maybeSingle()
@@ -1229,7 +1242,7 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
       status: 'completed',
       messages: nextMessages,
       completed_at: new Date().toISOString(),
-    }).eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+    }).eq('id', order.id).in('status', ['pending', 'processing', 'active', 'waiting'])
       .is('refunded_at', null).select().maybeSingle()
     if (!updated) {
       const { data: current } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
@@ -1270,7 +1283,7 @@ async function cancelSmsOrderAndRefund(
     .from('sms_orders')
     .update({ status: 'cancelled', cancelled_at: order.cancelled_at || cancelledAt })
     .eq('id', order.id)
-    .in('status', ['pending', 'active', 'waiting'])
+    .in('status', ['pending', 'processing', 'active', 'waiting'])
     .is('refunded_at', null)
     .select()
     .maybeSingle()
@@ -1526,6 +1539,13 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
       }, 409)
     }
 
+    if (existing.status === 'processing' || existing.status === 'failed') {
+      return json({
+        success: false,
+        error: 'This SMS purchase attempt needs review. Please check your orders before trying again.',
+        code: 'SMS_OUTCOME_REVIEW_REQUIRED',
+      }, 202)
+    }
     return json({ success: true, data: publicSmsOrder(existing), idempotency_hit: true })
   }
 
@@ -1593,7 +1613,7 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
       margin_usd: Math.max(0, (priceNgn - initialProviderCostNgn) / exchangeRate),
       total_cost_usd: priceNgn / exchangeRate,
       exchange_rate: exchangeRate, price_ngn: priceNgn,
-      status: 'pending',
+      status: 'processing',
       expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
       provider_payload: {
         service: svc,
@@ -1606,6 +1626,7 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     }).select().single()
 
     if (pendingOrderErr || !pendingOrder) {
+      console.error('SMS order insert failed before provider allocation:', pendingOrderErr?.code, pendingOrderErr?.message)
       throw new Error(`Failed to create SMS order before provider allocation: ${pendingOrderErr?.message}`)
     }
     order = pendingOrder
@@ -1692,25 +1713,36 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
       'NO_NUMBERS', 'MAX_PRICE_EXCEEDED', 'NO_MONEY', 'TOO_MANY_ACTIVE_RENTALS', 'BAD_KEY',
     ].includes(err.code)
     let safeToRefund = !providerRequestStarted || definitiveAllocationDecline || providerCancellationConfirmed
+    let refundConfirmed = false
     if (order?.id) {
       const { data: failedOrder, error: failedOrderError } = await admin.from('sms_orders').update({
-        status: safeToRefund ? 'failed' : 'pending',
+        status: safeToRefund ? 'failed' : 'processing',
         error_message: safeToRefund ? friendlyError(err) : 'Provider outcome requires review.',
         updated_at: new Date().toISOString(),
-      }).eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+      }).eq('id', order.id).in('status', ['pending', 'processing', 'active', 'waiting'])
         .is('refunded_at', null).select('id').maybeSingle()
       if (failedOrderError || !failedOrder) safeToRefund = false
     }
     if (debit && safeToRefund) {
-      await refundWallet(
-        admin,
-        order?.id ? order : { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: priceNgn, service_id: serviceCode },
-        `Auto-refund for failed SMS order: ${svc.service_name}`,
-        {
-          request_forensics: walletRequestForensics,
-          reason: 'create_otp_failed',
-        },
-      )
+      try {
+        const refund = await refundWallet(
+          admin,
+          order?.id ? order : { id: '00000000-0000-0000-0000-000000000000', user_id: userId, reference, price_ngn: priceNgn, service_id: serviceCode },
+          `Auto-refund for failed SMS order: ${svc.service_name}`,
+          {
+            request_forensics: walletRequestForensics,
+            reason: 'create_otp_failed',
+          },
+        )
+        refundConfirmed = refund.refunded === true
+      } catch (refundError) {
+        console.error('SMS refund needs review:', reference, refundError instanceof Error ? refundError.message : 'Unknown error')
+        return json({
+          success: false,
+          code: 'SMS_REFUND_REVIEW_REQUIRED',
+          error: `Purchase did not complete. Your wallet debit needs review. Contact support with reference ${reference}.`,
+        }, 202)
+      }
     }
     if (!safeToRefund) {
       return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED', data: publicSmsOrder(order) }, 202)
@@ -1730,6 +1762,9 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
         error: friendlyError(err),
       },
     })
+    if (refundConfirmed) {
+      return json({ success: false, code: 'SMS_PURCHASE_REFUNDED', error: 'Purchase did not complete. Your wallet was refunded.' })
+    }
     throw err
   }
 }
@@ -1757,7 +1792,7 @@ async function handleCheckOtp(admin: SupabaseAdmin, userId: string, body: Record
 
   if (result.status === 'waiting') {
     const { data: updated } = await admin.from('sms_orders').update({ status: 'waiting' })
-      .eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+      .eq('id', order.id).in('status', ['pending', 'processing', 'active', 'waiting'])
       .is('refunded_at', null).select().maybeSingle()
     if (updated) return json({ success: true, data: publicSmsOrder(updated), waiting: true })
     const { data: current } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
@@ -1773,7 +1808,7 @@ async function handleCheckOtp(admin: SupabaseAdmin, userId: string, body: Record
     const nextMessages = messages.some((m: any) => m.code === result.code) ? messages : [...messages, newMsg]
     const { data: updated } = await admin.from('sms_orders').update({
       status: 'completed', messages: nextMessages, completed_at: new Date().toISOString(),
-    }).eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+    }).eq('id', order.id).in('status', ['pending', 'processing', 'active', 'waiting'])
       .is('refunded_at', null).select().maybeSingle()
     if (!updated) {
       const { data: current } = await admin.from('sms_orders').select('*').eq('id', order.id).single()
@@ -1970,7 +2005,7 @@ async function handleDaisyWebhook(req: Request) {
 
   const { data: completed, error: completionError } = await admin.from('sms_orders').update({
     status: 'completed', messages: nextMessages, completed_at: new Date().toISOString(),
-  }).eq('id', order.id).in('status', ['pending', 'active', 'waiting'])
+  }).eq('id', order.id).in('status', ['pending', 'processing', 'active', 'waiting'])
     .is('refunded_at', null).select('id').maybeSingle()
   if (completionError) throw completionError
   if (!completed) return new Response('ok', { status: 200 })

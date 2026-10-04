@@ -652,7 +652,7 @@ check("refund paths credit the original order owner's wallet", () => {
   assert(sms.includes("source_order_id: order.id") && sms.includes("source_order_table: 'sms_orders'"), 'SMS refunds must keep normalized source order metadata')
   assert(sms.includes("if (!cancellation.cancelled) return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED' }, 202)"), 'SMS admin cancellation must hold an unconfirmed provider outcome')
   assert(sms.includes("await cancelSmsOrderAndRefund(admin, order, 'admin_cancelled'"), 'confirmed SMS admin cancellation must use the order-bound refund path')
-  assert(sms.includes(".in('status', ['pending', 'active', 'waiting'])") && sms.includes(".is('refunded_at', null)"), 'SMS cancellation must not overwrite terminal or refunded orders')
+  assert(sms.includes(".in('status', ['pending', 'processing', 'active', 'waiting'])") && sms.includes(".is('refunded_at', null)"), 'SMS cancellation must not overwrite terminal or refunded orders')
 
   const manageStaff = read('supabase/functions/manage-staff/index.ts')
   assert(manageStaff.includes('refundSmsOrderWallet(admin: any, order: any, reason: string, metadata: Record<string, unknown> = {})'), 'Staff SMS refunds must accept approval metadata')
