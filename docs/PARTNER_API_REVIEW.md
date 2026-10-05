@@ -18,4 +18,26 @@ Migration `20261005012000_partner_local_product_purchase.sql` adds service-role-
 
 The legacy paid-service handlers use a separate partner balance read/write and external provider calls without a committed reserve-first outbox. They are blocked by the purchase gate and need transactional idempotency, debit/refund journals, and provider outcome recovery before reopening. Partner credit is not a customer wallet credit and does not authorize individual customer spending.
 
+Migration `20261005020000_partner_external_purchase_journal.sql` prepares an isolated financial boundary for future SMS, Social Boost, bills, gift cards, and Telegram partner orders. `reserve_api_partner_external_order` locks the partner, checks a current reviewed partner and scoped key, compares the caller's authoritative price to the partner's expected price, and creates one idempotent order plus a prepaid balance hold or unlimited credit reservation. `claim_api_partner_external_dispatch` grants exactly one paid send after rechecking the current key, partner, sections, and credit mode. `record_api_partner_external_outcome` accepts a compatible provider ID/status and captures one immutable obligation, releases a prepaid hold only on a fixed definitive rejection, or marks an unknown outcome without releasing funds. Separate immutable reserve, capture, and release events record the financial transitions. Historical orders without a journal cannot be replayed into a new hold.
+
+Migration `20000` is applied and recorded in the source project. The provider adapters now calculate a server price and canonical request fingerprint before reserving funds, use the claim result as their only permission to make a paid call, and keep an ambiguous response held for review. This does not enable external purchase sections.
+
+## Deployed read and status controls
+
+On October 5, migrations `20261005021000_partner_external_reads_and_rate_limits.sql` and `20261005021100_partner_dispatch_lock_order.sql` were applied and recorded, followed by `partner-api` version 33. Live transaction-only verification used synthetic partners and unusable key hashes; every fixture and test schema change was rolled back before the final migration was applied.
+
+Read admission locks the key for its minute counter and checks current revocation, scope, partner activation and owner review. Paid operations recheck authorization under their mutation locks. A status poll can finish only an accepted, captured order owned by that partner, with the matching provider identity. It cannot change balances or issue a refund. Cancellation releases a prepared reservation once; a claimed send or unknown provider outcome cannot be cancelled this way.
+
+Gift card completion requires every purchased unit: distinct matching provider order IDs and a usable redemption for each card. Responses include `redemptions`, an array of `{ order_id, code?, pin?, link?, instructions?, expiration_date? }`. Quantity-one orders also retain the `redemption` object for compatibility. Missing or ambiguous delivery evidence leaves the order awaiting review.
+
+Product catalog responses retain the quantity-one `price_ngn` and add `quote_quantity`, `total_price_ngn` and `pricing`. Clients can request a current total with `action: "catalogue", section: "products", quote_quantity: <1..500>`, then submit `total_price_ngn` as the purchase's `expected_amount_ngn`. Pricing rounds the complete order upward once, matching the atomic purchase RPC. Multiplying the rounded quantity-one price is not the price formula. Catalog availability reflects the local stock that this purchase path can deliver; supplier fallback is a separate remaining integration.
+
+All partner administration, including listing partners, requires the verified owner. Catalog failures return a fixed `SERVICE_UNAVAILABLE` code rather than provider error text. The deployed smoke test rejected missing/fake keys, invalid and oversized bodies, and paused paid routes without changing orders, obligations or financial events.
+
+## Remaining activation work
+
+External SMS, Social Boost, bills, gift cards and Telegram adapters are deployed behind `PARTNER_EXTERNAL_SECTIONS_ENABLED`, which remains empty. Customer API access remains “Coming soon.” Existing partners remain inactive. No real paid provider request was used to verify this deployment.
+
+Before broader activation: finish an owner-reviewed reconciliation path for unknown sends and save failures; harden outgoing webhook delivery; replace the paused legacy PocketFi checkout/confirmation and crypto partner paths with verified journaled operations; connect product supplier fallback to the same financial boundary; and complete customer service adapters with ordinary wallet limits and no partner credit privileges. These remain part of the full requested API work.
+
 Deployment order was `20261005011000_partner_credit_review_gates.sql`, `20261005012000_partner_local_product_purchase.sql`, `20261005015000_partner_owner_admin_actions.sql`, then `20261005016000_partner_table_lockdown.sql`, followed by the function. Both read/local flags are enabled under the owner's existing deployment authorization; existing inactive partner accounts remain inactive. External paid routes remain blocked until their transaction and provider recovery paths are implemented and verified.

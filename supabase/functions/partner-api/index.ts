@@ -1,9 +1,14 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { partnerMarkup } from '../_shared/partner-pricing.ts'
+import { executePartnerExternalPurchase } from '../_shared/partner-external-runner.ts'
+import { preparePartnerSmsPlan, preparePartnerSocialPlan } from '../_shared/partner-sms-social.ts'
+import { preparePartnerBillsPlan, preparePartnerGiftcardPlan, preparePartnerTelegramPlan } from '../_shared/partner-bills-gift-telegram.ts'
+import { handlePartnerExternalOrderStatus } from '../_shared/partner-external-status.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-tally-api-key',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-tally-api-key, x-api-key',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 }
 
@@ -26,6 +31,10 @@ const PARTNER_API_PAUSED = Deno.env.get('PARTNER_API_READ_ENABLED') !== 'true'
 // accidentally expose the legacy balance, inventory, or supplier order paths.
 const PARTNER_PURCHASES_PAUSED = true
 const PARTNER_LOCAL_PRODUCTS_ENABLED = Deno.env.get('PARTNER_LOCAL_PRODUCTS_ENABLED') === 'true'
+const PARTNER_EXTERNAL_SECTIONS_ENABLED = new Set(
+  (Deno.env.get('PARTNER_EXTERNAL_SECTIONS_ENABLED') || '').split(',').map(section => section.trim())
+    .filter(section => ['sms','social_boost','bills_airtime','giftcards','telegram_stars'].includes(section)),
+)
 const OWNER_USER_ID = 'c1396bda-86e2-4dfc-94bb-0d95469d1d36'
 const OWNER_REVIEWED_ADMIN_ACTIONS = new Set([
   'admin_create_partner',
@@ -75,7 +84,7 @@ type Network = (typeof NIGERIAN_NETWORKS)[number]
 function json(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   })
 }
 
@@ -149,9 +158,10 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 }
 
 function allowedSections(value: unknown) {
-  const requested = asStringArray(value, ALL_SECTIONS)
-  const allowed = requested.filter((section) => ALL_SECTIONS.includes(section))
-  return allowed.length ? allowed : ALL_SECTIONS
+  if (!Array.isArray(value) || value.length === 0 || value.some(section => typeof section !== 'string' || !ALL_SECTIONS.includes(section))) {
+    throw new Error('INVALID_REQUEST')
+  }
+  return [...new Set(value)]
 }
 
 function hasSection(partner: any, section: string) {
@@ -162,11 +172,6 @@ function hasSection(partner: any, section: string) {
 function hasScope(auth: PartnerAuth, scope: string) {
   const scopes = Array.isArray(auth.key.scopes) ? auth.key.scopes : []
   return scopes.includes(scope)
-}
-
-function partnerMarkup(partner: any, amount: number) {
-  const markup = Number(partner.markup_percent || 0)
-  return Math.ceil(amount * (1 + Math.max(0, markup) / 100))
 }
 
 function splitName(value: unknown): { first: string; last: string } {
@@ -225,22 +230,25 @@ function requireInternal(req: Request) {
   throw new Error('Unauthorized internal request')
 }
 
-async function requirePartner(req: Request, admin: SupabaseAdmin): Promise<PartnerAuth> {
+async function requirePartner(req: Request, admin: SupabaseAdmin, scope: string): Promise<PartnerAuth> {
   const apiKey = getApiKey(req)
-  if (!apiKey) throw new Error('Missing TallyStore API key')
-  const keyHash = await sha256Hex(apiKey)
-  const { data: key, error } = await admin
-    .from('api_partner_keys')
-    .select('*, api_partners(*)')
-    .eq('key_hash', keyHash)
-    .is('revoked_at', null)
-    .maybeSingle()
-
-  if (error || !key || !key.api_partners) throw new Error('Invalid API key')
-  if (key.api_partners.is_active === false) throw new Error('Partner API access is disabled')
-  if (!key.api_partners.owner_reviewed_at) throw new Error('Partner requires owner review')
-
-  await admin.from('api_partner_keys').update({ last_used_at: new Date().toISOString() }).eq('id', key.id)
+  if (!apiKey || apiKey.length > 160) throw new Error('INVALID_KEY')
+  const { data: admission, error: admissionError } = await admin.rpc('authorize_api_partner_request', {
+    p_hash: await sha256Hex(apiKey), p_scope: scope,
+  })
+  if (admissionError || !admission) throw new Error('PARTNER_API_UNAVAILABLE')
+  if (admission.ok !== true) {
+    const code = ['INVALID_KEY', 'PARTNER_DISABLED', 'SCOPE_DENIED', 'RATE_LIMITED'].includes(admission.code)
+      ? admission.code : 'PARTNER_API_UNAVAILABLE'
+    throw new Error(code)
+  }
+  const { data: key, error } = await admin.from('api_partner_keys')
+    .select('id,partner_id,scopes,revoked_at,api_partners(*)')
+    .eq('id', admission.key_id).eq('partner_id', admission.partner_id).is('revoked_at', null).maybeSingle()
+  if (error) throw new Error('PARTNER_API_UNAVAILABLE')
+  if (!key || !key.api_partners) throw new Error('INVALID_KEY')
+  if (key.api_partners.is_active !== true || !key.api_partners.owner_reviewed_at) throw new Error('PARTNER_DISABLED')
+  if (!Array.isArray(key.scopes) || !key.scopes.includes(scope)) throw new Error('SCOPE_DENIED')
   return { partner: key.api_partners, key }
 }
 
@@ -542,7 +550,7 @@ function stockStatus(stock: number, isSellable: boolean, availability: string) {
   return stock <= 3 ? 'low_stock' : 'in_stock'
 }
 
-async function productCatalogue(admin: SupabaseAdmin, partner: any) {
+async function productCatalogue(admin: SupabaseAdmin, partner: any, quoteQuantity = 1) {
   if (!hasSection(partner, 'products')) return []
   let { data, error } = await admin
     .from('product_groups')
@@ -561,7 +569,7 @@ async function productCatalogue(admin: SupabaseAdmin, partner: any) {
   if (error) throw new Error(`Failed to load products: ${error.message}`)
 
   return (data || []).map((product: any) => {
-    const stock = Number(product.stock_count || 0)
+    const stock = Math.max(0, Math.floor(Number(product.stock_count || 0)))
     const availability = String(product.availability_status || '').toUpperCase()
     const isSellable = product.is_sellable !== false
     const status = stockStatus(stock, isSellable, availability)
@@ -573,11 +581,14 @@ async function productCatalogue(admin: SupabaseAdmin, partner: any) {
       description: product.description || '',
       category: product.categories?.name || null,
       price_ngn: partnerMarkup(partner, Number(product.price || 0)),
+      total_price_ngn: partnerMarkup(partner, Number(product.price || 0), quoteQuantity),
+      quote_quantity: quoteQuantity,
+      pricing: { base_price_ngn: Number(product.price || 0), markup_percent: Number(partner.markup_percent || 0), rounding: 'ceil_order_total' },
       currency: 'NGN',
-      availability: status === 'in_stock' || status === 'low_stock' ? 'available' : 'out_of_stock',
+      availability: isSellable && stock >= quoteQuantity && !['UNAVAILABLE', 'PAUSED'].includes(availability) ? 'available' : 'out_of_stock',
       stock: { status, available_quantity: stock },
       min_quantity: 1,
-      max_quantity: stock,
+      max_quantity: Math.min(500, stock),
       created_at: product.created_at,
     }
   })
@@ -645,7 +656,7 @@ async function getDaisyServices() {
   return services
 }
 
-async function smsCatalogue(admin: SupabaseAdmin, partner: any) {
+async function smsCatalogue(admin: SupabaseAdmin, partner: any, purchaseQuote = false) {
   if (!hasSection(partner, 'sms')) return []
   const [rate, live] = await Promise.all([getNgnUsdRate(admin), getDaisyServices()])
   const { data: settings } = await admin
@@ -668,6 +679,7 @@ async function smsCatalogue(admin: SupabaseAdmin, partner: any) {
         ? Number(row.price_override_ngn)
         : rate > 0 && providerCostUsd >= 0 ? Math.ceil(providerCostUsd * rate + margin) : 0
       return {
+        ...(purchaseQuote ? { live_verified: live.has(row.service_code), provider_cost_usd: providerCostUsd } : {}),
         type: 'sms',
         section: 'sms',
         id: row.service_code,
@@ -971,6 +983,8 @@ async function cryptoCatalogue(partner: any) {
 async function handleCatalogue(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>): Promise<ApiResult> {
   if (!hasScope(auth, 'catalogue:read')) throw new Error('Missing catalogue:read scope')
   const requestedSection = cleanText(body.section, 40)
+  const quoteQuantity = Number(body.quote_quantity ?? 1)
+  if (!Number.isSafeInteger(quoteQuantity) || quoteQuantity < 1 || quoteQuantity > 500) throw new Error('INVALID_QUANTITY')
   if (requestedSection && !ALL_SECTIONS.includes(requestedSection)) {
     throw new Error(`Unsupported catalogue section. Use one of: ${ALL_SECTIONS.join(', ')}`)
   }
@@ -987,7 +1001,7 @@ async function handleCatalogue(admin: SupabaseAdmin, auth: PartnerAuth, body: Re
     currency: 'NGN',
     availability: 'out_of_stock',
     stock: { status: 'provider_unavailable', available_quantity: 0 },
-    error: error instanceof Error ? error.message : `${name} catalogue unavailable`,
+    error: 'SERVICE_UNAVAILABLE',
   }]
   const loadSection = async <T extends any[]>(section: string, name: string, loader: () => Promise<T>) => {
     if (!include(section) || !hasSection(auth.partner, section)) return []
@@ -998,7 +1012,7 @@ async function handleCatalogue(admin: SupabaseAdmin, auth: PartnerAuth, body: Re
     }
   }
   const [products, sms, social, bills, giftcards, telegram, crypto] = await Promise.all([
-    loadSection('products', 'Products', () => productCatalogue(admin, auth.partner)),
+    loadSection('products', 'Products', () => productCatalogue(admin, auth.partner, quoteQuantity)),
     loadSection('sms', 'SMS', () => smsCatalogue(admin, auth.partner)),
     loadSection('social_boost', 'Social Boost', () => socialCatalogue(admin, auth.partner)),
     loadSection('bills_airtime', 'Bills & Airtime', () => billsCatalogue(admin, auth.partner)),
@@ -1955,18 +1969,27 @@ async function handleCreateCheckout(admin: SupabaseAdmin, auth: PartnerAuth, bod
 }
 
 async function handleCreateOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>): Promise<ApiResult> {
-  if (!hasScope(auth, 'orders:create')) throw new Error('Missing orders:create scope')
+  if (!hasScope(auth, 'orders:create')) throw new Error('SCOPE_DENIED')
   const itemType = cleanText(body.item_type || body.type, 40)
-  if (!itemType) throw new Error('item_type is required')
-
-  if (itemType === 'product') return await handleSafeProductOrder(admin, auth, body)
-  if (itemType === 'sms') return { body: await handleSmsOrder(admin, auth, body) }
-  if (itemType === 'social_boost') return { body: await handleSocialOrder(admin, auth, body) }
-  if (itemType === 'bills_airtime') return { body: await handleBillsOrder(admin, auth, body) }
-  if (itemType === 'giftcards') return { body: await handleGiftcardOrder(admin, auth, body) }
-  if (itemType === 'telegram_stars') return { body: await handleTelegramOrder(admin, auth, body) }
-  if (itemType === 'crypto') return { body: await handleCryptoOrder(admin, auth, body) }
-  throw new Error('Unsupported item_type')
+  if (itemType === 'product' && PARTNER_LOCAL_PRODUCTS_ENABLED) return await handleSafeProductOrder(admin, auth, body)
+  if (!itemType || !PARTNER_EXTERNAL_SECTIONS_ENABLED.has(itemType)) throw new Error('SECTION_UNAVAILABLE')
+  if (!hasSection(auth.partner, itemType)) throw new Error('SECTION_UNAVAILABLE')
+  const deps = { hasSection, partnerMarkup, sageCloudClient, getBitrefillClient,
+    getBlockedBitrefillIds, getBitrefillMarkupPct, convertToNgn,
+    getTelegramStarPricing, calculateTelegramStarsPrice, getTelegramPremiumPricing,
+    calculateTelegramPremiumPrice, istarGet, istarPost }
+  const plan = itemType === 'sms'
+    ? await preparePartnerSmsPlan(admin, auth.partner, body, {
+      smsCatalogue: (db, partner) => smsCatalogue(db, partner, true), getNgnUsdRate: getRequiredNgnUsdRate,
+    })
+    : itemType === 'social_boost'
+      ? await preparePartnerSocialPlan(admin, auth.partner, body, { smmOrderParams, SMM_TYPES_WITH_QUANTITY })
+      : itemType === 'bills_airtime' ? await preparePartnerBillsPlan(admin, auth.partner, body, deps)
+        : itemType === 'giftcards' ? await preparePartnerGiftcardPlan(admin, auth.partner, body, deps)
+          : itemType === 'telegram_stars' ? await preparePartnerTelegramPlan(admin, auth.partner, body, deps)
+            : null
+  if (!plan) throw new Error('SECTION_UNAVAILABLE')
+  return await executePartnerExternalPurchase(admin, auth, body, plan)
 }
 
 async function handleInternalConfirmCheckout(admin: SupabaseAdmin, req: Request, body: Record<string, unknown>) {
@@ -2342,16 +2365,63 @@ async function handleAdminSetUnlimitedCredit(admin: SupabaseAdmin, body: Record<
   return { success: true, data }
 }
 
+async function readPartnerBody(req: Request, url: URL): Promise<Record<string, unknown>> {
+  if (req.method === 'GET') {
+    if (url.search.length > 32768) throw new Error('REQUEST_TOO_LARGE')
+    return Object.fromEntries(url.searchParams.entries())
+  }
+  if (!/^application\/json(?:;|$)/i.test(req.headers.get('content-type') || '')) throw new Error('INVALID_REQUEST')
+  const reader = req.body?.getReader()
+  if (!reader) throw new Error('INVALID_REQUEST')
+  const chunks: Uint8Array[] = []
+  let bytes = 0
+  try {
+    while (true) {
+      const part = await reader.read()
+      if (part.done) break
+      bytes += part.value.byteLength
+      if (bytes > 32768) { await reader.cancel(); throw new Error('REQUEST_TOO_LARGE') }
+      chunks.push(part.value)
+    }
+  } finally { reader.releaseLock() }
+  const raw = new Uint8Array(bytes)
+  let offset = 0
+  for (const chunk of chunks) { raw.set(chunk, offset); offset += chunk.byteLength }
+  let body: unknown
+  try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)) } catch { throw new Error('INVALID_REQUEST') }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('INVALID_REQUEST')
+  return body as Record<string, unknown>
+}
+
+function publicRequestError(error: unknown): { code: string; status: number } {
+  const message = error instanceof Error ? error.message : ''
+  if (['INVALID_KEY', 'Missing TallyStore API key', 'Invalid API key', 'Unauthorized', 'Unauthorized internal request'].includes(message)) return { code: 'INVALID_KEY', status: 401 }
+  if (['PARTNER_DISABLED', 'SCOPE_DENIED', 'SECTION_UNAVAILABLE', 'Admin access required', 'Owner access required'].includes(message)) return { code: message.replaceAll(' ', '_').toUpperCase(), status: 403 }
+  if (message === 'RATE_LIMITED') return { code: message, status: 429 }
+  if (message === 'REQUEST_TOO_LARGE') return { code: message, status: 413 }
+  const validation = new Set(['INVALID_REQUEST','UNKNOWN_ACTION','INVALID_QUANTITY','INVALID_RECIPIENT','INVALID_ITEM','INVALID_ORDER','PRICE_CHANGED','NO_STOCK'])
+  if (validation.has(message)) return { code: message, status: message === 'PRICE_CHANGED' || message === 'NO_STOCK' ? 409 : 400 }
+  if (['PRICE_UNAVAILABLE','CATALOG_UNAVAILABLE','PROVIDER_BALANCE_UNAVAILABLE','PARTNER_API_UNAVAILABLE'].includes(message)) return { code: message, status: 503 }
+  if (/^(?:Invalid (?:SMS|Social Boost)|SMS quantity|Fixed-price Social Boost|Social Boost quantity|Valid (?:link|media URL)|(?:comments|usernames|username|hashtags|hashtag|keywords|groups|answer_number) (?:is required|list is too long))/.test(message)) return { code: 'INVALID_REQUEST', status: 400 }
+  if (/^(?:SMS (?:service|quote)|Social Boost (?:service|quote|limits)) is unavailable$/.test(message) || message === 'Unsupported Social Boost service type') return { code: 'SERVICE_UNAVAILABLE', status: 503 }
+  return { code: 'PARTNER_API_UNAVAILABLE', status: 503 }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
+  if (!['GET', 'POST'].includes(req.method)) return json({ success: false, code: 'METHOD_NOT_ALLOWED' }, 405)
 
   const admin = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { persistSession: false } })
   const url = new URL(req.url)
-  const body = req.method === 'GET' ? Object.fromEntries(url.searchParams.entries()) : await req.json().catch(() => ({}))
-  const action = cleanText((body as any).action || url.searchParams.get('action'), 80) || (req.method === 'GET' ? 'catalogue' : '')
+  let action = ''
   let auth: PartnerAuth | null = null
 
   try {
+    const body = await readPartnerBody(req, url)
+    action = cleanText(body.action || url.searchParams.get('action'), 80) || (req.method === 'GET' ? 'catalogue' : '')
+    if (req.method === 'GET' && !['catalogue', 'products', 'balance', 'order_status', 'admin_list_partners'].includes(action)) {
+      return json({ success: false, code: 'METHOD_NOT_ALLOWED' }, 405)
+    }
     if (PARTNER_API_PAUSED && !action.startsWith('admin_')) {
       await writeLog(admin, req, null, action || 'unknown', 503, false, 'Partner API is paused during wallet security review', {
         pause_reason: 'wallet_security_review',
@@ -2365,8 +2435,8 @@ serve(async (req) => {
 
     if (PARTNER_PURCHASES_PAUSED && (
       action === 'create_checkout' || action === 'internal_confirm_checkout' ||
-      (action === 'create_order' && (!PARTNER_LOCAL_PRODUCTS_ENABLED ||
-        String(body.item_type || body.type || '') !== 'product'))
+      (action === 'create_order' && !(PARTNER_LOCAL_PRODUCTS_ENABLED && String(body.item_type || body.type || '') === 'product')
+        && !PARTNER_EXTERNAL_SECTIONS_ENABLED.has(String(body.item_type || body.type || '')))
     )) {
       return json({ success: false, code: 'PARTNER_PURCHASES_PAUSED', error: 'Partner purchases are temporarily unavailable.' }, 503)
     }
@@ -2377,6 +2447,9 @@ serve(async (req) => {
 
     if (action.startsWith('admin_')) {
       const adminUser = await requireAdmin(req, admin)
+      if (adminUser.id !== OWNER_USER_ID) {
+        return json({ success: false, code: 'PARTNER_OWNER_REQUIRED', error: 'Owner access required.' }, 403)
+      }
       if (action === 'admin_list_partners') return json(await handleAdminList(admin))
       if (action === 'admin_update_partner' ||
         (OWNER_REVIEWED_ADMIN_ACTIONS.has(action) && adminUser.id !== OWNER_USER_ID)) {
@@ -2395,24 +2468,27 @@ serve(async (req) => {
       throw new Error('Unknown admin action')
     }
 
-    auth = await requirePartner(req, admin)
+    const actionScope = action === 'catalogue' || action === 'products' ? 'catalogue:read'
+      : action === 'balance' ? 'wallet:read' : action === 'order_status' ? 'orders:read'
+        : action === 'create_order' || action === 'create_checkout' ? 'orders:create' : null
+    if (!actionScope) throw new Error('UNKNOWN_ACTION')
+    auth = await requirePartner(req, admin, actionScope)
 
     let result: ApiResult
     if (action === 'catalogue' || action === 'products') result = await handleCatalogue(admin, auth, body)
     else if (action === 'balance') result = await handleBalance(auth)
     else if (action === 'create_order') result = await handleCreateOrder(admin, auth, body)
     else if (action === 'create_checkout') result = await handleCreateCheckout(admin, auth, body)
-    else if (action === 'order_status') result = PARTNER_PURCHASES_PAUSED
-      ? await handleStoredOrderStatus(admin, auth, body)
-      : await handleOrderStatus(admin, auth, body)
+    else if (action === 'order_status') result = await handlePartnerExternalOrderStatus(admin, auth, body, {
+      daisyGet, smmRequest, getBitrefillClient, istarGet, publicPartnerOrder,
+    })
     else throw new Error('Unknown partner API action')
 
-    await writeLog(admin, req, auth, action, result.status || 200, true)
+    await writeLog(admin, req, auth, action, result.status || 200, result.body.success === true).catch(() => undefined)
     return json(result.body, result.status || 200)
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Partner API request failed'
-    const status = /missing|invalid|unauthorized|access|required scope|admin/i.test(message) ? 401 : 400
-    await writeLog(admin, req, auth, action, status, false, message).catch(() => undefined)
-    return json({ success: false, error: message }, status)
+    const { code, status } = publicRequestError(error)
+    await writeLog(admin, req, auth, action, status, false, code).catch(() => undefined)
+    return json({ success: false, code, error: code.replaceAll('_', ' ').toLowerCase() }, status)
   }
 })
