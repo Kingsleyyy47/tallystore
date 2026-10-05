@@ -6731,6 +6731,25 @@ export default function AdminPage() {
                         Enable auto-fulfillment for this product
                       </label>
                     </div>
+                    {isPartnerOwner && editingTemplate?.id && productGroups.some((group) =>
+                      group.id === editingTemplate.id && group.auto_fulfill_enabled
+                      && Boolean(group.muabanvia_product_id || group.shopclone_product_id || group.shopviaclone_product_id)
+                    ) && (
+                      <div className="mt-3 space-y-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={resettingSupplierFallbackId !== null}
+                          onClick={() => handleResetSupplierFallback(editingTemplate.id)}
+                        >
+                          {resettingSupplierFallbackId === editingTemplate.id ? 'Checking supplier fallback...' : 'Retry supplier fallback'}
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                          Use after supplier stock or balance is restored. Orders still being confirmed require review first.
+                        </p>
+                      </div>
+                    )}
                   </div>
                   <div className="border-t pt-4">
                     <label className="text-sm font-medium block mb-1">ShopClone Fallback</label>
@@ -10827,25 +10846,6 @@ export default function AdminPage() {
                         Test mode
                       </label>
                     </div>
-                    {isPartnerOwner && editingTemplate.id && productGroups.some((group) =>
-                      group.id === editingTemplate.id && group.auto_fulfill_enabled
-                      && Boolean(group.muabanvia_product_id || group.shopclone_product_id || group.shopviaclone_product_id)
-                    ) && (
-                      <div className="mt-3 space-y-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={resettingSupplierFallbackId !== null}
-                          onClick={() => handleResetSupplierFallback(editingTemplate.id)}
-                        >
-                          {resettingSupplierFallbackId === editingTemplate.id ? 'Checking supplier fallback...' : 'Retry supplier fallback'}
-                        </Button>
-                        <p className="text-xs text-muted-foreground">
-                          Use after supplier stock or balance is restored. Orders still being confirmed require review first.
-                        </p>
-                      </div>
-                    )}
                   </div>
 
                   {/* Dry run result */}
