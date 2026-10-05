@@ -18,6 +18,7 @@ function fixture(mode, { supplier = true, balance = 1000 } = {}) {
   let blocked = 0
   let cancelled = 0
   let captured = 0
+  let proofCalls = 0
   const orders = new Map()
   const product = {
     id: productId, category_id: 'category', name: 'Fixture product', price: 100,
@@ -93,7 +94,7 @@ function fixture(mode, { supplier = true, balance = 1000 } = {}) {
       if (name === 'cancel_exhausted_supplier_purchase') {
         cancelled += 1
         const row = [...orders.values()][0]
-        row.status = 'cancelled'; row.financial_authorization_status = 'released'
+        row.status = 'cancelled'; row.financial_authorization_status = 'released'; row.release_proven = true
         return { data: { success: true }, error: null }
       }
       if (name === 'block_supplier_product_fallback') {
@@ -108,6 +109,7 @@ function fixture(mode, { supplier = true, balance = 1000 } = {}) {
         const row = [...orders.values()][0]
         if (mode === 'completion-error') return { data: null, error: { message: 'DB completion failed' } }
         row.status = 'completed'; row.financial_authorization_status = 'captured'
+        row.capture_proven = true; row.account_details = args.p_account_details
         if (mode === 'committed-response-lost') return { data: null, error: { message: 'Response lost' } }
         return { data: { success: true, balance_after: 800, account_details: args.p_account_details }, error: null }
       }
@@ -124,6 +126,21 @@ function fixture(mode, { supplier = true, balance = 1000 } = {}) {
     createClient: () => admin,
     ngnMinorUnits: value => Number.isFinite(Number(value)) ? Math.round(Number(value) * 100) : null,
     authenticateCustomerRequest: async () => ({ id: userId }),
+    getCustomerPurchaseStatus: async (client, actor, requestKey, group, orderId) => {
+      proofCalls += 1
+      assert.equal(client, admin); assert.equal(actor, userId); assert.equal(group, productId)
+      const row = orders.get(requestKey)
+      if (!row) return { state: 'unknown' }
+      assert.equal(row.user_id, actor); assert.equal(row.product_group_id, group)
+      assert.equal(row.idempotency_key, requestKey); assert.equal(row.id, orderId)
+      if (row.status === 'completed' && row.financial_authorization_status === 'captured' && row.capture_proven) {
+        assert.equal(captured, 1); return { state: 'completed', order_id: row.id }
+      }
+      if (row.status === 'cancelled' && row.financial_authorization_status === 'released' && row.release_proven) {
+        assert.equal(cancelled, 1); assert.equal(captured, 0); return { state: 'released', order_id: row.id }
+      }
+      return { state: 'pending', order_id: row.id }
+    },
     configuredSuppliers: () => [{ name: 'muabanvia', productId: 'supplier-42' }],
     fulfillSupplierShortfall: async () => {
       paidCalls += 1
@@ -143,7 +160,7 @@ function fixture(mode, { supplier = true, balance = 1000 } = {}) {
     return response.json()
   }
   return { request, paidCalls: () => paidCalls, authorizationCalls: () => authorizationCalls,
-    blocked: () => blocked, cancelled: () => cancelled, captured: () => captured }
+    blocked: () => blocked, cancelled: () => cancelled, captured: () => captured, proofCalls: () => proofCalls }
 }
 
 let f = fixture('success', { balance: 0 })
@@ -162,6 +179,7 @@ assert.equal(exhausted.success, false)
 assert.equal(f.cancelled(), 1)
 assert.equal(f.blocked(), 0)
 assert.equal(f.captured(), 0)
+assert.equal(f.proofCalls(), 1, 'definitive exhaustion uses owned release proof')
 
 f = fixture('unknown')
 const unknown = await f.request()
@@ -188,6 +206,11 @@ const completed = await f.request()
 assert.equal(completed.success, true)
 assert.equal(completed.order_id, 'supplier-order')
 assert.equal(completed.accounts, undefined, 'catch must not deliver credentials from unverified response')
+assert.equal(f.proofCalls(), 1)
+assert.equal((await f.request()).idempotency_hit, true)
+assert.equal(f.captured(), 1, 'completed replay cannot capture again')
+assert.equal(f.paidCalls(), 1, 'completed replay cannot dispatch again')
+assert.equal(f.proofCalls(), 2)
 
 f = fixture('completion-error', { supplier: false })
 assert.equal((await f.request()).code, 'PURCHASE_CONFIRMATION_PENDING')

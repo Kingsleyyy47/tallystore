@@ -928,7 +928,9 @@ serve(async (req) => {
         p_account_ids: accountIds,
         p_account_details: accountDetails,
         p_capture_idempotency_key: `purchase:${idempotency_key}`,
-        p_reference: `PUR-${idempotency_key.substring(0, 24)}`,
+        // An order UUID is unique across purchases and stable on retries. The
+        // request-key prefix repeats for the same customer and product.
+        p_reference: `PUR-${orderId}`,
         p_description: `Purchase: ${quantity}x ${productGroup.name}`,
         p_created_by: null,
       },
