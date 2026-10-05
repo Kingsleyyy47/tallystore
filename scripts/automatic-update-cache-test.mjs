@@ -1,6 +1,23 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
+import ts from 'typescript'
+
+// Evaluate the real build identity declarations: two deployments of one commit
+// must not share a cache, including environment-only redeployments.
+const config = ts.createSourceFile('vite.config.ts', readFileSync('vite.config.ts', 'utf8'), ts.ScriptTarget.ES2022, true)
+const identityNames = new Set(['buildSource', 'buildInstance', 'appBuildVersion'])
+const declarations = config.statements.filter(statement => ts.isVariableStatement(statement)
+  && statement.declarationList.declarations.some(declaration => identityNames.has(declaration.name.getText(config))))
+  .map(statement => statement.getText(config)).join('\n')
+const evaluateBuild = new Function('process', ts.transpileModule(declarations, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+}).outputText + '\nreturn appBuildVersion;')
+const firstBuild = evaluateBuild({ env: { VERCEL_GIT_COMMIT_SHA: 'samecommit', VERCEL_DEPLOYMENT_ID: 'dpl_first' } })
+const nextBuild = evaluateBuild({ env: { VERCEL_GIT_COMMIT_SHA: 'samecommit', VERCEL_DEPLOYMENT_ID: 'dpl_next' } })
+assert.notEqual(firstBuild, nextBuild, 'Same-commit redeployment must use a separate precache')
+assert.match(firstBuild, /^[A-Za-z0-9_-]{1,180}$/)
+assert.match(nextBuild, /^[A-Za-z0-9_-]{1,180}$/)
 
 const origin = 'https://tallystore.test'
 const listeners = new Map()

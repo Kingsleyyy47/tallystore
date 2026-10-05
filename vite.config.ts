@@ -3,7 +3,11 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { VitePWA } from 'vite-plugin-pwa';
 
-const appBuildVersion = process.env.VERCEL_GIT_COMMIT_SHA || process.env.VITE_APP_BUILD_VERSION || `${Date.now()}`;
+// Redeploying the same commit with changed environment values is still a new
+// build. Give it a separate asset cache so a busy tab keeps its original chunks.
+const buildSource = process.env.VERCEL_GIT_COMMIT_SHA || process.env.VITE_APP_BUILD_VERSION || 'local';
+const buildInstance = process.env.VERCEL_DEPLOYMENT_ID || `${Date.now()}`;
+const appBuildVersion = `${buildSource.slice(0, 96)}-${buildInstance.slice(0, 64)}`.replace(/[^A-Za-z0-9_-]/g, '_');
 
 // https://vitejs.dev/config/
 export default defineConfig(() => ({

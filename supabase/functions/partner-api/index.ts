@@ -5,6 +5,8 @@ import { executePartnerExternalPurchase } from '../_shared/partner-external-runn
 import { preparePartnerSmsPlan, preparePartnerSocialPlan } from '../_shared/partner-sms-social.ts'
 import { preparePartnerBillsPlan, preparePartnerGiftcardPlan, preparePartnerTelegramPlan } from '../_shared/partner-bills-gift-telegram.ts'
 import { handlePartnerExternalOrderStatus } from '../_shared/partner-external-status.ts'
+import { deliverPartnerWebhookSafely, validatePartnerWebhookUrl } from '../_shared/partner-webhook-delivery.ts'
+import { createRuntimePinnedWebhookTransport } from '../_shared/partner-webhook-transport.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -91,19 +93,6 @@ function json(body: Record<string, unknown>, status = 200) {
 async function sha256Hex(value: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-async function hmacSha256Hex(secret: string, value: string) {
-  const encoder = new TextEncoder()
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  )
-  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(value))
-  return Array.from(new Uint8Array(signature)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function randomHex(bytes = 32) {
@@ -1134,88 +1123,75 @@ function publicPartnerOrder(order: any) {
   }
 }
 
-async function deliverPartnerWebhook(admin: SupabaseAdmin, partner: any, order: any, eventType: string) {
-  const targetUrl = cleanUrl(partner.webhook_url)
-  if (!targetUrl) return
-  const payload = {
-    event: eventType,
-    created_at: new Date().toISOString(),
-    partner_id: partner.id,
-    data: { order: publicPartnerOrder(order) },
+async function deliverPartnerWebhook(admin: SupabaseAdmin, auth: PartnerAuth, orderId: string, eventType: string) {
+  if (!['partner.order.completed', 'partner.order.refunded'].includes(eventType)
+    || !auth?.key?.id || !auth?.partner?.id) return
+  // Recheck the current key, owner-reviewed partner, and exact order after
+  // settlement. A purchase key without orders:read cannot receive webhooks.
+  const { data: key, error: keyError } = await admin.from('api_partner_keys')
+    .select('id,partner_id,scopes,revoked_at').eq('id', auth.key.id)
+    .eq('partner_id', auth.partner.id).is('revoked_at', null).maybeSingle()
+  if (keyError || !key || !Array.isArray(key.scopes) || !key.scopes.includes('orders:read')) return
+  const { data: partner, error: partnerError } = await admin.from('api_partners')
+    .select('id,is_active,owner_reviewed_at,webhook_url,webhook_secret')
+    .eq('id', key.partner_id).eq('is_active', true).maybeSingle()
+  if (partnerError || !partner?.owner_reviewed_at || !validatePartnerWebhookUrl(partner.webhook_url)) return
+  const { data: order, error: orderError } = await admin.from('api_partner_orders')
+    .select('id,partner_id,partner_reference,status,item_type,amount_ngn,currency,refunded_at,refund_amount_ngn')
+    .eq('id', orderId).eq('partner_id', partner.id).maybeSingle()
+  if (orderError || !order) return
+  if (eventType === 'partner.order.completed') {
+    if (order.status !== 'completed') return
+    const { data: obligation, error } = await admin.from('api_partner_obligations')
+      .select('order_id,partner_id,amount_ngn').eq('order_id', order.id)
+      .eq('partner_id', partner.id).maybeSingle()
+    if (error || !obligation || Number(obligation.amount_ngn) !== Number(order.amount_ngn)) return
+  } else {
+    if (order.status !== 'failed' || !order.refunded_at || Number(order.refund_amount_ngn) <= 0) return
+    const { data: release, error } = await admin.from('api_partner_external_events')
+      .select('order_id,partner_id,amount_ngn').eq('order_id', order.id)
+      .eq('partner_id', partner.id).eq('event_type', 'release')
+      .eq('funding_type', 'prepaid').maybeSingle()
+    if (error || !release || Number(release.amount_ngn) !== Number(order.refund_amount_ngn)) return
   }
-  const payloadBody = JSON.stringify(payload)
-  const timestamp = String(Math.floor(Date.now() / 1000))
-  const webhookSecret = cleanText(partner.webhook_secret, 240)
-  const signature = webhookSecret
-    ? `sha256=${await hmacSha256Hex(webhookSecret, `${timestamp}.${payloadBody}`)}`
-    : null
-
-  let deliveryId: string | null = null
+  const transport = createRuntimePinnedWebhookTransport()
+  if (!transport) return
+  const hash = await sha256Hex(`partner-webhook-v2:${partner.id}:${order.id}:${eventType}`)
+  const deliveryId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}`
+    + `-${((parseInt(hash[16], 16) & 3) | 8).toString(16)}${hash.slice(17, 20)}-${hash.slice(20, 32)}`
+  // The existing primary key is the atomic claim. If the same event is
+  // attempted twice, only one insert can win and only that caller may POST.
   const inserted = await admin.from('api_partner_webhook_deliveries').insert({
-    partner_id: partner.id,
-    order_id: order.id,
-    event_type: eventType,
-    target_url: targetUrl,
-    payload,
+    id: deliveryId,
+    partner_id: partner.id, order_id: order.id, event_type: eventType,
+    target_url: partner.webhook_url,
+    payload: { event: eventType, order_id: order.id },
     attempts: 1,
   }).select('id').maybeSingle()
-  deliveryId = inserted.data?.id || null
-
-  try {
-    const response = await fetch(targetUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'TallyStore-Partner-API/1.0',
-        'X-Tally-Event': eventType,
-        'X-Tally-Partner-Id': String(partner.id),
-        'X-Tally-Timestamp': timestamp,
-        ...(signature ? { 'X-Tally-Signature': signature } : {}),
-      },
-      body: payloadBody,
-    })
-    const responseBody = (await response.text()).slice(0, 4000)
-    const updates = {
-      status: response.ok ? 'delivered' : 'failed',
-      status_code: response.status,
-      response_body: responseBody,
-      delivered_at: response.ok ? new Date().toISOString() : null,
-      updated_at: new Date().toISOString(),
-    }
-    if (deliveryId) await admin.from('api_partner_webhook_deliveries').update(updates).eq('id', deliveryId)
-    await admin.from('api_partner_logs').insert({
-      partner_id: partner.id,
-      action: `webhook:${eventType}`,
-      method: 'POST',
-      status_code: response.status,
-      success: response.ok,
-      error_message: response.ok ? null : responseBody.slice(0, 500),
-      metadata: { order_id: order.id, target_url: targetUrl },
-    })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Webhook delivery failed'
-    if (deliveryId) {
-      await admin.from('api_partner_webhook_deliveries').update({
-        status: 'failed',
-        error_message: message,
-        updated_at: new Date().toISOString(),
-      }).eq('id', deliveryId)
-    }
-    await admin.from('api_partner_logs').insert({
-      partner_id: partner.id,
-      action: `webhook:${eventType}`,
-      method: 'POST',
-      status_code: 0,
-      success: false,
-      error_message: message,
-      metadata: { order_id: order.id, target_url: targetUrl },
-    })
-  }
+  if (inserted.error || inserted.data?.id !== deliveryId) return
+  const result = await deliverPartnerWebhookSafely({ partner, order, eventType,
+    keyScopes: key.scopes, transport })
+  const delivered = result.state === 'delivered'
+  await admin.from('api_partner_webhook_deliveries').update({
+    status: delivered ? 'delivered' : 'failed',
+    status_code: result.http_status ?? null,
+    response_body: null,
+    error_message: delivered ? null : result.code,
+    delivered_at: delivered ? new Date().toISOString() : null,
+    updated_at: new Date().toISOString(),
+  }).eq('id', deliveryId)
+  await admin.from('api_partner_logs').insert({
+    partner_id: partner.id, key_id: key.id, action: `webhook:${eventType}`,
+    method: 'POST', status_code: result.http_status ?? 0,
+    success: delivered, error_message: delivered ? null : result.code,
+    metadata: { order_id: order.id },
+  })
 }
 
-async function updatePartnerOrderAndNotify(admin: SupabaseAdmin, partner: any, id: string, updates: Record<string, unknown>, eventType: string) {
+async function updatePartnerOrderAndNotify(admin: SupabaseAdmin, _partner: any, id: string, updates: Record<string, unknown>, _eventType: string) {
   const updated = await updatePartnerOrder(admin, id, updates)
-  await deliverPartnerWebhook(admin, partner, updated, eventType).catch(() => undefined)
+  // Legacy supplier/checkout paths cannot notify; only the atomic purchase
+  // engines below can prove capture or refund before sending an event.
   return updated
 }
 
@@ -1317,8 +1293,7 @@ async function handleSafeProductOrder(admin: SupabaseAdmin, auth: PartnerAuth, b
   })
   if (error || !data) throw new Error('Partner product purchase is unavailable')
   if (data.success && !data.idempotency_hit && data.data?.id) {
-    const { data: order } = await admin.from('api_partner_orders').select('*').eq('id', data.data.id).maybeSingle()
-    if (order) await deliverPartnerWebhook(admin, auth.partner, order, 'partner.order.completed').catch(() => undefined)
+    await deliverPartnerWebhook(admin, auth, data.data.id, 'partner.order.completed').catch(() => undefined)
   }
   return { body: data, status: data.success ? 200 : data.code === 'INSUFFICIENT_PARTNER_BALANCE' ? 402 : 409 }
 }
@@ -1989,7 +1964,17 @@ async function handleCreateOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: 
           : itemType === 'telegram_stars' ? await preparePartnerTelegramPlan(admin, auth.partner, body, deps)
             : null
   if (!plan) throw new Error('SECTION_UNAVAILABLE')
-  return await executePartnerExternalPurchase(admin, auth, body, plan)
+  const result = await executePartnerExternalPurchase(admin, auth, body, plan)
+  const response = result.body as Record<string, any>
+  const orderId = response.data?.id
+  if (response.idempotent_replay === false && typeof orderId === 'string') {
+    if (response.success === true && response.data?.status === 'completed') {
+      await deliverPartnerWebhook(admin, auth, orderId, 'partner.order.completed').catch(() => undefined)
+    } else if (response.success === false && response.data?.status === 'failed') {
+      await deliverPartnerWebhook(admin, auth, orderId, 'partner.order.refunded').catch(() => undefined)
+    }
+  }
+  return result
 }
 
 async function handleInternalConfirmCheckout(admin: SupabaseAdmin, req: Request, body: Record<string, unknown>) {
