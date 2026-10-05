@@ -75,3 +75,50 @@ it is a stream. The customer UI now decodes a cloned response with byte/time
 bounds, allows known public explanations and hides database/provider internals.
 An uncertain purchase directs the customer to order history before retrying.
 This UI change does not reopen a paused route or automatically repeat a purchase.
+
+## Identity audit NULL default
+
+A separately authorized account deletion exposed another database error: the
+identity guard compared an unset override setting with `true`, yielding NULL,
+then attempted to store `NOT NULL` in the audit table's required `blocked`
+column. The approved soft-delete request rolled back with SQLSTATE `23502`.
+The minimal repair defaults that comparison to false. The enabled guard still
+preserves the original email on a blocked change; no identity override is set.
+Actual PostgreSQL tests reproduced the original failure and verified the
+repaired blocked audit, password clearing and preserved profile history.
+Fresh SOURCE verification confirmed unchanged ownership, ACL and trigger.
+
+## Social Boost dispatch repair
+
+A supplier add request requires a committed, permanent one-use database claim
+bound to the exact customer, local order, completed wallet debit, service,
+quantity, amount, security version and full public request digest. Anonymous
+and customer roles cannot execute the claim; direct claim-table access is
+revoked from the service role as well. Claims cannot be updated or deleted.
+Legacy orders without a digest cannot obtain dispatch permission.
+
+A lost claim acknowledgement, ambiguous local insert or uncertain supplier
+response never permits another add or an automatic refund. The order remains
+under review until its financial and delivery outcome can be established.
+Supplier calls have a response-size limit and a deadline covering the response
+body; a provider order ID must be a positive safe integer. Existing orders are
+preserved, and `outcome_unknown` is now an allowed state.
+
+Actual handler tests cover concurrent duplicate requests, competing inserts,
+late commits, lost acknowledgements and malformed provider IDs. PostgreSQL
+tests cover concurrent claims, refunded debit rejection, stale authorization,
+private permissions and immutable claims. A loopback HTTP server checks that a
+hung response body is cancelled without retrying. No production customer
+purchase or new paid supplier request is used as a test.
+
+The supplier field contract is checked against its
+[official API documentation](https://thelordofthepanels.com/api). The customer
+quote and backend use the same package, explicit quantity and list-length
+rules. Service types without a supported billing and input contract are
+unavailable before a wallet debit. Deployment, effective launch flag and
+read-only supplier checks are recorded in private evidence. Withdrawal launch
+readiness is separate; the Social Boost repair does not enable withdrawals.
+
+The Source schema and function archive must be refreshed for migration after
+these repairs. Preparation snapshots taken earlier in the day are not a final
+cutover snapshot.

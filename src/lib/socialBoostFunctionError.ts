@@ -7,6 +7,9 @@ const AUTH_MESSAGE = 'Please sign in again, then check your order history before
 const PUBLIC_MESSAGES = new Set([
   'Service not found or inactive',
   'Quantity must be a whole number',
+  'This service is temporarily unavailable. Please choose another service.',
+  'Please check the order details.',
+  'Please enter a valid web link.',
   'Current displayed price is required. Please refresh and try again.',
   'Price changed. Please refresh and try again.',
   'Insufficient verified funds for purchase',
@@ -27,6 +30,9 @@ function publicMessage(value: unknown): string | null {
     case 'SMM_ORDERS_PAUSED':
       return 'Social Boost ordering is temporarily paused. Please contact support.';
     case 'SMM_SUPPLIER_OUTCOME_UNKNOWN':
+    case 'SMM_DISPATCH_STATUS_UNCONFIRMED':
+    case 'SMM_DEBIT_PROOF_UNCONFIRMED':
+    case 'SMM_LOCAL_ORDER_UNCONFIRMED':
       return 'Your order is under review. Check order history and contact support; do not place it again.';
     case 'SMM_PURCHASE_LEDGER_ORPHANED':
       return 'This purchase needs support review before it can be retried. Check your order history.';

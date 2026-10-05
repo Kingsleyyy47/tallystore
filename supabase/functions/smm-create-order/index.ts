@@ -1,6 +1,8 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts';
+import { smmPanelRequest } from '../_shared/smm-panel-transport.ts';
+import { quoteSmmOrder, validateSmmOrderFields, SMM_QUANTITY_TYPES, SMM_UNAVAILABLE } from '../_shared/smm-order-contract.ts';
 
 async function applyWalletTransaction(
   supabaseAdmin: any,
@@ -289,33 +291,7 @@ export class SmmPanelClient {
    * Make a POST request to the SMM Panel API
    */
   private async request<T>(params: Record<string, string | number>): Promise<T> {
-    const formData = new URLSearchParams();
-    formData.append('key', this.apiKey);
-    
-    for (const [key, value] of Object.entries(params)) {
-      formData.append(key, String(value));
-    }
-
-    const response = await fetch(SMM_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: formData.toString(),
-    });
-
-    if (!response.ok) {
-      throw new Error(`SMM API HTTP error: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    
-    // Check for API-level errors
-    if (data.error) {
-      throw new Error(`SMM API error: ${data.error}`);
-    }
-
-    return data as T;
+    return smmPanelRequest<T>(SMM_API_URL, this.apiKey, params);
   }
 
   /**
@@ -566,6 +542,24 @@ function generateReference(): string {
   return `SMM-${timestamp}-${random}`;
 }
 
+function buildPanelOrderParams(service: any, input: Record<string, any>): Record<string, string | number> & { service: number } {
+  const params: Record<string, string | number> & { service: number } = { service: Number(service.external_id) };
+  const serviceType = service.service_type;
+  if (serviceType !== 'Subscriptions' && input.link) params.link = input.link;
+  const typesWithQuantity = SMM_QUANTITY_TYPES;
+  if (typesWithQuantity.includes(serviceType) && input.actualQuantity) params.quantity = input.actualQuantity;
+  for (const field of ['comments','usernames','username','hashtags','hashtag','keywords','answer_number','groups']) {
+    if (input[field]) params[field] = input[field];
+  }
+  return params;
+}
+
+async function panelPayloadHash(params: Record<string, string | number>): Promise<string> {
+  const canonical = JSON.stringify(Object.fromEntries(Object.entries(params).sort(([a],[b]) => a.localeCompare(b))));
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical)));
+  return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 async function recordRevenueEvent(
   supabaseAdmin: any,
   input: {
@@ -657,7 +651,7 @@ serve(async (req) => {
     // Check for duplicate order (idempotency)
     const { data: existingOrder } = await supabaseAdmin
       .from('smm_orders')
-      .select('id, reference, status, service_id, quantity, amount_ngn, link')
+      .select('id, reference, status, service_id, quantity, amount_ngn, link, dispatch_payload_sha256')
       .eq('user_id', user.id)
       .eq('idempotency_key', idempotency_key)
       .single();
@@ -712,39 +706,12 @@ serve(async (req) => {
       throw new Error('Service cost is unavailable. Please try again after services sync.');
     }
 
-    // Determine the actual quantity to use
-    // Package services have fixed quantity (1 package)
-    // Other services use the provided quantity
-    const actualQuantity = service.service_type === 'Package' ? 1 : Number(quantity || service.min_quantity);
-
-    // Validate quantity against min/max (skip for packages)
-    if (service.service_type !== 'Package') {
-      if (!Number.isInteger(actualQuantity) || actualQuantity < 1) {
-        throw new Error('Quantity must be a whole number');
-      }
-      if (actualQuantity < service.min_quantity) {
-        throw new Error(`Minimum quantity is ${service.min_quantity}`);
-      }
-      if (actualQuantity > service.max_quantity) {
-        throw new Error(`Maximum quantity is ${service.max_quantity}`);
-      }
-    }
-
-    // Calculate price
-    // For packages: price_ngn is the total price
-    // For others: price_ngn is per 1000, so calculate based on quantity
-    let totalAmount: number;
-    let totalCost: number;
-    
-    if (service.service_type === 'Package') {
-      totalAmount = Math.ceil(service.price_ngn);
-      totalCost = service.rate_usd;
-    } else {
-      const pricePerUnit = service.price_ngn / 1000;
-      totalAmount = Math.ceil(pricePerUnit * actualQuantity);
-      const costPerUnit = service.rate_usd / 1000;
-      totalCost = costPerUnit * actualQuantity;
-    }
+    const rawFields = { quantity, link, comments, usernames, username, hashtags, hashtag, keywords, answer_number, groups };
+    const normalizedFields = validateSmmOrderFields(service.service_type, rawFields);
+    const quote = quoteSmmOrder(service, { ...normalizedFields, quantity });
+    const actualQuantity = quote.quantity;
+    const totalAmount = quote.amountNgn;
+    const totalCost = Number(service.rate_usd) * (quote.package ? 1 : actualQuantity / 1000);
     const expectedPriceNgn = Math.round(Number(expected_price_ngn));
     if (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0) {
       throw new Error('Current displayed price is required. Please refresh and try again.');
@@ -754,13 +721,17 @@ serve(async (req) => {
     }
 
     await assertPurchasingCustomer(supabaseAdmin, user.id, req, totalAmount);
+    const orderParams = buildPanelOrderParams(service, { ...normalizedFields, actualQuantity });
+    // This is the exact public, credential-free paid action sent by createOrder.
+    const payloadHash = await panelPayloadHash({ action: 'add', ...orderParams });
 
     if (existingOrder) {
       const sameRequest =
         String(existingOrder.service_id || '') === String(service.id) &&
         Number(existingOrder.quantity || 0) === actualQuantity &&
         Number(existingOrder.amount_ngn || 0) === totalAmount &&
-        String(existingOrder.link || '') === String(link || '');
+        String(existingOrder.link || '') === String(link || '') &&
+        (existingOrder.dispatch_payload_sha256 == null || existingOrder.dispatch_payload_sha256 === payloadHash);
 
       if (!sameRequest) {
         return new Response(
@@ -796,6 +767,17 @@ serve(async (req) => {
             data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'failed' },
           }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 },
+        );
+      }
+      if (existingOrder.status === 'pending') {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            code: 'SMM_DISPATCH_STATUS_UNCONFIRMED',
+            error: 'This order is awaiting provider confirmation. Do not place it again; check order history or contact support.',
+            data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'pending' },
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 },
         );
       }
       return new Response(
@@ -850,8 +832,18 @@ serve(async (req) => {
       }
     }
 
+    const { data: securityProfile, error: securityProfileError } = await supabaseAdmin
+      .from('profiles')
+      .select('financial_security_version')
+      .eq('id', user.id)
+      .single();
+    const securityVersion = Number(securityProfile?.financial_security_version);
+    if (securityProfileError || !Number.isInteger(securityVersion) || securityVersion < 1) {
+      throw new Error('Could not verify wallet authorization version');
+    }
+
     // Generate order reference
-    const reference = generateReference();
+    let reference = generateReference();
     const eventKey = idempotency_key;
 
     await recordRevenueEvent(supabaseAdmin, {
@@ -906,8 +898,24 @@ serve(async (req) => {
         service_name: service.name,
         platform: service.platform,
         quantity: actualQuantity,
+        dispatch_payload_sha256: payloadHash,
       },
     });
+
+    // The wallet engine returns the authoritative committed transaction on a
+    // replay. Bind the local order to its exact reference and full panel
+    // request. A different payload must not borrow an existing debit.
+    const committedDebit = debitResult?.transaction;
+    if (!committedDebit?.id || committedDebit.reference !== reference ||
+        committedDebit.idempotency_key !== `smm:purchase:${idempotency_key}` ||
+        committedDebit.metadata?.dispatch_payload_sha256 !== payloadHash) {
+      return new Response(JSON.stringify({
+        success: false,
+        code: 'SMM_DEBIT_PROOF_UNCONFIRMED',
+        error: 'This order needs review. Do not place the same request again.',
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 });
+    }
+    reference = committedDebit.reference;
 
     const newBalance = Number(debitResult.balance_after ?? 0);
 
@@ -922,6 +930,10 @@ serve(async (req) => {
       cost_usd: totalCost,
       status: 'pending',
       idempotency_key,
+      dispatch_payload_sha256: payloadHash,
+      financial_security_version: securityVersion,
+      financial_authorization_status: 'legacy_debit',
+      financial_authorization_reference: reference,
     };
 
     const { data: order, error: orderError } = await supabaseAdmin
@@ -931,91 +943,77 @@ serve(async (req) => {
       .single();
 
     if (orderError) {
-      await applyWalletTransaction(supabaseAdmin, {
-        userId: user.id,
-        type: 'refund',
-        amount: totalAmount,
-        reference: `REFUND-${reference}`,
-        description: `Auto-refund for failed SMM local order: ${service.name} (${actualQuantity} units)`,
-        idempotencyKey: `smm:refund:local-order:${idempotency_key}`,
-        metadata: {
-          source: 'smm-create-order',
-          request_forensics: walletRequestForensics,
-          reason: 'local_order_create_failed',
-          original_reference: reference,
-          source_debit_transaction_id: debitResult?.transaction?.id || null,
-          source_debit_idempotency_key: `smm:purchase:${idempotency_key}`,
-          service_id: service.id,
-        },
-      });
-
-      throw new Error(`Failed to create order: ${orderError.message}`);
+      // A same-key concurrent request may have won the unique order insert
+      // after this request's idempotent debit. Refunding here would release
+      // funds for the other handler while its paid panel send is in flight.
+      const { data: competingOrder, error: competingReadError } = await supabaseAdmin
+        .from('smm_orders')
+        .select('id, reference, status, service_id, quantity, amount_ngn, link, dispatch_payload_sha256')
+        .eq('user_id', user.id)
+        .eq('idempotency_key', idempotency_key)
+        .maybeSingle();
+      if (competingReadError) {
+        return new Response(JSON.stringify({ success: false, code: 'SMM_DISPATCH_STATUS_UNCONFIRMED', error: 'Order state needs review. Do not place this request again.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 });
+      }
+      if (competingOrder) {
+        const sameIntent = String(competingOrder.service_id) === String(service.id)
+          && Number(competingOrder.quantity) === actualQuantity
+          && Number(competingOrder.amount_ngn) === totalAmount
+          && String(competingOrder.link || '') === String(link || '')
+          && competingOrder.dispatch_payload_sha256 === payloadHash;
+        return new Response(JSON.stringify({
+          success: false,
+          code: sameIntent ? 'SMM_DISPATCH_STATUS_UNCONFIRMED' : 'IDEMPOTENCY_REQUEST_CONFLICT',
+          error: sameIntent ? 'Order state needs provider confirmation. Do not place it again.' : 'This idempotency key belongs to a different order request.',
+          data: { order_id: competingOrder.id, reference: competingOrder.reference, status: competingOrder.status },
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: sameIntent ? 202 : 409 });
+      }
+      // A lost INSERT acknowledgement can commit after this read. There is no
+      // safe proof that another executor has not taken the same debit, so
+      // retain the debit for exact order/ledger review and never send.
+      return new Response(JSON.stringify({
+        success: false,
+        code: 'SMM_LOCAL_ORDER_UNCONFIRMED',
+        error: 'Your order needs review. Do not place this request again; no panel request will be sent.',
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 });
     }
 
-    // Place order with SMM Panel
+    // This committed one-use claim must precede the paid panel POST. A lost
+    // acknowledgement burns permission and never triggers an automatic retry.
+    const debitTransactionId = String(debitResult?.transaction?.id || '');
+    const claim = debitTransactionId
+      ? await supabaseAdmin.rpc('claim_smm_dispatch', {
+          p_user_id: user.id,
+          p_order_id: order.id,
+          p_debit_transaction_id: debitTransactionId,
+          p_idempotency_key: idempotency_key,
+          p_payload_sha256: payloadHash,
+        })
+      : { data: null, error: new Error('DEBIT_TRANSACTION_ID_UNAVAILABLE') };
+    if (claim.error || claim.data?.success !== true || claim.data?.send_allowed !== true) {
+      const { error: holdError } = await supabaseAdmin.from('smm_orders')
+        .update({ status: 'outcome_unknown', updated_at: new Date().toISOString() })
+        .eq('id', order.id).eq('user_id', user.id).eq('status', 'pending');
+      if (holdError) console.error('Could not persist SMM no-send review state.');
+      return new Response(JSON.stringify({
+        success: false,
+        code: 'SMM_DISPATCH_STATUS_UNCONFIRMED',
+        error: 'Your order is under review. Do not place it again; no new panel request will be sent.',
+        data: { order_id: order.id, reference, status: 'outcome_unknown' },
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 });
+    }
+
+    // Place order with SMM Panel. No response outcome permits a second add.
     let panelOrderId: number | null = null;
     let panelError: string | null = null;
 
     try {
       const smmClient = createSmmPanelClient();
       
-      // Build order params based on service type
-      // Each type has specific required parameters per API docs:
-      // - Default: link, quantity
-      // - Package: link (no quantity)
-      // - Custom Comments: link, comments
-      // - Custom Comments Package: link, comments
-      // - Mentions: link, quantity, usernames
-      // - Mentions with Hashtags: link, quantity, usernames, hashtags
-      // - Mentions Custom List: link, usernames
-      // - Mentions Hashtag: link, quantity, hashtag
-      // - Mentions User Followers: link, quantity, username
-      // - Mentions Media Likers: link, quantity, username
-      // - Comment Likes: link, quantity, username
-      // - Comment Replies: link, username, comments (NO quantity!)
-      // - Poll: link, answer_number
-      // - Invites from Groups: link, quantity, groups
-      // - Subscriptions: username, quantity (NO link!)
-      // - SEO: link, keywords
-      // - Web Traffic: link, quantity
-      
-      const orderParams: {
-        service: number;
-        [key: string]: any;
-      } = {
-        service: service.external_id,
-      };
-      
-      const serviceType = service.service_type;
-      
-      // Add link for types that need it (all except Subscriptions)
-      if (serviceType !== 'Subscriptions' && link) {
-        orderParams.link = link;
-      }
-      
-      // Add quantity for types that need it
-      const typesWithQuantity = [
-        'Default', 'Mentions', 'Mentions with Hashtags', 'Mentions Hashtag',
-        'Mentions User Followers', 'Mentions Media Likers', 'Comment Likes',
-        'Invites from Groups', 'Subscriptions', 'Web Traffic'
-      ];
-      if (typesWithQuantity.includes(serviceType) && actualQuantity) {
-        orderParams.quantity = actualQuantity;
-      }
-      
-      // Add type-specific fields
-      if (comments) orderParams.comments = comments;
-      if (usernames) orderParams.usernames = usernames;
-      if (username) orderParams.username = username;
-      if (hashtags) orderParams.hashtags = hashtags;
-      if (hashtag) orderParams.hashtag = hashtag;
-      if (keywords) orderParams.keywords = keywords;
-      if (answer_number) orderParams.answer_number = answer_number;
-      if (groups) orderParams.groups = groups;
-      
       const panelResponse = await smmClient.createOrder(orderParams);
 
-      if (panelResponse.order) {
+      if (typeof panelResponse.order === 'number' && Number.isSafeInteger(panelResponse.order) && panelResponse.order > 0) {
         panelOrderId = panelResponse.order;
 
         // Update order with panel order ID
@@ -1141,6 +1139,9 @@ serve(async (req) => {
       'Valid idempotency_key is required',
       'Service not found or inactive',
       'Quantity must be a whole number',
+      SMM_UNAVAILABLE,
+      'Please check the order details.',
+      'Please enter a valid web link.',
       'Current displayed price is required. Please refresh and try again.',
       'Insufficient verified funds for purchase',
       'Purchasing is paused while this wallet is under security review. Please contact support.',

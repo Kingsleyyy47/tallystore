@@ -24,6 +24,9 @@ assert.equal(insufficient.context.bodyUsed, false, 'decode must leave original S
 assert.deepEqual(await insufficient.context.json(), { error: 'Insufficient verified funds for purchase' });
 assert.match(await read(jsonError({ code: 'SMM_ORDERS_PAUSED', error: 'private payload' }, 503), 'purchase'), /temporarily paused/);
 assert.match(await read(jsonError({ code: 'SMM_SUPPLIER_OUTCOME_UNKNOWN' }, 409), 'purchase'), /do not place it again/);
+for (const code of ['SMM_DISPATCH_STATUS_UNCONFIRMED', 'SMM_DEBIT_PROOF_UNCONFIRMED', 'SMM_LOCAL_ORDER_UNCONFIRMED']) {
+  assert.match(await read({ code, error: 'private detail' }, 'purchase'), /do not place it again/);
+}
 assert.match(await read(jsonError({ code: 'SMM_PURCHASE_LEDGER_ORPHANED' }, 409), 'purchase'), /support review/);
 assert.match(await read(jsonError({ code: 'IDEMPOTENCY_REQUEST_CONFLICT' }, 409), 'purchase'), /already used/);
 assert.match(await read(jsonError({ error: 'private auth payload' }, 401), 'purchase'), /sign in again/);

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/SimpleAuth';
 import { supabase } from '@/lib/supabase';
 import { readSocialBoostFunctionError } from '@/lib/socialBoostFunctionError';
+import { getSmmOrderContract, quoteSmmOrder, validateSmmOrderFields, SMM_QUANTITY_TYPES, SMM_UNAVAILABLE } from '@/lib/smmOrderContract';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -56,11 +57,7 @@ const PLATFORMS = [
   { id: 'spotify', name: 'Spotify', shortName: 'SP', icon: Star, color: 'text-green-500', placeholder: 'https://open.spotify.com/track/...', example: 'Track, Album, or Artist URL' },
 ];
 
-const SMM_TYPES_WITH_QUANTITY = [
-  'Default', 'Mentions', 'Mentions with Hashtags', 'Mentions Hashtag',
-  'Mentions User Followers', 'Mentions Media Likers', 'Comment Likes',
-  'Invites from Groups', 'Subscriptions', 'Web Traffic'
-];
+const SMM_TYPES_WITH_QUANTITY = SMM_QUANTITY_TYPES;
 
 const PlatformLogo = ({ name, className }: { name: string; className?: string }) => {
   if (!name || name === 'all') return <Zap className={className || 'h-4 w-4'} />;
@@ -180,28 +177,8 @@ const getPlaceholderForPlatform = (platform: string | undefined): { placeholder:
 };
 
 // Service type field requirements
-const SERVICE_TYPE_FIELDS: Record<string, string[]> = {
-  'Default': ['link', 'quantity'],
-  'Package': ['link'],
-  'Custom Comments': ['link', 'comments'],
-  'Custom Comments Package': ['link', 'comments'],
-  'Mentions': ['link', 'quantity', 'usernames'],
-  'Mentions with Hashtags': ['link', 'quantity', 'usernames', 'hashtags'],
-  'Mentions Custom List': ['link', 'usernames'],
-  'Mentions Hashtag': ['link', 'quantity', 'hashtag'],
-  'Mentions User Followers': ['link', 'quantity', 'username'],
-  'Mentions Media Likers': ['link', 'quantity', 'username'],
-  'Comment Likes': ['link', 'quantity', 'username'],
-  'Comment Replies': ['link', 'username', 'comments'],
-  'Poll': ['link', 'answer_number'],
-  'Invites from Groups': ['link', 'quantity', 'groups'],
-  'Subscriptions': ['username', 'quantity'],
-  'SEO': ['link', 'keywords'],
-  'Web Traffic': ['link', 'quantity'],
-};
-
 const getFieldsForType = (serviceType: string): string[] => {
-  return SERVICE_TYPE_FIELDS[serviceType] || ['link', 'quantity'];
+  return getSmmOrderContract(serviceType)?.fields || [];
 };
 
 const getServiceIcon = (name: string) => {
@@ -566,6 +543,7 @@ export default function SocialBoostPage() {
   };
 
   const handleSelectService = (service: SmmService) => {
+    if (!getSmmOrderContract(service.service_type)) return;
     setSelectedService(service);
     setQuantity(service.min_quantity.toString());
     setLink(''); setLinkError(''); setComments(''); setUsernames('');
@@ -592,31 +570,22 @@ export default function SocialBoostPage() {
     });
   };
 
-  // Service types that use quantity for pricing
+  const priceQuote = useMemo(() => {
+    if (!selectedService) return { quote: null, error: '' };
+    try { return { quote: quoteSmmOrder(selectedService, { quantity, comments, usernames }), error: '' }; }
+    catch (error) { return { quote: null, error: error instanceof Error ? error.message : SMM_UNAVAILABLE }; }
+  }, [selectedService, quantity, comments, usernames]);
+
   const calculateTotal = (): number => {
-    if (!selectedService) return 0;
-    
-    // Types with fixed pricing (no quantity multiplier)
-    // Package, Custom Comments, Custom Comments Package, Comment Replies, Poll, SEO, Mentions Custom List
-    if (!SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type)) {
-      return selectedService.price_ngn;
-    }
-    
-    // Types with quantity-based pricing
-    const qty = parseInt(quantity) || 0;
-    return Math.ceil((selectedService.price_ngn / 1000) * qty);
+    return priceQuote.quote?.amountNgn || 0;
   };
 
   useEffect(() => {
     if (!selectedService) return;
-    const expectedPriceNgn = SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type)
-      ? Math.ceil((selectedService.price_ngn / 1000) * (parseInt(quantity) || 0))
-      : selectedService.price_ngn;
+    const expectedPriceNgn = priceQuote.quote?.amountNgn;
     if (!expectedPriceNgn || expectedPriceNgn <= 0) return;
 
-    const qty = SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type)
-      ? parseInt(quantity) || selectedService.min_quantity
-      : null;
+    const qty = priceQuote.quote?.quantity;
     const day = new Date().toISOString().slice(0, 10);
     trackRevenueEvent({
       eventType: 'PAYMENT_PROVIDER_LOADED',
@@ -637,10 +606,12 @@ export default function SocialBoostPage() {
         personal_platform_count: selectedService._personal_platform_count || 0,
       },
     });
-  }, [quantity, selectedService, user?.id]);
+  }, [priceQuote, selectedService, user?.id]);
 
   const isFormValid = (): boolean => {
-    if (!selectedService) return false;
+    if (!selectedService || !priceQuote.quote) return false;
+    try { validateSmmOrderFields(selectedService.service_type, { link, comments, usernames, username, hashtags, hashtag, keywords, answer_number: answerNumber, groups }); }
+    catch { return false; }
     const fields = requiredFields;
     
     // Validate link for types that need it (not Subscriptions)
@@ -650,7 +621,7 @@ export default function SocialBoostPage() {
     
     // Validate quantity for types that need it
     if (SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type)) {
-      const qty = parseInt(quantity) || 0;
+      const qty = Number(quantity);
       if (qty < selectedService.min_quantity || qty > selectedService.max_quantity) return false;
     }
     
@@ -725,7 +696,7 @@ export default function SocialBoostPage() {
       
       if (error) throw error;
       
-      if (data?.code === 'SMM_SUPPLIER_OUTCOME_UNKNOWN') {
+      if (['SMM_SUPPLIER_OUTCOME_UNKNOWN', 'SMM_DISPATCH_STATUS_UNCONFIRMED', 'SMM_DEBIT_PROOF_UNCONFIRMED', 'SMM_LOCAL_ORDER_UNCONFIRMED'].includes(data?.code)) {
         await Promise.all([fetchOrders(), refreshWalletBalance()]);
         setActiveTab('history');
         toast({ title: 'Order under review', description: await readSocialBoostFunctionError(data, 'purchase') });
@@ -898,11 +869,13 @@ export default function SocialBoostPage() {
                       <div className="space-y-2 max-h-[280px] sm:max-h-[320px] md:max-h-[350px] overflow-y-auto -mx-1 px-1">
                         {services.map((service) => {
                           const isSelected = selectedService?.id === service.id;
+                          const supported = !!getSmmOrderContract(service.service_type);
                           return (
                             <Card 
                               key={service.id} 
-                              className={`cursor-pointer transition-all active:scale-[0.99] ${isSelected ? 'ring-2 ring-primary bg-primary/5' : 'hover:border-primary hover:shadow-sm'}`}
-                              onClick={() => handleSelectService(service)}
+                              aria-disabled={!supported}
+                              className={`${supported ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'} transition-all active:scale-[0.99] ${isSelected ? 'ring-2 ring-primary bg-primary/5' : 'hover:border-primary hover:shadow-sm'}`}
+                              onClick={() => { if (supported) handleSelectService(service); }}
                             >
                               <CardContent className="p-2.5 sm:p-3 md:p-4">
                                 <div className="flex items-center justify-between gap-2 sm:gap-3">
@@ -922,7 +895,7 @@ export default function SocialBoostPage() {
                                   </div>
                                   <div className="text-right shrink-0">
                                     <p className="text-sm sm:text-base md:text-lg font-bold text-green-600">{formatPrice(service.price_ngn)}</p>
-                                    <p className="text-[10px] sm:text-xs text-muted-foreground">{service.service_type === 'Package' ? 'fixed' : '/1K'}</p>
+                                    <p className="text-[10px] sm:text-xs text-muted-foreground">{!supported ? 'Temporarily unavailable' : getSmmOrderContract(service.service_type)?.mode === 'package' ? 'per package' : '/1K'}</p>
                                   </div>
                                   {isSelected && <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-primary shrink-0" />}
                                 </div>
@@ -1077,20 +1050,21 @@ export default function SocialBoostPage() {
                           <div className="p-3 sm:p-4 bg-background rounded-lg border">
                             <div className="flex justify-between items-center text-xs sm:text-sm">
                               <span className="text-muted-foreground">
-                                {SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type) ? 'Price per 1000:' : 'Fixed Price:'}
+                                {getSmmOrderContract(selectedService.service_type)?.mode === 'package' ? 'Package price:' : 'Price per 1000:'}
                               </span>
                               <span className="font-medium">{formatPrice(selectedService.price_ngn)}</span>
                             </div>
-                            {SMM_TYPES_WITH_QUANTITY.includes(selectedService.service_type) && (
+                            {getSmmOrderContract(selectedService.service_type)?.mode !== 'package' && (
                               <div className="flex justify-between items-center mt-1.5 sm:mt-2 text-xs sm:text-sm">
-                                <span className="text-muted-foreground">Quantity:</span>
-                                <span className="font-medium">{parseInt(quantity || '0').toLocaleString()}</span>
+                                <span className="text-muted-foreground">{['comments', 'usernames'].includes(getSmmOrderContract(selectedService.service_type)?.mode || '') ? 'Non-empty lines:' : 'Quantity:'}</span>
+                                <span className="font-medium">{(priceQuote.quote?.quantity || 0).toLocaleString()}</span>
                               </div>
                             )}
                             <div className="border-t mt-2 sm:mt-3 pt-2 sm:pt-3 flex justify-between items-center">
                               <span className="font-semibold text-sm sm:text-base">Total:</span>
                               <span className="text-xl sm:text-2xl font-bold text-green-600">{formatPrice(calculateTotal())}</span>
                             </div>
+                            {priceQuote.error && <p role="alert" className="mt-2 text-sm text-destructive">{priceQuote.error}</p>}
                           </div>
 
                           {(() => {
