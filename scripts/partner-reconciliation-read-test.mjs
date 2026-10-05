@@ -20,8 +20,11 @@ const baseOrder = { id: orderId, partner_id: partnerId, status: 'processing',
   customer_email: 'PRIVATE_CUSTOMER', response_payload: { code: 'PRIVATE_CODE' } }
 
 function fixture(journal = baseJournal, order = baseOrder) {
-const calls = { reads: [], ranges: [], writes: 0, provider: 0 }
-  const admin = { from(table) {
+  const calls = { reads: [], ranges: [], rpc: [], writes: 0, provider: 0 }
+  const admin = { async rpc(name,args) {
+    calls.rpc.push({name,args}); assert.equal(name,'get_api_partner_dispatch_receipt_review')
+    return {data:{success:true,cases:[]},error:null}
+  }, from(table) {
     const query = {
       select(columns) { calls.reads.push({ table, columns }); return this },
       in() { return this }, eq() { return this }, order() { return this }, range(start,end) { calls.ranges.push([start,end]); return this },
@@ -115,4 +118,17 @@ assert.equal(result.body.observation,'inconclusive')
 assert.equal(result.body.financial_decision,'none')
 assert.ok(Date.now()-started>=7900&&Date.now()-started<11000,'stalled provider returns within the production deadline')
 assert.equal(f.calls.writes,0)
+f=fixture({...baseJournal,state:'sending'})
+f.admin.rpc=async(name,args)=>{
+  assert.equal(name,'get_api_partner_dispatch_receipt_review')
+  assert.equal(args.p_owner_user_id,owner)
+  assert.deepEqual(Array.from(args.p_order_ids),[orderId])
+  return {data:{success:true,cases:[{order_id:orderId,receipt_outcome:'accepted',receipt_proof_hash:'a'.repeat(64)}]},error:null}
+}
+result=await list(f.admin,owner,{})
+assert.equal(result.body.cases[0].recovery.outcome,'accepted')
+assert.equal(result.body.cases[0].recovery.proof_hash,'a'.repeat(64))
+f.admin.rpc=async()=>({data:{success:true,cases:[{order_id:orderId,receipt_outcome:'unknown',receipt_proof_hash:'a'.repeat(64)}]},error:null})
+result=await list(f.admin,owner,{})
+assert.equal(result.status,503,'a malformed receipt summary must not invite settlement')
 console.log('Owner reconciliation reads: authorization, redaction, bound-ID probes and no financial writes passed.')

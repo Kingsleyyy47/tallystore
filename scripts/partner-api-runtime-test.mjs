@@ -13,6 +13,9 @@ vm.runInNewContext(compile(readFileSync('supabase/functions/_shared/partner-exte
 const pricingExports = {}
 vm.runInNewContext(compile(readFileSync('supabase/functions/_shared/partner-pricing.ts', 'utf8')),
   { exports: pricingExports })
+const recoveryExports = {}
+vm.runInNewContext(compile(readFileSync('supabase/functions/_shared/partner-receipt-recovery.ts','utf8')),
+  { exports: recoveryExports, setTimeout, clearTimeout })
 const source = readFileSync('supabase/functions/partner-api/index.ts', 'utf8').replace(/^import .*$/gm, '')
 const keyId = '10000000-0000-4000-8000-000000000001'
 const partnerId = '20000000-0000-4000-8000-000000000001'
@@ -61,6 +64,9 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
       if (name === 'record_api_partner_external_outcome') return { data: {
         success: true, data: { id: orderId, status: args.p_status, response_payload: args.p_public_payload },
       }, error: null }
+      if (name === 'reconcile_api_partner_dispatch_receipt') return { data: {
+        success:true,order_id:args.p_order_id,decision:'accepted',idempotent_replay:false,
+      },error:null }
       throw new Error('Unexpected privileged RPC')
     },
   }
@@ -69,6 +75,7 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
     Deno: { env: { get: name => ({ SUPABASE_URL: 'https://fixture.invalid',
       SUPABASE_SERVICE_ROLE_KEY: 'PRIVATE_SERVICE_CREDENTIAL', ...env })[name] } },
     executePartnerExternalPurchase: runnerExports.executePartnerExternalPurchase,
+    reconcilePartnerDispatchReceipt: recoveryExports.reconcilePartnerDispatchReceipt,
     listPartnerExternalReconciliationCases: async (_admin, actorId) => {
       calls.reconciliation.push(['list', actorId]); return { body: { success: true, cases: [] }, status: 200 }
     },
@@ -148,6 +155,22 @@ assert.equal(result.status, 200); assert.equal(result.calls.reconciliation[0][0]
 result = await run({ env: enabled, adminAccount: true, body: { action: 'admin_reconciliation_probe', order_id: orderId } })
 assert.equal(result.status, 200); assert.equal(result.calls.reconciliation[0][0], 'probe')
 assert.equal(result.calls.dispatch, 0)
+const recoveryBody={action:'admin_reconcile_dispatch_receipt',order_id:orderId,receipt_proof_hash:'a'.repeat(64)}
+for(const account of [{signedIn:true},{signedIn:true,staffAccount:true},
+  {adminAccount:true,actor:'40000000-0000-4000-8000-000000000001'},{adminAccount:true,suspended:true}]) {
+  result=await run({env:enabled,...account,body:recoveryBody})
+  assert.equal(result.status,403)
+  assert.equal(result.calls.rpc.length,0)
+  assert.equal(result.calls.dispatch,0)
+}
+result=await run({env:enabled,adminAccount:true,body:recoveryBody})
+assert.equal(result.status,200)
+assert.equal(result.calls.rpc.length,1)
+assert.equal(result.calls.rpc[0].name,'reconcile_api_partner_dispatch_receipt')
+assert.equal(result.calls.rpc[0].args.p_owner_user_id,owner)
+assert.equal(result.calls.dispatch,0)
+result=await run({env:enabled,adminAccount:true,body:{...recoveryBody,amount_ngn:100000}})
+assert.equal(result.status,400);assert.equal(result.calls.rpc.length,0)
 result = await run({ env: enabled, adminAccount: true, body: { action: 'admin_create_partner',
   name: 'Fixture', allowed_sections: ['invalid-section'] } })
 assert.equal(result.status, 400)

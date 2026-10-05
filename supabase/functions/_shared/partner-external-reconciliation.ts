@@ -3,6 +3,7 @@
 type Admin = any
 type Result = { body: Record<string, unknown>; status: number }
 type ReadResult = { data: any; error: unknown }
+const PROOF_HASH = /^[a-f0-9]{64}$/
 type Deps = {
   daisyStatus: (id: string) => Promise<unknown>
   smmStatus: (id: string) => Promise<unknown>
@@ -57,7 +58,8 @@ export async function listPartnerExternalReconciliationCases(admin: Admin, owner
       .order('created_at', { ascending: false }).order('order_id', { ascending: false })
       .range(start, start + PAGE_SIZE))
     if (journalError || !Array.isArray(journals)) return error('PARTNER_API_UNAVAILABLE', 503)
-    const ids = journals.map((row: any) => row.order_id).filter((id: unknown) => typeof id === 'string' && UUID.test(id))
+    const visibleJournals = journals.slice(0, PAGE_SIZE)
+    const ids = visibleJournals.map((row: any) => row.order_id).filter((id: unknown) => typeof id === 'string' && UUID.test(id))
     let orders: any[] = []
     if (ids.length) {
       const read = await withDeadline<ReadResult>(() => admin.from('api_partner_orders')
@@ -67,8 +69,23 @@ export async function listPartnerExternalReconciliationCases(admin: Admin, owner
       orders = read.data
     }
     const byId = new Map(orders.map(order => [order.id, order]))
-    const cases = journals.slice(0, PAGE_SIZE)
-      .map((journal: any) => caseSummary(journal, byId.get(journal.order_id)))
+    const recoveries = new Map<string, { outcome: 'accepted' | 'rejected'; proof_hash: string }>()
+    if (ids.length) {
+      const read = await withDeadline<ReadResult>(() => admin.rpc('get_api_partner_dispatch_receipt_review', {
+        p_owner_user_id: ownerId, p_order_ids: ids,
+      }))
+      if (read.error || read.data?.success !== true || !Array.isArray(read.data.cases)) return error('PARTNER_API_UNAVAILABLE', 503)
+      for (const receipt of read.data.cases) {
+        if (!receipt || !ids.includes(receipt.order_id)
+          || !['accepted', 'rejected'].includes(receipt.receipt_outcome)
+          || typeof receipt.receipt_proof_hash !== 'string' || !PROOF_HASH.test(receipt.receipt_proof_hash)
+          || recoveries.has(receipt.order_id)) return error('PARTNER_API_UNAVAILABLE', 503)
+        recoveries.set(receipt.order_id, { outcome: receipt.receipt_outcome, proof_hash: receipt.receipt_proof_hash })
+      }
+    }
+    const cases = visibleJournals.map((journal: any) => ({ ...caseSummary(journal, byId.get(journal.order_id)),
+      ...(journal.state === 'sending' && recoveries.has(journal.order_id) ? { recovery: recoveries.get(journal.order_id) } : {}),
+    }))
     return { body: { success: true, cases, next_page: journals.length > PAGE_SIZE ? Number(page) + 1 : null }, status: 200 }
   } catch { return error('PARTNER_API_UNAVAILABLE', 503) }
 }

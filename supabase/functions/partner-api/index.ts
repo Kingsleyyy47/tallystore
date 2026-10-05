@@ -8,6 +8,7 @@ import { handlePartnerExternalOrderStatus } from '../_shared/partner-external-st
 import { deliverPartnerWebhookSafely, validatePartnerWebhookUrl } from '../_shared/partner-webhook-delivery.ts'
 import { createRuntimePinnedWebhookTransport } from '../_shared/partner-webhook-transport.ts'
 import { listPartnerExternalReconciliationCases, probePartnerExternalReconciliationCase } from '../_shared/partner-external-reconciliation.ts'
+import { reconcilePartnerDispatchReceipt } from '../_shared/partner-receipt-recovery.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -2437,6 +2438,10 @@ serve(async (req) => {
         return json({ success: false, code: 'PARTNER_OWNER_REQUIRED', error: 'Owner access required.' }, 403)
       }
       if (action === 'admin_list_partners') return json(await handleAdminList(admin))
+      if (action === 'admin_reconcile_dispatch_receipt') {
+        const result = await reconcilePartnerDispatchReceipt(admin, adminUser.id, body)
+        return json(result.body, result.status)
+      }
       if (action === 'admin_reconciliation_cases' || action === 'admin_reconciliation_probe') {
         const result = action === 'admin_reconciliation_cases'
           ? await listPartnerExternalReconciliationCases(admin, adminUser.id, body)
