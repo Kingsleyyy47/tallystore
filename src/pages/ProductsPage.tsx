@@ -469,10 +469,13 @@ export default function ProductsPage() {
           }} className="h-11 rounded-xl border-slate-200 bg-white pl-10 dark:border-white/10 dark:bg-card" />
         </div>
 
-        <nav aria-label="Product categories" className="mb-4 flex gap-2 overflow-x-auto pb-2">
-          <button type="button" onClick={() => setSelectedCategory('all')} className={`shrink-0 rounded-xl px-4 py-2 text-xs font-bold transition ${selectedCategory === 'all' ? 'bg-purple-600 text-white shadow-md' : 'border border-slate-200 bg-white text-slate-600 hover:border-purple-300 dark:border-white/10 dark:bg-card dark:text-slate-300'}`}>All ({activeProductGroups.length})</button>
-          {categoryChips.map(({ category, count }) => <button key={category.id} type="button" onClick={() => setSelectedCategory(category.id)} className={`shrink-0 rounded-xl px-4 py-2 text-xs font-bold transition ${selectedCategory === category.id ? 'bg-purple-600 text-white shadow-md' : 'border border-slate-200 bg-white text-slate-600 hover:border-purple-300 dark:border-white/10 dark:bg-card dark:text-slate-300'}`}>{category.name.trim()} ({count})</button>)}
-        </nav>
+        <div className="mb-4 rounded-2xl border border-slate-200 bg-white/80 p-3 dark:border-white/10 dark:bg-card">
+          <label htmlFor="product-category" className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Choose a collection</label>
+          <select id="product-category" value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)} className="h-10 w-full rounded-lg border border-teal-200 bg-teal-50/60 px-3 text-sm font-semibold text-slate-800 dark:border-teal-900 dark:bg-teal-950/30 dark:text-slate-100">
+            <option value="all">All collections · {activeProductGroups.length} products</option>
+            {categoryChips.map(({ category, count }) => <option key={category.id} value={category.id}>{category.name.trim()} · {count}</option>)}
+          </select>
+        </div>
 
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">{sortedProductGroups.length} product{sortedProductGroups.length === 1 ? '' : 's'} found</p>

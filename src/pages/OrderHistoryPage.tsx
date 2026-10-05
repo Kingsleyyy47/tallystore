@@ -284,11 +284,13 @@ function OrderDetailsView({
           <Card className="rounded-2xl border-slate-200 bg-white/85 dark:border-white/10 dark:bg-white/[0.035]">
             <CardContent className="p-6 text-center">
               <KeyRound className="mx-auto h-10 w-10 text-muted-foreground" />
-              <p className="mt-3 font-black">Credentials are not available yet</p>
+              <p className="mt-3 font-black">{order.status === 'completed' ? 'Purchased details could not be loaded' : 'Credentials are not available yet'}</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {order.status === 'processing'
                   ? 'This order is being confirmed. Please do not place it again. Contact support with the order ID if you need help.'
-                  : `This order is ${order.status}. Completed orders will show the purchased account details here.`}
+                  : order.status === 'completed'
+                    ? 'Please refresh your orders. If the details are still missing, contact support with this order ID so we can recover your purchase.'
+                    : `This order is ${order.status}. Purchased details are shown after completion.`}
               </p>
             </CardContent>
           </Card>

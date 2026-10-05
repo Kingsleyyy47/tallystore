@@ -64,13 +64,31 @@ function ProductRow({ product, category, onBuy, onImpression }: { product: Produ
   )
 }
 
-function categoryHeaderColor(name: string) {
-  if (/facebook/i.test(name)) return 'from-blue-700 to-blue-600'
-  if (/email|gmail|mail/i.test(name)) return 'from-red-600 to-rose-500'
-  if (/proxy|vpn/i.test(name)) return 'from-cyan-700 to-blue-600'
-  if (/instagram/i.test(name)) return 'from-pink-600 to-fuchsia-600'
-  if (/telegram/i.test(name)) return 'from-sky-700 to-blue-600'
-  return 'from-purple-700 to-indigo-700'
+function categoryHeaderTone(name: string) {
+  if (/facebook|telegram|proxy|vpn/i.test(name)) return {
+    surface: 'border-sky-200 bg-[#eaf3f7] text-[#173c52] dark:border-sky-900/70 dark:bg-[#142937] dark:text-sky-100',
+    rail: 'bg-[#397b9c]',
+    icon: 'border-sky-200 bg-white/85 dark:border-sky-700/70 dark:bg-sky-950/60',
+    meta: 'text-[#4f7890] dark:text-sky-300/75',
+    count: 'border-sky-200 bg-white/70 text-[#285873] dark:border-sky-700/70 dark:bg-sky-950/50 dark:text-sky-200',
+    action: 'text-[#235d7b] hover:bg-white/65 dark:text-sky-200 dark:hover:bg-sky-900/60',
+  }
+  if (/instagram|snapchat|email|gmail|mail/i.test(name)) return {
+    surface: 'border-[#ead9c7] bg-[#f7f0e8] text-[#59402d] dark:border-[#634633] dark:bg-[#302820] dark:text-[#f7dfc6]',
+    rail: 'bg-[#b77c4f]',
+    icon: 'border-[#e6d2bd] bg-white/80 dark:border-[#72543c] dark:bg-[#463528]',
+    meta: 'text-[#926d4e] dark:text-[#d7ad86]',
+    count: 'border-[#e6d2bd] bg-white/70 text-[#815a3c] dark:border-[#72543c] dark:bg-[#463528] dark:text-[#eac7a6]',
+    action: 'text-[#825335] hover:bg-white/65 dark:text-[#f0c9a6] dark:hover:bg-[#57402e]',
+  }
+  return {
+    surface: 'border-teal-200 bg-[#eaf4f0] text-[#17483f] dark:border-teal-900/70 dark:bg-[#132e2c] dark:text-teal-100',
+    rail: 'bg-[#368a76]',
+    icon: 'border-teal-200 bg-white/85 dark:border-teal-700/70 dark:bg-teal-950/60',
+    meta: 'text-[#578478] dark:text-teal-300/75',
+    count: 'border-teal-200 bg-white/70 text-[#2d6c5b] dark:border-teal-700/70 dark:bg-teal-950/50 dark:text-teal-200',
+    action: 'text-[#286b5c] hover:bg-white/65 dark:text-teal-200 dark:hover:bg-teal-900/60',
+  }
 }
 
 export default function GroupedProductCatalog({ categories, products, selectedCategory, searching = false, onSelectCategory, onBuy, onImpression }: Props) {
@@ -87,18 +105,33 @@ export default function GroupedProductCatalog({ categories, products, selectedCa
 
   return <div className="space-y-5">
     {sections.map(({ category, products: categoryProducts }) => {
+      const headerTone = categoryHeaderTone(category.name)
       const isAll = selectedCategory === 'all'
       const isExpanded = expanded[category.id] === true
       const shown = isAll && !searching && !isExpanded ? categoryProducts.slice(0, 3) : categoryProducts
       const regions = !isAll && categoryProducts.length > 5 ? groupProductsByRegion(shown) : []
       return <section key={category.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-white/10 dark:bg-card">
-        <div className={`relative flex items-center justify-between gap-3 overflow-hidden bg-gradient-to-r ${categoryHeaderColor(category.name)} px-4 py-4 text-white sm:px-5`}>
-          <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full bg-white/10" />
-          <div className="relative flex min-w-0 items-center gap-3">
-            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/20"><CategoryLogo name={category.name} className="h-7 w-7" iconClassName="h-7 w-7 text-white" /></span>
-            <div className="min-w-0"><h2 className="truncate text-base font-extrabold uppercase tracking-wide sm:text-lg">{category.name.trim()}</h2><p className="text-xs text-white/75">{categoryProducts.length} products</p></div>
+        <div className={`relative overflow-hidden border-b px-4 py-3.5 sm:px-5 ${headerTone.surface}`}>
+          <div aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${headerTone.rail}`} />
+          <div aria-hidden="true" className="pointer-events-none absolute -right-5 inset-y-0 w-24 -skew-x-12 border-x border-current opacity-[0.07]" />
+          <div className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 sm:flex sm:justify-between sm:gap-3">
+            <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-3 sm:order-1 sm:flex-1">
+              <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl border shadow-sm ${headerTone.icon}`}>
+                <CategoryLogo name={category.name} className="h-8 w-8" iconClassName="h-7 w-7" />
+              </span>
+              <div className="min-w-0">
+                <p className={`text-[10px] font-bold uppercase tracking-[0.18em] ${headerTone.meta}`}>TallyStore collection</p>
+                <h2 className="break-words text-base font-extrabold leading-tight sm:truncate sm:text-lg">{category.name.trim()}</h2>
+              </div>
+            </div>
+            <img src="/icon-192x192.png" alt="TallyStore logo" className="col-start-2 row-start-1 h-11 w-11 shrink-0 object-contain sm:order-3 sm:h-12 sm:w-12" loading="lazy" />
+            <div className="col-span-2 row-start-2 flex items-center justify-between gap-2 pl-14 sm:order-2 sm:ml-auto sm:justify-end sm:pl-0">
+              <span className={`inline-flex shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${headerTone.count}`}>
+                {categoryProducts.length} {categoryProducts.length === 1 ? 'product' : 'products'}
+              </span>
+              {isAll && onSelectCategory && <button type="button" className={`rounded-lg px-2 py-2 text-[11px] font-bold transition-colors sm:px-3 sm:text-xs ${headerTone.action}`} onClick={() => onSelectCategory(category.id)}>View all <ChevronRight className="inline h-3.5 w-3.5" /></button>}
+            </div>
           </div>
-          {isAll && onSelectCategory && <button type="button" className="relative shrink-0 rounded-lg bg-white/15 px-3 py-2 text-xs font-bold hover:bg-white/25" onClick={() => onSelectCategory(category.id)}>View all <ChevronRight className="inline h-3.5 w-3.5" /></button>}
         </div>
         {regions.length > 1 ? regions.map(({ region, products: regionProducts }) => <div key={region.label}>
           <h3 className="border-b border-slate-100 bg-slate-50 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">{region.label} <span className="font-normal">({regionProducts.length})</span></h3>
