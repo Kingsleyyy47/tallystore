@@ -5,12 +5,14 @@ import { createServer } from 'node:http'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 
 const root = resolve(import.meta.dirname, '../..')
 const temporary = await mkdtemp(join(tmpdir(), 'tally-order-history-test-'))
 const bundlePath = join(temporary, 'bundle.js')
-const chrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+const localRequire = createRequire(join(root, 'scripts/ui-review.local/package.json'))
+const { chromium } = localRequire('playwright')
+const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
 
 const mockModules = {
   '@/contexts/SimpleAuth': `const user = { id: 'synthetic-customer', email: 'synthetic@example.invalid' }; export function useAuth() { return { user, showBalances: true, accountSuspended: false, walletReviewRequired: false, walletReviewedBy: null } }`,
@@ -71,12 +73,6 @@ const entry = `
   import { BrowserRouter } from 'react-router-dom';
   import OrderHistoryPage from ${JSON.stringify(join(root, 'src/pages/OrderHistoryPage.tsx'))};
   createRoot(document.getElementById('app')!).render(<BrowserRouter><OrderHistoryPage /></BrowserRouter>);
-  const mode = new URLSearchParams(location.search).get('case');
-  if (mode === 'initial-retry' || mode === 'refresh') setTimeout(() => {
-    const label = mode === 'refresh' ? 'Refresh orders' : 'Retry orders';
-    const button = [...document.querySelectorAll('button')].find(item => item.textContent?.includes(label));
-    button?.click();
-  }, 250);
 `
 
 await build({ stdin: { contents: entry, resolveDir: root, sourcefile: 'order-history-test-entry.tsx', loader: 'tsx' }, bundle: true, format: 'iife', platform: 'browser', target: 'es2022',
@@ -102,30 +98,39 @@ const server = createServer((request, response) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const port = server.address().port
 
-async function browserText(testCase) {
-  const url = `http://127.0.0.1:${port}/?case=${testCase}`
-  const child = spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
-    '--virtual-time-budget=1500', '--dump-dom', `--user-data-dir=${join(temporary, `chrome-${testCase}`)}`, url],
-  { stdio: ['ignore', 'pipe', 'pipe'] })
-  let output = ''
-  let error = ''
-  child.stdout.on('data', (chunk) => { output += chunk })
-  child.stderr.on('data', (chunk) => { error += chunk })
-  const status = await new Promise((resolve) => child.on('close', resolve))
-  if (status !== 0) throw new Error(`Chrome failed in ${testCase}: ${error.slice(-700)}`)
-  return output
-}
-
+let browser
 try {
-  const optional = await browserText('optional')
-  if (!optional.includes('SYNTHETIC TEST ORDER')) throw new Error('Optional request delayed core orders')
-  const initialFail = await browserText('initial-fail')
-  if (!initialFail.includes('Order history is unavailable') || initialFail.includes('No Orders Found')) throw new Error('Initial failure appeared as empty history')
-  const initialRetry = await browserText('initial-retry')
-  if (!initialRetry.includes('SYNTHETIC TEST ORDER')) throw new Error('Retry did not restore core orders')
-  const refresh = await browserText('refresh')
-  if (!refresh.includes('SYNTHETIC TEST ORDER') || !refresh.includes('Could not refresh orders')) throw new Error('Refresh failure hid previously loaded order')
+  browser = await chromium.launch({ executablePath: edge, headless: true })
+  const origin = `http://127.0.0.1:${port}`
+  const context = await browser.newContext({ viewport: { width: 390, height: 700 } })
+  context.setDefaultTimeout(30_000)
+  await context.route('**/*', route => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
+  const page = await context.newPage()
+  const pageErrors = []
+  page.on('pageerror', error => pageErrors.push(error.message))
+
+  await page.goto(`${origin}/?case=optional`)
+  await page.getByText('SYNTHETIC TEST ORDER').waitFor()
+
+  await page.goto(`${origin}/?case=initial-fail`)
+  await page.getByText('Order history is unavailable').waitFor()
+  if (await page.getByText('No Orders Found').count()) throw new Error('Initial failure appeared as empty history')
+
+  await page.goto(`${origin}/?case=initial-retry`)
+  await page.getByText('Order history is unavailable').waitFor()
+  await page.getByRole('button', { name: 'Retry orders' }).first().click()
+  await page.getByText('SYNTHETIC TEST ORDER').waitFor()
+
+  await page.goto(`${origin}/?case=refresh`)
+  await page.getByText('SYNTHETIC TEST ORDER').waitFor()
+  const refresh = page.getByRole('button', { name: 'Refresh orders' })
+  await refresh.waitFor({ state: 'visible' })
+  await refresh.click() // Playwright waits for the initial load to enable it.
+  await page.getByText(/Could not refresh orders/).waitFor()
+  if (!(await page.getByText('SYNTHETIC TEST ORDER').count())) throw new Error('Refresh failure hid previously loaded order')
+  if (pageErrors.length) throw new Error(`Browser runtime errors: ${pageErrors.join('; ')}`)
   process.stdout.write('Order history component browser tests passed (optional delay, initial failure, retry, refresh failure).\n')
 } finally {
-  server.close()
+  await browser?.close()
+  await new Promise(resolve => server.close(resolve))
 }

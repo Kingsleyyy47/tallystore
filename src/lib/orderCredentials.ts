@@ -25,15 +25,20 @@ export function normalizeOrderCredential(account: unknown): Account {
   const line = rawCredentialLine(source)
   if (!line) return { ...source }
 
+  // The separator-adjacent spaces in an old stock line may be formatting or
+  // part of a credential. Keep the exact original for copying and download;
+  // the trimmed columns below are only a convenient parsed view.
+  const withOriginalLine = { ...source, original_line: line }
+
   const parts = line.split('|').map((part) => part.trim())
   if (parts.length === 6 && parts[5] === '') parts.pop()
   // Only the documented five-column legacy format is positional. An
   // unrecognized line stays visible as originally stored; no fields are guessed.
   if (parts.length !== 5 || !parts[0] || !parts[1] ||
-      (/^username\s*$/i.test(parts[0]) && /^password\s*$/i.test(parts[1]))) return { ...source }
+      (/^username\s*$/i.test(parts[0]) && /^password\s*$/i.test(parts[1]))) return withOriginalLine
 
   return {
-    ...source,
+    ...withOriginalLine,
     username: parts[0],
     password: parts[1],
     email: parts[2],

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/SimpleAuth';
 import { supabase } from '@/lib/supabase';
+import { readSocialBoostFunctionError } from '@/lib/socialBoostFunctionError';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -722,25 +723,12 @@ export default function SocialBoostPage() {
     try {
       const { data, error } = await supabase.functions.invoke('smm-create-order', { body: payload });
       
-      // Handle edge function errors - extract the actual error message
-      if (error) {
-        // Try to get detailed error from FunctionsHttpError
-        let errorMessage = error.message;
-        if (error.context?.body) {
-          try {
-            const errorBody = typeof error.context.body === 'string' 
-              ? JSON.parse(error.context.body) 
-              : error.context.body;
-            if (errorBody?.error) errorMessage = errorBody.error;
-          } catch { /* ignore parse errors */ }
-        }
-        throw new Error(errorMessage);
-      }
+      if (error) throw error;
       
       if (data?.code === 'SMM_SUPPLIER_OUTCOME_UNKNOWN') {
         await Promise.all([fetchOrders(), refreshWalletBalance()]);
         setActiveTab('history');
-        toast({ title: 'Order under review', description: data.error });
+        toast({ title: 'Order under review', description: await readSocialBoostFunctionError(data, 'purchase') });
       } else if (data?.success) {
         toast({ title: 'Order Placed! 🎉', description: `Order #${data.data?.reference || data.orderId} submitted.` });
         setSelectedService(null); setLink(''); setQuantity(''); setSearchQuery('');
@@ -749,15 +737,11 @@ export default function SocialBoostPage() {
         await Promise.all([fetchOrders(), refreshWalletBalance()]);
         setActiveTab('history');
       } else {
-        throw new Error(data?.error || 'Failed to place order');
+        throw data || new Error('Failed to place order');
       }
     } catch (err: unknown) {
-      console.error('Order error:', err);
-      // Check if error has JSON body with more details
-      let errorMessage = 'Failed to place order.';
-      if (err instanceof Error) {
-        errorMessage = err.message;
-      }
+      console.error('Social Boost order request could not be confirmed.');
+      const errorMessage = await readSocialBoostFunctionError(err, 'purchase');
       toast({ variant: 'destructive', title: 'Order Failed', description: errorMessage });
     } finally {
       setSubmitting(false);
@@ -773,14 +757,14 @@ export default function SocialBoostPage() {
     try {
       const { data, error } = await supabase.functions.invoke('smm-check-status', { body: { order_id: orderId } });
       if (error) throw error;
-      if (data.success) {
+      if (data?.success) {
         const status = data.data?.status || data.status || 'Unknown';
         toast({ title: 'Status Updated', description: `Status: ${status}` });
         await fetchOrders();
-      } else throw new Error(data.error);
+      } else throw data || new Error('Failed to check status');
     } catch (err) {
-      console.error('Status check error:', err);
-      toast({ variant: 'destructive', title: 'Check Failed', description: err instanceof Error ? err.message : 'Failed.' });
+      console.error('Social Boost order status could not be checked.');
+      toast({ variant: 'destructive', title: 'Check Failed', description: await readSocialBoostFunctionError(err, 'status') });
     } finally {
       setCheckingStatus(null);
     }

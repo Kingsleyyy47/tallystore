@@ -89,6 +89,7 @@ const credentialFields = [
   { keys: ['recovery', 'recovery_email', 'backup_email'], label: 'RECOVERY', tone: 'text-sky-500' },
   { keys: ['recovery_email_password', 'recovery_password', 'backup_email_password', 'backup_password'], label: 'RECOVERY PASS', tone: 'text-cyan-500' },
   { keys: ['additional_info', 'notes', 'note'], label: 'NOTES', tone: 'text-slate-500 dark:text-slate-400' },
+  { keys: ['original_line'], label: 'ORIGINAL STOCK LINE', tone: 'text-slate-500 dark:text-slate-400' },
 ]
 
 function isCredentialVisibleOrder(order: any) {

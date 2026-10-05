@@ -51,3 +51,27 @@ supplier request as a recovery shortcut.
 Production deployment and any recovery are recorded separately in private
 evidence. This document does not assert that a customer purchase was made as a
 test or that all possible checkout failures are resolved.
+
+## Verified repair and separate non-2xx failures
+
+The reviewed reference change was deployed to SOURCE `process-purchase` v77
+on 5 October at 19:34:23 UTC. A fresh downloaded bundle matched all six reviewed
+modules. JWT verification remains enabled; an unauthenticated status request
+returned 401. One previously held local-stock order was completed from its
+original reservation, with a fresh read confirming exactly one purchase debit
+and one delivered unit. No new paid supplier request was used for verification.
+
+The screenshot titled `Order Failed` matches Social Boost's `smm-create-order`
+client. SOURCE function HTTP logs show 503 responses on that route in the
+reported evening. Its absent `SMM_ORDERS_ENABLED` flag causes
+`SMM_ORDERS_PAUSED` before authentication or spending. Separate withdrawal and
+bills 503 responses match their disabled launch flags. These failures are
+separate from the product order status constraint and reference collision.
+The logs do not reliably identify an authenticated customer for pre-auth pause
+responses, so these records cannot be assigned to the supplied customer emails.
+
+Social Boost previously treated the SDK error response body as a parsed object;
+it is a stream. The customer UI now decodes a cloned response with byte/time
+bounds, allows known public explanations and hides database/provider internals.
+An uncertain purchase directs the customer to order history before retrying.
+This UI change does not reopen a paused route or automatically repeat a purchase.
