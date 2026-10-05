@@ -54,6 +54,17 @@ receipt records the dispatcher observation; it does not resolve a crash before
 that observation was saved. See `PARTNER_API_RECONCILIATION_PLAN.md` for the
 remaining financial recovery and independent evidence requirements.
 
+Migration `20261005025000_partner_receipt_reconciliation.sql` and `partner-api`
+version 37 added audited owner confirmation for a definitive saved receipt.
+Migration `20261005026000_partner_bitrefill_invoice_binding.sql` and version 38
+now preserve an unpaid Bitrefill invoice ID before payment, prohibit another
+payment on a binding replay, and expose owner-only status reads after a lost
+response. Live rollback tests verified private grants, exact receipt and order
+bindings, wallet isolation and compatibility with receipt recovery. External
+sections remain disabled until unknown-send recovery and independent provider
+evidence settlement are complete; no real supplier purchase was used to verify
+these changes.
+
 ## Outgoing webhook delivery
 
 Commit `dc6c16b` deployed the reviewed webhook path in source `partner-api` version 35. It rechecks the current key's `orders:read` scope, active owner-reviewed partner, owned order, and matching captured obligation or prepaid release before delivery. A deterministic primary-key claim allows only one sender for a partner/order/event. Notifications contain a signed order summary; provider responses, purchased credentials and HTTP response bodies are excluded.

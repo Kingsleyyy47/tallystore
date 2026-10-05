@@ -22,7 +22,9 @@ const baseOrder = { id: orderId, partner_id: partnerId, status: 'processing',
 function fixture(journal = baseJournal, order = baseOrder) {
   const calls = { reads: [], ranges: [], rpc: [], writes: 0, provider: 0 }
   const admin = { async rpc(name,args) {
-    calls.rpc.push({name,args}); assert.equal(name,'get_api_partner_dispatch_receipt_review')
+    calls.rpc.push({name,args})
+    if(name==='get_api_partner_bitrefill_bound_invoice') return {data:{success:true,bound:false},error:null}
+    assert.ok(['get_api_partner_dispatch_receipt_review','get_api_partner_bitrefill_bound_invoices'].includes(name))
     return {data:{success:true,cases:[]},error:null}
   }, from(table) {
     const query = {
@@ -131,4 +133,56 @@ assert.equal(result.body.cases[0].recovery.proof_hash,'a'.repeat(64))
 f.admin.rpc=async()=>({data:{success:true,cases:[{order_id:orderId,receipt_outcome:'unknown',receipt_proof_hash:'a'.repeat(64)}]},error:null})
 result=await list(f.admin,owner,{})
 assert.equal(result.status,503,'a malformed receipt summary must not invite settlement')
-console.log('Owner reconciliation reads: authorization, redaction, bound-ID probes and no financial writes passed.')
+// An invoice bound before payment survives an unknown paid response. Its
+// provider ID is used only for status reads and is excluded from browser data.
+const giftJournal={...baseJournal,section:'giftcards'}
+const giftOrder={...baseOrder,item_type:'giftcards'}
+f=fixture(giftJournal,giftOrder)
+f.admin.rpc=async(name,args)=>{
+  f.calls.rpc.push({name,args})
+  assert.equal(args.p_owner_user_id,owner)
+  if(name==='get_api_partner_dispatch_receipt_review')return{data:{success:true,cases:[]},error:null}
+  if(name==='get_api_partner_bitrefill_bound_invoices')return{data:{success:true,cases:[{order_id:orderId,invoice_id:'ACTIVE123'}]},error:null}
+  assert.equal(name,'get_api_partner_bitrefill_bound_invoice')
+  assert.equal(args.p_order_id,orderId)
+  return{data:{success:true,bound:true,order_id:orderId,invoice_id:'ACTIVE123'},error:null}
+}
+result=await list(f.admin,owner,{})
+assert.equal(result.body.cases[0].probe_available,true)
+assert.equal(JSON.stringify(result.body).includes('ACTIVE123'),false,'private bound invoice is not browser payload')
+result=await probe(f.admin,owner,{order_id:orderId},f.deps)
+assert.equal(result.body.observation,'invoice_complete_requires_order_review')
+assert.equal(result.body.financial_decision,'none')
+assert.equal(f.calls.provider,1)
+assert.equal(f.calls.writes,0)
+assert.equal(JSON.stringify(result.body).includes('ACTIVE123'),false)
+for(const malformed of [
+  {success:true,bound:true,order_id:'30000000-0000-4000-8000-000000000002',invoice_id:'ACTIVE123'},
+  {success:true,bound:true,order_id:orderId,invoice_id:'https://private.example/secret'},
+  {success:true,bound:'true',order_id:orderId,invoice_id:'ACTIVE123'},
+  {success:false,code:'BINDING_MISMATCH'}
+]){
+  const bad=fixture(giftJournal,giftOrder)
+  bad.admin.rpc=async()=>({data:malformed,error:null})
+  assert.equal((await probe(bad.admin,owner,{order_id:orderId},bad.deps)).status,503)
+  assert.equal(bad.calls.provider,0)
+}
+for(const cases of [
+  [{order_id:orderId,invoice_id:'ACTIVE123'},{order_id:orderId,invoice_id:'ACTIVE123'}],
+  [{order_id:'30000000-0000-4000-8000-000000000002',invoice_id:'ACTIVE123'}],
+  [{order_id:orderId,invoice_id:'https://private.example/secret'}]
+]){
+  const bad=fixture(giftJournal,giftOrder)
+  bad.admin.rpc=async()=>({data:{success:true,cases},error:null})
+  assert.equal((await list(bad.admin,owner,{})).status,503)
+  assert.equal(bad.calls.provider,0)
+}
+for(const mismatch of [{partner_id:'20000000-0000-4000-8000-000000000002'},
+  {status:'completed'},{amount_ngn:101},{fulfillment_source:'bitrefill',fulfillment_id:'OTHER_ID'}]){
+  const bad=fixture(giftJournal,{...giftOrder,...mismatch})
+  result=await probe(bad.admin,owner,{order_id:orderId},bad.deps)
+  assert.equal(result.body.observation,'provider_id_unavailable')
+  assert.equal(bad.calls.provider,0)
+  assert.equal(bad.calls.rpc.length,0,'conflicting order cannot invoke bound invoice fallback')
+}
+console.log('Owner reconciliation reads: authorization, redaction, bound and receiptless invoice probes, validation and no financial writes passed.')

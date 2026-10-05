@@ -20,6 +20,7 @@ async function financialSnapshot() {
       (SELECT count(*) FROM public.api_partner_obligations) AS obligations,
       (SELECT count(*) FROM private.api_partner_dispatch_receipts) AS receipts,
       (SELECT count(*) FROM private.api_partner_receipt_reconciliation_decisions) AS decisions,
+      (SELECT count(*) FROM private.api_partner_bitrefill_invoice_bindings) AS invoice_bindings,
       (SELECT md5(coalesce(string_agg(id::text||':'||balance_ngn::text,',' ORDER BY id),'')) FROM public.api_partners) AS partner_balances;
       COMMIT;`}),signal:AbortSignal.timeout(30000)})
   if(!response.ok)throw Error(`Snapshot HTTP ${response.status}`)
@@ -27,7 +28,7 @@ async function financialSnapshot() {
 }
 const deployed=(await metadata('/functions')).find(value=>value.slug==='partner-api')
 assert.equal(deployed?.status,'ACTIVE')
-assert.ok(deployed.version>=37,'Updated receipt recovery function required')
+assert.ok(deployed.version>=38,'Updated bound invoice function required')
 console.log(JSON.stringify({source:ref,function:deployed.slug,version:deployed.version,status:deployed.status}))
 const anon=(await metadata('/api-keys')).find(value=>value.name==='anon')?.api_key
 assert.ok(anon)
@@ -57,6 +58,13 @@ for(const [name,args] of [
     p_owner_user_id:'c1396bda-86e2-4dfc-94bb-0d95469d1d36',p_receipt_proof_hash:'a'.repeat(64)}],
   ['get_api_partner_dispatch_receipt_review',{p_owner_user_id:'c1396bda-86e2-4dfc-94bb-0d95469d1d36',
     p_order_ids:['30000000-0000-4000-8000-000000000001']}],
+  ['bind_api_partner_bitrefill_invoice',{p_order_id:'30000000-0000-4000-8000-000000000001',
+    p_partner_id:'20000000-0000-4000-8000-000000000001',p_invoice_id:'TEST-DENIED-ONLY',
+    p_invoice_status:'unpaid',p_item_id:'test-card',p_quantity:1,p_amount_ngn:100}],
+  ['get_api_partner_bitrefill_bound_invoice',{p_order_id:'30000000-0000-4000-8000-000000000001',
+    p_owner_user_id:'c1396bda-86e2-4dfc-94bb-0d95469d1d36'}],
+  ['get_api_partner_bitrefill_bound_invoices',{p_owner_user_id:'c1396bda-86e2-4dfc-94bb-0d95469d1d36',
+    p_order_ids:['30000000-0000-4000-8000-000000000001']}],
 ]) {
   const denied=await fetch(origin+'/rest/v1/rpc/'+name,{method:'POST',headers,
     body:JSON.stringify(args),signal:AbortSignal.timeout(30000)})
@@ -65,4 +73,4 @@ for(const [name,args] of [
   console.log(JSON.stringify({case:name,anonymousDenied:true,status:denied.status}))
 }
 assert.deepEqual(await financialSnapshot(),before,'Denied probes changed partner finance')
-console.log('Live anonymous denial checks passed; partner balances, orders, receipts, decisions, obligations and events unchanged. No authorized purchase or provider request was made.')
+console.log('Live anonymous denial checks passed; partner balances, orders, receipts, decisions, invoice bindings, obligations and events unchanged. No authorized purchase or provider request was made.')

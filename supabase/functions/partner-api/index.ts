@@ -348,11 +348,12 @@ function getBitrefillClient() {
   return {
     listProducts: (limit = 80, cursor?: string) => request(`/products?${new URLSearchParams({ limit: String(limit), ...(cursor ? { cursor } : {}) }).toString()}`),
     searchProducts: (query: string, limit = 80) => request(`/products/search?${new URLSearchParams({ q: query, limit: String(limit) }).toString()}`),
-    getProductDetails: (productId: string) => request(`/products/${encodeURIComponent(productId)}`),
-    getBalance: () => request('/accounts/balance'),
-    createInvoice: (params: Record<string, unknown>) => request('/invoices', { method: 'POST', body: JSON.stringify({ payment_method: 'balance', ...params }) }),
-    getInvoice: (invoiceId: string) => request(`/invoices/${encodeURIComponent(invoiceId)}`),
-    getOrder: (orderId: string) => request(`/orders/${encodeURIComponent(orderId)}`),
+    getProductDetails: async (productId: string) => { const result = await request(`/products/${encodeURIComponent(productId)}`); return result?.data ?? result },
+    getBalance: async () => { const result = await request('/accounts/balance'); return result?.data ?? result },
+    createInvoice: async (params: Record<string, unknown>) => { const result = await request('/invoices', { method: 'POST', body: JSON.stringify({ payment_method: 'balance', ...params }) }); return result?.data ?? result },
+    payInvoice: async (invoiceId: string) => { const result = await request(`/invoices/${encodeURIComponent(invoiceId)}/pay`, { method: 'POST', body: '{}' }); return result?.data ?? result },
+    getInvoice: async (invoiceId: string) => { const result = await request(`/invoices/${encodeURIComponent(invoiceId)}`); return result?.data ?? result },
+    getOrder: async (orderId: string) => { const result = await request(`/orders/${encodeURIComponent(orderId)}`); return result?.data ?? result },
   }
 }
 

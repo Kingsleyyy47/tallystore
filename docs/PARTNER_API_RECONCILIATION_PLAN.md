@@ -79,8 +79,32 @@ customer wallet. All decisions, including manual owner attestations, require
 an immutable audit record. If delivery remains uncertain, keep the hold; any
 goodwill credit should be a separately labeled compensation.
 
-Provider correlation remains a launch prerequisite. For Bitrefill, create an
-unpaid invoice, persist its ID, and only then pay the identified invoice.
+## Bitrefill invoice correlation
+
+Migration `20261005026000_partner_bitrefill_invoice_binding.sql` is applied and
+recorded on the source project. It binds one unpaid invoice to the already
+claimed gift-card order before the explicit payment call. The binding is private
+and immutable, and a replay never grants permission to pay again. Binding checks
+the original partner, key, request fingerprint, item, quantity, amount, funding,
+reserve event and current dispatch authorization. Both the durable receipt and
+financial acceptance must match that invoice and the normalized receipt.
+Historical accepted orders retain their status-only update path.
+
+The adapter uses `auto_pay: false`, persists the binding, then makes one payment
+request. A failed, replayed or uncertain binding prevents payment. A lost paid
+response leaves the original reservation held; the owner can read the saved
+invoice status without paying again. The bounded batch read makes these cases
+visible in the owner review list. Invoice completion alone remains insufficient
+proof of delivery for every purchased gift-card unit. This follows Bitrefill's
+[separate invoice and payment flow](https://docs.bitrefill.com/docs/integration-flow).
+
+Live rollback probes verified owner recovery compatibility, exact replay after
+a status update, browser denial, and unchanged financial rows. These synthetic
+records were rolled back; no provider payment was used for verification.
+The backend is deployed as `partner-api` version 38. External paid sections are
+still disabled pending complete independent-evidence settlement and recovery.
+
+Provider correlation remains a launch prerequisite for the remaining adapters.
 For Daisy and Social Boost, a lost response can lose the provider ID; obtain
 independent vendor evidence. SageCloud data currently lacks a deterministic
 reference, and iStar has no documented read by idempotency key in this adapter.

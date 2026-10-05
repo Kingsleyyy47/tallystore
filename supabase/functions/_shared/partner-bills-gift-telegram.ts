@@ -17,7 +17,7 @@ export type PartnerPurchasePlan = {
 }
 
 type Admin = any
-type Partner = { allowed_sections?: string[]; markup_percent?: number; [key: string]: unknown }
+type Partner = { id?: string; allowed_sections?: string[]; markup_percent?: number; [key: string]: unknown }
 type Body = Record<string, unknown>
 type Network = 'MTN' | 'GLO' | 'AIRTEL' | '9MOBILE'
 export type PartnerExternalDeps = {
@@ -33,6 +33,7 @@ export type PartnerExternalDeps = {
     getProductDetails: (id: string) => Promise<any>
     getBalance: () => Promise<any>
     createInvoice: (body: Record<string, unknown>) => Promise<any>
+    payInvoice?: (invoiceId: string) => Promise<any>
   }
   getBlockedBitrefillIds: (admin: Admin) => Promise<Set<string>>
   getBitrefillMarkupPct: (admin: Admin) => Promise<number>
@@ -232,15 +233,34 @@ export async function preparePartnerGiftcardPlan(admin: Admin, partner: Partner,
   const requestPayload = { product_id: productId, package_id: packageId || null, value: unitValue, quantity, provider_currency: currency, recipient_phone: recipientPhone || null, customer_email: recipientEmail || null }
   return {
     section: 'giftcards', itemId: productId, itemName: product.name, quantity, amountNgn: charge, requestPayload,
-    dispatch: oneDispatch(async () => {
+    dispatch: oneDispatch(async (orderId) => {
+      // The paid endpoint is unavailable until the caller wires the explicit
+      // two-step client. Creating an unpaid invoice alone cannot fulfill.
+      const payInvoice = client.payInvoice
+      if (typeof payInvoice !== 'function') return { kind: 'unknown' }
       const invoice = await onceWithDeadline(() => client.createInvoice({
         products: [{ product_id: productId, package_id: packageId || undefined, value: packageId ? undefined : unitValue, quantity, phone_number: recipientPhone }],
-        payment_method: 'balance', auto_pay: true, email: recipientEmail,
+        payment_method: 'balance', auto_pay: false, email: recipientEmail,
       }))
       const actualId = providerId(invoice?.id)
-      if (!actualId || !['pending', 'complete', 'payment_detected', 'payment_confirmed', 'unpaid'].includes(String(invoice?.status || '').toLowerCase())) return { kind: 'unknown' }
-      const orderId = providerId(invoice?.orders?.[0]?.id)
-      return { kind: 'accepted', source: 'bitrefill', id: actualId, status: 'processing', payload: { invoice_id: actualId, provider_order_id: orderId, provider_status: String(invoice.status).toLowerCase() } }
+      if (!actualId || String(invoice?.status || '').toLowerCase() !== 'unpaid') return { kind: 'unknown' }
+      const bound = await onceWithDeadline(() => admin.rpc('bind_api_partner_bitrefill_invoice', {
+        p_order_id: orderId, p_partner_id: partner.id, p_invoice_id: actualId,
+        p_invoice_status: 'unpaid', p_item_id: productId, p_quantity: quantity,
+        p_amount_ngn: charge,
+      }))
+      if (bound?.error || bound?.data?.success !== true || bound.data.pay_allowed !== true
+        || bound.data.idempotent_replay === true || bound.data.order_id !== orderId) return { kind: 'unknown' }
+      // This is the sole paid request. A lost response is unknown; the bound
+      // invoice ID supports owner-only read reconciliation without a resend.
+      const paid = await onceWithDeadline(() => payInvoice(actualId))
+      if (providerId(paid?.id) !== actualId
+        || !['pending', 'complete', 'payment_detected', 'payment_confirmed'].includes(String(paid?.status || '').toLowerCase())) return { kind: 'unknown' }
+      const providerOrderId = quantity === 1 ? providerId(paid?.orders?.[0]?.id) : null
+      return { kind: 'accepted', source: 'bitrefill', id: actualId, status: 'processing', payload: {
+        invoice_id: actualId, provider_order_id: providerOrderId,
+        provider_status: String(paid.status).toLowerCase(),
+      } }
     }),
   }
 }

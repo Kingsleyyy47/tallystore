@@ -9,13 +9,22 @@ const exports = {}
 vm.runInNewContext(code, { exports, setTimeout, clearTimeout })
 const { preparePartnerBillsPlan, preparePartnerGiftcardPlan, preparePartnerTelegramPlan } = exports
 const orderId = '10000000-0000-4000-8000-000000000001'
-const partner = { allowed_sections: ['bills_airtime', 'giftcards', 'telegram_stars'], markup_percent: 10 }
-const calls = { airtime: 0, data: 0, giftcard: 0, telegram: 0, recipient: 0 }
+const partner = { id: '30000000-0000-4000-8000-000000000001', allowed_sections: ['bills_airtime', 'giftcards', 'telegram_stars'], markup_percent: 10 }
+const calls = { airtime: 0, data: 0, giftcard: 0, giftcardBind: 0, giftcardPay: 0, telegram: 0, recipient: 0 }
 let billResponse = { success: true, status: 'success', reference: 'sage-123' }
-let invoiceResponse = { id: 'invoice-123', status: 'pending', orders: [{ id: 'gift-order-123' }] }
+let invoiceResponse = { id: 'invoice-123', status: 'unpaid', orders: [{ id: 'gift-order-123' }] }
+let paidResponse = { id: 'invoice-123', status: 'pending', orders: [{ id: 'gift-order-123' }] }
+let bindResponse = { success: true, idempotent_replay: false, pay_allowed: true, order_id: orderId }
 let telegramResponse = { order_id: 'telegram-order-123', status: 'pending' }
 let recipientResponse = { success: true, recipient: 'ABCDEF123456' }
 const admin = {
+  async rpc(name, args) {
+    assert.equal(name, 'bind_api_partner_bitrefill_invoice')
+    assert.equal(args.p_order_id, orderId)
+    assert.equal(args.p_partner_id, partner.id)
+    calls.giftcardBind++
+    return { data: bindResponse, error: null }
+  },
   from(table) {
     const query = {
       select() { return query }, eq() { return query },
@@ -40,7 +49,8 @@ const deps = {
     getProductDetails: async () => ({ product_id: 'amazon-us', name: 'Amazon', currency: 'USD', recipient_type: 'email',
       packages: [{ package_id: 'ten', value: 10 }], range: { min: 5, max: 50, step: 5 } }),
     getBalance: async () => ({ balance: 500, currency: 'USD' }),
-    createInvoice: async () => { calls.giftcard++; return invoiceResponse },
+    createInvoice: async input => { assert.equal(input.auto_pay, false); assert.equal(input.payment_method, 'balance'); calls.giftcard++; return invoiceResponse },
+    payInvoice: async id => { assert.equal(id, 'invoice-123'); calls.giftcardPay++; return paidResponse },
   }),
   getBlockedBitrefillIds: async () => new Set(),
   getBitrefillMarkupPct: async () => 5,
@@ -87,14 +97,50 @@ assert.equal(calls.giftcard, 0)
 const acceptedGiftcard = await giftcard.dispatch(orderId)
 assert.equal(acceptedGiftcard.id, 'invoice-123')
 assert.equal(acceptedGiftcard.status, 'processing')
-assert.equal(acceptedGiftcard.payload.provider_order_id, 'gift-order-123')
+assert.equal(acceptedGiftcard.payload.provider_order_id, null, 'two-card invoice must not imply one delivered order')
 assert.equal(calls.giftcard, 1)
+assert.equal(calls.giftcardBind, 1)
+assert.equal(calls.giftcardPay, 1)
 invoiceResponse = { status: 'pending', message: 'private token abcdef' }
 const uncertainGiftcard = await preparePartnerGiftcardPlan(admin, partner, {
   item_id: 'amazon-us', package_id: 'ten', customer_email: 'buyer@example.com',
 }, deps)
 assert.equal((await uncertainGiftcard.dispatch(orderId)).kind, 'unknown')
 assert.ok(!JSON.stringify(await uncertainGiftcard.dispatch(orderId)).includes('private token'))
+assert.equal(calls.giftcardPay, 1, 'missing unpaid invoice ID cannot pay')
+
+invoiceResponse = { id: 'invoice-123', status: 'unpaid' }
+bindResponse = { success: false, code: 'PRIVATE_DATABASE_ERROR' }
+const noBind = await preparePartnerGiftcardPlan(admin, partner, {
+  item_id: 'amazon-us', package_id: 'ten', customer_email: 'buyer@example.com',
+}, deps)
+assert.equal((await noBind.dispatch(orderId)).kind, 'unknown')
+assert.equal(calls.giftcardPay, 1, 'binding failure cannot pay')
+bindResponse = { success: true, idempotent_replay: true, pay_allowed: false, order_id: orderId }
+const replayBind = await preparePartnerGiftcardPlan(admin, partner, {
+  item_id: 'amazon-us', package_id: 'ten', customer_email: 'buyer@example.com',
+}, deps)
+assert.equal((await replayBind.dispatch(orderId)).kind, 'unknown')
+assert.equal(calls.giftcardPay, 1, 'binding replay cannot pay again')
+bindResponse = { success: true, idempotent_replay: false, pay_allowed: true, order_id: orderId }
+paidResponse = { id: 'foreign-invoice', status: 'complete', private_message: 'private token abcdef' }
+const wrongPaidInvoice = await preparePartnerGiftcardPlan(admin, partner, {
+  item_id: 'amazon-us', package_id: 'ten', customer_email: 'buyer@example.com',
+}, deps)
+assert.equal((await wrongPaidInvoice.dispatch(orderId)).kind, 'unknown')
+assert.equal(calls.giftcardPay, 2)
+assert.equal((await wrongPaidInvoice.dispatch(orderId)).kind, 'unknown')
+assert.equal(calls.giftcardPay, 2, 'lost/mismatched paid response never retries')
+const noPayClient = await preparePartnerGiftcardPlan(admin, partner, {
+  item_id: 'amazon-us', package_id: 'ten', customer_email: 'buyer@example.com',
+}, { ...deps, getBitrefillClient: () => {
+  const client = deps.getBitrefillClient()
+  delete client.payInvoice
+  return client
+} })
+const beforeUnwired = calls.giftcard
+assert.equal((await noPayClient.dispatch(orderId)).kind, 'unknown')
+assert.equal(calls.giftcard, beforeUnwired, 'unwired paid client cannot create an orphan invoice')
 
 recipientResponse = { success: true, recipient: 'DIFFERENT123' }
 await assert.rejects(preparePartnerTelegramPlan(admin, partner, {
@@ -118,4 +164,4 @@ const ambiguousTelegram = await preparePartnerTelegramPlan(admin, partner, {
 assert.equal((await ambiguousTelegram.dispatch(orderId)).kind, 'unknown')
 assert.ok(!JSON.stringify(await ambiguousTelegram.dispatch(orderId)).includes('api key secret'))
 
-console.log('Partner bills/gift/Telegram plans: server pricing, recipient validation, one paid send, accepted IDs, ambiguous outcomes and redaction passed.')
+console.log('Partner bills/gift/Telegram plans: server pricing, recipient validation, unpaid Bitrefill invoice bound before one paid send, ambiguous outcomes and redaction passed.')
