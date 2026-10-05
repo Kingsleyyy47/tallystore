@@ -29,6 +29,7 @@ import { getRevenueRequestContext, getRevenueVisitorId, trackRevenueEvent } from
 import { RecommendationStrip } from "@/components/RecommendationCard";
 import { useRecommendations } from "@/hooks/useRecommendations";
 import { useCurrency } from "@/contexts/CurrencyContext";
+import LegacyGiftCardHistory from "@/components/LegacyGiftCardHistory";
 
 interface BitrefillPackage {
   package_id: string;
@@ -96,6 +97,9 @@ function GiftCardsComingSoon() {
         <Button onClick={() => navigate('/dashboard')} className="rounded-xl px-8">
           Back to Dashboard
         </Button>
+      </div>
+      <div className="container mx-auto max-w-lg px-4 pb-24 sm:px-6">
+        <LegacyGiftCardHistory />
       </div>
     </div>
   );

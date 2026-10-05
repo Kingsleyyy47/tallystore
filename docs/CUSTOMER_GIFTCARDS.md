@@ -46,8 +46,8 @@ functions, mutate orders, or read the private dispatch table.
 
 The new shared provider client uses the fixed Bitrefill API origin, bounded
 requests and response reads, no redirects and no automatic POST retries. It
-creates an unpaid balance invoice, then exposes a separate explicit payment
-method that the future handler must fence with its database claim.
+creates an unpaid balance invoice. The authenticated handler fences invoice
+creation and payment with separate one-use database claims.
 The Personal API uses the fixed `https://api.bitrefill.com/v2` origin and a Bearer
 key stored only in Supabase, as documented in the
 [Bitrefill Personal API quickstart](https://docs.bitrefill.com/docs/quickstart-2).
@@ -73,9 +73,10 @@ reminder or supplier payment was created.
    currency, and price candidates must not be assumed to be satoshis or major units.
    Only then set the Supabase-only `BITREFILL_PRICE_UNIT` to `major` for USD/NGN or
    `satoshi` for BTC. An absent or mismatched setting cannot authorize a wallet hold.
-2. Implement and test the authenticated `customer-giftcards` handler with strict
-   field allowlists, stable retries, owner pricing from migration 290, and exact
-   invoice checks before its payment claim. Keep its purchase gate off during this.
+2. Keep the `CUSTOMER_GIFTCARDS_ENABLED` purchase gate off until the supplier
+   credentials and price units have been verified. The prepared authenticated
+   handler has strict field allowlists, stable retries, owner pricing from
+   migration 290, and exact invoice checks before its payment claim.
 3. Wire the customer page to server quotes and owned redemptions, preserving
    historical gift-card orders. Verify partial delivery and uncertain-payment UX.
 4. Add a separately reviewed customer API scope only after the engine is ready;
@@ -85,3 +86,38 @@ The focused wallet tests execute the actual reservation and settlement routines.
 The SOURCE migration runner proves the new access rules and rollback probe while
 hashing existing financial rows; it accepts only the SOURCE project reference and
 checks the exact migration/probe/runner hashes before applying.
+
+## Handler verification
+
+`scripts/customer-giftcards-engine-test.mjs` bundles and exercises the actual
+handler with synthetic Supabase and supplier adapters. It verifies customer JWT
+ownership, staff/admin exclusions, paused purchases, missing price units,
+insufficient trusted funds, canonical request replay, conflicting retries,
+unpaid invoice identity and value checks, one invoice creation and payment,
+uncertain or partial delivery retaining its hold, captured-only redemptions,
+owned read-only reconciliation, sanitized errors and bounded request bodies.
+No real supplier invoice or payment is created by these tests.
+
+The handler was deployed to SOURCE with purchases still gated off. The deployed
+smoke test verifies its bundle markers, eight service-only RPC grant boundaries,
+eight denied Data API reads and five denied handler requests. Gift-card order and
+dispatch counts remain unchanged. The live legacy history routine was also
+checked: it filters by `auth.uid()`, returns redemption details only for successful
+orders, and browser roles cannot read redemption columns directly.
+
+The normal customer Coming Soon page now includes the ten most recent stored
+legacy gift-card orders. Its browser fixture checks error/Retry, timeout, account
+switch and sign-out cleanup, exact clipboard/TXT values and HTTPS-only clickable
+links without embedded credentials. Older multi-unit records are identified as
+potentially incomplete rather than being presented as complete delivery evidence.
+
+Lost settlement replies are reconciled against the owned database outcome:
+captured completion with all validated codes remains complete, and a committed
+unpaid rejection remains rejected. Confirmed supplier balance warnings are
+attempted before rejection; warning failure cannot prevent releasing unpaid funds.
+
+Pricing uses exact decimal arithmetic before rounding each unit up to the next
+NGN 10 and multiplying by quantity. Tests cover USD and NGN major units and
+explicit BTC satoshis, including an exact decimal rounding boundary. This does
+not establish the units used by the current merchant account; that read-only
+provider verification remains required before launch.

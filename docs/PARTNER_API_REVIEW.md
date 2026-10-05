@@ -84,3 +84,19 @@ boundary and uncertain-delivery behavior. Other service recovery and activation
 requirements above remain open.
 
 Deployment order was `20261005011000_partner_credit_review_gates.sql`, `20261005012000_partner_local_product_purchase.sql`, `20261005015000_partner_owner_admin_actions.sql`, then `20261005016000_partner_table_lockdown.sql`, followed by the function. Both read/local flags are enabled under the owner's existing deployment authorization; existing inactive partner accounts remain inactive. External paid routes remain blocked until their transaction and provider recovery paths are implemented and verified.
+
+## Current secret comparison
+
+On 5 October 2026, a read-only audit compared the five non-placeholder keys in
+the reachable historical Git `.env` blob against all 40 current SOURCE Supabase
+Edge secrets. It covered Git refs under `--all`, including deletion history, and
+compared both raw values and values normalized for outer whitespace and wrapping
+quotes. No exact matches were found. Credentials were compared in memory and
+were not printed, saved or changed.
+
+The checked historical names were `MUABANVIA_API_KEY`, `POCKETFI_SECRET_KEY`,
+`VITE_ERCASPAY_API_KEY`, `VITE_ERCASPAY_SECRET_KEY` and `VITE_POCKETFI_API_TOKEN`.
+The current browser-source and build leak scan also passed. This establishes
+these inspected values are absent from the current SOURCE secret set; it does
+not prove that previously exposed keys were revoked at every provider or that
+the whole application security review is complete.

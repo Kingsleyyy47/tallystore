@@ -507,6 +507,20 @@ serve(async (req) => {
     // Parse request body
     const { amount, bank_code, bank_name, account_number, account_name, narration, source } = await req.json();
 
+    // The historical referral balance is retained, but a general crypto-withdrawal
+    // rollout must never reactivate referral cash-outs. Review and enable that
+    // legacy path explicitly, independently of WITHDRAWALS_ENABLED.
+    if (source === 'referral' && String(Deno.env.get('LEGACY_REFERRAL_WITHDRAWALS_ENABLED') || '').trim().toLowerCase() !== 'true') {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          code: 'LEGACY_REFERRAL_WITHDRAWALS_DISABLED',
+          error: 'Historical referral withdrawals require review before they can be requested.',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 },
+      );
+    }
+
     // Validate required fields
     if (!amount || !bank_code || !bank_name || !account_number || !account_name) {
       throw new Error('Missing required fields: amount, bank_code, bank_name, account_number, account_name');
@@ -518,9 +532,8 @@ serve(async (req) => {
       throw new Error('Invalid amount');
     }
 
-    // `source` selects which balance this withdrawal draws from. Defaults to 'crypto' to
-    // preserve existing behavior exactly. 'referral' lets users cash out referral_balance
-    // straight to their bank via the same SageCloud transfer flow below.
+    // Keep crypto as the default. Referral is available only behind the separate
+    // historical-withdrawal flag checked above.
     const balanceSource: 'crypto' | 'referral' = source === 'referral' ? 'referral' : 'crypto';
 
     // Check user's balance

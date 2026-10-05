@@ -7795,6 +7795,14 @@ export default function AdminPage() {
             {/* SMS Product Curation */}
             <TabsContent value="sms-products" className="space-y-6">
               <BitrefillPricingAdmin kind="sms" active={adminTab === 'sms-products'} />
+              <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 text-sm">
+                <p className="font-semibold">Which SMS price applies?</p>
+                <p className="mt-1 text-muted-foreground">
+                  Saved markup rules above take priority and always round each number up to the next ₦10.
+                  The legacy controls below apply only to services without an active markup rule.
+                  Changing a legacy price does not replace a saved markup rule.
+                </p>
+              </div>
               <Card>
                 <CardHeader>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -7804,7 +7812,7 @@ export default function AdminPage() {
                         SMS Products
                       </CardTitle>
                       <p className="text-muted-foreground">
-                        Enable what customers can buy, set favorites, and override naira pricing per product.
+                        Enable what customers can buy, set favorites, and manage legacy prices for services without a saved markup rule.
                       </p>
                     </div>
                     <Button type="button" variant="outline" onClick={loadSmsProducts} disabled={smsProductsLoading}>
@@ -7844,17 +7852,17 @@ export default function AdminPage() {
                     </label>
                     <Button type="button" variant="outline" disabled={smsSavingKey === 'global-markup'} onClick={applySmsGlobalMarkup}>
                       {smsSavingKey === 'global-markup' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      Markup
+                      Apply legacy markup
                     </Button>
                     <Button
                       type="button"
                       variant={smsRoundToNearestTen ? 'default' : 'outline'}
                       disabled={smsSavingKey === 'round-to-10'}
                       onClick={toggleSmsRounding}
-                      title="Round auto-markup prices up to the next 10, for example 982 becomes 990"
+                      title="Round legacy auto-markup prices up to the next ₦10. Saved markup rules above already include this rounding."
                     >
                       {smsSavingKey === 'round-to-10' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      Round up to 10
+                      Legacy rounding
                     </Button>
                     <Button type="button" variant="outline" disabled={smsSavingKey === 'enable-all'} onClick={() => bulkToggleSmsProducts(true)}>
                       Enable all ({smsProducts.length})
@@ -7869,7 +7877,7 @@ export default function AdminPage() {
                       <p className="font-semibold">{smsCatalogNotice || 'SMS sync diagnostics'}</p>
                       {smsDiagnostics && (
                         <p className="mt-1 text-xs opacity-90">
-                          Host: {smsDiagnostics.provider_host || 'unknown'} · Rate source: {smsExchangeRateSource} · Rounding: {smsRoundToNearestTen ? 'up to 10' : 'off'} · Country: {smsDiagnostics.country_id || 'unknown'} · getPricesVerification: {smsDiagnostics.verification_services ?? 0} · getPrices: {smsDiagnostics.prices_services ?? 0}
+                          Host: {smsDiagnostics.provider_host || 'unknown'} · Rate source: {smsExchangeRateSource} · Legacy rounding: {smsRoundToNearestTen ? 'up to 10' : 'off'} · Country: {smsDiagnostics.country_id || 'unknown'} · getPricesVerification: {smsDiagnostics.verification_services ?? 0} · getPrices: {smsDiagnostics.prices_services ?? 0}
                         </p>
                       )}
                     </div>
@@ -7900,7 +7908,7 @@ export default function AdminPage() {
                     <div className="grid gap-4 border-b bg-muted/40 px-4 py-3 text-xs font-semibold uppercase text-muted-foreground lg:grid-cols-[minmax(180px,1.3fr)_220px_minmax(240px,1fr)_90px]">
                       <span>Product</span>
                       <span>Cost</span>
-                      <span>Customer price override</span>
+                      <span>Legacy price override</span>
                       <span className="lg:text-right">Enabled</span>
                     </div>
                     <div className="px-4">
