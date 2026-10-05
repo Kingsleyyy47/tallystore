@@ -5,6 +5,7 @@ import { executePartnerExternalPurchase } from '../_shared/partner-external-runn
 import { preparePartnerSmsPlan, preparePartnerSocialPlan } from '../_shared/partner-sms-social.ts'
 import { preparePartnerBillsPlan, preparePartnerGiftcardPlan, preparePartnerTelegramPlan } from '../_shared/partner-bills-gift-telegram.ts'
 import { handlePartnerExternalOrderStatus } from '../_shared/partner-external-status.ts'
+import { reviewPartnerBitrefillDelivery, confirmPartnerBitrefillDelivery } from '../_shared/partner-bitrefill-recovery.ts'
 import { deliverPartnerWebhookSafely, validatePartnerWebhookUrl } from '../_shared/partner-webhook-delivery.ts'
 import { createRuntimePinnedWebhookTransport } from '../_shared/partner-webhook-transport.ts'
 import { listPartnerExternalReconciliationCases, probePartnerExternalReconciliationCase } from '../_shared/partner-external-reconciliation.ts'
@@ -2441,6 +2442,14 @@ serve(async (req) => {
       if (action === 'admin_list_partners') return json(await handleAdminList(admin))
       if (action === 'admin_reconcile_dispatch_receipt') {
         const result = await reconcilePartnerDispatchReceipt(admin, adminUser.id, body)
+        return json(result.body, result.status)
+      }
+      if (action === 'admin_review_bitrefill_delivery') {
+        const result = await reviewPartnerBitrefillDelivery(admin, adminUser.id, body, getBitrefillClient())
+        return json(result.body, result.status)
+      }
+      if (action === 'admin_confirm_bitrefill_delivery') {
+        const result = await confirmPartnerBitrefillDelivery(admin, adminUser.id, body)
         return json(result.body, result.status)
       }
       if (action === 'admin_reconciliation_cases' || action === 'admin_reconciliation_probe') {

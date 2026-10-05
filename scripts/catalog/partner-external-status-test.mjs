@@ -4,20 +4,29 @@ import vm from 'node:vm'
 import ts from 'typescript'
 
 const source = readFileSync(new URL('../../supabase/functions/_shared/partner-external-status.ts', import.meta.url), 'utf8')
+const deliverySource = readFileSync(new URL('../../supabase/functions/_shared/partner-bitrefill-delivery.ts', import.meta.url), 'utf8')
 const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
+const deliveryCode = ts.transpileModule(deliverySource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
+const deliveryExports = {}
+vm.runInNewContext(deliveryCode, { exports: deliveryExports, setTimeout, clearTimeout, URL })
 const exports = {}
-vm.runInNewContext(code, { exports, setTimeout, clearTimeout, URL, encodeURIComponent, Deno: { env: { get: () => 'server-secret' } } })
+vm.runInNewContext(code, { exports, setTimeout, clearTimeout, URL, encodeURIComponent,
+  require: specifier => {
+    assert.equal(specifier, './partner-bitrefill-delivery.ts')
+    return deliveryExports
+  }, Deno: { env: { get: () => 'server-secret' } } })
 const { handlePartnerExternalOrderStatus } = exports
 const orderId = '10000000-0000-4000-8000-000000000001'
 const partnerId = '20000000-0000-4000-8000-000000000001'
 const keyId = '30000000-0000-4000-8000-000000000001'
 const auth = { partner: { id: partnerId }, key: { id: keyId, scopes: ['orders:read'] } }
 
-function fixture({ source = 'daisy', section = 'sms', itemType = 'sms', fulfillmentId = 'provider-123', journalState = 'accepted', response = 'STATUS_OK:123456', status = 'processing', quantity = 1, responsePayload = { api_key: 'private-secret', provider_status: 'pending' } } = {}) {
+function fixture({ source = 'daisy', section = 'sms', itemType = 'sms', fulfillmentId = 'provider-123', journalState = 'accepted', response = 'STATUS_OK:123456', status = 'processing', quantity = 1, requestPayload = { value: 50, provider_currency: 'USD', package_id: null }, responsePayload = { api_key: 'private-secret', provider_status: 'pending' } } = {}) {
   let reads = 0
   let writes = 0
   let order = { id: orderId, partner_id: partnerId, partner_reference: 'reference-123', status,
     item_type: itemType, item_id: 'amazon-us', quantity, fulfillment_source: source, fulfillment_id: fulfillmentId,
+    request_payload: requestPayload,
     response_payload: responsePayload, error_message: null }
   const journal = journalState ? { order_id: orderId, partner_id: partnerId, key_id: keyId, section,
     state: journalState, fulfillment_source: source, fulfillment_id: fulfillmentId } : null
@@ -73,8 +82,8 @@ assert.ok(!JSON.stringify(result).includes('private-secret'))
 
 f = fixture({ itemType: 'product', status: 'completed', journalState: null, responsePayload: {
   product_name: 'Discord account', partner_balance_after: 420,
-  accounts: [{ username: 'discord-user', password: 'discord-pass', email: 'mail@example.test',
-    email_password: 'mail-pass', two_fa_code: '2fa-key', recovery_email: 'recovery@example.test',
+  accounts: [{ username: 'discord-user', password: 'discord-pass', email: 'synthetic-mail',
+    email_password: 'mail-pass', two_fa_code: '2fa-key', recovery_email: 'synthetic-recovery',
     recovery_email_password: 'recovery-pass', additional_info: { note: 'backup codes', api_key: 'private-secret' },
     provider_token: 'private-secret' }], api_key: 'private-secret',
 } })
@@ -126,7 +135,7 @@ assert.ok(!JSON.stringify(result).includes('private-secret'))
 
 f = fixture({ source: 'bitrefill', section: 'giftcards', itemType: 'giftcards', fulfillmentId: 'invoice-123', response: {
   invoice: { id: 'invoice-123', status: 'complete', orders: [{ id: 'gift-order-123', product_id: 'amazon-us' }] },
-  detail: { id: 'gift-order-123', redemption_info: { code: 'GIFT-123', link: 'https://redeem.example/card', api_key: 'private-secret' } },
+  detail: { id: 'gift-order-123', status: 'delivered', product: { id: 'amazon-us', value: 50 }, redemption_info: { code: 'GIFT-123', link: 'https://redeem.example/card', api_key: 'private-secret' } },
 } })
 result = await handlePartnerExternalOrderStatus(f.admin, auth, { order_id: orderId }, f.deps)
 assert.equal(result.body.data.status, 'completed')
@@ -144,8 +153,8 @@ f = fixture({ source: 'bitrefill', section: 'giftcards', itemType: 'giftcards',
   fulfillmentId: 'invoice-123', quantity: 2, response: {
     invoice: twoCardInvoice,
     details: {
-      'gift-order-123': { id: 'gift-order-123', product_id: 'amazon-us', redemption_info: { code: 'CARD-ONE', api_key: 'private-secret' } },
-      'gift-order-456': { id: 'gift-order-456', product_id: 'amazon-us', redemption_info: { code: 'CARD-TWO', pin: '2468' } },
+      'gift-order-123': { id: 'gift-order-123', status: 'delivered', product: { id: 'amazon-us', value: 50 }, redemption_info: { code: 'CARD-ONE', api_key: 'private-secret' } },
+      'gift-order-456': { id: 'gift-order-456', status: 'delivered', product_id: 'amazon-us', value: 50, redemption_info: { code: 'CARD-TWO', pin: '2468' } },
     },
   } })
 result = await handlePartnerExternalOrderStatus(f.admin, auth, { order_id: orderId }, f.deps)
@@ -188,6 +197,36 @@ for (const badResponse of [
   assert.equal(result.body.code, 'RECONCILIATION_REQUIRED')
   assert.equal(result.body.data.status, 'processing')
   assert.equal(f.writes(), 0, 'missing or ambiguous per-unit redemption must not complete whole purchase')
+}
+
+const verifiedTwoDetails = {
+  'gift-order-123': { id: 'gift-order-123', status: 'delivered', product: { id: 'amazon-us', value: 50 }, redemption_info: { code: 'CARD-ONE' } },
+  'gift-order-456': { id: 'gift-order-456', status: 'delivered', product: { id: 'amazon-us', value: 50 }, redemption_info: { code: 'CARD-TWO' } },
+}
+for (const [name, badDetails] of [
+  ['wrong denomination', { ...verifiedTwoDetails, 'gift-order-456': { ...verifiedTwoDetails['gift-order-456'], product: { id: 'amazon-us', value: 100 } } }],
+  ['failed unit', { ...verifiedTwoDetails, 'gift-order-456': { ...verifiedTwoDetails['gift-order-456'], status: 'failed' } }],
+  ['PIN only', { ...verifiedTwoDetails, 'gift-order-456': { ...verifiedTwoDetails['gift-order-456'], redemption_info: { pin: '2468' } } }],
+  ['credentialed link', { ...verifiedTwoDetails, 'gift-order-456': { ...verifiedTwoDetails['gift-order-456'], redemption_info: { link: 'https://user:pass@example.invalid/card' } } }],
+  ['conflicting flat product', { ...verifiedTwoDetails, 'gift-order-456': { ...verifiedTwoDetails['gift-order-456'], product_id: 'other-product' } }],
+]) {
+  f = fixture({ source: 'bitrefill', section: 'giftcards', itemType: 'giftcards', fulfillmentId: 'invoice-123', quantity: 2,
+    response: { invoice: { ...twoCardInvoice, orders: [{ id: 'gift-order-123' }, { id: 'gift-order-456' }] }, details: badDetails } })
+  result = await handlePartnerExternalOrderStatus(f.admin, auth, { order_id: orderId }, f.deps)
+  assert.equal(result.body.code, 'RECONCILIATION_REQUIRED', `${name} was accepted`)
+  assert.equal(f.writes(), 0, `${name} changed financial state`)
+}
+
+for (const missingQuote of [
+  { provider_currency: 'USD' },
+  { value: 50 },
+]) {
+  f = fixture({ source: 'bitrefill', section: 'giftcards', itemType: 'giftcards', fulfillmentId: 'invoice-123', quantity: 2,
+    requestPayload: missingQuote,
+    response: { invoice: { ...twoCardInvoice, orders: [{ id: 'gift-order-123' }, { id: 'gift-order-456' }] }, details: verifiedTwoDetails } })
+  result = await handlePartnerExternalOrderStatus(f.admin, auth, { order_id: orderId }, f.deps)
+  assert.equal(result.body.code, 'RECONCILIATION_REQUIRED', 'Missing original quote completed an order')
+  assert.equal(f.writes(), 0)
 }
 
 f = fixture({ source: 'bitrefill', section: 'giftcards', itemType: 'giftcards', fulfillmentId: 'invoice-123', response: {

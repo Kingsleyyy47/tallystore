@@ -21,6 +21,8 @@ async function financialSnapshot() {
       (SELECT count(*) FROM private.api_partner_dispatch_receipts) AS receipts,
       (SELECT count(*) FROM private.api_partner_receipt_reconciliation_decisions) AS decisions,
       (SELECT count(*) FROM private.api_partner_bitrefill_invoice_bindings) AS invoice_bindings,
+      (SELECT count(*) FROM private.api_partner_bitrefill_delivery_evidence) AS delivery_evidence,
+      (SELECT count(*) FROM private.api_partner_bitrefill_delivery_decisions) AS delivery_decisions,
       (SELECT md5(coalesce(string_agg(id::text||':'||balance_ngn::text,',' ORDER BY id),'')) FROM public.api_partners) AS partner_balances;
       COMMIT;`}),signal:AbortSignal.timeout(30000)})
   if(!response.ok)throw Error(`Snapshot HTTP ${response.status}`)
@@ -28,14 +30,15 @@ async function financialSnapshot() {
 }
 const deployed=(await metadata('/functions')).find(value=>value.slug==='partner-api')
 assert.equal(deployed?.status,'ACTIVE')
-assert.ok(deployed.version>=38,'Updated bound invoice function required')
+assert.ok(deployed.version>=39,'Updated verified delivery function required')
 console.log(JSON.stringify({source:ref,function:deployed.slug,version:deployed.version,status:deployed.status}))
 const anon=(await metadata('/api-keys')).find(value=>value.name==='anon')?.api_key
 assert.ok(anon)
 const origin=`https://${ref}.supabase.co`
 const headers={apikey:anon,Authorization:`Bearer ${anon}`,'Content-Type':'application/json'}
 const before=await financialSnapshot()
-for(const action of ['admin_reconciliation_cases','admin_reconciliation_probe','admin_reconcile_dispatch_receipt']) {
+for(const action of ['admin_reconciliation_cases','admin_reconciliation_probe','admin_reconcile_dispatch_receipt',
+  'admin_review_bitrefill_delivery','admin_confirm_bitrefill_delivery']) {
   const response=await fetch(origin+'/functions/v1/partner-api',{method:'POST',headers,
     body:JSON.stringify({action,order_id:'30000000-0000-4000-8000-000000000001',receipt_proof_hash:'a'.repeat(64)}),signal:AbortSignal.timeout(30000)})
   assert.equal(response.status,401,`${action} anonymous access`)
@@ -65,6 +68,10 @@ for(const [name,args] of [
     p_owner_user_id:'c1396bda-86e2-4dfc-94bb-0d95469d1d36'}],
   ['get_api_partner_bitrefill_bound_invoices',{p_owner_user_id:'c1396bda-86e2-4dfc-94bb-0d95469d1d36',
     p_order_ids:['30000000-0000-4000-8000-000000000001']}],
+  ['record_api_partner_bitrefill_delivery_evidence',{p_order_id:'30000000-0000-4000-8000-000000000001',
+    p_owner_user_id:'c1396bda-86e2-4dfc-94bb-0d95469d1d36',p_invoice_id:'TEST-DENIED-ONLY',p_delivery:{}}],
+  ['reconcile_api_partner_bitrefill_delivery',{p_order_id:'30000000-0000-4000-8000-000000000001',
+    p_owner_user_id:'c1396bda-86e2-4dfc-94bb-0d95469d1d36',p_evidence_proof_hash:'a'.repeat(64)}],
 ]) {
   const denied=await fetch(origin+'/rest/v1/rpc/'+name,{method:'POST',headers,
     body:JSON.stringify(args),signal:AbortSignal.timeout(30000)})

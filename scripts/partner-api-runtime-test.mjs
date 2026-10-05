@@ -16,6 +16,14 @@ vm.runInNewContext(compile(readFileSync('supabase/functions/_shared/partner-pric
 const recoveryExports = {}
 vm.runInNewContext(compile(readFileSync('supabase/functions/_shared/partner-receipt-recovery.ts','utf8')),
   { exports: recoveryExports, setTimeout, clearTimeout })
+const deliveryExports = {}
+vm.runInNewContext(compile(readFileSync('supabase/functions/_shared/partner-bitrefill-delivery.ts','utf8')),
+  {exports:deliveryExports,setTimeout,clearTimeout,URL})
+const bitrefillRecoveryExports = {}
+vm.runInNewContext(compile(readFileSync('supabase/functions/_shared/partner-bitrefill-recovery.ts','utf8')),
+  {exports:bitrefillRecoveryExports,setTimeout,clearTimeout,require:name=>{
+    assert.equal(name,'./partner-bitrefill-delivery.ts');return deliveryExports
+  }})
 const source = readFileSync('supabase/functions/partner-api/index.ts', 'utf8').replace(/^import .*$/gm, '')
 const keyId = '10000000-0000-4000-8000-000000000001'
 const partnerId = '20000000-0000-4000-8000-000000000001'
@@ -67,6 +75,9 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
       if (name === 'reconcile_api_partner_dispatch_receipt') return { data: {
         success:true,order_id:args.p_order_id,decision:'accepted',idempotent_replay:false,
       },error:null }
+      if(name==='reconcile_api_partner_bitrefill_delivery')return{data:{
+        success:true,order_id:args.p_order_id,decision:'accepted',idempotent_replay:false,
+      },error:null}
       throw new Error('Unexpected privileged RPC')
     },
   }
@@ -76,6 +87,8 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
       SUPABASE_SERVICE_ROLE_KEY: 'PRIVATE_SERVICE_CREDENTIAL', ...env })[name] } },
     executePartnerExternalPurchase: runnerExports.executePartnerExternalPurchase,
     reconcilePartnerDispatchReceipt: recoveryExports.reconcilePartnerDispatchReceipt,
+    reviewPartnerBitrefillDelivery: bitrefillRecoveryExports.reviewPartnerBitrefillDelivery,
+    confirmPartnerBitrefillDelivery: bitrefillRecoveryExports.confirmPartnerBitrefillDelivery,
     listPartnerExternalReconciliationCases: async (_admin, actorId) => {
       calls.reconciliation.push(['list', actorId]); return { body: { success: true, cases: [] }, status: 200 }
     },
@@ -171,6 +184,24 @@ assert.equal(result.calls.rpc[0].args.p_owner_user_id,owner)
 assert.equal(result.calls.dispatch,0)
 result=await run({env:enabled,adminAccount:true,body:{...recoveryBody,amount_ngn:100000}})
 assert.equal(result.status,400);assert.equal(result.calls.rpc.length,0)
+const deliveryConfirmation={action:'admin_confirm_bitrefill_delivery',order_id:orderId,evidence_proof_hash:'a'.repeat(64)}
+for(const action of ['admin_review_bitrefill_delivery','admin_confirm_bitrefill_delivery']){
+  for(const account of [{signedIn:true},{signedIn:true,staffAccount:true},
+    {adminAccount:true,actor:'40000000-0000-4000-8000-000000000001'},{adminAccount:true,suspended:true}]){
+    result=await run({env:enabled,...account,body:{...deliveryConfirmation,action}})
+    assert.equal(result.status,403);assert.equal(result.calls.rpc.length,0);assert.equal(result.calls.dispatch,0)
+  }
+}
+result=await run({env:enabled,adminAccount:true,body:deliveryConfirmation})
+assert.equal(result.status,200)
+assert.equal(result.calls.rpc.length,1)
+assert.equal(result.calls.rpc[0].name,'reconcile_api_partner_bitrefill_delivery')
+assert.equal(result.calls.dispatch,0)
+for(const body of [{...deliveryConfirmation,force:true},
+  {action:'admin_review_bitrefill_delivery',order_id:orderId,amount_ngn:1}]){
+  result=await run({env:{...enabled,BITREFILL_API_KEY:'SYNTHETIC_ONLY'},adminAccount:true,body})
+  assert.equal(result.status,400);assert.equal(result.calls.rpc.length,0);assert.equal(result.calls.dispatch,0)
+}
 result = await run({ env: enabled, adminAccount: true, body: { action: 'admin_create_partner',
   name: 'Fixture', allowed_sections: ['invalid-section'] } })
 assert.equal(result.status, 400)

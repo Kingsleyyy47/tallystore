@@ -1,5 +1,6 @@
 // Status polling for accepted, journaled partner external purchases only.
 // This module never makes a purchase, changes a balance, or issues a refund.
+import { readBoundBitrefillDelivery } from './partner-bitrefill-delivery.ts'
 declare const Deno: { env: { get: (key: string) => string | undefined } }
 type Admin = any
 type Auth = { partner: { id: string }; key: { id: string; scopes?: string[] } }
@@ -195,36 +196,14 @@ async function pollVendor(order: any, journal: any, deps: PartnerExternalStatusD
   }
   if (source === 'bitrefill' && order.item_type === 'giftcards' && journal.section === 'giftcards') {
     const client = deps.getBitrefillClient()
-    const invoice = await client.getInvoice(id)
-    if (!invoice || invoice.id !== id) return { completed: false, review: true }
-    const status = String(invoice.status || '').toLowerCase()
-    if (status !== 'complete') return { completed: false, review: !['unpaid', 'pending', 'payment_detected', 'payment_confirmed'].includes(status) }
-    const quantity = Number(order.quantity)
-    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 20
-      || !Array.isArray(invoice.orders) || invoice.orders.length !== quantity) {
-      return { completed: false, review: true }
-    }
-    const ids = new Set<string>()
-    const redemptions: Record<string, string>[] = []
-    for (const item of invoice.orders) {
-      const providerOrderId = validId(item?.id)
-      if (!providerOrderId || ids.has(providerOrderId) || item?.product_id !== order.item_id
-        || (item.quantity !== undefined && item.quantity !== 1)) {
-        return { completed: false, review: true }
-      }
-      ids.add(providerOrderId)
-      const detail = await client.getOrder(providerOrderId)
-      if (!detail || detail.id !== providerOrderId
-        || (detail.product_id !== undefined && detail.product_id !== order.item_id)
-        || (detail.quantity !== undefined && detail.quantity !== 1)) {
-        return { completed: false, review: true }
-      }
-      const redemption = safeRedemption(detail.redemption_info)
-      if (!redemption) return { completed: false, review: true }
-      redemptions.push({ order_id: providerOrderId, ...redemption })
-    }
-    return { completed: true, delta: { provider_status: 'complete', redemptions,
-      ...(quantity === 1 ? { redemption: redemptions[0] } : {}) } }
+    const result = await readBoundBitrefillDelivery(client, id, {
+      itemId: order.item_id, quantity: order.quantity, unitValue: order.request_payload?.value,
+      currency: order.request_payload?.provider_currency, packageId: order.request_payload?.package_id,
+    })
+    if (result.completed === false) return { completed: false, review: result.review }
+    const redemptions = result.delivery.redemptions
+    return { completed: true, delta: { provider_status: result.delivery.provider_status, redemptions,
+      ...(result.delivery.quantity === 1 ? { redemption: redemptions[0] } : {}) } }
   }
   if (source === 'istar' && order.item_type === 'telegram_stars' && journal.section === 'telegram_stars') {
     const providerOrder = await deps.istarGet(`/orders/${encodeURIComponent(id)}`)

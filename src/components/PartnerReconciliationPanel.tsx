@@ -8,6 +8,7 @@ const OWNER_USER_ID = 'c1396bda-86e2-4dfc-94bb-0d95469d1d36'
 const REQUEST_DEADLINE_MS = 30_000
 const ORDER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PROOF_HASH = /^[0-9a-f]{64}$/i
+const DELIVERY_PROOF_HASH = /^[0-9a-f]{64}$/
 
 type Recovery = { outcome: 'accepted' | 'rejected'; proof_hash: string }
 
@@ -37,6 +38,22 @@ type RecoveryResponse = {
   decision: 'accepted' | 'rejected'
   idempotent_replay: boolean
 }
+type DeliveryReviewResponse = {
+  success: true
+  order_id: string
+  evidence_proof_hash: string
+  quantity: number
+  amount_ngn: number
+  funding_type: 'prepaid' | 'unlimited_credit'
+  idempotent_replay: boolean
+}
+type DeliveryConfirmResponse = {
+  success: true
+  order_id: string
+  decision: 'accepted'
+  idempotent_replay: boolean
+}
+type DeliveryEvidence = Pick<DeliveryReviewResponse, 'order_id' | 'evidence_proof_hash' | 'quantity' | 'amount_ngn' | 'funding_type'>
 
 type Props = {
   ownerId: string
@@ -100,6 +117,21 @@ function validRecovery(entry: ReconciliationCase): entry is ReconciliationCase &
     && typeof recovery.proof_hash === 'string' && PROOF_HASH.test(recovery.proof_hash)
 }
 
+function reviewableGiftcard(entry: ReconciliationCase): entry is ReconciliationCase & { funding_type: 'prepaid' | 'unlimited_credit' } {
+  return entry.section === 'giftcards' && (entry.state === 'sending' || entry.state === 'unknown')
+    && entry.order_status === 'processing' && entry.probe_available === true
+    && (entry.funding_type === 'prepaid' || entry.funding_type === 'unlimited_credit')
+    && Number.isFinite(entry.amount_ngn) && entry.amount_ngn > 0
+}
+
+function validDeliveryEvidence(result: DeliveryReviewResponse, entry: ReconciliationCase): boolean {
+  return result?.success === true && result.order_id === entry.order_id
+    && typeof result.evidence_proof_hash === 'string' && DELIVERY_PROOF_HASH.test(result.evidence_proof_hash)
+    && Number.isSafeInteger(result.quantity) && result.quantity >= 1 && result.quantity <= 20
+    && result.amount_ngn === entry.amount_ngn && result.funding_type === entry.funding_type
+    && typeof result.idempotent_replay === 'boolean'
+}
+
 function recoveryEffect(entry: ReconciliationCase & { recovery: Recovery; funding_type: 'prepaid' | 'unlimited_credit' }): string {
   if (entry.recovery.outcome === 'accepted') {
     return 'This completes the recorded partner order using its existing reservation. It does not make another provider purchase or charge again.'
@@ -122,10 +154,14 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
   const [recoveryBusy, setRecoveryBusy] = useState(false)
   const [recoveryNeedsRefresh, setRecoveryNeedsRefresh] = useState(false)
   const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null)
+  const [deliveryReviewBusy, setDeliveryReviewBusy] = useState(false)
+  const [deliveryEvidence, setDeliveryEvidence] = useState<DeliveryEvidence | null>(null)
+  const [deliveryReviewError, setDeliveryReviewError] = useState<string | null>(null)
   const [observations, setObservations] = useState<Record<string, string>>({})
   const [probeErrors, setProbeErrors] = useState<Record<string, boolean>>({})
   const generation = useRef(0)
   const checkingRef = useRef(false)
+  const deliveryReviewRef = useRef(false)
   const recoveringRef = useRef(false)
   const ownerRef = useRef(ownerId)
   const activeRef = useRef(active)
@@ -137,7 +173,11 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
     // A response from the previous account must never update a later session.
     recoveringRef.current = false
     checkingRef.current = false
+    deliveryReviewRef.current = false
     setRecoveryBusy(false)
+    setDeliveryReviewBusy(false)
+    setDeliveryEvidence(null)
+    setDeliveryReviewError(null)
     setConfirmOrderId(null)
     setRecoveryNeedsRefresh(true)
     setRecoveryNotice(null)
@@ -150,6 +190,10 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
     setReadError(false)
     setCheckingId(null)
     checkingRef.current = false
+    deliveryReviewRef.current = false
+    setDeliveryReviewBusy(false)
+    setDeliveryEvidence(null)
+    setDeliveryReviewError(null)
     setConfirmOrderId(null)
     setObservations({})
     setProbeErrors({})
@@ -177,7 +221,8 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
 
   const checkProvider = useCallback(async (entry: ReconciliationCase) => {
     if (!activeRef.current || ownerRef.current !== OWNER_USER_ID || !entry.probe_available
-      || checkingRef.current || recoveringRef.current || recoveryNeedsRefresh) return
+      || checkingRef.current || recoveringRef.current || deliveryReviewRef.current
+      || deliveryEvidence || recoveryNeedsRefresh) return
     const requestGeneration = generation.current
     checkingRef.current = true
     setCheckingId(entry.order_id)
@@ -199,12 +244,12 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
         setCheckingId(null)
       }
     }
-  }, [invoke, recoveryNeedsRefresh])
+  }, [deliveryEvidence, invoke, recoveryNeedsRefresh])
 
   const confirmRecovery = useCallback(async (entry: ReconciliationCase) => {
     if (!validRecovery(entry) || confirmOrderId !== entry.order_id || !activeRef.current
       || ownerRef.current !== OWNER_USER_ID || recoveringRef.current || checkingRef.current
-      || recoveryNeedsRefresh || loading) return
+      || deliveryReviewRef.current || deliveryEvidence || recoveryNeedsRefresh || loading) return
     recoveringRef.current = true // Locks synchronous double-clicks before React rerenders.
     setRecoveryBusy(true)
     setRecoveryNotice(null)
@@ -242,7 +287,76 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
         setRecoveryBusy(false)
       }
     }
-  }, [confirmOrderId, invoke, loading, recoveryNeedsRefresh])
+  }, [confirmOrderId, deliveryEvidence, invoke, loading, recoveryNeedsRefresh])
+
+  const reviewGiftcardDelivery = useCallback(async (entry: ReconciliationCase) => {
+    if (!reviewableGiftcard(entry) || !activeRef.current || ownerRef.current !== OWNER_USER_ID
+      || deliveryReviewRef.current || recoveringRef.current || checkingRef.current
+      || confirmOrderId || deliveryEvidence || recoveryNeedsRefresh || loading) return
+    deliveryReviewRef.current = true
+    setDeliveryReviewBusy(true)
+    setDeliveryReviewError(null)
+    const requestGeneration = generation.current
+    try {
+      const result = await withDeadline(invoke<DeliveryReviewResponse>({
+        action: 'admin_review_bitrefill_delivery', order_id: entry.order_id,
+      }))
+      if (requestGeneration !== generation.current || ownerRef.current !== OWNER_USER_ID || !activeRef.current) return
+      if (!validDeliveryEvidence(result, entry)) throw new Error('Invalid delivery evidence')
+      setDeliveryEvidence({ order_id: result.order_id, evidence_proof_hash: result.evidence_proof_hash,
+        quantity: result.quantity, amount_ngn: result.amount_ngn, funding_type: result.funding_type })
+    } catch {
+      if (requestGeneration === generation.current && ownerRef.current === OWNER_USER_ID && activeRef.current) {
+        setDeliveryEvidence(null)
+        setDeliveryReviewError(entry.order_id)
+      }
+    } finally {
+      if (requestGeneration === generation.current && ownerRef.current === OWNER_USER_ID && activeRef.current) {
+        deliveryReviewRef.current = false
+        setDeliveryReviewBusy(false)
+      }
+    }
+  }, [confirmOrderId, deliveryEvidence, invoke, loading, recoveryNeedsRefresh])
+
+  const confirmGiftcardDelivery = useCallback(async (entry: ReconciliationCase) => {
+    if (!reviewableGiftcard(entry) || !deliveryEvidence || deliveryEvidence.order_id !== entry.order_id
+      || deliveryEvidence.amount_ngn !== entry.amount_ngn || deliveryEvidence.funding_type !== entry.funding_type
+      || !DELIVERY_PROOF_HASH.test(deliveryEvidence.evidence_proof_hash)
+      || !Number.isSafeInteger(deliveryEvidence.quantity) || deliveryEvidence.quantity < 1 || deliveryEvidence.quantity > 20
+      || !activeRef.current || ownerRef.current !== OWNER_USER_ID || recoveringRef.current
+      || deliveryReviewRef.current || checkingRef.current || confirmOrderId || recoveryNeedsRefresh || loading) return
+    recoveringRef.current = true
+    setRecoveryBusy(true)
+    setRecoveryNotice(null)
+    const requestGeneration = generation.current
+    try {
+      const result = await withDeadline(invoke<DeliveryConfirmResponse>({
+        action: 'admin_confirm_bitrefill_delivery',
+        order_id: entry.order_id,
+        evidence_proof_hash: deliveryEvidence.evidence_proof_hash,
+      }))
+      if (requestGeneration !== generation.current || ownerRef.current !== OWNER_USER_ID || !activeRef.current) return
+      if (!result?.success || result.order_id !== entry.order_id || result.decision !== 'accepted'
+        || typeof result.idempotent_replay !== 'boolean') throw new Error('Invalid delivery confirmation')
+      setDeliveryEvidence(null)
+      setRecoveryNeedsRefresh(true)
+      setRecoveryNotice(result.idempotent_replay
+        ? 'Verified gift-card delivery was already confirmed. Refreshing the case list.'
+        : `Verified gift-card delivery confirmed for all ${deliveryEvidence.quantity} units using the original reservation. No new purchase was made. Refreshing the case list.`)
+      setReload((value) => value + 1)
+    } catch {
+      if (requestGeneration === generation.current && ownerRef.current === OWNER_USER_ID && activeRef.current) {
+        setDeliveryEvidence(null)
+        setRecoveryNeedsRefresh(true)
+        setRecoveryNotice('Delivery confirmation could not be verified. It may have completed. Refresh cases before deciding whether to try again.')
+      }
+    } finally {
+      if (requestGeneration === generation.current && ownerRef.current === OWNER_USER_ID && activeRef.current) {
+        recoveringRef.current = false
+        setRecoveryBusy(false)
+      }
+    }
+  }, [confirmOrderId, deliveryEvidence, invoke, loading, recoveryNeedsRefresh])
 
   if (!active || ownerId !== OWNER_USER_ID) return null
 
@@ -254,10 +368,10 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
             <AlertTriangle className="h-4 w-4 text-amber-600" /> External order review
           </CardTitle>
           <p className="mt-2 text-sm text-muted-foreground">
-            These external partner orders are held while their outcome is resolved. Checking the provider only reads status. An unknown outcome stays held; a recorded, bound receipt can be confirmed by the owner without another purchase.
+            These external partner orders are held while their outcome is resolved. Checking the provider only reads status. An unknown outcome stays held unless a verified gift-card delivery or a recorded, bound receipt supports owner confirmation without another purchase.
           </p>
         </div>
-        <Button type="button" size="sm" variant="outline" disabled={loading || recoveryBusy} onClick={() => setReload((value) => value + 1)}>
+        <Button type="button" size="sm" variant="outline" disabled={loading || recoveryBusy || deliveryReviewBusy} onClick={() => setReload((value) => value + 1)}>
           <RefreshCw className="mr-2 h-4 w-4" /> Refresh
         </Button>
       </CardHeader>
@@ -288,7 +402,7 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
               </div>
             </div>
             {entry.probe_available ? (
-              <Button type="button" size="sm" variant="outline" className="mt-3" disabled={checkingId !== null || recoveryBusy || recoveryNeedsRefresh}
+              <Button type="button" size="sm" variant="outline" className="mt-3" disabled={checkingId !== null || recoveryBusy || deliveryReviewBusy || !!deliveryEvidence || recoveryNeedsRefresh}
                 onClick={() => void checkProvider(entry)}>
                 {checkingId === entry.order_id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Check provider
@@ -300,6 +414,35 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
             {probeErrors[entry.order_id] && (
               <p role="alert" className="mt-3 text-sm text-red-600">Provider check could not finish. No order or balance was changed. You can try again.</p>
             )}
+            {reviewableGiftcard(entry) && !recoveryNeedsRefresh && (
+              deliveryEvidence?.order_id === entry.order_id ? (
+                <div className="mt-3 space-y-3 rounded-xl border border-amber-300/70 bg-amber-50/60 p-3 text-sm dark:bg-amber-500/5">
+                  <p className="font-semibold">Provider delivery verified for all {deliveryEvidence.quantity} gift-card units.</p>
+                  <p className="break-all text-xs">Order {entry.order_id}</p>
+                  <p>{formatAmount(deliveryEvidence.amount_ngn)} · {deliveryEvidence.funding_type === 'prepaid' ? 'Prepaid reservation' : 'Unlimited credit reservation'}</p>
+                  <p>Confirming completes the recorded order using its original reservation. It does not make another provider purchase, charge again, or reveal gift-card credentials here.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" disabled={recoveryBusy || deliveryReviewBusy || checkingId !== null}
+                      onClick={() => void confirmGiftcardDelivery(entry)}>
+                      {recoveryBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Confirm verified delivery
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" disabled={recoveryBusy || deliveryReviewBusy}
+                      onClick={() => setDeliveryEvidence(null)}>Cancel</Button>
+                  </div>
+                </div>
+              ) : (
+                <Button type="button" size="sm" variant="outline" className="mt-3"
+                  disabled={recoveryBusy || deliveryReviewBusy || checkingId !== null || !!deliveryEvidence || !!confirmOrderId}
+                  onClick={() => void reviewGiftcardDelivery(entry)}>
+                  {deliveryReviewBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Review gift-card delivery
+                </Button>
+              )
+            )}
+            {deliveryReviewError === entry.order_id && (
+              <p role="alert" className="mt-3 text-sm text-red-600">Complete gift-card delivery could not be verified. No confirmation is available from this check.</p>
+            )}
             {validRecovery(entry) && !recoveryNeedsRefresh && (
               confirmOrderId === entry.order_id ? (
                 <div className="mt-3 space-y-3 rounded-xl border border-amber-300/70 bg-amber-50/60 p-3 text-sm dark:bg-amber-500/5">
@@ -307,17 +450,17 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
                   <p>{formatAmount(entry.amount_ngn)} · {entry.funding_type === 'prepaid' ? 'Prepaid reservation' : 'Unlimited credit reservation'}</p>
                   <p>{recoveryEffect(entry)}</p>
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" size="sm" disabled={recoveryBusy || checkingId !== null}
+                    <Button type="button" size="sm" disabled={recoveryBusy || deliveryReviewBusy || checkingId !== null}
                       onClick={() => void confirmRecovery(entry)}>
                       {recoveryBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                       Confirm recorded {entry.recovery.outcome}
                     </Button>
-                    <Button type="button" size="sm" variant="outline" disabled={recoveryBusy}
+                    <Button type="button" size="sm" variant="outline" disabled={recoveryBusy || deliveryReviewBusy}
                       onClick={() => setConfirmOrderId(null)}>Cancel</Button>
                   </div>
                 </div>
               ) : (
-                <Button type="button" size="sm" variant="outline" className="mt-3" disabled={recoveryBusy || checkingId !== null}
+                <Button type="button" size="sm" variant="outline" className="mt-3" disabled={recoveryBusy || deliveryReviewBusy || checkingId !== null || !!deliveryEvidence}
                   onClick={() => setConfirmOrderId(entry.order_id)}>
                   Review recorded {entry.recovery.outcome} receipt
                 </Button>
@@ -327,9 +470,9 @@ export default function PartnerReconciliationPanel({ ownerId, active, invoke }: 
         ))}
         {!loading && !readError && (
           <div className="flex items-center justify-between gap-3 pt-2 text-sm">
-            <Button type="button" size="sm" variant="outline" disabled={page === 0 || recoveryBusy} onClick={() => setPage((value) => Math.max(0, value - 1))}>Previous</Button>
+            <Button type="button" size="sm" variant="outline" disabled={page === 0 || recoveryBusy || deliveryReviewBusy} onClick={() => setPage((value) => Math.max(0, value - 1))}>Previous</Button>
             <span>Page {page + 1}</span>
-            <Button type="button" size="sm" variant="outline" disabled={nextPage === null || nextPage > 1000 || recoveryBusy} onClick={() => setPage(nextPage!)}>Next</Button>
+            <Button type="button" size="sm" variant="outline" disabled={nextPage === null || nextPage > 1000 || recoveryBusy || deliveryReviewBusy} onClick={() => setPage(nextPage!)}>Next</Button>
           </div>
         )}
       </CardContent>

@@ -1,11 +1,10 @@
 // Synthetic browser test of the real owner reconciliation component. All service calls are local fixtures.
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
-import { createServer } from 'vite'
-import tailwindcss from 'tailwindcss'
-import autoprefixer from 'autoprefixer'
+import { createServer } from 'node:http'
+import { build } from 'esbuild'
 
 const root = resolve(import.meta.dirname, '..')
 const fixtureRoot = await mkdtemp(join(root, 'scripts/ui-review.local/partner-reconciliation-'))
@@ -19,13 +18,15 @@ const acceptedId = '10000000-0000-4000-8000-000000000004'
 const rejectedPrepaidId = '10000000-0000-4000-8000-000000000005'
 const rejectedUnlimitedId = '10000000-0000-4000-8000-000000000006'
 const proofHash = 'a'.repeat(64)
+const giftcardPrepaidId = '20000000-0000-4000-8000-000000000001'
+const giftcardUnlimitedId = '20000000-0000-4000-8000-000000000002'
+const deliveryHash = 'b'.repeat(64)
 
-await writeFile(join(fixtureRoot, 'index.html'), '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/harness.tsx"></script></body></html>')
+await writeFile(join(fixtureRoot, 'index.html'), '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/styles.css"></head><body><div id="root"></div><script defer src="/bundle.js"></script></body></html>')
 await writeFile(join(fixtureRoot, 'harness.tsx'), String.raw`
 import React, { useCallback, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import PartnerReconciliationPanel from '@/components/PartnerReconciliationPanel';
-import '@/index.css';
 const OWNER = 'c1396bda-86e2-4dfc-94bb-0d95469d1d36';
 const firstId = '10000000-0000-4000-8000-000000000001';
 const secondId = '10000000-0000-4000-8000-000000000002';
@@ -37,17 +38,25 @@ const unknownId = '10000000-0000-4000-8000-000000000007';
 const malformedId = '10000000-0000-4000-8000-000000000008';
 const activeId = '10000000-0000-4000-8000-000000000009';
 const completedId = '10000000-0000-4000-8000-00000000000a';
+const giftcardPrepaidId = '20000000-0000-4000-8000-000000000001';
+const giftcardUnlimitedId = '20000000-0000-4000-8000-000000000002';
+const giftcardNoProbeId = '20000000-0000-4000-8000-000000000003';
+const giftcardStaleId = '20000000-0000-4000-8000-000000000004';
 const proofHash = 'a'.repeat(64);
+const deliveryHash = 'b'.repeat(64);
 const row = (order_id, probe_available, state = 'unknown') => ({ order_id, section: 'sms', state,
  order_status: 'processing', amount_ngn: 12345.67,
  created_at: '2026-10-05T12:00:00Z', claimed_at: '2026-10-05T12:01:00Z', probe_available });
 const recoverable = (order_id, outcome, funding_type) => ({ ...row(order_id, order_id === acceptedId, 'sending'),
  funding_type, recovery: { outcome, proof_hash: proofHash } });
+const giftcard = (order_id, funding_type, state = 'unknown', probe_available = true) => ({
+ ...row(order_id, probe_available, state), section: 'giftcards', funding_type });
 const fixture = { calls: [], mode: new URLSearchParams(location.search).get('mode') || 'rows',
- pending: [], pendingRecoveries: [], resolvedIds: new Set(), setOwner: null, setActive: null, setMode(mode) { this.mode = mode; },
+ pending: [], pendingRecoveries: [], pendingDeliveries: [], resolvedIds: new Set(), setOwner: null, setActive: null, setMode(mode) { this.mode = mode; },
  settleCases(response) { const pending = this.pending.shift(); if (pending) pending.resolve(response); },
  failCases() { const pending = this.pending.shift(); if (pending) pending.reject(new Error('private provider payload')); },
- settleRecovery(response) { const pending = this.pendingRecoveries.shift(); if (pending) pending.resolve(response); } };
+ settleRecovery(response) { const pending = this.pendingRecoveries.shift(); if (pending) pending.resolve(response); },
+ settleDelivery(response) { const pending = this.pendingDeliveries.shift(); if (pending) pending.resolve(response); } };
 window.__fixture = fixture;
 function Harness() {
  const [ownerId, setOwnerId] = useState(new URLSearchParams(location.search).get('actor') === 'other' ? '20000000-0000-4000-8000-000000000001' : OWNER);
@@ -57,6 +66,26 @@ function Harness() {
    fixture.calls.push(payload);
    if (payload.action === 'admin_reconciliation_probe') return { success: true, case: row(payload.order_id, true),
      observation: fixture.mode === 'bad_probe' ? '__proto__' : 'reported_pending', financial_decision: 'none' };
+   if (payload.action === 'admin_review_bitrefill_delivery') {
+     if (fixture.mode === 'giftcard_review_pending') return new Promise((resolve, reject) => fixture.pendingDeliveries.push({ resolve, reject }));
+     if (fixture.mode === 'giftcard_review_denied') throw new Error('private gift-card credentials');
+     const response = { success: true, order_id: payload.order_id, evidence_proof_hash: deliveryHash,
+       quantity: 2, amount_ngn: 12345.67, funding_type: payload.order_id === giftcardUnlimitedId ? 'unlimited_credit' : 'prepaid',
+       idempotent_replay: false, credentials: 'SECRET-GIFT-CARD-CODE' };
+     if (fixture.mode === 'giftcard_review_wrong_id') response.order_id = giftcardUnlimitedId;
+     if (fixture.mode === 'giftcard_review_wrong_amount') response.amount_ngn = 1;
+     if (fixture.mode === 'giftcard_review_wrong_funding') response.funding_type = 'unlimited_credit';
+     if (fixture.mode === 'giftcard_review_bad_hash') response.evidence_proof_hash = 'not-a-hash';
+     if (fixture.mode === 'giftcard_review_bad_quantity') response.quantity = 21;
+     return response;
+   }
+   if (payload.action === 'admin_confirm_bitrefill_delivery') {
+     if (fixture.mode === 'giftcard_confirm_pending') return new Promise((resolve, reject) => fixture.pendingDeliveries.push({ resolve, reject }));
+     if (fixture.mode === 'giftcard_confirm_denied') throw new Error('private financial response');
+     if (fixture.mode === 'giftcard_confirm_malformed') return { success: true, order_id: giftcardUnlimitedId, decision: 'accepted', idempotent_replay: false };
+     fixture.resolvedIds.add(payload.order_id);
+     return { success: true, order_id: payload.order_id, decision: 'accepted', idempotent_replay: false };
+   }
    if (payload.action === 'admin_reconcile_dispatch_receipt') {
      if (fixture.mode === 'recovery_pending') return new Promise((resolve, reject) => fixture.pendingRecoveries.push({ resolve, reject }));
      if (fixture.mode === 'recovery_error') throw new Error('private financial payload');
@@ -68,6 +97,12 @@ function Harness() {
    if (fixture.mode === 'pending') return new Promise((resolve, reject) => fixture.pending.push({ resolve, reject }));
    if (fixture.mode === 'error') throw new Error('private provider payload');
    if (fixture.mode === 'empty') return { success: true, cases: [], next_page: null };
+   if (fixture.mode.startsWith('giftcard')) return { success: true, cases: [
+     giftcard(giftcardPrepaidId, 'prepaid'),
+     { ...giftcard(giftcardUnlimitedId, 'unlimited_credit', 'sending'), recovery: { outcome: 'accepted', proof_hash: proofHash } },
+     giftcard(giftcardNoProbeId, 'prepaid', 'unknown', false),
+     { ...giftcard(giftcardStaleId, 'prepaid'), order_status: 'completed' },
+   ].filter(item => !fixture.resolvedIds.has(item.order_id)), next_page: null };
    if (fixture.mode.startsWith('recovery')) return { success: true, cases: [
      recoverable(acceptedId, 'accepted', 'prepaid'),
      recoverable(rejectedPrepaidId, 'rejected', 'prepaid'),
@@ -87,17 +122,33 @@ function Harness() {
 createRoot(document.getElementById('root')).render(<Harness/>);
 `)
 
-const server = await createServer({
-  root: fixtureRoot, configFile: false, publicDir: false, logLevel: 'error',
-  resolve: { alias: { '@': join(root, 'src') } },
-  css: { postcss: { plugins: [tailwindcss({ config: join(root, 'tailwind.config.ts') }), autoprefixer()] } },
-  server: { host: '127.0.0.1', port: 0, strictPort: true, fs: { allow: [root, fixtureRoot] } },
+await build({
+  entryPoints: [join(fixtureRoot, 'harness.tsx')], bundle: true, platform: 'browser',
+  format: 'iife', target: 'es2022', jsx: 'automatic', absWorkingDir: root,
+  alias: { '@': join(root, 'src') }, outfile: join(fixtureRoot, 'bundle.js'),
+})
+const bundle = await readFile(join(fixtureRoot, 'bundle.js'))
+const html = await readFile(join(fixtureRoot, 'index.html'))
+const cssFile = (await readdir(join(root, 'dist/assets'))).find(file => /^index-.*\.css$/.test(file))
+assert.ok(cssFile, 'Run npm build before the visual fixture so compiled app CSS is available')
+const css = await readFile(join(root, 'dist/assets', cssFile))
+const server = createServer((request, response) => {
+  if (request.url === '/bundle.js') {
+    response.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-store' })
+    response.end(bundle)
+  } else if (request.url === '/styles.css') {
+    response.writeHead(200, { 'Content-Type': 'text/css', 'Cache-Control': 'no-store' })
+    response.end(css)
+  } else {
+    response.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' })
+    response.end(html)
+  }
 })
 let browser
 const pageErrors = []
 try {
-  await server.listen()
-  const origin = `http://127.0.0.1:${server.httpServer.address().port}`
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const origin = `http://127.0.0.1:${server.address().port}`
   browser = await chromium.launch({ executablePath: edge, headless: true })
   const context = await browser.newContext({ viewport: { width: 390, height: 700 }, reducedMotion: 'reduce' })
   context.setDefaultTimeout(120_000)
@@ -273,6 +324,120 @@ try {
   await page.getByText('Recovery result could not be confirmed. It may have completed. Refresh cases before deciding whether to try again.').waitFor()
   assert.equal(await page.getByText('private financial payload').count(), 0, 'Denied result must remain a fixed message')
 
+  await load('giftcard')
+  await caseRow(giftcardPrepaidId).waitFor()
+  assert.equal(await caseRow('20000000-0000-4000-8000-000000000003').getByRole('button', { name: 'Review gift-card delivery' }).count(), 0,
+    'Unbound gift-card case cannot start delivery review')
+  assert.equal(await caseRow('20000000-0000-4000-8000-000000000004').getByRole('button', { name: 'Review gift-card delivery' }).count(), 0,
+    'Completed gift-card order cannot start delivery review')
+  for (const mode of ['giftcard_review_wrong_id', 'giftcard_review_wrong_amount', 'giftcard_review_wrong_funding',
+    'giftcard_review_bad_hash', 'giftcard_review_bad_quantity', 'giftcard_review_denied']) {
+    await page.evaluate(value => window.__fixture.setMode(value), mode)
+    await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+    await caseRow(giftcardPrepaidId).getByRole('alert').filter({ hasText: 'Complete gift-card delivery could not be verified' }).waitFor()
+    assert.equal(await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Confirm verified delivery' }).count(), 0,
+      `${mode}: malformed or denied evidence cannot unlock confirmation`)
+    assert.equal(await page.getByText('private gift-card credentials').count(), 0)
+  }
+  await page.evaluate(() => window.__fixture.setMode('giftcard'))
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  await caseRow(giftcardPrepaidId).getByText('Provider delivery verified for all 2 gift-card units.').waitFor()
+  assert.equal((await calls()).filter(call => call.action === 'admin_confirm_bitrefill_delivery').length, 0,
+    'Proof review must not make a financial confirmation')
+  assert.equal(await page.getByText('SECRET-GIFT-CARD-CODE').count(), 0, 'Provider credentials must never render')
+  assert.match(await caseRow(giftcardPrepaidId).innerText(), /₦12,345\.67.*Prepaid reservation/s)
+  assert.equal(await caseRow(giftcardUnlimitedId).getByRole('button', { name: 'Review recorded accepted receipt' }).isDisabled(), true,
+    'A second financial confirmation must be blocked while delivery evidence is selected')
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).waitFor()
+  assert.equal(await page.getByRole('button', { name: 'Confirm verified delivery' }).count(), 0,
+    'Refreshing the case list must clear temporary evidence')
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  await caseRow(giftcardPrepaidId).getByText('Provider delivery verified for all 2 gift-card units.').waitFor()
+  await page.screenshot({ path: join(fixtureRoot, 'giftcard-confirm-390.png'), fullPage: true })
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false)
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Confirm verified delivery' }).click()
+  await page.getByText('Verified gift-card delivery confirmed for all 2 units using the original reservation. No new purchase was made. Refreshing the case list.').waitFor()
+  await caseRow(giftcardPrepaidId).waitFor({ state: 'hidden' })
+
+  await caseRow(giftcardUnlimitedId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  assert.match(await caseRow(giftcardUnlimitedId).innerText(), /Unlimited credit reservation/)
+  await caseRow(giftcardUnlimitedId).getByRole('button', { name: 'Confirm verified delivery' }).click()
+  await caseRow(giftcardUnlimitedId).waitFor({ state: 'hidden' })
+  const deliveryReviews = (await calls()).filter(call => call.action === 'admin_review_bitrefill_delivery')
+  const deliveryConfirms = (await calls()).filter(call => call.action === 'admin_confirm_bitrefill_delivery')
+  assert.equal(deliveryConfirms.length, 2)
+  for (const call of deliveryReviews) assert.deepEqual(Object.keys(call).sort(), ['action', 'order_id'])
+  for (const call of deliveryConfirms) {
+    assert.deepEqual(Object.keys(call).sort(), ['action', 'evidence_proof_hash', 'order_id'])
+    assert.equal(call.evidence_proof_hash, deliveryHash)
+  }
+  assert.deepEqual(deliveryConfirms.map(call => call.order_id), [giftcardPrepaidId, giftcardUnlimitedId])
+  assert.equal((await calls()).some(call => ['create_order', 'create_checkout', 'purchase', 'refund'].includes(call.action)), false)
+
+  await load('giftcard_review_pending')
+  await caseRow(giftcardPrepaidId).waitFor()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  await page.waitForFunction(() => window.__fixture.pendingDeliveries.length === 1)
+  assert.equal(await page.getByRole('button', { name: 'Refresh' }).isDisabled(), true)
+  assert.equal(await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Check provider' }).isDisabled(), true)
+  assert.equal(await caseRow(giftcardUnlimitedId).getByRole('button', { name: 'Review recorded accepted receipt' }).isDisabled(), true)
+  await page.evaluate(() => window.__fixture.setActive(false))
+  await page.getByText('External order review').waitFor({ state: 'hidden' })
+  await page.evaluate(([id, hash]) => window.__fixture.settleDelivery({ success: true, order_id: id,
+    evidence_proof_hash: hash, quantity: 2, amount_ngn: 12345.67, funding_type: 'prepaid', idempotent_replay: false }), [giftcardPrepaidId, deliveryHash])
+  await page.evaluate(() => window.__fixture.setMode('giftcard'))
+  await page.evaluate(() => window.__fixture.setActive(true))
+  await caseRow(giftcardPrepaidId).waitFor()
+  assert.equal(await page.getByRole('button', { name: 'Confirm verified delivery' }).count(), 0,
+    'Late review after unmount cannot retain temporary evidence')
+
+  await load('giftcard_review_pending')
+  await caseRow(giftcardPrepaidId).waitFor()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  await page.waitForFunction(() => window.__fixture.pendingDeliveries.length === 1)
+  await page.evaluate(() => window.__fixture.setOwner('20000000-0000-4000-8000-000000000001'))
+  await page.getByText('External order review').waitFor({ state: 'hidden' })
+  await page.evaluate(([id, hash]) => window.__fixture.settleDelivery({ success: true, order_id: id,
+    evidence_proof_hash: hash, quantity: 2, amount_ngn: 12345.67, funding_type: 'prepaid', idempotent_replay: false }), [giftcardPrepaidId, deliveryHash])
+  await page.evaluate(() => window.__fixture.setMode('giftcard'))
+  await page.evaluate(id => window.__fixture.setOwner(id), owner)
+  await caseRow(giftcardPrepaidId).waitFor()
+  assert.equal(await page.getByRole('button', { name: 'Confirm verified delivery' }).count(), 0,
+    'Late review after account switch cannot retain temporary evidence')
+
+  await load('giftcard_confirm_pending')
+  await caseRow(giftcardPrepaidId).waitFor()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Confirm verified delivery' }).evaluate(button => { button.click(); button.click() })
+  await page.waitForFunction(() => window.__fixture.pendingDeliveries.length === 1)
+  assert.equal((await calls()).filter(call => call.action === 'admin_confirm_bitrefill_delivery').length, 1,
+    'Synchronous duplicate click must produce one confirmation request')
+  assert.equal(await page.getByRole('button', { name: 'Refresh' }).isDisabled(), true)
+  assert.equal(await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Check provider' }).isDisabled(), true)
+  await page.evaluate(() => window.__fixture.setOwner('20000000-0000-4000-8000-000000000001'))
+  await page.getByText('External order review').waitFor({ state: 'hidden' })
+  await page.evaluate(id => window.__fixture.settleDelivery({ success: true, order_id: id, decision: 'accepted', idempotent_replay: false }), giftcardPrepaidId)
+  await page.evaluate(() => window.__fixture.setMode('giftcard'))
+  await page.evaluate(id => window.__fixture.setOwner(id), owner)
+  await caseRow(giftcardPrepaidId).waitFor()
+  assert.equal(await page.getByText('Verified gift-card delivery confirmed').count(), 0,
+    'Late confirmation after account switch must not update panel')
+
+  await load('giftcard_confirm_malformed')
+  await caseRow(giftcardPrepaidId).waitFor()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Confirm verified delivery' }).click()
+  await page.getByText('Delivery confirmation could not be verified. It may have completed. Refresh cases before deciding whether to try again.').waitFor()
+  assert.equal(await page.getByRole('button', { name: 'Confirm verified delivery' }).count(), 0)
+
+  await load('giftcard_confirm_denied')
+  await caseRow(giftcardPrepaidId).waitFor()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Confirm verified delivery' }).click()
+  await page.getByText('Delivery confirmation could not be verified. It may have completed. Refresh cases before deciding whether to try again.').waitFor()
+  assert.equal(await page.getByText('private financial response').count(), 0)
+
   await load('recovery_pending')
   await caseRow(acceptedId).waitFor()
   await caseRow(acceptedId).getByRole('button', { name: 'Review recorded accepted receipt' }).click()
@@ -287,6 +452,33 @@ try {
   await page.getByRole('button', { name: 'Refresh' }).click()
   await caseRow(acceptedId).getByRole('button', { name: 'Review recorded accepted receipt' }).waitFor()
 
+  await load('giftcard_confirm_pending')
+  await caseRow(giftcardPrepaidId).waitFor()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Confirm verified delivery' }).click()
+  await page.waitForFunction(() => window.__fixture.pendingDeliveries.length === 1)
+  await page.evaluate(() => window.__fixture.setActive(false))
+  await page.getByText('External order review').waitFor({ state: 'hidden' })
+  await page.evaluate(id => window.__fixture.settleDelivery({ success: true, order_id: id, decision: 'accepted', idempotent_replay: false }), giftcardPrepaidId)
+  await page.evaluate(() => window.__fixture.setMode('giftcard'))
+  await page.evaluate(() => window.__fixture.setActive(true))
+  await caseRow(giftcardPrepaidId).waitFor()
+  assert.equal(await page.getByText('Verified gift-card delivery confirmed').count(), 0,
+    'Late confirmation after unmount must not update panel')
+
+  await load('giftcard_confirm_pending')
+  await caseRow(giftcardPrepaidId).waitFor()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).click()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Confirm verified delivery' }).click()
+  await page.waitForFunction(() => window.__fixture.pendingDeliveries.length === 1)
+  await page.clock.fastForward(31_000)
+  await page.getByText('Delivery confirmation could not be verified. It may have completed. Refresh cases before deciding whether to try again.').waitFor()
+  assert.equal((await calls()).filter(call => call.action === 'admin_confirm_bitrefill_delivery').length, 1,
+    'Timed-out delivery confirmation must not automatically retry')
+  await page.evaluate(() => window.__fixture.setMode('giftcard'))
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await caseRow(giftcardPrepaidId).getByRole('button', { name: 'Review gift-card delivery' }).waitFor()
+
   await load('pending')
   await page.getByText('Loading held orders…').waitFor()
   await page.clock.fastForward(31_000)
@@ -296,5 +488,5 @@ try {
   console.log(`Partner reconciliation UI passed; 390px screenshot: ${join(fixtureRoot, 'reconciliation-390.png')}`)
 } finally {
   await browser?.close()
-  await server.close()
+  await new Promise(resolve => server.close(resolve))
 }

@@ -60,7 +60,7 @@ or response requires a fresh read and never automatically repeats the action.
 An exact replay confirms the existing audited decision without moving money
 again. The database rechecks all bindings independently of the browser.
 
-## Next financial step
+## Remaining financial recovery
 
 Add immutable independent provider evidence and owner decision records bound to
 the original order, partner, request fingerprint, provider identity, amount,
@@ -109,3 +109,28 @@ For Daisy and Social Boost, a lost response can lose the provider ID; obtain
 independent vendor evidence. SageCloud data currently lacks a deterministic
 reference, and iStar has no documented read by idempotency key in this adapter.
 Do not turn a second paid call into a status probe.
+
+## Verified Bitrefill gift-card delivery recovery
+
+Migration `20261005027000_partner_bitrefill_delivery_recovery.sql` is applied on
+the source project and `partner-api` version 39 is deployed. A saved unpaid
+invoice binding allows GET-only recovery after a lost payment response. The
+invoice must be complete, and every unique unit must individually be delivered,
+match the original product and denomination, and contain a usable code or HTTPS
+redemption link. PIN-only responses, duplicate units and mixed delivery outcomes
+cannot authorize completion. See Bitrefill's
+[core concepts](https://docs.bitrefill.com/docs/core-concepts) and
+[webhook delivery rules](https://docs.bitrefill.com/docs/webhooks).
+
+The owner first reviews delivery, saving immutable private evidence. A separate
+confirmation consumes its proof hash and original reservation, creating exactly
+one capture, obligation and immutable decision without a second payment or
+prepaid debit. An uncertain confirmation requires a fresh read. Unknown,
+conflicting or incomplete delivery remains held. Gift-card credentials are
+excluded from the owner review response.
+
+PGlite, Edge runtime, actual component browser checks and source rollback probes
+passed. Live anonymous calls to both owner actions and financial RPCs were
+denied; partner financial records were unchanged. Other supplier recovery and
+asynchronous webhook delivery remain outstanding. Phone top-ups require their
+own recipient-bound delivery check because they do not issue redemption codes.
