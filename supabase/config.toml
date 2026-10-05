@@ -10,6 +10,10 @@ verify_jwt = false
 [functions.partner-api]
 verify_jwt = false
 
+# Dedicated private scheduler bearer; browser and partner credentials are denied.
+[functions.partner-webhook-worker]
+verify_jwt = false
+
 # Customer API authenticates its own hash-only section keys and user sessions.
 [functions.customer-api]
 verify_jwt = false

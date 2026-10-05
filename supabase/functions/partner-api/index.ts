@@ -6,7 +6,7 @@ import { preparePartnerSmsPlan, preparePartnerSocialPlan } from '../_shared/part
 import { preparePartnerBillsPlan, preparePartnerGiftcardPlan, preparePartnerTelegramPlan } from '../_shared/partner-bills-gift-telegram.ts'
 import { handlePartnerExternalOrderStatus } from '../_shared/partner-external-status.ts'
 import { reviewPartnerBitrefillDelivery, confirmPartnerBitrefillDelivery } from '../_shared/partner-bitrefill-recovery.ts'
-import { deliverPartnerWebhookSafely, validatePartnerWebhookUrl } from '../_shared/partner-webhook-delivery.ts'
+import { dispatchPartnerWebhookEvent } from '../_shared/partner-webhook-dispatch.ts'
 import { createRuntimePinnedWebhookTransport } from '../_shared/partner-webhook-transport.ts'
 import { listPartnerExternalReconciliationCases, probePartnerExternalReconciliationCase } from '../_shared/partner-external-reconciliation.ts'
 import { reconcilePartnerDispatchReceipt } from '../_shared/partner-receipt-recovery.ts'
@@ -1130,66 +1130,12 @@ function publicPartnerOrder(order: any) {
 async function deliverPartnerWebhook(admin: SupabaseAdmin, auth: PartnerAuth, orderId: string, eventType: string) {
   if (!['partner.order.completed', 'partner.order.refunded'].includes(eventType)
     || !auth?.key?.id || !auth?.partner?.id) return
-  // Recheck the current key, owner-reviewed partner, and exact order after
-  // settlement. A purchase key without orders:read cannot receive webhooks.
-  const { data: key, error: keyError } = await admin.from('api_partner_keys')
-    .select('id,partner_id,scopes,revoked_at').eq('id', auth.key.id)
-    .eq('partner_id', auth.partner.id).is('revoked_at', null).maybeSingle()
-  if (keyError || !key || !Array.isArray(key.scopes) || !key.scopes.includes('orders:read')) return
-  const { data: partner, error: partnerError } = await admin.from('api_partners')
-    .select('id,is_active,owner_reviewed_at,webhook_url,webhook_secret')
-    .eq('id', key.partner_id).eq('is_active', true).maybeSingle()
-  if (partnerError || !partner?.owner_reviewed_at || !validatePartnerWebhookUrl(partner.webhook_url)) return
-  const { data: order, error: orderError } = await admin.from('api_partner_orders')
-    .select('id,partner_id,partner_reference,status,item_type,amount_ngn,currency,refunded_at,refund_amount_ngn')
-    .eq('id', orderId).eq('partner_id', partner.id).maybeSingle()
-  if (orderError || !order) return
-  if (eventType === 'partner.order.completed') {
-    if (order.status !== 'completed') return
-    const { data: obligation, error } = await admin.from('api_partner_obligations')
-      .select('order_id,partner_id,amount_ngn').eq('order_id', order.id)
-      .eq('partner_id', partner.id).maybeSingle()
-    if (error || !obligation || Number(obligation.amount_ngn) !== Number(order.amount_ngn)) return
-  } else {
-    if (order.status !== 'failed' || !order.refunded_at || Number(order.refund_amount_ngn) <= 0) return
-    const { data: release, error } = await admin.from('api_partner_external_events')
-      .select('order_id,partner_id,amount_ngn').eq('order_id', order.id)
-      .eq('partner_id', partner.id).eq('event_type', 'release')
-      .eq('funding_type', 'prepaid').maybeSingle()
-    if (error || !release || Number(release.amount_ngn) !== Number(order.refund_amount_ngn)) return
-  }
-  const transport = createRuntimePinnedWebhookTransport()
-  if (!transport) return
-  const hash = await sha256Hex(`partner-webhook-v2:${partner.id}:${order.id}:${eventType}`)
+  // The financial transaction queues this deterministic event. Both this
+  // immediate path and the worker compete for its one irreversible DB claim.
+  const hash = await sha256Hex(`partner-webhook-v2:${auth.partner.id}:${orderId}:${eventType}`)
   const deliveryId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}`
     + `-${((parseInt(hash[16], 16) & 3) | 8).toString(16)}${hash.slice(17, 20)}-${hash.slice(20, 32)}`
-  // The existing primary key is the atomic claim. If the same event is
-  // attempted twice, only one insert can win and only that caller may POST.
-  const inserted = await admin.from('api_partner_webhook_deliveries').insert({
-    id: deliveryId,
-    partner_id: partner.id, order_id: order.id, event_type: eventType,
-    target_url: partner.webhook_url,
-    payload: { event: eventType, order_id: order.id },
-    attempts: 1,
-  }).select('id').maybeSingle()
-  if (inserted.error || inserted.data?.id !== deliveryId) return
-  const result = await deliverPartnerWebhookSafely({ partner, order, eventType,
-    keyScopes: key.scopes, transport })
-  const delivered = result.state === 'delivered'
-  await admin.from('api_partner_webhook_deliveries').update({
-    status: delivered ? 'delivered' : 'failed',
-    status_code: result.http_status ?? null,
-    response_body: null,
-    error_message: delivered ? null : result.code,
-    delivered_at: delivered ? new Date().toISOString() : null,
-    updated_at: new Date().toISOString(),
-  }).eq('id', deliveryId)
-  await admin.from('api_partner_logs').insert({
-    partner_id: partner.id, key_id: key.id, action: `webhook:${eventType}`,
-    method: 'POST', status_code: result.http_status ?? 0,
-    success: delivered, error_message: delivered ? null : result.code,
-    metadata: { order_id: order.id },
-  })
+  await dispatchPartnerWebhookEvent(admin, deliveryId, createRuntimePinnedWebhookTransport())
 }
 
 async function updatePartnerOrderAndNotify(admin: SupabaseAdmin, _partner: any, id: string, updates: Record<string, unknown>, _eventType: string) {

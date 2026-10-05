@@ -71,6 +71,16 @@ Commit `dc6c16b` deployed the reviewed webhook path in source `partner-api` vers
 
 The transport resolves IPv4 candidates and connects to a checked public literal address, then verifies the original hostname with TLS on that same socket. It does not follow redirects, retry an ambiguous send, or connect to private addresses. A temporary service-role-only Edge probe verified DNS, literal-address TCP, hostname TLS and a fixed public HEAD request; the probe was deleted and its absence checked. No real partner webhook was sent during verification. Callback hosts need a public IPv4 address; an IPv6-only host is not supported by this transport.
 
-The function sends completed/refunded events only from the reviewed purchase engines. Read-only status polling emits no later completion event. A separate event worker and outcome reconciliation remain necessary before promising asynchronous completion notifications for every external service.
+Source migrations `20261005030000` and `20261005031000` now add a future-only,
+financial-proof callback queue and a private worker scheduled every minute.
+Immediate purchase notifications and later status/recovery completion use the
+same irreversible claim. Source `partner-api` version 43 and
+`partner-webhook-worker` version 3 are active. Live rollback probes verified
+unchanged financial rows; deployed checks denied unauthorized worker calls and
+browser queue RPCs, and an authorized empty-queue run sent no callback.
+The managed net schema is excluded from this project's Data API; actual browser
+queue reads are denied. See `PARTNER_WEBHOOK_OUTBOX.md` for the platform grant
+boundary and uncertain-delivery behavior. Other service recovery and activation
+requirements above remain open.
 
 Deployment order was `20261005011000_partner_credit_review_gates.sql`, `20261005012000_partner_local_product_purchase.sql`, `20261005015000_partner_owner_admin_actions.sql`, then `20261005016000_partner_table_lockdown.sql`, followed by the function. Both read/local flags are enabled under the owner's existing deployment authorization; existing inactive partner accounts remain inactive. External paid routes remain blocked until their transaction and provider recovery paths are implemented and verified.
