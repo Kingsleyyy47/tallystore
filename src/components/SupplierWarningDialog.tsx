@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 
-const supplierNames: Record<string, string> = { muabanvia: 'MuaBanVia', shopclone: 'ShopClone', shopviaclone: 'ShopViaClone' }
+const supplierNames: Record<string, string> = { muabanvia: 'MuaBanVia', shopclone: 'ShopClone', shopviaclone: 'ShopViaClone', bitrefill: 'Bitrefill (international airtime)' }
 type SupplierAlert = { provider: string; last_seen_at: string }
 
 export default function SupplierWarningDialog() {

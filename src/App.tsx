@@ -51,6 +51,7 @@ const AdminPage = lazy(() => import('@/pages/AdminPage'))
 const StaffAdminPage = lazy(() => import('@/pages/StaffAdminPage'))
 const EmailConfirmation = lazy(() => import('@/pages/EmailConfirmation'))
 const GiftCardsEsims = lazy(() => import('@/pages/GiftCardsEsims'))
+const InternationalAirtime = lazy(() => import('@/pages/InternationalAirtime'))
 const SocialBoostPage = lazy(() => import('@/pages/SocialBoostPage'))
 const GetIP = lazy(() => import('@/pages/GetIP'))
 const SmsNumbersPage = lazy(() => import('@/pages/SmsNumbersPage'))
@@ -218,6 +219,7 @@ const App = () => {
                   </ProtectedRoute>
                 }
               />
+              <Route path="/international-airtime" element={<ProtectedRoute requireRole="user"><InternationalAirtime /></ProtectedRoute>} />
               <Route
                 path="/crypto-withdrawal"
                 element={

@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts'
+import { customerMarkupPrice, loadSmsMarkupRules, type CustomerMarkupRule } from '../_shared/customer-service-pricing.ts'
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -771,7 +772,8 @@ type SmsCatalogItem = {
   is_favorite: boolean
   price_override_ngn: number | null
   auto_markup_enabled: boolean
-  pricing_mode: 'auto_markup' | 'manual_margin' | 'override'
+  pricing_mode: 'auto_markup' | 'manual_margin' | 'override' | 'owner_markup'
+  owner_markup_rule?: CustomerMarkupRule
 }
 
 async function requireAuth(req: Request, action: string) {
@@ -876,8 +878,17 @@ function priceSmsService(
   setting: Partial<SmsProductSetting>,
   globalMarginNgn: number,
   roundAutoPricesToNearestTen: boolean,
+  ownerRule?: CustomerMarkupRule,
 ) {
   const providerCostNgn = Math.ceil(providerCostUsd * exchangeRate)
+  if (ownerRule && !ownerRule.legacy_pricing) {
+    const priceNgn = customerMarkupPrice(providerCostNgn, ownerRule)
+    const marginNgn = priceNgn - providerCostNgn
+    return {
+      providerCostNgn, marginNgn, marginUsd: marginNgn / exchangeRate,
+      priceNgn, totalUsd: priceNgn / exchangeRate, pricingMode: 'owner_markup' as const,
+    }
+  }
   const overrideNgn = optionalNaira(setting.price_override_ngn)
   const marginNgn = optionalNaira(setting.margin_ngn) ?? Math.round(globalMarginNgn)
   const autoPriceNgn = Math.max(0, providerCostNgn + marginNgn)
@@ -985,13 +996,16 @@ async function buildSmsCatalog(admin: SupabaseAdmin, userId?: string | null) {
   if (error) throw new Error(`Failed to load SMS product settings: ${error.message}`)
 
   const settings = new Map<string, SmsProductSetting>((settingsRows || []).map((row: SmsProductSetting) => [row.service_code, row]))
+  const ownerRules = await loadSmsMarkupRules(admin, services.map(service => service.code))
   const [buyCounts, personalBuyCounts] = await Promise.all([
     getSmsServiceBuyCounts(admin),
     userId ? getSmsServiceBuyCounts(admin, userId) : Promise.resolve(new Map<string, number>()),
   ])
   const products = services.map((svc, index) => {
     const setting = settings.get(svc.code) || { service_code: svc.code }
-    const pricing = priceSmsService(svc.priceUsd, exchangeRate, setting, globalMarginNgn, roundAutoPricesToNearestTen)
+    const ownerRule = ownerRules.get(svc.code)
+    if (!ownerRule) throw new Error('SMS pricing is temporarily unavailable')
+    const pricing = priceSmsService(svc.priceUsd, exchangeRate, setting, globalMarginNgn, roundAutoPricesToNearestTen, ownerRule)
     const isFavorite = setting.is_favorite === true
     const buyCount = buyCounts.get(svc.code) || 0
     const personalBuyCount = personalBuyCounts.get(svc.code) || 0
@@ -1018,6 +1032,7 @@ async function buildSmsCatalog(admin: SupabaseAdmin, userId?: string | null) {
       price_override_ngn: optionalNaira(setting.price_override_ngn),
       auto_markup_enabled: setting.auto_markup_enabled !== false,
       pricing_mode: pricing.pricingMode,
+      owner_markup_rule: ownerRule,
     }
   })
 
@@ -1652,7 +1667,7 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     providerRequestStarted = true
     number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd)
     const effectiveProviderUsd = number.priceUsd ?? svc.provider_cost_usd
-    const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true)
+    const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true, svc.owner_markup_rule)
     if (effectivePricing.providerCostNgn > estimatedPriceNgn) {
       throw new Error('Service price changed before purchase. Please refresh and try again.')
     }

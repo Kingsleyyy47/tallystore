@@ -28,12 +28,12 @@ async function request({ profile, authenticated = true, profileError = null, act
         }
         if (table === 'supplier_balance_alerts') {
           alertReads++
-          const stored = { provider: 'shopclone', alert_code: 'insufficient_balance', last_seen_at: '2026-10-05T12:00:00Z', api_key: 'secret', provider_response: 'account|password', product_group_id: 'hidden' }
+          const stored = ['bitrefill', 'muabanvia', 'shopclone', 'shopviaclone'].map(provider => ({ provider, alert_code: 'insufficient_balance', last_seen_at: '2026-10-05T12:00:00Z', api_key: 'secret', provider_response: 'account|password', product_group_id: 'hidden' }))
           const chain = {
             select: fields => { selected = fields; return chain },
             is: (field, value) => { assert.equal(field, 'resolved_at'); assert.equal(value, null); return chain },
             order: () => chain,
-            limit: async count => { assert.equal(count, 3); return { data: [Object.fromEntries(selected.split(',').map(field => field.trim()).map(field => [field, stored[field]]))], error: null } },
+            limit: async count => { assert.equal(count, 4); return { data: stored.slice(0, count).map(row => Object.fromEntries(selected.split(',').map(field => field.trim()).map(field => [field, row[field]]))), error: null } },
           }
           return chain
         }
@@ -62,6 +62,8 @@ for (const profile of [{ is_staff: true, account_suspended: false }, { is_admin:
   const result = await request({ profile })
   assert.equal(result.status, 200)
   assert.equal(result.alertReads, 1)
+  assert.equal(result.result.alerts.length, 4)
+  assert.equal(result.result.alerts[0].provider, 'bitrefill')
   assert.equal(result.selected, 'provider, alert_code, last_seen_at')
   assert.equal(JSON.stringify(result.result).includes('secret'), false)
   assert.equal(JSON.stringify(result.result).includes('password'), false)

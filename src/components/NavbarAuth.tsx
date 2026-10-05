@@ -3,7 +3,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import {
   ChevronRight, CircleUserRound, Download, History, Home, LifeBuoy, LogOut,
   Menu, Plane, Rocket, ShieldCheck, ShoppingBag, Smartphone, Sparkles,
-  Star, UsersRound, Wallet, X,
+  Star, UsersRound, Wallet, X, Globe2,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -24,6 +24,7 @@ const navigation = [
   { label: 'Home', to: '/', icon: Home },
   { label: 'Products', to: '/products', icon: ShoppingBag },
   { label: 'US & Canada (SMS)', to: '/us-canada', icon: Smartphone },
+  { label: 'International Airtime', to: '/international-airtime', icon: Globe2 },
   { label: 'Social Boost', to: '/social-boost', icon: Rocket },
   { label: 'Telegram', to: '/telegram-stars', icon: Star },
   { label: 'Travel & Visa', to: '/travel-visa', icon: Plane },

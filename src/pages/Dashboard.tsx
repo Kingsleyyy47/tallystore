@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, CircleHelp, Eye, EyeOff, MessageSquareText, Package, Plane, Plus, Send, ShoppingBag, TrendingUp, Wallet } from 'lucide-react'
+import { ArrowRight, CircleHelp, Eye, EyeOff, Globe2, MessageSquareText, Package, Plane, Plus, Send, ShoppingBag, TrendingUp, Wallet } from 'lucide-react'
 import NavbarAuth from '@/components/NavbarAuth'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/contexts/SimpleAuth'
@@ -18,6 +18,7 @@ type RecentOrder = {
 const services = [
   { title: 'Products', detail: 'Browse digital accounts', href: '/products', icon: ShoppingBag, tone: 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-200' },
   { title: 'US & Canada SMS', detail: 'Get a verification number', href: '/us-canada', icon: MessageSquareText, tone: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-200' },
+  { title: 'International Airtime', detail: 'Top up a phone abroad', href: '/international-airtime', icon: Globe2, tone: 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-200' },
   { title: 'Social Boost', detail: 'Grow your channels', href: '/social-boost', icon: TrendingUp, tone: 'bg-pink-100 text-pink-700 dark:bg-pink-500/15 dark:text-pink-200' },
   { title: 'Telegram', detail: 'Stars and Premium', href: '/telegram-stars', icon: Send, tone: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200' },
   { title: 'Travel & Visa', detail: 'Explore travel services', href: '/travel-visa', icon: Plane, tone: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200' },

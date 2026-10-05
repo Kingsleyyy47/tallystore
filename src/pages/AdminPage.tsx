@@ -55,6 +55,7 @@ import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import AdminAlerts from '@/components/AdminAlerts'
 import PartnerReconciliationPanel from '@/components/PartnerReconciliationPanel'
+import BitrefillPricingAdmin from '@/components/BitrefillPricingAdmin'
 import { 
   getCategories, 
   getManagedProductGroups,
@@ -154,6 +155,8 @@ import {
 const ADMIN_TABS = [
   { value: 'templates', label: 'Templates' },
   { value: 'sms-products', label: 'SMS Products' },
+  { value: 'international-airtime', label: 'International Airtime' },
+  { value: 'gift-card-pricing', label: 'Gift Card Pricing' },
   { value: 'sms-orders', label: 'SMS Orders' },
   { value: 'telegram-stars', label: 'Telegram Stars' },
   { value: 'products', label: 'Products' },
@@ -960,11 +963,6 @@ export default function AdminPage() {
   const [supportPopupMessage, setSupportPopupMessage] = useState('')
   const [savingSupportLinks, setSavingSupportLinks] = useState(false)
   const [loadingSupportLinks, setLoadingSupportLinks] = useState(true)
-
-  // Bitrefill gift card markup setting
-  const [bitrefillMarkupPct, setBitrefillMarkupPct] = useState('0')
-  const [savingBitrefillMarkup, setSavingBitrefillMarkup] = useState(false)
-  const [loadingBitrefillMarkup, setLoadingBitrefillMarkup] = useState(true)
 
   // Bitrefill catalog curation (blocked products)
   const [bitrefillBlocklist, setBitrefillBlocklist] = useState<{ product_id: string; name: string }[]>([])
@@ -2396,17 +2394,6 @@ export default function AdminPage() {
   // ==================== BITREFILL GIFT CARD SETTINGS ====================
 
   useEffect(() => {
-    const loadBitrefillMarkup = async () => {
-      setLoadingBitrefillMarkup(true)
-      try {
-        const value = await getAppSetting('bitrefill_markup_pct')
-        if (value) setBitrefillMarkupPct(value)
-      } catch (err) {
-        console.error('Failed to load Bitrefill markup %:', err)
-      } finally {
-        setLoadingBitrefillMarkup(false)
-      }
-    }
     const loadBitrefillBlocklist = async () => {
       setLoadingBitrefillBlocklist(true)
       try {
@@ -2421,28 +2408,8 @@ export default function AdminPage() {
         setLoadingBitrefillBlocklist(false)
       }
     }
-    loadBitrefillMarkup()
     loadBitrefillBlocklist()
   }, [])
-
-  const handleSaveBitrefillMarkup = async () => {
-    const pct = parseFloat(bitrefillMarkupPct)
-    if (isNaN(pct) || pct < 0) {
-      toast({ title: 'Invalid value', description: 'Enter a percentage of 0 or more', variant: 'destructive' })
-      return
-    }
-    setSavingBitrefillMarkup(true)
-    try {
-      const ok = await upsertAppSetting('bitrefill_markup_pct', pct.toString())
-      if (ok) {
-        toast({ title: 'Saved', description: `Gift card markup set to ${pct}%` })
-      } else {
-        toast({ title: 'Failed to save', description: 'Please try again', variant: 'destructive' })
-      }
-    } finally {
-      setSavingBitrefillMarkup(false)
-    }
-  }
 
   const handleBitrefillCurationSearch = async () => {
     if (!bitrefillCurationQuery.trim()) return
@@ -6267,33 +6234,6 @@ export default function AdminPage() {
                 </div>
               </AdminControlSection>
 
-            {/* Bitrefill Gift Card Markup */}
-              <AdminControlSection title="Gift Card Markup">
-                <div className="flex flex-col sm:flex-row sm:items-end gap-3">
-                  <div className="flex-1">
-                    <Label htmlFor="bitrefillMarkup">Markup % added on top of Bitrefill's price</Label>
-                    <Input
-                      id="bitrefillMarkup"
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      placeholder="e.g. 5"
-                      value={bitrefillMarkupPct}
-                      onChange={(e) => setBitrefillMarkupPct(e.target.value)}
-                      disabled={loadingBitrefillMarkup}
-                    />
-                  </div>
-                  <Button onClick={handleSaveBitrefillMarkup} disabled={savingBitrefillMarkup || loadingBitrefillMarkup}>
-                    {savingBitrefillMarkup ? 'Saving...' : 'Save'}
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground mt-2">
-                  Currently 0% — customers are charged Bitrefill's raw NGN-converted price with no margin.
-                  Set this above 0 to add your profit margin to every gift card purchase. Applied server-side
-                  in purchase-bitrefill, and shown to customers on the Gift Cards page before they buy.
-                </p>
-              </AdminControlSection>
-
             {/* Bitrefill Catalog Curation */}
               <div className="md:col-span-2 xl:col-span-1">
                 <AdminControlSection title="Gift Card Catalog Curation">
@@ -7844,8 +7784,17 @@ export default function AdminPage() {
               </Card>
             </TabsContent>
 
+            <TabsContent value="international-airtime" className="space-y-6">
+              <BitrefillPricingAdmin kind="airtime" active={adminTab === 'international-airtime'} />
+            </TabsContent>
+            <TabsContent value="gift-card-pricing" className="space-y-6">
+              <BitrefillPricingAdmin kind="gift_card" active={adminTab === 'gift-card-pricing'} />
+              <p className="text-sm text-muted-foreground">Gift card purchasing remains coming soon. These pricing rules do not enable purchases.</p>
+            </TabsContent>
+
             {/* SMS Product Curation */}
             <TabsContent value="sms-products" className="space-y-6">
+              <BitrefillPricingAdmin kind="sms" active={adminTab === 'sms-products'} />
               <Card>
                 <CardHeader>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

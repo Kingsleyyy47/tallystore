@@ -1691,7 +1691,7 @@ serve(async (req) => {
         return json({ error: 'Staff access required' }, 403)
       }
       const { data: alerts, error: alertsError } = await admin.from('supplier_balance_alerts')
-        .select('provider, alert_code, last_seen_at').is('resolved_at', null).order('provider').limit(3)
+        .select('provider, alert_code, last_seen_at').is('resolved_at', null).order('provider').limit(4)
       if (alertsError) return json({ error: 'Supplier warning status is unavailable' }, 503)
       return json({ alerts: alerts || [] })
     }
