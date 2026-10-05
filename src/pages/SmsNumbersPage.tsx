@@ -355,6 +355,23 @@ async function invokeSms<T>(action: string, payload: Record<string, unknown> = {
   return data
 }
 
+// Read requests must not keep the catalog or owned-order UI waiting indefinitely.
+// The function client in this project has no AbortSignal option, so only read actions
+// use this bounded wait; purchase and cancellation calls keep their original handling.
+async function invokeSmsRead<T>(action: string, payload: Record<string, unknown> = {}, timeoutMs = 12000) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      invokeSms<T>(action, payload),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('SMS request timed out. Try again.')), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+}
+
 function EmptyState({ title, body }: { title: string; body: string }) {
   return (
     <div className="rounded-3xl bg-slate-100 p-6 text-center dark:bg-muted">
@@ -686,7 +703,15 @@ function SmsNumbersSurface() {
   const [visibleServiceCount, setVisibleServiceCount] = useState(SERVICE_BATCH_SIZE)
   const [rentalQuery, setRentalQuery] = useState('')
   const [loading, setLoading] = useState(true)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [ordersLoading, setOrdersLoading] = useState(true)
+  const [ordersError, setOrdersError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
+  const mountedRef = useRef(true)
+  const catalogLoadActiveRef = useRef(false)
+  const ordersLoadActiveRef = useRef(false)
+
+  useEffect(() => () => { mountedRef.current = false }, [])
 
   const configured = health?.configured === true
   const numbersReady = configured && health?.valid !== false
@@ -855,36 +880,36 @@ function SmsNumbersSurface() {
   }
 
   const loadSmsNumbers = useCallback(async () => {
+    if (catalogLoadActiveRef.current) return
+    catalogLoadActiveRef.current = true
     setLoading(true)
+    setCatalogError(null)
     // Fire sync silently so externally cancelled orders are reflected locally.
     invokeSms('sync_cancelled').catch(() => {})
     try {
-      const [healthResult, orderResult] = await Promise.all([
-        invokeSms<never>('health'),
-        invokeSms<SmsOrder[]>('orders'),
-      ])
-
+      const healthResult = await invokeSmsRead<never>('health', {}, 10000)
+      if (!mountedRef.current) return
       setHealth(healthResult)
-      setOrders(orderResult.data || [])
-      window.dispatchEvent(new Event('transactionAdded'))
-
       if (healthResult.configured && healthResult.valid !== false) {
-        const [serviceResult, areaResult] = await Promise.all([
-          invokeSms<SmsService[]>('services', { country_code: 'us' }),
-          invokeSms<SmsRentalArea[]>('rental_areas'),
+        const [serviceResult, areaResult] = await Promise.allSettled([
+          invokeSmsRead<SmsService[]>('services', { country_code: 'us' }),
+          invokeSmsRead<SmsRentalArea[]>('rental_areas'),
         ])
-
-        setServices(serviceResult.data || [])
-        setAreas(areaResult.data || [])
-
+        if (!mountedRef.current) return
+        const serviceLoaded = serviceResult.status === 'fulfilled' && Array.isArray(serviceResult.value.data)
+        const areaLoaded = areaResult.status === 'fulfilled' && Array.isArray(areaResult.value.data)
+        if (serviceLoaded) setServices(serviceResult.value.data as SmsService[])
+        if (areaLoaded) setAreas(areaResult.value.data as SmsRentalArea[])
+        if (!serviceLoaded || !areaLoaded) setCatalogError('Some live SMS stock could not be loaded. Try refreshing the catalog.')
       } else {
         setServices([])
         setAreas([])
       }
     } catch (error) {
-      toast.error(safeSmsError(error, 'Failed to load SMS numbers'))
+      if (mountedRef.current) setCatalogError(safeSmsError(error, 'Failed to load SMS numbers'))
     } finally {
-      setLoading(false)
+      catalogLoadActiveRef.current = false
+      if (mountedRef.current) setLoading(false)
     }
   }, [])
 
@@ -1082,16 +1107,31 @@ function SmsNumbersSurface() {
   }
 
   const refreshOrders = useCallback(async () => {
-    const result = await invokeSms<SmsOrder[]>('orders')
-    setOrders(result.data || [])
-    window.dispatchEvent(new Event('transactionAdded'))
+    if (ordersLoadActiveRef.current) return
+    ordersLoadActiveRef.current = true
+    setOrdersLoading(true)
+    setOrdersError(null)
+    try {
+      const result = await invokeSmsRead<SmsOrder[]>('orders')
+      if (!Array.isArray(result.data)) throw new Error('Could not verify SMS order history. Try again.')
+      if (!mountedRef.current) return
+      setOrders(result.data)
+      window.dispatchEvent(new Event('transactionAdded'))
+    } catch (error) {
+      if (mountedRef.current) setOrdersError(safeSmsError(error, 'Failed to load SMS orders'))
+    } finally {
+      ordersLoadActiveRef.current = false
+      if (mountedRef.current) setOrdersLoading(false)
+    }
   }, [])
+
+  useEffect(() => { void refreshOrders() }, [refreshOrders])
 
   useEffect(() => {
     if (activeOrders.length === 0) return
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
-        refreshOrders().catch((error) => console.error('Failed to refresh SMS orders:', error))
+        void refreshOrders()
       }
     }, 30000)
     return () => window.clearInterval(timer)
@@ -1314,6 +1354,13 @@ function SmsNumbersSurface() {
         </Card>
       )}
 
+      {catalogError && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200" role="alert">
+          <span>{catalogError}</span>
+          <Button type="button" variant="outline" size="sm" onClick={() => void loadSmsNumbers()} disabled={loading}>Retry stock</Button>
+        </div>
+      )}
+
       <div className={cn(
         'grid gap-1 rounded-2xl bg-white p-1.5 shadow-card dark:bg-card sm:inline-grid sm:gap-2 sm:rounded-3xl sm:p-2',
         rentalsAvailable ? 'grid-cols-3' : 'grid-cols-2',
@@ -1408,8 +1455,8 @@ function SmsNumbersSurface() {
                   ))
                 ) : visibleServices.length === 0 ? (
                   <EmptyState
-                    title={services.length === 0 ? 'No OTP services available' : 'No service found'}
-                    body={services.length === 0 ? 'No live SMS stock is available for this country right now. Please try again shortly.' : 'Try another app name or clear the search.'}
+                    title={services.length === 0 ? catalogError ? 'SMS stock could not be verified' : 'No OTP services available' : 'No service found'}
+                    body={services.length === 0 ? catalogError ? 'Refresh the catalog to check live stock.' : 'No live SMS stock is available for this country right now. Please try again shortly.' : 'Try another app name or clear the search.'}
                   />
                 ) : visibleServices.map((service) => {
                   const selected = selectedServiceId === service.service_id
@@ -1641,13 +1688,21 @@ function SmsNumbersSurface() {
                 Active OTP and rental numbers appear here.
               </p>
             </div>
-            <Button type="button" variant="outline" className="h-11 rounded-2xl" onClick={refreshOrders}>
-              <RefreshCw className="h-4 w-4" />
+            <Button type="button" variant="outline" className="h-11 rounded-2xl" onClick={() => void refreshOrders()} disabled={ordersLoading}>
+              {ordersLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               Refresh
             </Button>
           </div>
 
-          {orders.length === 0 ? (
+          {ordersError && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200" role="alert">
+              <span>SMS order history could not be verified. {ordersError}</span>
+              <Button type="button" variant="outline" size="sm" onClick={() => void refreshOrders()} disabled={ordersLoading}>Retry orders</Button>
+            </div>
+          )}
+          {ordersLoading && orders.length === 0 ? (
+            <p className="text-sm text-muted-foreground" role="status">Loading your SMS numbers...</p>
+          ) : orders.length === 0 && !ordersError ? (
             <EmptyState title="No SMS numbers yet" body="Your OTP and rental numbers will appear here after purchase." />
           ) : orders.map((order) => (
             <SmsOrderCard
@@ -1668,13 +1723,14 @@ function SmsNumbersSurface() {
 }
 
 export default function SmsNumbersPage() {
+  const { user } = useAuth()
   const { recommendations: recs } = useRecommendations({ limit: 3 })
   return (
     <div className="min-h-screen max-w-full overflow-x-hidden bg-[#f6f7fb] text-slate-950 dark:bg-background dark:text-foreground">
       <NavbarAuth />
 
       <main className="container mx-auto max-w-full overflow-x-hidden px-4 py-5 sm:px-6 lg:py-8">
-        <SmsNumbersSurface />
+        <SmsNumbersSurface key={user?.id || 'signed-out'} />
 
         {recs.length > 0 && (
           <div className="mx-auto mt-10 max-w-2xl">

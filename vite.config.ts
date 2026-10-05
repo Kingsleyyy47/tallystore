@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { VitePWA } from 'vite-plugin-pwa';
 
-const appBuildVersion = process.env.VITE_APP_BUILD_VERSION || `${Date.now()}`;
+const appBuildVersion = process.env.VERCEL_GIT_COMMIT_SHA || process.env.VITE_APP_BUILD_VERSION || `${Date.now()}`;
 
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
@@ -60,7 +60,11 @@ export default defineConfig(() => ({
       workbox: {
         skipWaiting: true,
         clientsClaim: true,
-        cleanupOutdatedCaches: true,
+        // Keep assets available to an older tab while its page update waits for
+        // checkout or unsaved work. sw-assets.js bounds retained build caches.
+        cacheId: `tallystore-${appBuildVersion}`,
+        cleanupOutdatedCaches: false,
+        importScripts: ['/sw-assets.js'],
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp}'],
         runtimeCaching: [
           {

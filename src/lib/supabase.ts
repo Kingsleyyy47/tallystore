@@ -1876,19 +1876,27 @@ export async function processPurchaseSecure(
   expectedAmountNgn?: number,
   clientIdempotencyKey?: string,
 ): Promise<{ success: boolean; error?: string; code?: string; retry_safe?: boolean; order_id?: string; amount?: number; new_balance?: number; product_name?: string; reward_code?: string; account_details?: PurchaseAccountDetails; accounts?: PurchasedAccountCredentials[] }> {
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 45_000)
+  // functions-js in this project ignores an invoke-level AbortSignal. Race the
+  // whole wait against one deadline, and preserve the caller's idempotency key
+  // so an uncertain purchase is never retried automatically.
+  const timedOut = Symbol('purchase-timeout')
+  let deadlineExpired = false
+  let timeoutId: number | undefined
+  const deadline = new Promise<typeof timedOut>(resolve => {
+    timeoutId = window.setTimeout(() => { deadlineExpired = true; resolve(timedOut) }, 45_000)
+  })
   try {
     // Get current session for user ID
-    const { data: { session } } = await supabase.auth.getSession();
+    const sessionResult = await Promise.race([supabase.auth.getSession(), deadline])
+    if (sessionResult === timedOut || deadlineExpired) return { success: false, error: 'Purchase status could not be confirmed. Check your order history before trying again.', code: 'PURCHASE_STATUS_UNKNOWN' }
+    const { data: { session } } = sessionResult
     if (!session?.user?.id) {
       return { success: false, error: 'Not authenticated' };
     }
 
     const idempotencyKey = clientIdempotencyKey || generateIdempotencyKey(session.user.id, productGroupId, quantity);
 
-    const { data, error } = await supabase.functions.invoke('process-purchase', {
-      signal: controller.signal,
+    const invokeResult = await Promise.race([supabase.functions.invoke('process-purchase', {
       body: {
         product_group_id: productGroupId,
         quantity: quantity,
@@ -1899,19 +1907,25 @@ export async function processPurchaseSecure(
         preferred_account_id: preferredAccountId || undefined,
         expected_amount_ngn: expectedAmountNgn,
       },
-    });
+    }), deadline])
+    if (invokeResult === timedOut || deadlineExpired) return { success: false, error: 'Purchase status could not be confirmed. Check your order history before trying again.', code: 'PURCHASE_STATUS_UNKNOWN' }
+    const { data, error } = invokeResult
 
     if (error) {
-      console.error('❌ Edge Function error:', error);
+      console.error('Purchase response could not be confirmed.');
       const context = error.context as any;
       let payload: any = null;
       try {
-        if (context instanceof Response) payload = await context.clone().json();
+        if (context instanceof Response) {
+          const parsed = await Promise.race([context.clone().json(), deadline])
+          if (parsed === timedOut || deadlineExpired) return { success: false, error: 'Purchase status could not be confirmed. Check your order history before trying again.', code: 'PURCHASE_STATUS_UNKNOWN' }
+          payload = parsed
+        }
         else if (typeof context?.body === 'string') payload = JSON.parse(context.body);
         else if (context?.body && typeof context.body === 'object') payload = context.body;
         else if (context && typeof context === 'object') payload = context;
-      } catch (parseError) {
-        console.error('Failed to parse purchase response:', parseError);
+      } catch {
+        console.error('Purchase response could not be read.');
       }
       return {
         success: false,
@@ -1937,7 +1951,7 @@ export async function processPurchaseSecure(
       accounts: data.accounts,
     };
   } catch (error: any) {
-    console.error('❌ processPurchaseSecure error:', error);
+    console.error('Purchase status could not be confirmed.');
     
     // Try to extract meaningful error message
     let errorMessage = 'An unexpected error occurred';
@@ -1962,14 +1976,14 @@ export async function processPurchaseSecure(
         else if (error.context.error) {
           errorMessage = error.context.error;
         }
-      } catch (e) {
-        console.error('Failed to parse error context:', e);
+      } catch {
+        console.error('Purchase error context could not be read.');
       }
     }
     
     return { success: false, error: errorMessage, code: 'PURCHASE_STATUS_UNKNOWN' };
   } finally {
-    window.clearTimeout(timeout)
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId)
   }
 }
 
@@ -2098,13 +2112,17 @@ export type CustomerPurchaseAttemptStatus = {
 // This action reads authenticated ownership and committed financial evidence.
 // It never authorizes, sends to a supplier, captures, or releases funds.
 export async function getCustomerPurchaseAttemptStatus(productId: string, key: string, orderId?: string | null): Promise<CustomerPurchaseAttemptStatus> {
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 12000)
+  const timedOut = Symbol('purchase-status-timeout')
+  let timeoutId: number | undefined
+  const deadline = new Promise<typeof timedOut>(resolve => {
+    timeoutId = window.setTimeout(() => resolve(timedOut), 12000)
+  })
   try {
-    const { data, error } = await supabase.functions.invoke('process-purchase', {
+    const result = await Promise.race([supabase.functions.invoke('process-purchase', {
       body: { action: 'get_status', product_group_id: productId, idempotency_key: key, order_id: orderId || undefined },
-      signal: controller.signal,
-    })
+    }), deadline])
+    if (result === timedOut) return { state: 'unknown' }
+    const { data, error } = result
     if (error || !data || !['unknown', 'pending', 'completed', 'released', 'review_required'].includes(data.state)) return { state: 'unknown' }
     if (['completed', 'released'].includes(data.state) && (
       typeof data.order_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(data.order_id) ||
@@ -2119,7 +2137,7 @@ export async function getCustomerPurchaseAttemptStatus(productId: string, key: s
   } catch {
     return { state: 'unknown' }
   } finally {
-    window.clearTimeout(timeout)
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId)
   }
 }
 
