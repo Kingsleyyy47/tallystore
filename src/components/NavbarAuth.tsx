@@ -49,6 +49,7 @@ export default function Navbar() {
   const verifiedRole = !!user && !loading && !roleLookupError && !accountSuspended
   const homeRoute = user ? '/dashboard' : '/'
   const primaryNavigation = navigation.map(item => item.label === 'Home' ? { ...item, to: homeRoute } : item)
+  const productNavigationSelected = /^\/(?:products(?:\/|$)|category\/|product\/|checkout(?:\/|$))/.test(location.pathname)
 
   useEffect(() => {
     const checkAnnouncement = () => {
@@ -144,7 +145,7 @@ export default function Navbar() {
               {primaryNavigation.map(({ label, to, icon: Icon }) => to ? (
                 <NavLink
                   key={label} to={to} end={label === 'Home'}
-                  className={({ isActive }) => `flex items-center gap-1.5 whitespace-nowrap py-2 text-xs font-semibold transition-colors hover:text-primary ${isActive ? 'text-primary' : 'text-muted-foreground'}`}
+                  className={({ isActive }) => `flex items-center gap-1.5 whitespace-nowrap py-2 text-xs font-semibold transition-colors hover:text-primary ${isActive || (label === 'Products' && productNavigationSelected) ? 'text-primary' : 'text-muted-foreground'}`}
                 >
                   <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{label}
                 </NavLink>
@@ -217,10 +218,22 @@ export default function Navbar() {
                 {primaryNavigation.map(({ label, to, icon: Icon }) => to ? (
                   <NavLink
                     key={label} to={to} end={label === 'Home'} onClick={() => setIsMobileMenuOpen(false)}
-                    className={({ isActive }) => `group flex min-h-14 items-center gap-3 rounded-2xl px-3 py-3 text-sm font-semibold transition-colors ${isActive ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted'}`}
+                    className={({ isActive }) => `group flex min-h-14 items-center gap-3 rounded-2xl px-3 py-3 text-sm font-semibold transition-colors ${isActive || (label === 'Products' && productNavigationSelected) ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted'}`}
                   >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"><Icon className="h-[18px] w-[18px]" aria-hidden="true" /></span>
-                    <span>{label}</span><ChevronRight className="ml-auto h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                    {({ isActive }) => (
+                      <>
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"><Icon className="h-[18px] w-[18px]" aria-hidden="true" /></span>
+                        <span>{label}</span>
+                        <span className="ml-auto flex shrink-0 items-center gap-2">
+                          {(isActive || (label === 'Products' && productNavigationSelected)) && (
+                            <span aria-hidden="true" className="relative h-8 w-8 overflow-hidden rounded-lg border border-primary/20 bg-primary/5">
+                              <img src="/TALLYAPPLOGO.png" alt="" data-selected-menu-marker={label} className="absolute -left-[14px] -top-[8px] h-[60px] w-[60px] max-w-none" />
+                            </span>
+                          )}
+                          <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                        </span>
+                      </>
+                    )}
                   </NavLink>
                 ) : (
                   <button key={label} disabled className="flex min-h-14 w-full cursor-not-allowed items-center gap-3 rounded-2xl px-3 py-3 text-left text-sm font-semibold text-muted-foreground">

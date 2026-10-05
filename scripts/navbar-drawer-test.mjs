@@ -47,14 +47,20 @@ const dropdown = {
     ? React.createElement('button', { disabled }, children) : React.createElement(React.Fragment, null, children),
   DropdownMenuLabel: pass('h3'), DropdownMenuSeparator: () => React.createElement('hr'),
 }
+let pathname = '/products'
 const routes = {
-  useLocation: () => ({ pathname: '/products' }),
+  useLocation: () => ({ pathname }),
   Link: ({ to, children, className }) => React.createElement('a', { href: to, className }, children),
-  NavLink: ({ to, children, className }) => React.createElement('a', { href: to, className: typeof className === 'function' ? className({ isActive: to === '/products' }) : className }, children),
+  NavLink: ({ to, children, className }) => {
+    const state = { isActive: to === pathname }
+    return React.createElement('a', { href: to, className: typeof className === 'function' ? className(state) : className },
+      typeof children === 'function' ? children(state) : children)
+  },
 }
 let auth
 let effects
-function renderNavbar(overrides = {}) {
+function renderNavbar(overrides = {}, pagePath = '/products') {
+  pathname = pagePath
   auth = {
     user: { id: 'test-user' }, loading: false, roleLookupError: null, accountSuspended: false,
     isAdmin: false, isStaff: false, walletBalance: 75, walletLoading: false,
@@ -107,4 +113,17 @@ assert.doesNotMatch(renderNavbar({ showBalances: false }), /NGN 75/)
 assert.match(renderNavbar({ walletBalanceUnavailable: true }), /Unavailable/)
 assert.match(renderNavbar({ user: null }), /href="\/login"/)
 assert.match(renderNavbar({ user: null }), /href="\/"/)
+for (const path of ['/products','/product/synthetic','/category/synthetic','/checkout']) {
+  assert.equal((renderNavbar({},path).match(/src="\/TALLYAPPLOGO.png"/g) || []).length,1)
+  assert.match(renderNavbar({},path),/data-selected-menu-marker="Products"/)
+}
+for (const [path,label] of [['/dashboard','Home'],['/us-canada','US &amp; Canada (SMS)'],['/telegram-stars','Telegram'],['/travel-visa','Travel &amp; Visa'],['/support','Help Centre']]) {
+  const result=renderNavbar({},path)
+  assert.equal((result.match(/src="\/TALLYAPPLOGO.png"/g) || []).length,1,'Only the selected row has a marker')
+  assert.ok(result.includes(`data-selected-menu-marker="${label}"`))
+}
+for (const path of ['/wallet','/orders']) {
+  assert.doesNotMatch(renderNavbar({},path),/src="\/TALLYAPPLOGO.png"/,
+    'Unselected navigation must keep its standard icons')
+}
 console.log('Navbar drawer checks passed: scrolled viewport locking/restoration, routes, disabled choices, account controls, and verified workspace gates.')

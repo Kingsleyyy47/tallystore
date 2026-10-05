@@ -1,9 +1,17 @@
 import { useEffect, useState } from 'react'
-import { X, MessageCircle, Radio } from 'lucide-react'
+import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { X, MessageCircle, Radio, Megaphone } from 'lucide-react'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useSupportSettings } from '@/hooks/useSupportSettings'
 
 const SESSION_KEY_PREFIX = 'login_welcome_shown:'
+
+function safeSupportUrl(value: string): string | null {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : null
+  } catch { return null }
+}
 
 function WhatsAppIcon({ className }: { className?: string }) {
   return (
@@ -30,104 +38,99 @@ export default function LoginWelcomeDialog() {
   useEffect(() => {
     setOpen(false)
     if (!userId || loading || settings.loading || roleLookupError || isAdmin || isStaff) return
-    if (sessionStorage.getItem(SESSION_KEY_PREFIX + userId) === settings.popupMessage) return
+    try {
+      if (sessionStorage.getItem(SESSION_KEY_PREFIX + userId) === settings.popupMessage) return
+    } catch { /* Storage denial must not hide the announcement. */ }
 
     const timer = window.setTimeout(() => setOpen(true), 800)
     return () => window.clearTimeout(timer)
   }, [userId, loading, settings.loading, settings.popupMessage, roleLookupError, isAdmin, isStaff])
 
   const dismiss = () => {
-    if (userId) sessionStorage.setItem(SESSION_KEY_PREFIX + userId, settings.popupMessage)
+    try {
+      if (userId) sessionStorage.setItem(SESSION_KEY_PREFIX + userId, settings.popupMessage)
+    } catch { /* Closing the dialog remains available when storage is denied. */ }
     setOpen(false)
   }
 
-  if (!open) return null
+  if (!open || !userId || loading || settings.loading || roleLookupError || isAdmin || isStaff) return null
 
-  const hasLinks = settings.whatsappUrl || settings.telegramUrl || settings.channelUrl
+  const whatsappUrl = safeSupportUrl(settings.whatsappUrl)
+  const telegramUrl = safeSupportUrl(settings.telegramUrl)
+  const channelUrl = safeSupportUrl(settings.channelUrl)
+  const hasLinks = whatsappUrl || telegramUrl || channelUrl
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-end justify-center p-4 sm:items-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={dismiss}
-        aria-hidden="true"
-      />
+    <DialogPrimitive.Root open={open} onOpenChange={next => { if (!next) dismiss() }}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-[200] bg-black/65 backdrop-blur-sm" />
+        <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-[201] flex max-h-[min(85dvh,680px)] w-[calc(100vw-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl outline-none">
+          <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 sm:px-5">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"><Megaphone className="h-4 w-4" aria-hidden="true" /></span>
+            <div className="min-w-0 flex-1">
+              <DialogPrimitive.Title className="text-base font-bold text-foreground">Store announcement</DialogPrimitive.Title>
+              <DialogPrimitive.Description className="text-xs text-muted-foreground">The latest update and ways to get help.</DialogPrimitive.Description>
+            </div>
+            <DialogPrimitive.Close className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label="Close announcement"><X className="h-4 w-4" /></DialogPrimitive.Close>
+          </header>
 
-      {/* Dialog */}
-      <div className="relative w-full max-w-md overflow-hidden rounded-3xl bg-background shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-300">
-        {/* Close */}
-        <button
-          onClick={dismiss}
-          className="absolute right-4 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-white transition-colors hover:bg-white/30"
-          aria-label="Close"
-        >
-          <X className="h-4 w-4" />
-        </button>
-
-        {/* Header */}
-        <div className="bg-gradient-to-r from-violet-600 via-purple-600 to-blue-600 px-6 py-8 text-white">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15">
-            <MessageCircle className="h-6 w-6" />
-          </div>
-          <h2 className="text-2xl font-bold">Stay connected</h2>
-          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-white/80">
-            {settings.popupMessage}
-          </p>
-        </div>
-
-        {/* Body */}
-        <div className="space-y-3 p-6">
-          {settings.channelUrl && (
+          <div className="min-h-0 overflow-y-auto overscroll-contain md:grid md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+            <section aria-label="Announcement message" className="min-w-0 border-b border-border bg-primary/[0.04] p-4 sm:p-5 md:border-b-0 md:border-r">
+              <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-primary">Please read</p>
+              <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground [overflow-wrap:anywhere]">{settings.popupMessage}</p>
+            </section>
+            <aside aria-label="Support and community" className="space-y-2 p-4">
+              <h3 className="mb-3 text-xs font-semibold text-muted-foreground">Support &amp; community</h3>
+          {channelUrl && (
             <a
-              href={settings.channelUrl}
+              href={channelUrl}
               target="_blank"
               rel="noopener noreferrer"
               onClick={dismiss}
-              className="flex w-full items-center gap-4 rounded-2xl border border-border bg-muted/50 px-5 py-4 transition-colors hover:bg-muted"
+              className="flex w-full items-center gap-3 rounded-xl border border-border px-3 py-3 transition-colors hover:bg-muted"
             >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300">
-                <Radio className="h-5 w-5" />
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Radio className="h-4 w-4" />
               </div>
               <div className="min-w-0 text-left">
-                <p className="font-semibold">Join our channel</p>
-                <p className="text-sm text-muted-foreground">Announcements, updates &amp; deals</p>
+                <p className="text-sm font-semibold">Join our channel</p>
+                <p className="text-xs text-muted-foreground">Updates &amp; deals</p>
               </div>
             </a>
           )}
 
-          {settings.whatsappUrl && (
+          {whatsappUrl && (
             <a
-              href={settings.whatsappUrl}
+              href={whatsappUrl}
               target="_blank"
               rel="noopener noreferrer"
               onClick={dismiss}
-              className="flex w-full items-center gap-4 rounded-2xl border border-border bg-muted/50 px-5 py-4 transition-colors hover:bg-muted"
+              className="flex w-full items-center gap-3 rounded-xl border border-border px-3 py-3 transition-colors hover:bg-muted"
             >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300">
-                <WhatsAppIcon className="h-5 w-5" />
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300">
+                <WhatsAppIcon className="h-4 w-4" />
               </div>
               <div className="min-w-0 text-left">
-                <p className="font-semibold">WhatsApp support</p>
-                <p className="text-sm text-muted-foreground">Account, wallet &amp; order issues</p>
+                <p className="text-sm font-semibold">WhatsApp support</p>
+                <p className="text-xs text-muted-foreground">Wallet &amp; order help</p>
               </div>
             </a>
           )}
 
-          {settings.telegramUrl && (
+          {telegramUrl && (
             <a
-              href={settings.telegramUrl}
+              href={telegramUrl}
               target="_blank"
               rel="noopener noreferrer"
               onClick={dismiss}
-              className="flex w-full items-center gap-4 rounded-2xl border border-border bg-muted/50 px-5 py-4 transition-colors hover:bg-muted"
+              className="flex w-full items-center gap-3 rounded-xl border border-border px-3 py-3 transition-colors hover:bg-muted"
             >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300">
-                <TelegramIcon className="h-5 w-5" />
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300">
+                <TelegramIcon className="h-4 w-4" />
               </div>
               <div className="min-w-0 text-left">
-                <p className="font-semibold">Telegram support</p>
-                <p className="text-sm text-muted-foreground">Message us on Telegram</p>
+                <p className="text-sm font-semibold">Telegram support</p>
+                <p className="text-xs text-muted-foreground">Message our team</p>
               </div>
             </a>
           )}
@@ -136,26 +139,25 @@ export default function LoginWelcomeDialog() {
             <a
               href="/support"
               onClick={dismiss}
-              className="flex w-full items-center gap-4 rounded-2xl border border-border bg-muted/50 px-5 py-4 transition-colors hover:bg-muted"
+              className="flex w-full items-center gap-3 rounded-xl border border-border px-3 py-3 transition-colors hover:bg-muted"
             >
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300">
                 <MessageCircle className="h-5 w-5" />
               </div>
               <div className="min-w-0 text-left">
-                <p className="font-semibold">Support Center</p>
+                <p className="text-sm font-semibold">Help Centre</p>
                 <p className="text-sm text-muted-foreground">Get help with your account</p>
               </div>
             </a>
           )}
 
-          <button
-            onClick={dismiss}
-            className="mt-1 w-full rounded-2xl py-3 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-          >
-            Maybe later
-          </button>
-        </div>
-      </div>
-    </div>
+            </aside>
+          </div>
+          <footer className="shrink-0 border-t border-border p-3">
+            <button onClick={dismiss} className="w-full rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">Got it</button>
+          </footer>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   )
 }

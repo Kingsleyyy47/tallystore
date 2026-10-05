@@ -2,11 +2,15 @@
 // This harness cannot contact Supabase or a payment provider.
 import { build } from 'esbuild'
 import { createServer } from 'node:http'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
+import { existsSync } from 'node:fs'
 import assert from 'node:assert/strict'
+import postcss from 'postcss'
+import tailwindcss from 'tailwindcss'
+import autoprefixer from 'autoprefixer'
 
 const root = resolve(import.meta.dirname, '../..')
 const temporary = await mkdtemp(join(tmpdir(), 'tally-checkout-recovery-test-'))
@@ -31,7 +35,7 @@ const mocks = {
   '@/lib/supabase': `
     const mode = new URLSearchParams(location.search).get('case');
     const product = { id: 'synthetic-product', category_id: 'synthetic-category', name: 'SYNTHETIC CHECKOUT PRODUCT',
-      description: 'Synthetic test item', price: 200, stock_count: 5, is_active: true, is_sellable: true,
+      description: 'Synthetic product instructions. Read the first line before purchase.\\nSecond line: keep your recovery details secure and follow the full setup guide after delivery.', price: 200, stock_count: 5, is_active: true, is_sellable: true,
       availability_status: 'AVAILABLE', quantity_discount_tiers: [] };
     export const DISCOUNTS_ENABLED = false;
     export const supabase = { rpc: async () => mode === 'circle-hung'
@@ -46,6 +50,14 @@ const mocks = {
     export async function previewDiscountCode() { return { valid: false } }
     export async function processPurchaseSecure(...args) {
       window.__checkoutFixture.paidCalls.push({ key: args.at(-1), stored: localStorage.getItem(window.__checkoutFixture.storageKey) });
+      if (mode === 'visual-single' || mode === 'visual-bulk') return { success: true, order_id: 'synthetic-visual-order', account_details: { accounts: Array.from({ length: mode === 'visual-bulk' ? 3 : 1 }, (_, i) => ({
+        username: 'synthetic-long-login-' + (i + 1) + '-'.repeat(72) + '@example.invalid',
+        password: 'synthetic-password-' + (i + 1) + '-'.repeat(54),
+        two_fa_code: 'SYNTHETIC-2FA-' + (i + 1),
+        email: 'synthetic-mail-' + (i + 1) + '@example.invalid',
+        email_password: 'synthetic-mail-password-' + (i + 1),
+        additional_info: 'Synthetic setup note for account ' + (i + 1) + '.\\nKeep this line and the next line visible.',
+      })) } };
       if (mode === 'success') return { success: true, order_id: 'synthetic-order', account_details: { accounts: [
         { username: 'synthetic-user', password: 'synthetic-password' },
       ] } };
@@ -61,13 +73,6 @@ const mocks = {
   '@/components/NavbarAuth': `export default function NavbarAuth() { return null }`,
   '@/components/CategoryLogo': `export default function CategoryLogo() { return null }`,
   '@/components/ui/back-button': `export function BackToProducts() { return null }`,
-  '@/components/ui/button': `import React from 'react'; export function Button({children,asChild,...props}) { if (asChild && React.isValidElement(children)) return React.cloneElement(children, props); return React.createElement('button', props, children) }`,
-  '@/components/ui/card': `import React from 'react'; const Box = ({children,...props}) => React.createElement('div',props,children); export const Card = Box; export const CardContent = Box; export const CardHeader = Box; export const CardTitle = Box;`,
-  '@/components/ui/badge': `import React from 'react'; export function Badge({children,...props}) { return React.createElement('span',props,children) }`,
-  '@/components/ui/alert': `import React from 'react'; const Box = ({children,...props}) => React.createElement('div',props,children); export const Alert = Box; export const AlertDescription = Box;`,
-  '@/components/ui/input': `import React from 'react'; export function Input(props) { return React.createElement('input',props) }`,
-  '@/components/ui/dialog': `import React from 'react'; const Box = ({children,...props}) => React.createElement('div',props,children); export function Dialog({open,children}) { return open ? React.createElement('div',null,children) : null }; export const DialogContent = Box; export const DialogDescription = Box; export const DialogHeader = Box; export const DialogTitle = Box;`,
-  '@/components/ui/collapsible': `import React from 'react'; const Box = ({children,...props}) => React.createElement('div',props,children); export const Collapsible = Box; export const CollapsibleContent = Box; export const CollapsibleTrigger = Box;`,
 }
 
 const entry = `
@@ -78,7 +83,7 @@ const entry = `
   const mode = new URLSearchParams(location.search).get('case');
   const storageKey = 'tallystore:pending-purchase:synthetic-customer:synthetic-product';
   window.__checkoutFixture = { paidCalls: [], statusCalls: [], storageKey };
-  if (!['deferred', 'success', 'circle-error', 'circle-hung'].includes(mode)) localStorage.setItem(storageKey, JSON.stringify({
+  if (!['deferred', 'success', 'circle-error', 'circle-hung', 'visual-single', 'visual-bulk'].includes(mode)) localStorage.setItem(storageKey, JSON.stringify({
     idempotencyKey: 'original-synthetic-key', orderId: 'synthetic-order', quantity: 1, expectedAmountNgn: 200,
   }));
   createRoot(document.getElementById('app')!).render(<BrowserRouter><CheckoutPage /></BrowserRouter>);
@@ -90,19 +95,28 @@ await build({ stdin: { contents: entry, resolveDir: root, sourcefile: 'checkout-
   plugins: [{ name: 'mock-services', setup(plugin) {
     plugin.onResolve({ filter: /^@\// }, (args) => mocks[args.path]
       ? { path: args.path, namespace: 'mock-services' }
-      : { path: join(root, 'src', args.path.slice(2)) })
+      : { path: existsSync(join(root, 'src', args.path.slice(2) + '.tsx'))
+        ? join(root, 'src', args.path.slice(2) + '.tsx')
+        : join(root, 'src', args.path.slice(2) + '.ts') })
     plugin.onLoad({ filter: /.*/, namespace: 'mock-services' }, (args) => ({ contents: mocks[args.path], loader: 'tsx', resolveDir: root }))
   } }],
 })
 
 const bundle = await readFile(bundlePath)
+const tailwindConfig = createRequire(import.meta.url)('tailwindcss/loadConfig')(join(root,'tailwind.config.ts'))
+const css = (await postcss([tailwindcss({ ...tailwindConfig, safelist:['dark'], content:[
+  join(root,'src/pages/CheckoutPage.tsx'),join(root,'src/components/ui/*.{ts,tsx}'),
+]}),autoprefixer()]).process(await readFile(join(root,'src/index.css'),'utf8'),{from:join(root,'src/index.css')})).css
 const server = createServer((request, response) => {
   if (request.url?.startsWith('/bundle.js')) {
     response.writeHead(200, { 'Content-Type': 'application/javascript' })
     response.end(bundle)
+  } else if (request.url?.startsWith('/styles.css')) {
+    response.writeHead(200, { 'Content-Type': 'text/css' })
+    response.end(css)
   } else {
     response.writeHead(200, { 'Content-Type': 'text/html' })
-    response.end('<!doctype html><html><body><div id="app"></div><script src="/bundle.js"></script></body></html>')
+    response.end('<!doctype html><html class="dark"><head><meta name="viewport" content="width=device-width, initial-scale=1" /><link rel="stylesheet" href="/styles.css" /></head><body><div id="app"></div><script src="/bundle.js"></script></body></html>')
   }
 })
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -199,6 +213,60 @@ try {
   await page.waitForFunction(() => window.__checkoutFixture.paidCalls.length === 1)
   assert.equal(JSON.parse((await calls()).paid[0].stored).expectedAmountNgn, 200,
     'Timed-out Circle RPC must use standard price before server verification')
+
+  const visualDir = join(root, 'scripts/ui-review.local')
+  await mkdir(visualDir, { recursive: true })
+  await page.evaluate(key => { localStorage.removeItem(key); sessionStorage.removeItem(key) }, storageKey)
+  await page.setViewportSize({ width: 390, height: 560 })
+  await load('visual-single')
+  const instructions = page.getByRole('region', { name: 'Product information & instructions' })
+  await instructions.waitFor()
+  assert.match(await instructions.textContent(), /Second line: keep your recovery details secure/)
+  assert.equal(await instructions.evaluate(element => getComputedStyle(element.querySelector('p:last-child')).maxHeight), 'none',
+    'Product instructions must not be clamped or height limited')
+  await page.getByRole('button', { name: 'Buy Now' }).click()
+  const dialog = page.getByTestId('credentials-dialog')
+  await dialog.waitFor()
+  const region = page.getByTestId('credential-scroll-region')
+  const shortMetrics = await page.evaluate(() => {
+    const modal = document.querySelector('[data-testid="credentials-dialog"]')
+    const scroll = document.querySelector('[data-testid="credential-scroll-region"]')
+    const rect = modal.getBoundingClientRect()
+    const value = scroll.querySelector('section span.select-text')
+    return { x: rect.x, width: rect.width, y: rect.y, bottom: rect.bottom,
+      scrollHeight: scroll.scrollHeight, clientHeight: scroll.clientHeight,
+      valueWidth: value.clientWidth, valueScrollWidth: value.scrollWidth,
+      viewportWidth: innerWidth, viewportHeight: innerHeight }
+  })
+  assert.ok(shortMetrics.width <= 420 && shortMetrics.x >= 0 && shortMetrics.bottom <= 560,
+    `Short-screen modal must fit horizontally and vertically: ${JSON.stringify(shortMetrics)}`)
+  assert.ok(shortMetrics.bottom-shortMetrics.y <= 560*0.82+1,'Credential modal must remain compact on short screens')
+  assert.ok(Math.abs(shortMetrics.y - (560 - (shortMetrics.bottom - shortMetrics.y)) / 2) < 5,
+    'Short-screen modal should be centered')
+  assert.ok(shortMetrics.scrollHeight > shortMetrics.clientHeight,
+    'Short-screen credentials need their own scroll region')
+  assert.ok(shortMetrics.valueScrollWidth <= shortMetrics.valueWidth + 2,
+    'Long credential must wrap instead of being clipped')
+  assert.equal(await page.getByRole('button', { name: 'Copy USERNAME / ID for account 1' }).count(), 1)
+  const headerY = await dialog.getByText('Account credentials').evaluate(element => element.getBoundingClientRect().y)
+  const downloadY = await dialog.getByRole('button', { name: 'Download TXT' }).evaluate(element => element.getBoundingClientRect().y)
+  await region.evaluate(element => { element.scrollTop = element.scrollHeight })
+  assert.equal(await dialog.getByText('Account credentials').evaluate(element => element.getBoundingClientRect().y), headerY)
+  assert.equal(await dialog.getByRole('button', { name: 'Download TXT' }).evaluate(element => element.getBoundingClientRect().y), downloadY)
+  await page.screenshot({ path: join(visualDir, 'checkout-credentials-390x560.png') })
+
+  await page.evaluate(key => { localStorage.removeItem(key); sessionStorage.removeItem(key) }, storageKey)
+  await page.setViewportSize({ width: 390, height: 700 })
+  await load('visual-bulk')
+  await page.getByRole('button', { name: 'Increase quantity' }).click()
+  await page.getByRole('button', { name: 'Increase quantity' }).click()
+  await page.getByRole('button', { name: 'Buy Now' }).click()
+  await dialog.waitFor()
+  assert.equal(await dialog.getByRole('region', { name: /^Account \d$/ }).count(), 3)
+  assert.equal(await dialog.getByRole('button', { name: /Copy PASSWORD for account/ }).count(), 3)
+  assert.equal(await region.evaluate(element => element.scrollHeight > element.clientHeight), true)
+  await region.evaluate(element => { element.scrollTop = element.scrollHeight })
+  await page.screenshot({ path: join(visualDir, 'checkout-credentials-bulk-390x700.png') })
   assert.deepEqual(errors, [], 'Browser component raised an error')
   process.stdout.write('Checkout recovery browser tests passed (pre-dispatch persistence, reload/unknown/missing, completed/released, credentials before wallet refresh).\n')
 } finally {

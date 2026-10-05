@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { CheckCircle, CreditCard, Wallet, Loader2, Copy, Download, ChevronDown, Minus, Plus, Clock } from 'lucide-react'
+import { CheckCircle, CreditCard, Wallet, Loader2, Copy, Download, ChevronDown, Minus, Plus, Clock, Info } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import NavbarAuth from '@/components/NavbarAuth'
@@ -747,10 +747,16 @@ function CheckoutAccount() {
               </div>
             </div>
 
-            <div className="rounded-2xl bg-slate-50 p-3 dark:bg-white/5">
-              <p className="mb-1 text-xs font-semibold text-muted-foreground">Description</p>
-              <p className="max-h-32 overflow-y-auto text-sm leading-relaxed">{productGroup.description || 'Product details will be shown with your order after purchase.'}</p>
-            </div>
+            <section aria-labelledby="product-instructions-heading" className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 via-white to-slate-50 p-4 shadow-sm dark:border-violet-400/25 dark:from-violet-500/10 dark:via-slate-900 dark:to-slate-900">
+              <div className="mb-3 flex items-center gap-3">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-200"><Info className="h-5 w-5" /></span>
+                <div className="min-w-0">
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700 dark:text-violet-300">Selected product</p>
+                  <h3 id="product-instructions-heading" className="text-base font-extrabold leading-tight text-foreground">Product information &amp; instructions</h3>
+                </div>
+              </div>
+              <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground [overflow-wrap:anywhere]">{productGroup.description || 'Product details will be shown with your order after purchase.'}</p>
+            </section>
 
             <div className="rounded-2xl bg-slate-50 p-3 dark:bg-white/5">
               <div className="flex items-center justify-between gap-3">
@@ -979,28 +985,17 @@ function CheckoutAccount() {
       </main>
 
       <Dialog open={credentialsModalOpen} onOpenChange={setCredentialsModalOpen}>
-        <DialogContent className="max-h-[88vh] w-[calc(100vw-1.5rem)] max-w-3xl overflow-y-auto rounded-3xl border-slate-700/70 bg-[#050818] p-0 text-white shadow-2xl sm:w-full">
-          <DialogHeader className="border-b border-white/10 px-5 py-4 text-left sm:px-7">
-            <div className="flex items-start justify-between gap-4 pr-8">
-              <div className="min-w-0">
-                <DialogTitle className="text-2xl font-black text-white">Account Credentials</DialogTitle>
-                <DialogDescription className="mt-1 text-sm text-slate-300">
-                  Copy each field or download all delivered accounts as TXT.
-                </DialogDescription>
-              </div>
-              <Button
-                type="button"
-                onClick={downloadCredentialsTxt}
-                disabled={!purchasedCredentials.length}
-                className="shrink-0 rounded-full bg-purple-500 px-4 text-sm font-bold text-black hover:bg-purple-400 disabled:opacity-50"
-              >
-                <Download className="mr-2 h-4 w-4" />
-                Download TXT
-              </Button>
+        <DialogContent data-testid="credentials-dialog" className="flex max-h-[min(82dvh,560px)] w-[calc(100vw-1.5rem)] max-w-[420px] flex-col gap-0 overflow-hidden rounded-2xl border-slate-700/70 bg-[#050818] p-0 text-white shadow-2xl">
+          <DialogHeader className="shrink-0 border-b border-white/10 px-4 py-3 pr-12 text-left">
+            <div className="min-w-0">
+              <DialogTitle className="text-lg font-black leading-tight text-white">Account credentials</DialogTitle>
+              <DialogDescription className="mt-0.5 text-xs leading-5 text-slate-300">
+                {purchasedCredentials.length} {purchasedCredentials.length === 1 ? 'account' : 'accounts'} delivered. Copy a field or save the TXT file.
+              </DialogDescription>
             </div>
           </DialogHeader>
 
-          <div className="space-y-4 px-4 py-5 sm:px-7">
+          <div data-testid="credential-scroll-region" className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-3 sm:px-4">
             {purchasedCredentials.length === 0 ? (
               <div className="rounded-2xl border border-white/10 bg-white/5 p-5 text-sm text-slate-300">
                 The purchase completed, but no credentials were returned to this screen. Open Order History to view the saved order credentials.
@@ -1012,42 +1007,42 @@ function CheckoutAccount() {
                   .filter((field) => field.value)
 
                 return (
-                  <div key={`${credential.username || 'account'}-${index}`} className="rounded-[28px] border border-slate-700/80 bg-[#070b20] p-4 shadow-xl sm:p-6">
-                    <div className="mb-5 flex items-start gap-4">
-                      <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-purple-950 text-2xl font-black text-white">
-                        {index + 1}
-                      </div>
-                      <div className="min-w-0 flex-1 rounded-full bg-white/[0.08] px-4 py-3 font-mono text-lg tracking-[0.18em] text-slate-300 sm:text-2xl">
-                        <span className="block whitespace-normal text-xs leading-relaxed tracking-normal sm:text-sm">{visibleFields.map((field) => field.label).join(' | ')}</span>
-                      </div>
+                  <section key={`${credential.username || 'account'}-${index}`} aria-label={`Account ${index + 1}`} className="rounded-xl border border-slate-700/80 bg-[#0b1028] p-3">
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-violet-500/20 text-xs font-black text-violet-200">{index + 1}</span>
+                      <h4 className="text-sm font-bold text-white">Account {index + 1}</h4>
                     </div>
 
-                    <div className="space-y-4">
+                    <div className="space-y-2">
                       {visibleFields.map((field) => (
-                        <div key={field.key} className="grid grid-cols-[minmax(92px,170px)_1fr_auto] items-center gap-3">
-                          <span className={`text-sm font-black uppercase tracking-wide sm:text-lg ${field.labelClassName}`}>
-                            {field.label}
-                          </span>
-                          <div className="min-w-0 rounded-full bg-white/[0.08] px-4 py-3 font-mono text-base text-slate-100 sm:text-xl">
-                            <span className="block truncate">{field.value}</span>
+                        <div key={field.key} className="flex min-w-0 items-start gap-2 rounded-lg bg-white/[0.06] px-3 py-2">
+                          <div className="min-w-0 flex-1">
+                            <span className={`block text-[11px] font-bold uppercase tracking-wide ${field.labelClassName}`}>{field.label}</span>
+                            <span className="mt-0.5 block select-text whitespace-pre-wrap break-all font-mono text-sm leading-5 text-slate-100 [overflow-wrap:anywhere]">{field.value}</span>
                           </div>
                           <Button
                             type="button"
                             variant="ghost"
                             size="icon"
                             onClick={() => copyCredential(field.value, field.label)}
-                            className="h-10 w-10 shrink-0 rounded-xl text-slate-300 hover:bg-white/10 hover:text-white"
-                            aria-label={`Copy ${field.label}`}
+                            className="h-9 w-9 shrink-0 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white"
+                            aria-label={`Copy ${field.label} for account ${index + 1}`}
                           >
-                            <Copy className="h-5 w-5" />
+                            <Copy className="h-4 w-4" />
                           </Button>
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </section>
                 )
               })
             )}
+          </div>
+          <div className="shrink-0 border-t border-white/10 bg-[#050818] px-3 py-3 sm:px-4">
+            <Button type="button" onClick={downloadCredentialsTxt} disabled={!purchasedCredentials.length}
+              className="h-10 w-full rounded-xl bg-violet-500 text-sm font-bold text-white hover:bg-violet-400 disabled:opacity-50">
+              <Download className="mr-2 h-4 w-4" />Download TXT
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
