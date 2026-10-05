@@ -42,7 +42,9 @@ async function run(mode, action) {
     async rpc(name) {
       calls.push(name)
       if (name === 'wallet_financial_truth_internal') return { data: { confirmed_spendable: 1000, spending_blocked: false }, error: null }
-      if (name === 'tally_circle_qualified_count') return { data: 0, error: null }
+      if (name === 'get_tally_circle_purchase_status') return {
+        data: { enabled: false, is_member: false, discount_percent: 0 }, error: null,
+      }
       assert.equal(name, 'authorize_product_purchase')
       authorized++
       if (mode.startsWith('transport_error')) return { data: null, error: { message: 'PRIVATE_DATABASE_ERROR' } }

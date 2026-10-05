@@ -88,6 +88,7 @@ export function createPinnedDenoWebhookTransport(runtime: PinnedDenoRuntime): Pi
       if (headerEntries.length < 1 || headerEntries.length > ALLOWED_HEADERS.size
         || headerEntries.some(([key, value]) => !ALLOWED_HEADERS.has(key.toLowerCase())
           || !/^[A-Za-z0-9-]+$/.test(key) || typeof value !== 'string'
+          // eslint-disable-next-line no-control-regex -- Header values must reject every ASCII control byte.
           || /[\r\n\u0000-\u001f\u007f]/.test(value) || value.length > 1000)) {
         throw new Error('webhook headers invalid')
       }

@@ -773,7 +773,7 @@ function staticReply(intent: Intent, whatsappUrl: string, telegramUrl: string, m
     return "Completed purchases stay in Orders. Open Order History, choose the order, then use Copy or Download to view the delivered account details.";
   }
   if (intent === "REFERRAL") {
-    return "Your referral link/code is in the Referrals area. When someone signs up through it, their completed purchases can earn referral commission according to the active admin setting.";
+    return "Tally Circle referrals are coming soon. Once launched, five friends who each make at least ₦1,000 in verified wallet deposits can unlock a 3% product discount. Purchase referral commissions have been retired.";
   }
   if (["SUPPORT", "REFUND", "PAYMENT"].includes(intent)) return supportReply(whatsappUrl, telegramUrl, latest, pagePath);
   return "";

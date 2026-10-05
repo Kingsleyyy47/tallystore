@@ -613,6 +613,7 @@ function validProviderPayment(payment: CreatePaymentResponse, orderReference: st
     String(payment.price_currency ?? '').toLowerCase() === 'usd' &&
     Number.isFinite(payAmount) && payAmount >= requestedCryptoAmount * 0.8 && payAmount <= requestedCryptoAmount * 1.5 &&
     Number.isFinite(priceAmount) && Math.abs(priceAmount - usdAmount) <= 0.01 &&
+    // eslint-disable-next-line no-control-regex -- Provider addresses containing whitespace or control bytes are invalid.
     address.length > 0 && address.length <= 256 && !/[\s\u0000-\u001f]/.test(address);
 }
 

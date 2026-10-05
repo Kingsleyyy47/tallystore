@@ -65,7 +65,9 @@ function fixture(mode, { supplier = true, balance = 1000 } = {}) {
     },
     async rpc(name, args) {
       if (name === 'wallet_financial_truth_internal') return { data: { confirmed_spendable: balance, spending_blocked: false }, error: null }
-      if (name === 'tally_circle_qualified_count') return { data: 0, error: null }
+      if (name === 'get_tally_circle_purchase_status') return {
+        data: { enabled: false, is_member: false, discount_percent: 0 }, error: null,
+      }
       if (name === 'authorize_product_purchase') {
         authorizationCalls += 1
         if (supplier) return { data: { success: false, code: 'INSUFFICIENT_STOCK', available: 1 }, error: null }

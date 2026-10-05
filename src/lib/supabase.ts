@@ -1580,6 +1580,21 @@ function parsePlainCredentialLine(line: string, sep: string) {
   return normalizeParsedAccountRow(row)
 }
 
+export function detectAccountImportMode(firstLine: string, formatKey?: string): 'explicit' | 'csv' | 'pipe' | 'colon' | 'unknown' {
+  if (formatKey && SITE_FORMATS[formatKey]) return 'explicit'
+  const csvFields = parseCsvLine(firstLine).map(value => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''))
+  const loginHeaders = new Set(['username', 'user', 'user_name', 'login', 'account', 'account_username', 'email', 'mail', 'email_address', 'account_email'])
+  const passwordHeaders = new Set(['password', 'pass', 'account_password'])
+  const validCsvHeader = csvFields.some(value => loginHeaders.has(value)) && csvFields.some(value => passwordHeaders.has(value))
+  const startsLikeCsvHeader = loginHeaders.has(csvFields[0]) || passwordHeaders.has(csvFields[0])
+  if (firstLine.includes(',') && (validCsvHeader || startsLikeCsvHeader)) return 'csv'
+  // A comma inside a TXT password must not turn the first credential row into CSV headers.
+  if (firstLine.includes('|')) return 'pipe'
+  if (firstLine.includes(':')) return 'colon'
+  if (firstLine.includes(',')) return 'csv'
+  return 'unknown'
+}
+
 export function parseCSV(csvText: string, formatKey?: string): any[] {
   const lines = csvText
     .replace(/^\uFEFF/, '')
@@ -1604,19 +1619,14 @@ export function parseCSV(csvText: string, formatKey?: string): any[] {
   }
 
   // \u2500\u2500 TXT / plain-credential format detection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-  const firstLine = lines[0]
-  const hasColon = firstLine.includes(':')
-  const hasPipe  = firstLine.includes('|')
-  const hasComma = firstLine.includes(',')
-  const looksLikePlainCredentials = (hasColon || hasPipe) && !hasComma
-
-  if (looksLikePlainCredentials) {
-    const sep = hasPipe ? '|' : ':'
+  const mode = detectAccountImportMode(lines[0])
+  if (mode === 'pipe' || mode === 'colon') {
+    const sep = mode === 'pipe' ? '|' : ':'
     return lines.map(line => parsePlainCredentialLine(line, sep)).filter(r => r.username || r.password)
   }
 
   // \u2500\u2500 CSV format: requires at least header + one data row \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-  if (lines.length < 2) return []
+  if (mode !== 'csv' || lines.length < 2) return []
 
   const normalizeHeader = (header: string) => {
     const key = header
@@ -1656,6 +1666,7 @@ export function parseCSV(csvText: string, formatKey?: string): any[] {
   }
 
   const headers = parseCsvLine(lines[0]).map(normalizeHeader)
+  if (!headers.includes('password') || (!headers.includes('username') && !headers.includes('email'))) return []
   const rows = lines.slice(1)
 
   return rows.map(row => {

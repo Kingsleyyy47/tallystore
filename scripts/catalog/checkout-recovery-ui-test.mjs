@@ -34,7 +34,11 @@ const mocks = {
       description: 'Synthetic test item', price: 200, stock_count: 5, is_active: true, is_sellable: true,
       availability_status: 'AVAILABLE', quantity_discount_tiers: [] };
     export const DISCOUNTS_ENABLED = false;
-    export const supabase = { rpc: async () => ({ data: { is_member: false, discount_percent: 3 }, error: null }) };
+    export const supabase = { rpc: async () => mode === 'circle-hung'
+      ? new Promise(() => {})
+      : mode === 'circle-error'
+      ? { data: null, error: { message: 'unavailable' } }
+      : { data: { enabled: false, is_member: false, discount_active: false, discount_percent: 0 }, error: null } };
     export async function getProductGroupById() { return product }
     export async function getCategoryById() { return { id: 'synthetic-category', name: 'Synthetic' } }
     export async function getIndividualAccountById() { return null }
@@ -74,7 +78,7 @@ const entry = `
   const mode = new URLSearchParams(location.search).get('case');
   const storageKey = 'tallystore:pending-purchase:synthetic-customer:synthetic-product';
   window.__checkoutFixture = { paidCalls: [], statusCalls: [], storageKey };
-  if (!['deferred', 'success'].includes(mode)) localStorage.setItem(storageKey, JSON.stringify({
+  if (!['deferred', 'success', 'circle-error', 'circle-hung'].includes(mode)) localStorage.setItem(storageKey, JSON.stringify({
     idempotencyKey: 'original-synthetic-key', orderId: 'synthetic-order', quantity: 1, expectedAmountNgn: 200,
   }));
   createRoot(document.getElementById('app')!).render(<BrowserRouter><CheckoutPage /></BrowserRouter>);
@@ -178,6 +182,23 @@ try {
   assert.equal(await page.getByText('MAIL PASS', { exact: true }).count(), 0, 'Missing mail password acquired a phantom label')
   assert.equal(await saved(), null, 'Successful attempt retained pending key')
   assert.equal((await calls()).paid.length, 1)
+
+  await load('circle-error')
+  await page.getByText(/Tally Circle status is unavailable/).waitFor()
+  await page.getByRole('button', { name: 'Buy Now' }).click()
+  await page.waitForFunction(() => window.__checkoutFixture.paidCalls.length === 1)
+  assert.equal(JSON.parse((await calls()).paid[0].stored).expectedAmountNgn, 200,
+    'Circle RPC outage must use standard price before server verification')
+
+  await page.evaluate(key => { localStorage.removeItem(key); sessionStorage.removeItem(key) }, storageKey)
+  await load('circle-hung')
+  await page.getByRole('button', { name: 'Checking Price...' }).waitFor()
+  assert.equal((await calls()).paid.length, 0, 'Hung optional status dispatched a purchase while loading')
+  await page.getByText(/Tally Circle status is unavailable/).waitFor({ timeout: 12000 })
+  await page.getByRole('button', { name: 'Buy Now' }).click()
+  await page.waitForFunction(() => window.__checkoutFixture.paidCalls.length === 1)
+  assert.equal(JSON.parse((await calls()).paid[0].stored).expectedAmountNgn, 200,
+    'Timed-out Circle RPC must use standard price before server verification')
   assert.deepEqual(errors, [], 'Browser component raised an error')
   process.stdout.write('Checkout recovery browser tests passed (pre-dispatch persistence, reload/unknown/missing, completed/released, credentials before wallet refresh).\n')
 } finally {

@@ -246,23 +246,30 @@ function CheckoutAccount() {
     let active = true
     setCircleStatus('loading')
     setCircleUserId(null)
-    void supabase.rpc('get_my_tally_circle_status').then(({ data, error }) => {
+    setCircleMember(false)
+    let timer: number
+    const timeout = new Promise<never>((_, reject) => {
+      timer = window.setTimeout(() => reject(new Error('Tally Circle status timed out')), 8000)
+    })
+    void Promise.race([supabase.rpc('get_my_tally_circle_status'), timeout]).then(({ data, error }) => {
       if (!active) return
-      if (error || !data || typeof data.is_member !== 'boolean' || data.discount_percent !== 3) {
-        console.error('Failed to verify Tally Circle checkout status:', error)
+      if (error || !data || typeof data.enabled !== 'boolean'
+        || typeof data.is_member !== 'boolean' || typeof data.discount_active !== 'boolean'
+        || data.discount_percent !== (data.discount_active ? 3 : 0)
+        || (!data.enabled && (data.is_member || data.discount_active))
+        || (data.discount_active && !data.is_member)) {
         setCircleStatus('error')
         return
       }
-      setCircleMember(data.is_member)
+      setCircleMember(data.enabled && data.is_member && data.discount_active)
       setCircleUserId(user.id)
       setCircleStatus('ready')
-    }).catch((error) => {
+    }).catch(() => {
       if (!active) return
-      console.error('Failed to verify Tally Circle checkout status:', error)
       setCircleStatus('error')
-    })
+    }).finally(() => window.clearTimeout(timer))
 
-    return () => { active = false }
+    return () => { active = false; window.clearTimeout(timer) }
   }, [user?.id, circleRetry])
 
   // Calculate total based on quantity, applying any quantity discount tier
@@ -518,7 +525,7 @@ function CheckoutAccount() {
   const handlePurchase = async () => {
     if (!productGroup || !user) return
     if (purchasing || pendingOrderId || purchaseStatusUnknown || purchaseIdempotencyKeyRef.current) return
-    if (circleStatus !== 'ready' || circleUserId !== user.id) return
+    if (circleStatus === 'loading' || (circleStatus === 'ready' && circleUserId !== user.id)) return
     if (blockStaffPurchase(isStaff, isAdmin, toast)) return
 
     // Another tab may have started this product checkout since this page loaded.
@@ -707,7 +714,9 @@ function CheckoutAccount() {
   }
 
   const walletBalanceReady = !walletLoading && !walletBalanceUnavailable
-  const circlePriceReady = circleStatus === 'ready' && circleUserId === user?.id
+  const circlePriceReady = Boolean(user?.id) && (
+    (circleStatus === 'ready' && circleUserId === user?.id) || circleStatus === 'error'
+  )
   const canAfford = walletBalanceReady && circlePriceReady && walletBalance >= totalAmount
   const insufficientFunds = walletBalanceReady && circlePriceReady && walletBalance < totalAmount
   const balanceAfter = walletBalance - totalAmount
@@ -877,7 +886,7 @@ function CheckoutAccount() {
                 <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
                   <span>{circleStatus === 'loading'
                     ? 'Checking your Tally Circle price...'
-                    : 'Tally Circle pricing is unavailable. Check again before buying.'}</span>
+                    : 'Tally Circle status is unavailable. Checkout will use the standard price; the server will confirm the final price before purchase.'}</span>
                   {circleStatus === 'error' && (
                     <Button type="button" variant="outline" size="sm" onClick={() => setCircleRetry((value) => value + 1)}>
                       Retry pricing

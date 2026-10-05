@@ -40,6 +40,7 @@ export async function getCustomerPurchaseStatus(
 ): Promise<CustomerPurchaseStatus> {
   if (!UUID.test(userId) || typeof idempotencyKey !== 'string'
     || idempotencyKey.length < 10 || idempotencyKey.length > 200
+    // eslint-disable-next-line no-control-regex -- Control bytes are explicitly rejected in request identities.
     || /[\u0000-\u001f\u007f]/.test(idempotencyKey)
     || typeof productId !== 'string' || !UUID.test(productId)
     || (orderId != null && (typeof orderId !== 'string' || !UUID.test(orderId)))) return { state: 'unknown' }

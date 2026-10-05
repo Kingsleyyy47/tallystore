@@ -677,14 +677,31 @@ serve(async (req) => {
       totalPrice = totalPriceMinor / 100;
       appliedDiscountCode = { id: codeRow.id, code: codeRow.code };
     }
-    const { data: qualifiedReferrals, error: circleStatusError } = await supabaseAdmin.rpc(
-      'tally_circle_qualified_count',
+    const { data: circlePurchaseStatus, error: circleStatusError } = await supabaseAdmin.rpc(
+      'get_tally_circle_purchase_status',
       { p_user_id: user.id },
     );
-    if (circleStatusError || !Number.isInteger(qualifiedReferrals) || qualifiedReferrals < 0) {
+    let circleDiscountPercent = 0;
+    if (circleStatusError || !circlePurchaseStatus || typeof circlePurchaseStatus.enabled !== 'boolean'
+      || typeof circlePurchaseStatus.is_member !== 'boolean'
+      || ![0, 3].includes(circlePurchaseStatus.discount_percent)
+      || (!circlePurchaseStatus.enabled && circlePurchaseStatus.is_member)) {
+      // During Coming Soon, a Circle RPC outage must not stop normal product
+      // purchases. Read the server-owned launch row directly before using the
+      // standard price; any uncertainty after launch still stops before a hold.
+      const { data: circleLaunched, error: launchError } = await supabaseAdmin
+        .rpc('tally_circle_launch_enabled');
+      if (launchError || circleLaunched !== false) {
+        throw new Error('Referral pricing could not be verified. Please retry.');
+      }
+    } else if (circlePurchaseStatus.enabled && circlePurchaseStatus.is_member) {
+      if (circlePurchaseStatus.discount_percent !== 3) {
+        throw new Error('Referral pricing could not be verified. Please retry.');
+      }
+      circleDiscountPercent = 3;
+    } else if (circlePurchaseStatus.discount_percent !== 0) {
       throw new Error('Referral pricing could not be verified. Please retry.');
     }
-    const circleDiscountPercent = qualifiedReferrals >= 5 ? 3 : 0;
     const beforeCircleDiscountMinor = totalPriceMinor;
     if (circleDiscountPercent > 0) {
       totalPriceMinor = Math.round(totalPriceMinor * 97 / 100);

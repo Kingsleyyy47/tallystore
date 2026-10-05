@@ -74,6 +74,7 @@ import {
   getAdminSalesStats,
   bulkCreateIndividualAccounts,
   parseCSV,
+  detectAccountImportMode,
   SITE_FORMATS,
   createProductTemplate,
   processBulkAccountUpload,
@@ -197,10 +198,11 @@ function getAdminImportLines(text: string): string[] {
 function analyzeAdminImport(text: string, formatKey?: string): AdminImportReview {
   const lines = getAdminImportLines(text)
   const firstLine = lines[0] || ''
-  const requiresCsvHeader = !formatKey && firstLine.includes(',')
+  const mode = detectAccountImportMode(firstLine, formatKey)
+  const requiresCsvHeader = mode === 'csv'
   const formatLabel = formatKey
     ? `${SITE_FORMATS[formatKey]?.label || 'Selected'} format`
-    : requiresCsvHeader ? 'Comma-separated CSV' : firstLine.includes('|') ? 'Pipe-separated text' : firstLine.includes(':') ? 'Colon-separated text' : 'Unrecognized text'
+    : mode === 'csv' ? 'Comma-separated CSV' : mode === 'pipe' ? 'Pipe-separated text' : mode === 'colon' ? 'Colon-separated text' : 'Unrecognized text'
   const headerWords = new Set(['username', 'user', 'login', 'email', 'mail', 'password', 'pass', 'emailpassword', 'mailpassword', 'twofa', 'year'])
   const firstColumns = firstLine.split(/[,:|\t]/).map(value => value.toLowerCase().replace(/[^a-z0-9]/g, ''))
   const likelyHeader = firstColumns.length > 1 && firstColumns.filter(value => headerWords.has(value)).length >= 2

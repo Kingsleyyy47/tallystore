@@ -28,6 +28,7 @@ import {
   getCategories,
   getDiscountCodes,
   parseCSV,
+  detectAccountImportMode,
   SITE_FORMATS,
   getUserCount,
   getAdminSalesStats,
@@ -136,8 +137,7 @@ function getBulkLines(text: string): string[] {
 function buildBulkImportReview(text: string, formatKey?: string): BulkImportReview {
   const lines = getBulkLines(text)
   const firstLine = lines[0] || ''
-  // The existing parser treats comma-delimited files as CSV and consumes their first row as column names.
-  const requiresCsvHeader = !formatKey && firstLine.includes(',')
+  const requiresCsvHeader = detectAccountImportMode(firstLine, formatKey) === 'csv'
   const headerWords = new Set(['username', 'user', 'login', 'email', 'mail', 'password', 'pass', 'emailpassword', 'mailpassword', 'twofa', 'year'])
   const firstColumns = firstLine.split(/[,:|\t]/).map(value => value.toLowerCase().replace(/[^a-z0-9]/g, ''))
   const likelyHeader = firstColumns.length > 1 && firstColumns.filter(value => headerWords.has(value)).length >= 2

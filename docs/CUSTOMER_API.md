@@ -1,6 +1,8 @@
 # Customer developer API
 
-The individual API uses the account's verified TallyStore wallet. Ordinary active customers may create separate keys for Products, SMS, and Social Boost from **Profile → Developer API**. A key works only for its named section. An owner override can restrict or disable sections. Staff and admin accounts cannot create customer keys. Partner accounts and partner credit are separate.
+Customer API access is currently **Coming soon**. The menu and direct page URL show that state, and the server launch gate blocks customer key issuance, API reads and purchases. Customers can still revoke their own existing keys. The verified owner can prepare future access. These controls are deployed; hiding the menu alone is not the access boundary.
+
+The following describes the prepared API contract, not a currently available customer service. When launched, the individual API will use the account's verified TallyStore wallet. Ordinary active customers will be able to create separate keys for Products, SMS, and Social Boost. A key works only for its named section. An owner override can restrict or disable sections. Staff and admin accounts cannot create customer keys. Partner accounts and partner credit are separate.
 
 Keys are shown once. The server stores their SHA-256 hashes and a short display prefix. Send a key in `Authorization: Bearer <key>` to the Supabase function endpoint. The request limit is 60 requests per minute per key. A revoked key stops working immediately.
 
@@ -15,7 +17,7 @@ Base URL: `https://<supabase-project>/functions/v1/customer-api`
 | GET | `/v1/orders/<uuid>?section=products` | One owned order; completed, financially captured product orders include delivered account details |
 | POST | `/v1/purchases` | Purchase through the existing section checkout engine |
 
-The key's section must match the query or purchase body section. A purchase request must include a unique `idempotency_key` of at least 10 characters. Reuse the same key and exact request when retrying an uncertain network outcome. For products, use the quote's `expected_amount_ngn`; it includes the customer's current 3% Tally Circle discount when eligible. The checkout engine recomputes the price and rejects a stale `expected_amount_ngn` or `expected_price_ngn`; the client never controls the final charge.
+The key's section must match the query or purchase body section. A purchase request must include a unique `idempotency_key` of at least 10 characters. Reuse the same key and exact request when retrying an uncertain network outcome. For products, use the quote's `expected_amount_ngn`. Tally Circle is also Coming soon: its 3% discount applies only after its separate trusted launch gate is enabled and the customer qualifies. The checkout engine recomputes the price and rejects a stale `expected_amount_ngn` or `expected_price_ngn`; the client never controls the final charge.
 
 Product example:
 

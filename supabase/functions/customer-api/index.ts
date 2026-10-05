@@ -67,9 +67,20 @@ function ngnMinorUnits(value: unknown) {
   return minor > 0n && minor <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(minor) : null
 }
 async function circlePercent(admin: any, userId: string) {
-  const { data, error } = await admin.rpc('tally_circle_qualified_count', { p_user_id: userId })
-  if (error || !Number.isInteger(data) || data < 0) throw new Error('Circle status unavailable')
-  return data >= 5 ? 3 : 0
+  const { data, error } = await admin.rpc('get_tally_circle_purchase_status', { p_user_id: userId })
+  if (error || !data || typeof data.enabled !== 'boolean'
+    || typeof data.is_member !== 'boolean' || ![0, 3].includes(data.discount_percent)
+    || (!data.enabled && data.is_member)) {
+    const { data: circleLaunched, error: launchError } = await admin.rpc('tally_circle_launch_enabled')
+    if (!launchError && circleLaunched === false) return 0
+    throw new Error('Circle status unavailable')
+  }
+  if (!data.enabled || !data.is_member) {
+    if (data.discount_percent !== 0) throw new Error('Circle status unavailable')
+    return 0
+  }
+  if (data.discount_percent !== 3) throw new Error('Circle status unavailable')
+  return 3
 }
 async function productQuote(admin: any, userId: string, url: URL) {
   const productId = url.searchParams.get('product_group_id') || ''

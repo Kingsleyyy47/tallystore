@@ -55,6 +55,7 @@ export function isPublicIpv4(value: unknown): value is string {
 
 export function validatePartnerWebhookUrl(value: unknown): { url: string; hostname: string } | null {
   if (typeof value !== 'string' || value.length < 12 || value.length > 500
+    // eslint-disable-next-line no-control-regex -- Reject whitespace and control bytes before parsing a callback URL.
     || /[\u0000-\u0020\u007f]/.test(value)) return null
   let url: URL
   try { url = new URL(value) } catch { return null }

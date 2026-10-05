@@ -22,6 +22,7 @@ const privateField = /(?:apikey|authorization|password|secret|requestpayload|req
 function keyName(key: string) { return key.replace(/[^a-z0-9]/gi, '').toLowerCase() }
 function boundedText(value: unknown, max: number, required = false): string | null {
   if (value == null) { if (required) throw new Error('Invalid input'); return null }
+  // eslint-disable-next-line no-control-regex -- Control bytes must not enter partner request identities.
   if (typeof value !== 'string' || value.length > max || /[\u0000-\u001f\u007f]/.test(value)) throw new Error('Invalid input')
   const text = value.trim()
   if (!text && required) throw new Error('Invalid input')
