@@ -1875,7 +1875,9 @@ export async function processPurchaseSecure(
   preferredAccountId?: string | null,
   expectedAmountNgn?: number,
   clientIdempotencyKey?: string,
-): Promise<{ success: boolean; error?: string; code?: string; order_id?: string; amount?: number; new_balance?: number; product_name?: string; reward_code?: string; account_details?: PurchaseAccountDetails; accounts?: PurchasedAccountCredentials[] }> {
+): Promise<{ success: boolean; error?: string; code?: string; retry_safe?: boolean; order_id?: string; amount?: number; new_balance?: number; product_name?: string; reward_code?: string; account_details?: PurchaseAccountDetails; accounts?: PurchasedAccountCredentials[] }> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 45_000)
   try {
     // Get current session for user ID
     const { data: { session } } = await supabase.auth.getSession();
@@ -1886,6 +1888,7 @@ export async function processPurchaseSecure(
     const idempotencyKey = clientIdempotencyKey || generateIdempotencyKey(session.user.id, productGroupId, quantity);
 
     const { data, error } = await supabase.functions.invoke('process-purchase', {
+      signal: controller.signal,
       body: {
         product_group_id: productGroupId,
         quantity: quantity,
@@ -1914,12 +1917,13 @@ export async function processPurchaseSecure(
         success: false,
         error: payload?.error || payload?.message || error.message || 'Purchase status unavailable',
         code: payload?.code || (payload ? undefined : 'PURCHASE_STATUS_UNKNOWN'),
+        retry_safe: payload?.retry_safe === true,
         order_id: payload?.order_id,
       };
     }
 
     if (!data?.success) {
-      return { success: false, error: data?.error || 'Purchase failed', code: data?.code, order_id: data?.order_id };
+      return { success: false, error: data?.error || 'Purchase failed', code: data?.code, retry_safe: data?.retry_safe === true, order_id: data?.order_id };
     }
 
     return {
@@ -1964,6 +1968,8 @@ export async function processPurchaseSecure(
     }
     
     return { success: false, error: errorMessage, code: 'PURCHASE_STATUS_UNKNOWN' };
+  } finally {
+    window.clearTimeout(timeout)
   }
 }
 
@@ -2082,24 +2088,65 @@ function sanitizeOrderHistoryCredentialVisibility(order: any) {
   }
 }
 
+export type CustomerPurchaseAttemptStatus = {
+  state: 'unknown' | 'pending' | 'completed' | 'released' | 'review_required'
+  order_id?: string
+  quantity?: number
+  amount_ngn?: number
+}
+
+// This action reads authenticated ownership and committed financial evidence.
+// It never authorizes, sends to a supplier, captures, or releases funds.
+export async function getCustomerPurchaseAttemptStatus(productId: string, key: string, orderId?: string | null): Promise<CustomerPurchaseAttemptStatus> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 12000)
+  try {
+    const { data, error } = await supabase.functions.invoke('process-purchase', {
+      body: { action: 'get_status', product_group_id: productId, idempotency_key: key, order_id: orderId || undefined },
+      signal: controller.signal,
+    })
+    if (error || !data || !['unknown', 'pending', 'completed', 'released', 'review_required'].includes(data.state)) return { state: 'unknown' }
+    if (['completed', 'released'].includes(data.state) && (
+      typeof data.order_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(data.order_id) ||
+      !Number.isInteger(data.quantity) || data.quantity < 1 ||
+      typeof data.amount_ngn !== 'number' || !Number.isFinite(data.amount_ngn) || data.amount_ngn <= 0
+    )) return { state: 'unknown' }
+    return { state: data.state,
+      order_id: typeof data.order_id === 'string' ? data.order_id : undefined,
+      quantity: Number.isInteger(data.quantity) && data.quantity > 0 ? data.quantity : undefined,
+      amount_ngn: typeof data.amount_ngn === 'number' && Number.isFinite(data.amount_ngn) && data.amount_ngn > 0 ? data.amount_ngn : undefined,
+    }
+  } catch {
+    return { state: 'unknown' }
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
 // Get user's order history
-export async function getUserOrders(userId: string): Promise<any[]> {
+export async function getUserOrders(userId: string, signal?: AbortSignal): Promise<any[]> {
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  if (signal?.aborted) controller.abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  const timeout = setTimeout(abort, 12000)
   try {
     const { data, error } = await supabase
       .from('orders_safe_history' as any)
       .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
+      .abortSignal(controller.signal)
 
-    if (error) {
-      console.error('Error fetching user orders:', error)
-      return []
-    }
-
-    return (data || []).map(sanitizeOrderHistoryCredentialVisibility)
-  } catch (error) {
-    console.error('Error getting user orders:', error)
-    return []
+    if (error || !Array.isArray(data)) throw new Error('orders_history_unavailable')
+    return data.map(sanitizeOrderHistoryCredentialVisibility)
+  } catch {
+    // A failed request is not an empty order history. Never log credential rows
+    // or forward database errors to a customer-facing error message.
+    throw new Error('orders_history_unavailable')
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', abort)
   }
 }
 

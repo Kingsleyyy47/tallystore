@@ -13,6 +13,7 @@ import { BackToProducts } from '@/components/ui/back-button'
 import { useAuth } from '@/contexts/SimpleAuth'
 import {
   processPurchaseSecure,
+  getCustomerPurchaseAttemptStatus,
   getIndividualAccountById,
   getProductGroupById,
   getCategoryById,
@@ -37,7 +38,7 @@ const credentialFields: Array<{
   label: string
   labelClassName: string
 }> = [
-  { key: 'username', label: 'ID', labelClassName: 'text-white' },
+  { key: 'username', label: 'USERNAME / ID', labelClassName: 'text-white' },
   { key: 'password', label: 'PASSWORD', labelClassName: 'text-rose-400' },
   { key: 'two_fa_code', label: '2FA KEY', labelClassName: 'text-purple-400' },
   { key: 'email', label: 'EMAIL', labelClassName: 'text-emerald-400 underline underline-offset-4' },
@@ -52,6 +53,11 @@ function credentialValue(value: unknown) {
   if (typeof value === 'string') return value.trim()
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
   return JSON.stringify(value, null, 2)
+}
+
+function checkoutCredentialLabel(field: typeof credentialFields[number], credential: PurchasedAccountCredentials, productName = '') {
+  return field.key === 'username' && productName.toLowerCase().includes('discord') && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(credentialValue(credential.username))
+    ? 'USERNAME / LOGIN EMAIL' : field.label
 }
 
 function normalizePurchasedCredentials(
@@ -77,6 +83,14 @@ function normalizePurchasedCredentials(
 }
 
 export default function CheckoutPage() {
+  const { user } = useAuth()
+  const location = useLocation()
+  const product = location.state?.productGroup?.id || new URLSearchParams(location.search).get('product') || ''
+  // A change of account removes any previously displayed credentials immediately.
+  return <CheckoutAccount key={`${user?.id || 'signed-out'}:${product}`} />
+}
+
+function CheckoutAccount() {
   const location = useLocation()
   const navigate = useNavigate()
   const { user, walletBalance, walletLoading, walletBalanceUnavailable, refreshWalletBalance, showBalances, isStaff, isAdmin } = useAuth()
@@ -113,36 +127,100 @@ export default function CheckoutPage() {
   const purchaseCompletedRef = useRef(false)
   const checkoutAttemptRef = useRef(`checkout_${Date.now()}_${crypto.randomUUID()}`)
   const purchaseIdempotencyKeyRef = useRef<string | null>(null)
+  const pendingSnapshotRef = useRef<{ quantity?: number; expectedAmountNgn?: number }>({})
+  const [checkingPurchaseStatus, setCheckingPurchaseStatus] = useState(false)
+  const [purchaseCheckMessage, setPurchaseCheckMessage] = useState('')
+  const purchaseScopeRef = useRef(pendingPurchaseStorageKey)
+  const checkoutMountedRef = useRef(true)
+  purchaseScopeRef.current = pendingPurchaseStorageKey
+  useEffect(() => {
+    checkoutMountedRef.current = true
+    return () => { checkoutMountedRef.current = false }
+  }, [])
 
   useEffect(() => {
+    purchaseIdempotencyKeyRef.current = null
+    pendingSnapshotRef.current = {}
+    setPendingOrderId(null)
+    setPurchaseStatusUnknown(false)
+    setPurchasedCredentials([])
+    setCompletedPurchase(null)
+    setCredentialsModalOpen(false)
+    setPurchaseCheckMessage('')
+    setCheckingPurchaseStatus(false)
+    setPurchasing(false)
     if (!pendingPurchaseStorageKey) return
     try {
-      const saved = JSON.parse(sessionStorage.getItem(pendingPurchaseStorageKey) || 'null')
+      const saved = JSON.parse(localStorage.getItem(pendingPurchaseStorageKey) || sessionStorage.getItem(pendingPurchaseStorageKey) || 'null')
       purchaseIdempotencyKeyRef.current = typeof saved?.idempotencyKey === 'string' ? saved.idempotencyKey : null
       setPendingOrderId(typeof saved?.orderId === 'string' ? saved.orderId : null)
       setPurchaseStatusUnknown(Boolean(saved?.idempotencyKey))
+      if (Number.isInteger(saved?.quantity) && saved.quantity > 0) {
+        pendingSnapshotRef.current = { quantity: saved.quantity, expectedAmountNgn: saved.expectedAmountNgn }
+        setQuantity(saved.quantity)
+      }
     } catch {
-      setPurchaseStatusUnknown(false)
+      // An unreadable purchase reference cannot prove that no request was sent.
+      setPurchaseStatusUnknown(true)
+      setPurchaseCheckMessage('This browser could not read your purchase reference. Check your order history or contact support.')
     }
   }, [pendingPurchaseStorageKey])
 
   const rememberPendingPurchase = (idempotencyKey: string, orderId?: string) => {
+    purchaseIdempotencyKeyRef.current = idempotencyKey
     setPendingOrderId(orderId || null)
     setPurchaseStatusUnknown(true)
     if (pendingPurchaseStorageKey) {
       try {
-        sessionStorage.setItem(pendingPurchaseStorageKey, JSON.stringify({ idempotencyKey, orderId: orderId || null }))
-      } catch (storageError) {
-        console.error('Could not retain pending purchase in this browser session:', storageError)
+        const snapshot = JSON.stringify({ idempotencyKey, orderId: orderId || null, ...pendingSnapshotRef.current })
+        localStorage.setItem(pendingPurchaseStorageKey, snapshot)
+        try { sessionStorage.setItem(pendingPurchaseStorageKey, snapshot) } catch { /* Durable copy is already saved. */ }
+        return true
+      } catch {
+        console.error('Could not retain purchase reference in this browser')
       }
     }
+    return false
   }
 
   const clearPendingPurchase = () => {
     purchaseIdempotencyKeyRef.current = null
+    pendingSnapshotRef.current = {}
+    setPendingOrderId(null)
+    setPurchaseStatusUnknown(false)
+    setPurchaseCheckMessage('')
     if (pendingPurchaseStorageKey) {
-      try { sessionStorage.removeItem(pendingPurchaseStorageKey) } catch { /* Session storage is optional. */ }
+      try { localStorage.removeItem(pendingPurchaseStorageKey) } catch { /* Retain conservatively on storage failure. */ }
+      try { sessionStorage.removeItem(pendingPurchaseStorageKey) } catch { /* Retain conservatively on storage failure. */ }
     }
+  }
+
+  const checkPendingPurchase = async () => {
+    const key = purchaseIdempotencyKeyRef.current
+    const scope = pendingPurchaseStorageKey
+    if (!key || !productId || checkingPurchaseStatus || purchasing) return
+    setCheckingPurchaseStatus(true)
+    setPurchaseCheckMessage('')
+    const result = await getCustomerPurchaseAttemptStatus(productId, key, pendingOrderId)
+    if (!checkoutMountedRef.current || purchaseScopeRef.current !== scope || purchaseIdempotencyKeyRef.current !== key) return
+    if (result.state === 'completed') {
+      const savedQuantity = pendingSnapshotRef.current.quantity
+      clearPendingPurchase()
+      purchaseCompletedRef.current = true
+      setCompletedPurchase({ orderId: result.order_id, productName: productGroup?.name, quantity: result.quantity || savedQuantity })
+      void refreshWalletBalance().catch(() => undefined)
+      toast({ title: 'Purchase confirmed', description: 'Your purchased account details are in your order history.' })
+    } else if (result.state === 'released') {
+      clearPendingPurchase()
+      void refreshWalletBalance().catch(() => undefined)
+      toast({ title: 'Purchase was not completed', description: 'The wallet hold was released. Review the current price and stock before trying again.' })
+    } else {
+      if (result.order_id) rememberPendingPurchase(key, result.order_id)
+      setPurchaseCheckMessage(result.state === 'review_required'
+        ? 'This purchase needs support review. Your original purchase reference is saved; do not place it again.'
+        : 'This purchase is still unconfirmed. Your original reference is saved; check again shortly or contact support.')
+    }
+    setCheckingPurchaseStatus(false)
   }
 
   // Discount code state - applied on top of any quantity discount tier.
@@ -260,7 +338,7 @@ export default function CheckoutPage() {
       lines.push(`Account ${index + 1}`)
       credentialFields.forEach((field) => {
         const value = credentialValue(credential[field.key])
-        if (value) lines.push(`${field.label}: ${value}`)
+        if (value) lines.push(`${checkoutCredentialLabel(field, credential, completedPurchase?.productName || productGroup?.name)}: ${value}`)
       })
       lines.push('')
     })
@@ -326,6 +404,7 @@ export default function CheckoutPage() {
         new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 12000)),
       ]).catch(() => null)
       if (!latestProductGroup || !isCustomerSellableProduct(latestProductGroup)) {
+        if (purchaseIdempotencyKeyRef.current) { setLoading(false); return }
         toast({
           variant: "destructive",
           title: "Product unavailable",
@@ -339,14 +418,14 @@ export default function CheckoutPage() {
       const latestMaxQuantity = accountId ? 1 : canAutoFulfillProduct(latestProductGroup)
         ? 100
         : Math.max(1, Number.isFinite(stock) ? stock : 1)
-      setQuantity((current) => Math.max(1, Math.min(current, latestMaxQuantity)))
+      setQuantity((current) => pendingSnapshotRef.current.quantity || Math.max(1, Math.min(current, latestMaxQuantity)))
       if (navigationCategory) setCategory(navigationCategory)
       if (!navigationCategory) {
         void getCategoryById(latestProductGroup.category_id).then(setCategory).catch(() => setCategory(null))
       }
       
       // If we have an accountId, load individual account data
-      if (accountId) {
+      if (accountId && !purchaseIdempotencyKeyRef.current) {
         try {
           setLoading(true)
 
@@ -365,7 +444,7 @@ export default function CheckoutPage() {
         setAccount(accountData)
 
         // Refresh wallet balance
-        await refreshWalletBalance()
+        void refreshWalletBalance().catch(() => undefined)
         } catch (error) {
           console.error('Error loading checkout data:', error)
           toast({
@@ -380,7 +459,7 @@ export default function CheckoutPage() {
       } else {
         // For bulk purchases without specific accountId, just refresh wallet and continue
         try {
-          await refreshWalletBalance()
+          void refreshWalletBalance().catch(() => undefined)
           setLoading(false)
         } catch (error) {
           console.error('Error refreshing wallet:', error)
@@ -438,15 +517,38 @@ export default function CheckoutPage() {
 
   const handlePurchase = async () => {
     if (!productGroup || !user) return
-    if (pendingOrderId || purchaseStatusUnknown) return
+    if (purchasing || pendingOrderId || purchaseStatusUnknown || purchaseIdempotencyKeyRef.current) return
     if (circleStatus !== 'ready' || circleUserId !== user.id) return
     if (blockStaffPurchase(isStaff, isAdmin, toast)) return
+
+    // Another tab may have started this product checkout since this page loaded.
+    // Reuse its saved reference for status checks instead of overwriting it.
+    try {
+      const saved = pendingPurchaseStorageKey ? JSON.parse(localStorage.getItem(pendingPurchaseStorageKey) || 'null') : null
+      if (typeof saved?.idempotencyKey === 'string') {
+        pendingSnapshotRef.current = { quantity: saved.quantity, expectedAmountNgn: saved.expectedAmountNgn }
+        rememberPendingPurchase(saved.idempotencyKey, saved.orderId)
+        return
+      }
+    } catch {
+      toast({ variant: 'destructive', title: 'Purchase could not start', description: 'This browser could not read the purchase reference. Check order history or enable site storage.' })
+      return
+    }
 
     setPurchasing(true)
     setServerInsufficientFunds(false)
     paymentAttemptedRef.current = true
     const idempotencyKey = purchaseIdempotencyKeyRef.current || `purchase_${user.id.substring(0, 8)}_${productGroup.id.substring(0, 8)}_${quantity}_${Date.now()}_${crypto.randomUUID()}`
     purchaseIdempotencyKeyRef.current = idempotencyKey
+    const purchaseScope = pendingPurchaseStorageKey
+    pendingSnapshotRef.current = { quantity, expectedAmountNgn: totalAmount }
+    if (!rememberPendingPurchase(idempotencyKey)) {
+      purchaseIdempotencyKeyRef.current = null
+      setPurchaseStatusUnknown(false)
+      setPurchasing(false)
+      toast({ variant: 'destructive', title: 'Purchase could not start', description: 'This browser could not save the purchase reference. Enable site storage and try again.' })
+      return
+    }
     
     try {
       // SECURE: Use Edge Function for purchase (server-side processing)
@@ -474,6 +576,7 @@ export default function CheckoutPage() {
         assignmentMode: croAssignment?.mode || 'unknown',
         revenueContext: getRevenueRequestContext(),
       }, quantity === 1 ? account?.id || accountId || null : null, totalAmount, idempotencyKey)
+      if (!checkoutMountedRef.current || purchaseScopeRef.current !== purchaseScope) return
       
       if (result.success) {
         clearPendingPurchase()
@@ -482,7 +585,7 @@ export default function CheckoutPage() {
         const accountText = quantity > 1 ? `${quantity} accounts` : '1 account'
 
         // Refresh wallet balance after successful purchase
-        await refreshWalletBalance()
+        void refreshWalletBalance().catch(() => undefined)
 
         toast({
           title: `${purchaseType} Successful! 🎉`,
@@ -509,7 +612,7 @@ export default function CheckoutPage() {
           }, 1500)
         }
       } else {
-        if (result.code === 'SUPPLIER_CONFIRMATION_PENDING' || result.code === 'PURCHASE_CONFIRMATION_PENDING' || result.code === 'PURCHASE_STATUS_UNKNOWN') {
+        if (result.retry_safe !== true) {
           rememberPendingPurchase(idempotencyKey, result.order_id)
           toast({
             title: 'Order being checked',
@@ -541,7 +644,7 @@ export default function CheckoutPage() {
         } else if (result.error?.includes('INSUFFICIENT_STOCK')) {
           errorTitle = "Limited Stock Available 📦";
           errorDescription = result.error.replace('INSUFFICIENT_STOCK: ', '');
-        } else if (result.error?.includes('Insufficient wallet balance')) {
+        } else if (result.error?.includes('Insufficient wallet balance') || result.error?.includes('Insufficient verified funds')) {
           errorTitle = "Insufficient Balance 💰";
           errorDescription = "Please top up your wallet to complete this purchase.";
           setServerInsufficientFunds(true)
@@ -556,6 +659,7 @@ export default function CheckoutPage() {
       }
       
     } catch (error) {
+      if (!checkoutMountedRef.current || purchaseScopeRef.current !== purchaseScope) return
       console.error('❌ Purchase error:', error)
       rememberPendingPurchase(idempotencyKey)
       toast({
@@ -563,7 +667,7 @@ export default function CheckoutPage() {
         description: 'We could not confirm the purchase status. Check order history or contact support before placing it again.',
       })
     } finally {
-      setPurchasing(false)
+      if (checkoutMountedRef.current && purchaseScopeRef.current === purchaseScope) setPurchasing(false)
     }
   }
 
@@ -589,10 +693,12 @@ export default function CheckoutPage() {
         <NavbarAuth />
         <div className="container mx-auto px-6 pt-24 pb-12">
           <div className="text-center">
-            <h1 className="text-2xl font-bold mb-4">Product Not Found</h1>
+            <h1 className="text-2xl font-bold mb-4">{purchaseStatusUnknown ? 'Check your purchase' : 'Product Not Found'}</h1>
             <p className="text-muted-foreground mb-6">
-              The product you're trying to purchase doesn't exist.
+              {purchaseStatusUnknown ? 'Your purchase reference is saved even if this product is no longer listed.' : "The product you're trying to purchase doesn't exist."}
             </p>
+            {purchaseStatusUnknown && <div className="mb-6 space-y-3"><Button onClick={() => void checkPendingPurchase()} disabled={checkingPurchaseStatus || !purchaseIdempotencyKeyRef.current}>Check purchase status</Button><p className="text-sm text-muted-foreground" role="status">{purchaseCheckMessage}</p><Link className="block underline" to="/orders">Open order history</Link></div>}
+            {completedPurchase && <Link className="mb-6 block underline" to="/orders">Purchase confirmed — open order history</Link>}
             <BackToProducts />
           </div>
         </div>
@@ -804,7 +910,7 @@ export default function CheckoutPage() {
                 <CheckCircle className="h-4 w-4 mr-2" />
                 Purchase Complete
               </Button>
-            ) : purchaseStatusUnknown ? (
+            ) : purchaseStatusUnknown && !purchasing ? (
               <Button className="w-full" size="lg" disabled>
                 <Clock className="h-4 w-4 mr-2" />
                 Order Being Checked
@@ -846,10 +952,15 @@ export default function CheckoutPage() {
                 )}
               </Button>
             )}
-            {purchaseStatusUnknown && (
+            {completedPurchase && <Link to="/orders" className="block rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-center text-sm font-semibold text-primary">Purchase confirmed — open order history</Link>}
+            {purchaseStatusUnknown && !purchasing && (
               <Alert>
                 <AlertDescription>
                   This purchase is awaiting confirmation{pendingOrderId ? ` (order ${pendingOrderId})` : ''}. Check <Link to="/orders" className="font-semibold underline">order history</Link> or contact support before placing it again.
+                  <Button type="button" variant="outline" className="mt-3 w-full" disabled={checkingPurchaseStatus || !purchaseIdempotencyKeyRef.current} onClick={() => void checkPendingPurchase()}>
+                    {checkingPurchaseStatus && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Check purchase status
+                  </Button>
+                  {purchaseCheckMessage && <p className="mt-2 text-sm" role="status">{purchaseCheckMessage}</p>}
                 </AlertDescription>
               </Alert>
             )}
@@ -888,7 +999,7 @@ export default function CheckoutPage() {
             ) : (
               purchasedCredentials.map((credential, index) => {
                 const visibleFields = credentialFields
-                  .map((field) => ({ ...field, value: credentialValue(credential[field.key]) }))
+                  .map((field) => ({ ...field, label: checkoutCredentialLabel(field, credential, completedPurchase?.productName || productGroup.name), value: credentialValue(credential[field.key]) }))
                   .filter((field) => field.value)
 
                 return (
@@ -898,7 +1009,7 @@ export default function CheckoutPage() {
                         {index + 1}
                       </div>
                       <div className="min-w-0 flex-1 rounded-full bg-white/[0.08] px-4 py-3 font-mono text-lg tracking-[0.18em] text-slate-300 sm:text-2xl">
-                        <span className="block truncate">username | password | Mail | Mail password | 2fa key |</span>
+                        <span className="block whitespace-normal text-xs leading-relaxed tracking-normal sm:text-sm">{visibleFields.map((field) => field.label).join(' | ')}</span>
                       </div>
                     </div>
 

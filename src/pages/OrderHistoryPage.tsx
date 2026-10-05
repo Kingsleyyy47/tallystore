@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -359,6 +359,13 @@ function OrderDetailsView({
 }
 
 export default function OrderHistoryPage() {
+  const { user } = useAuth()
+  // Remount on account changes so the previous customer's orders and selected
+  // credentials cannot be rendered while the next account is being checked.
+  return <OrderHistoryAccount key={user?.id || 'signed-out'} />
+}
+
+function OrderHistoryAccount() {
   const location = useLocation()
   const navigate = useNavigate()
   const {
@@ -378,6 +385,11 @@ export default function OrderHistoryPage() {
   const [orders, setOrders] = useState<any[]>([])
   const [filteredOrders, setFilteredOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [hasLoadedOrders, setHasLoadedOrders] = useState(false)
+  const [ordersError, setOrdersError] = useState<string | null>(null)
+  const [reloadToken, setReloadToken] = useState(0)
+  const hasLoadedOrdersRef = useRef(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
@@ -413,87 +425,36 @@ export default function OrderHistoryPage() {
     }
   }, [location.state, toast, user?.id])
 
-  // Load real orders from Supabase
+  // Load owned orders independently of catalogue and recommendation requests.
   useEffect(() => {
+    if (!user?.id) return
+    const userId = user.id
+    const controller = new AbortController()
+    let active = true
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     const loadOrders = async () => {
-      if (!user) return
-      
+      if (hasLoadedOrdersRef.current) setRefreshing(true)
+      else setLoading(true)
+      setOrdersError(null)
       try {
-        setLoading(true)
-        const [
-          ordersData,
-          productGroupsData,
-          categoriesData,
-          automationSetting,
-          revenueSettings,
-          experiments,
-          actionPlans,
-          favoriteIds,
-          topSellingIds,
-          purchaseHistory,
-        ] = await Promise.all([
-          getUserOrders(user.id),
-          getAllProductGroups(),
-          getCategories(),
-          getAppSetting('sales_recommendation_automation_enabled'),
-          loadRevenueOsSettings(),
-          loadRunningCroExperiments(),
-          loadRunningCroActionPlans(),
-          getFavoriteProductGroupIds(),
-          getTopSellingProductGroupIds(16),
-          getUserPurchaseHistory(user.id),
+        const ordersData = await Promise.race([
+          getUserOrders(userId, controller.signal),
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              controller.abort()
+              reject(new Error('Order history timed out'))
+            }, 12_000)
+          }),
         ])
-        
+        if (!active) return
         setOrders(ordersData)
         setFilteredOrders(ordersData)
-        setRecommendationCategories(categoriesData)
-        setRecommendationSettings(revenueSettings)
-        setRecommendationExperiments(experiments)
-
-        const completedProductIds = new Set(
-          ordersData
-            .filter((order: any) => order.status === 'completed' && order.product_group_id)
-            .map((order: any) => String(order.product_group_id)),
-        )
-        const relationshipBoosts = await loadCustomerRelationshipBoosts(
-          purchaseHistory.productGroupCounts,
-          purchaseHistory.lastPurchasedAtByProductGroup,
-        )
-        const sellableCandidates = productGroupsData
-          .filter(isCustomerSellableProduct)
-          .filter((product) => !completedProductIds.has(product.id) || relationshipBoosts[product.id] || favoriteIds.includes(product.id) || topSellingIds.includes(product.id))
-
-        const assignment = resolveCroAssignment({
-          surface: 'order_history_post_purchase',
-          settings: revenueSettings,
-          experiments,
-          visitorId: getRevenueVisitorId(),
-          userId: user.id,
-        })
-        const automationEnabled = automationSetting !== 'false' && revenueSettings.enabled && assignment.rankingEnabled
-        const ranked = automationEnabled
-          ? rankProductsForRevenueOs(sellableCandidates, categoriesData, {
-              surface: 'order_history_post_purchase',
-              topSellingIds,
-              favoriteProductIds: favoriteIds,
-              relationshipBoosts,
-              actionPlans,
-              customer: {
-                productGroupCounts: purchaseHistory.productGroupCounts,
-                categoryCounts: purchaseHistory.categoryCounts,
-                lastPurchasedAtByProductGroup: purchaseHistory.lastPurchasedAtByProductGroup,
-                lastPurchasedAtByCategory: purchaseHistory.lastPurchasedAtByCategory,
-                lastProductGroupId: purchaseHistory.lastProductGroupId,
-              },
-              pressure: getCustomerPressureState(),
-              settings: revenueSettings,
-              assignment,
-            }).slice(0, 4).map((rankedProduct) => rankedProduct.product)
-          : []
-        setRecommendationProducts(ranked)
+        setSelectedOrder((current: any) => current ? ordersData.find((order: any) => order.id === current.id) || null : null)
+        hasLoadedOrdersRef.current = true
+        setHasLoadedOrders(true)
         trackRevenueEvent({
           eventType: 'PAGE_VIEWED',
-          userId: user.id,
+          userId,
           surface: 'order_history_loaded',
           metadata: {
             order_count: ordersData.length,
@@ -503,23 +464,102 @@ export default function OrderHistoryPage() {
           },
         })
       } catch (error) {
+        if (!active) return
         console.error('Error loading orders:', error)
-        setRecommendationProducts([])
-        setRecommendationCategories([])
-        setRecommendationSettings(null)
-        setRecommendationExperiments([])
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Failed to load order history"
-        })
+        setOrdersError(hasLoadedOrdersRef.current
+          ? 'Could not refresh orders. Your last loaded orders are still shown; try again.'
+          : 'Could not load your orders. Please retry. No purchase history has been confirmed yet.')
       } finally {
-        setLoading(false)
+        if (timeoutId) clearTimeout(timeoutId)
+        if (active) {
+          setLoading(false)
+          setRefreshing(false)
+        }
       }
     }
 
-    loadOrders()
-  }, [user, toast])
+    void loadOrders()
+    return () => {
+      active = false
+      controller.abort()
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }, [user?.id, reloadToken])
+
+  // Suggestions are optional. Their latency or failure must never hide orders.
+  useEffect(() => {
+    if (!user?.id || !hasLoadedOrders) return
+    const userId = user.id
+    let active = true
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const loadSuggestions = async () => {
+      try {
+        const optionalData = Promise.all([
+          getAllProductGroups(), getCategories(),
+          getAppSetting('sales_recommendation_automation_enabled'),
+          loadRevenueOsSettings(), loadRunningCroExperiments(),
+          loadRunningCroActionPlans(), getFavoriteProductGroupIds(),
+          getTopSellingProductGroupIds(16), getUserPurchaseHistory(userId),
+        ])
+        const [productGroupsData, categoriesData, automationSetting, revenueSettings, experiments, actionPlans, favoriteIds, topSellingIds, purchaseHistory] = await Promise.race([
+          optionalData,
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('Suggestions timed out')), 6_000)
+          }),
+        ])
+        if (timeoutId) clearTimeout(timeoutId)
+        timeoutId = undefined
+        if (!active) return
+        const completedProductIds = new Set(orders
+          .filter((order: any) => order.status === 'completed' && order.product_group_id)
+          .map((order: any) => String(order.product_group_id)))
+        const relationshipBoosts = await Promise.race([
+          loadCustomerRelationshipBoosts(purchaseHistory.productGroupCounts, purchaseHistory.lastPurchasedAtByProductGroup),
+          new Promise<Record<string, number>>((resolve) => {
+            timeoutId = setTimeout(() => resolve({}), 3_000)
+          }),
+        ])
+        if (!active) return
+        const sellableCandidates = productGroupsData
+          .filter(isCustomerSellableProduct)
+          .filter((product) => !completedProductIds.has(product.id) || relationshipBoosts[product.id] || favoriteIds.includes(product.id) || topSellingIds.includes(product.id))
+        const assignment = resolveCroAssignment({
+          surface: 'order_history_post_purchase', settings: revenueSettings,
+          experiments, visitorId: getRevenueVisitorId(), userId,
+        })
+        const automationEnabled = automationSetting !== 'false' && revenueSettings.enabled && assignment.rankingEnabled
+        const ranked = automationEnabled
+          ? rankProductsForRevenueOs(sellableCandidates, categoriesData, {
+              surface: 'order_history_post_purchase', topSellingIds,
+              favoriteProductIds: favoriteIds, relationshipBoosts, actionPlans,
+              customer: {
+                productGroupCounts: purchaseHistory.productGroupCounts,
+                categoryCounts: purchaseHistory.categoryCounts,
+                lastPurchasedAtByProductGroup: purchaseHistory.lastPurchasedAtByProductGroup,
+                lastPurchasedAtByCategory: purchaseHistory.lastPurchasedAtByCategory,
+                lastProductGroupId: purchaseHistory.lastProductGroupId,
+              },
+              pressure: getCustomerPressureState(), settings: revenueSettings, assignment,
+            }).slice(0, 4).map((rankedProduct) => rankedProduct.product)
+          : []
+        setRecommendationCategories(categoriesData)
+        setRecommendationSettings(revenueSettings)
+        setRecommendationExperiments(experiments)
+        setRecommendationProducts(ranked)
+      } catch (error) {
+        if (!active) return
+        console.warn('Optional order recommendations unavailable:', error)
+        setRecommendationProducts([])
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId)
+      }
+    }
+    void loadSuggestions()
+    return () => {
+      active = false
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }, [hasLoadedOrders, orders, user?.id])
 
   useEffect(() => {
     // Filter orders based on search and filters
@@ -804,14 +844,17 @@ export default function OrderHistoryPage() {
                 Open completed orders to copy or download the exact account details attached to that purchase.
               </p>
             </div>
-            {!purchasingPaused && (
-              <Button asChild className="hidden shrink-0 rounded-xl font-black sm:inline-flex">
-                <Link to="/products">
-                  <ShoppingBag className="h-4 w-4" />
-                  Shop
-                </Link>
+            <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+              <Button type="button" variant="outline" className="rounded-xl font-black" disabled={loading || refreshing} onClick={() => setReloadToken((current) => current + 1)}>
+                <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+                {refreshing ? 'Refreshing...' : 'Refresh orders'}
               </Button>
-            )}
+              {!purchasingPaused && (
+                <Button asChild className="hidden shrink-0 rounded-xl font-black sm:inline-flex">
+                  <Link to="/products"><ShoppingBag className="h-4 w-4" />Shop</Link>
+                </Button>
+              )}
+            </div>
           </div>
         </section>
 
@@ -846,6 +889,14 @@ export default function OrderHistoryPage() {
           </Alert>
         )}
 
+        {ordersError && <Alert role="alert" className="mt-4 border-amber-500 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">
+          <ShieldAlert className="h-5 w-5" />
+          <div className="ml-2 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-semibold">{ordersError}</p>
+            <Button type="button" variant="outline" size="sm" disabled={loading || refreshing} onClick={() => setReloadToken((current) => current + 1)}>Retry orders</Button>
+          </div>
+        </Alert>}
+
         {selectedOrder ? (
           <section className="mt-8">
             <div className="mb-5 flex items-center gap-3">
@@ -875,6 +926,13 @@ export default function OrderHistoryPage() {
               onOpenLogin={handleOpenLogin}
             />
           </section>
+        ) : !hasLoadedOrders && !loading ? (
+          <div className="mt-8 rounded-2xl border border-amber-300 bg-white p-8 text-center dark:border-amber-700 dark:bg-card">
+            <Package className="mx-auto h-9 w-9 text-amber-600" />
+            <h2 className="mt-3 text-lg font-bold">Order history is unavailable</h2>
+            <p className="mt-2 text-sm text-muted-foreground">Retry to verify your purchases and credentials.</p>
+            <Button type="button" className="mt-4" onClick={() => setReloadToken((current) => current + 1)}>Retry orders</Button>
+          </div>
         ) : (
           <>
         {/* Stats */}

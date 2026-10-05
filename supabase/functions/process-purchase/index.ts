@@ -3,6 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { ngnMinorUnits } from '../_shared/ngn-amount.mjs';
 import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts';
 import { configuredSuppliers, fulfillSupplierShortfall } from '../_shared/supplier-purchase.mjs';
+import { getCustomerPurchaseStatus } from '../_shared/customer-purchase-status.ts';
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -398,6 +399,8 @@ serve(async (req) => {
   }
 
   let supabaseAdmin: any = null;
+  let authorizationMayHaveCommitted = false;
+  let checkingStatus = false;
   const revenueContext: {
     userId?: string | null;
     productGroupId?: string | null;
@@ -420,6 +423,13 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
     const user = await authenticateCustomerRequest(req, supabaseAdmin, 'products', 'process-purchase');
+    const requestBody = await req.json();
+    if (requestBody?.action === 'get_status') {
+      checkingStatus = true;
+      const result = await getCustomerPurchaseStatus(supabaseAdmin, user.id,
+        requestBody.idempotency_key, requestBody.product_group_id, requestBody.order_id);
+      return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+    }
     await assertPurchasingCustomer(supabaseAdmin, user.id, req);
     revenueContext.userId = user.id;
 
@@ -433,7 +443,7 @@ serve(async (req) => {
       revenue_context,
       preferred_account_id,
       expected_amount_ngn,
-    } = await req.json();
+    } = requestBody;
     const revenueRequestContext = sanitizeRevenueRequestContext(revenue_context);
     const walletRequestForensics = await getWalletRequestForensics(req, 'process-purchase');
     revenueContext.requestContext = revenueRequestContext;
@@ -470,12 +480,14 @@ serve(async (req) => {
       : null;
 
     // Check idempotency - prevent duplicate purchases
-    const { data: existingOrder } = await supabaseAdmin
+    const { data: existingOrder, error: existingOrderError } = await supabaseAdmin
       .from('orders')
       .select('id, amount, status, created_at, product_group_id, account_details, wallet_reservation_id, financial_authorization_status, financial_security_version')
       .eq('user_id', user.id)
       .eq('idempotency_key', idempotency_key)
-      .single();
+      .maybeSingle();
+
+    if (existingOrderError) throw new Error('Could not verify purchase idempotency state');
 
     if (existingOrder) {
       const existingDetails = existingOrder.account_details && typeof existingOrder.account_details === 'object'
@@ -500,6 +512,11 @@ serve(async (req) => {
       }
 
       if (String(existingOrder.status || '').toLowerCase() === 'completed') {
+        const proof = await getCustomerPurchaseStatus(supabaseAdmin, user.id, idempotency_key, product_group_id, existingOrder.id);
+        if (proof.state !== 'completed') return new Response(JSON.stringify({ success: false,
+          order_id: existingOrder.id, code: 'PURCHASE_CONFIRMATION_PENDING',
+          error: 'This purchase needs confirmation. Check order history or contact support before placing it again.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         console.log('Purchase idempotency hit: returning completed order.');
         return new Response(
           JSON.stringify({
@@ -769,12 +786,15 @@ serve(async (req) => {
         p_financial_security_version: requestedSecurityVersion,
     };
     const existingSupplierOrder = (existingOrder?.account_details as any)?.financial_authorization === 'supplier_reserve_first';
+    authorizationMayHaveCommitted = true;
     let { data: authorization, error: authorizationError } = await supabaseAdmin.rpc(
       existingSupplierOrder ? 'authorize_supplier_product_purchase' : 'authorize_product_purchase',
       existingSupplierOrder ? Object.fromEntries(Object.entries(authorizationArgs).filter(([key]) => key !== 'p_preferred_account_id')) : authorizationArgs,
     );
     if (!authorizationError && authorization?.code === 'INSUFFICIENT_STOCK' && productHasLiveProvider && !preferredAccountId) {
+      if (authorization?.success === false && !existingOrder && !authorization?.order_id) authorizationMayHaveCommitted = false;
       if (quantity > 100) throw new Error('INSUFFICIENT_STOCK: Supplier orders support at most 100 accounts.');
+      authorizationMayHaveCommitted = true;
       ({ data: authorization, error: authorizationError } = await supabaseAdmin.rpc('authorize_supplier_product_purchase', Object.fromEntries(Object.entries(authorizationArgs).filter(([key]) => key !== 'p_preferred_account_id'))));
       // Local stock may have been replenished between the two authorizations.
       if (!authorizationError && authorization?.code === 'LOCAL_STOCK_AVAILABLE') {
@@ -789,6 +809,16 @@ serve(async (req) => {
     const authorizationResult = authorization as any;
     if (!authorizationResult?.success) {
       const code = String(authorizationResult?.code || '');
+      // A transport error, malformed result, or a result referring to an order
+      // cannot prove that no hold was created. Only documented pre-hold denials
+      // allow the customer to start another attempt.
+      const preHoldDenials = new Set(['PROFILE_NOT_FOUND', 'CUSTOMER_ONLY', 'WALLET_NOT_ACTIVE',
+        'WALLET_SECURITY_VERSION_STALE', 'PRODUCT_NOT_FOUND', 'PRODUCT_UNAVAILABLE', 'PRICE_CHANGED',
+        'FINANCIAL_STATE_UNAVAILABLE', 'WALLET_REVIEW_REQUIRED', 'PREFERRED_ACCOUNT_QUANTITY_INVALID',
+        'PREFERRED_ACCOUNT_UNAVAILABLE', 'INSUFFICIENT_STOCK', 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS',
+        'SUPPLIER_NOT_CONFIGURED', 'SUPPLIER_CONFIG_SNAPSHOT_REQUIRED', 'SUPPLIER_CONFIG_SNAPSHOT_INVALID',
+        'LOCAL_STOCK_AVAILABLE']);
+      if (!existingOrder && !authorizationResult?.order_id && preHoldDenials.has(code)) authorizationMayHaveCommitted = false;
       if (code === 'INSUFFICIENT_TRUSTED_AVAILABLE_FUNDS') {
         throw new Error(`Insufficient verified funds. Required: ₦${totalPrice.toLocaleString()}`);
       }
@@ -1014,6 +1044,9 @@ serve(async (req) => {
     const internalMessage = error instanceof Error ? error.message : 'Unknown error';
     const message = publicPurchaseError(internalMessage);
     console.error('Purchase failed:', message);
+    if (checkingStatus) return new Response(JSON.stringify({ state: 'unknown' }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, status: 503,
+    });
 
     // An RPC response can fail after its transaction committed. Find the order
     // by the authenticated user and request key before deciding whether this
@@ -1028,16 +1061,19 @@ serve(async (req) => {
           .maybeSingle();
         if (lookupError) throw lookupError;
         pendingOrder = data;
-      } catch (lookupError) {
-        console.error('Could not verify purchase state after error:', lookupError);
+      } catch {
+        console.error('Could not verify purchase state after error');
       }
     }
     const knownOrderId = pendingOrder?.id || authorizedOrderContext?.orderId;
     const knownReservationId = pendingOrder?.wallet_reservation_id || authorizedOrderContext?.reservationId;
-    if (pendingOrder?.user_id === revenueContext.userId
+    const terminalProof = pendingOrder && ['completed', 'cancelled', 'canceled', 'failed'].includes(String(pendingOrder.status || '').toLowerCase())
+      ? await getCustomerPurchaseStatus(supabaseAdmin, revenueContext.userId!, revenueContext.idempotencyKey!, revenueContext.productGroupId!, knownOrderId).catch(() => ({ state: 'unknown' }))
+      : { state: 'unknown' };
+    if (pendingOrder && revenueContext.userId && pendingOrder.user_id === revenueContext.userId
       && pendingOrder.status === 'completed'
       && pendingOrder.financial_authorization_status === 'captured'
-      && knownReservationId) {
+      && knownReservationId && terminalProof.state === 'completed') {
       return new Response(JSON.stringify({
         success: true,
         order_id: pendingOrder.id,
@@ -1048,7 +1084,7 @@ serve(async (req) => {
     }
     const orderConfirmedClosed = pendingOrder
       && ['cancelled', 'canceled', 'failed'].includes(String(pendingOrder.status || '').toLowerCase())
-      && pendingOrder.financial_authorization_status === 'released';
+      && pendingOrder.financial_authorization_status === 'released' && terminalProof.state === 'released';
     if (knownOrderId && !orderConfirmedClosed) {
       const supplierOrder = authorizedOrderContext?.supplier
         || pendingOrder?.account_details?.financial_authorization === 'supplier_reserve_first';
@@ -1073,6 +1109,12 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
+    if (authorizationMayHaveCommitted && !orderConfirmedClosed) {
+      return new Response(JSON.stringify({ success: false, code: 'PURCHASE_STATUS_UNKNOWN',
+        error: 'We could not confirm this purchase. Check its status or contact support before placing it again.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
     if (revenueContext.userId && supabaseAdmin) {
       await recordRevenueEvent(supabaseAdmin, {
         eventType: 'PAYMENT_FAILED',
@@ -1090,10 +1132,10 @@ serve(async (req) => {
     
     // Return 200 with success: false for business errors so the client can read the message
     // Only return 401 for auth errors
-    const status = message === 'Unauthorized' || message === 'Missing authorization header' ? 401 : 200;
+    const status = internalMessage === 'Unauthorized' || internalMessage === 'Missing authorization header' ? 401 : 200;
 
     return new Response(
-      JSON.stringify({ success: false, error: message }),
+      JSON.stringify({ success: false, error: message, retry_safe: !authorizationMayHaveCommitted }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status }
     );
   }
