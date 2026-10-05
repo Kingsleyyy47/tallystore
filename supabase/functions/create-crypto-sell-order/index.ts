@@ -348,11 +348,12 @@ export class NowPaymentsClient {
     const response = await fetch(`${NOWPAYMENTS_API_URL}${endpoint}`, {
       ...options,
       headers,
+      redirect: 'error',
+      signal: AbortSignal.timeout(20000),
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`NowPayments API error: ${response.status} - ${errorText}`);
+      throw new Error(`NowPayments API HTTP ${response.status}`);
     }
 
     return response.json();
@@ -488,7 +489,8 @@ export async function getNgnUsdRate(supabaseAdmin: any): Promise<{ rate: number;
   }
 
   try {
-    const res = await fetch(LIVE_RATE_URL);
+    const res = await fetch(LIVE_RATE_URL, { signal: AbortSignal.timeout(8000), redirect: 'error' });
+    if (!res.ok) throw new Error('Rate source unavailable');
     const json = await res.json();
     const liveRate = json?.rates?.NGN;
     if (liveRate && typeof liveRate === 'number' && liveRate > 0) {
@@ -570,6 +572,65 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const MAX_CRYPTO_ORDER_BODY_BYTES = 32 * 1024;
+
+async function readCryptoOrderBody(req: Request): Promise<Record<string, unknown>> {
+  const declaredLength = Number(req.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_CRYPTO_ORDER_BODY_BYTES) throw new Error('REQUEST_TOO_LARGE');
+  if (!req.body) throw new Error('INVALID_JSON');
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_CRYPTO_ORDER_BODY_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error('REQUEST_TOO_LARGE');
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(bytes));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('INVALID_JSON');
+    return parsed as Record<string, unknown>;
+  } catch { throw new Error('INVALID_JSON'); }
+}
+
+function validProviderPayment(payment: CreatePaymentResponse, orderReference: string, cryptoType: string, usdAmount: number, requestedCryptoAmount: number) {
+  const paymentId = String(payment?.payment_id ?? '');
+  const payAmount = Number(payment?.pay_amount);
+  const priceAmount = Number(payment?.price_amount);
+  const address = String(payment?.pay_address ?? '');
+  return /^\d{1,40}$/.test(paymentId) && paymentId !== '0' &&
+    payment.payment_status === 'waiting' &&
+    (payment.order_id == null || payment.order_id === orderReference) &&
+    String(payment.pay_currency ?? '').toLowerCase() === cryptoType.toLowerCase() &&
+    String(payment.price_currency ?? '').toLowerCase() === 'usd' &&
+    Number.isFinite(payAmount) && payAmount >= requestedCryptoAmount * 0.8 && payAmount <= requestedCryptoAmount * 1.5 &&
+    Number.isFinite(priceAmount) && Math.abs(priceAmount - usdAmount) <= 0.01 &&
+    address.length > 0 && address.length <= 256 && !/[\s\u0000-\u001f]/.test(address);
+}
+
+async function registerWalletQuote(admin: any, transactionId: string, userId: string, paymentId: string,
+  orderReference: string, ngnAmount: number, payAmount: number, payCurrency: string, payAddress: string) {
+  const { data, error } = await admin.rpc('register_nowpayments_wallet_quote', {
+    p_crypto_transaction_id: transactionId,
+    p_user_id: userId,
+    p_payment_id: paymentId,
+    p_order_reference: orderReference,
+    p_ngn_amount: ngnAmount,
+    p_pay_amount: payAmount,
+    p_pay_currency: payCurrency,
+    p_pay_address: payAddress,
+  });
+  if (error || data?.success !== true) throw new Error('CRYPTO_QUOTE_REGISTRATION_UNAVAILABLE');
+}
+
 async function recordRevenueEvent(
   supabaseAdmin: any,
   input: {
@@ -620,6 +681,12 @@ serve(async (req) => {
           status: 503,
         }
       );
+    }
+
+    if (req.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json', Allow: 'POST, OPTIONS' }, status: 405,
+      });
     }
 
     // Get user from auth header
@@ -701,19 +768,19 @@ serve(async (req) => {
     await assertPurchasingCustomer(supabaseAdmin, user.id, req);
 
     // Parse request body
-    let requestBody;
+    let requestBody: Record<string, unknown>;
     try {
-      requestBody = await req.json();
-    } catch {
+      requestBody = await readCryptoOrderBody(req);
+    } catch (bodyError) {
       console.error('Could not parse crypto order request body.');
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'Invalid request body',
+          error: bodyError instanceof Error && bodyError.message === 'REQUEST_TOO_LARGE' ? 'Request body is too large' : 'Invalid request body',
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 400,
+          status: bodyError instanceof Error && bodyError.message === 'REQUEST_TOO_LARGE' ? 413 : 400,
         }
       );
     }
@@ -731,7 +798,8 @@ serve(async (req) => {
     const displayNairaAmount = client_display_naira_amount ?? legacy_client_display_naira_amount;
 
     // Validate required fields
-    if (!crypto_type || !crypto_amount) {
+    if (typeof crypto_type !== 'string' || !/^[a-z0-9]{2,32}$/i.test(crypto_type) || crypto_amount == null ||
+      (network !== undefined && (typeof network !== 'string' || network.length > 80))) {
       console.error('❌ Missing required fields');
       return new Response(
         JSON.stringify({
@@ -869,6 +937,27 @@ serve(async (req) => {
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 },
         );
       }
+      const existingExpiry = Date.parse(String(existingPayment.expiration_date || existingPayment.expires_at || ''));
+      if (!['pending', 'waiting', 'confirming'].includes(String(existingPayment.status)) ||
+        !Number.isFinite(existingExpiry) || existingExpiry <= Date.now()) {
+        return new Response(
+          JSON.stringify({ success: false, code: 'CRYPTO_PAYMENT_NOT_ACTIVE', error: 'This payment is no longer active. Please review your payment history or contact support.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 },
+        );
+      }
+      // Historical receipts have no immutable server quote. Never expose an
+      // address or retroactively register one from a stored row alone.
+      const registered = existingPayment.payment_reference === orderReference
+        ? await supabaseAdmin.rpc('get_registered_nowpayments_wallet_quote', { p_crypto_transaction_id: existingPayment.id })
+        : { data: null, error: null };
+      if (registered.error || registered.data?.registered !== true ||
+        String(registered.data?.payment_id || '') !== String(existingPayment.nowpayments_payment_id || '') ||
+        registered.data?.order_reference !== orderReference) {
+        return new Response(
+          JSON.stringify({ success: false, code: 'CRYPTO_PAYMENT_REVIEW_REQUIRED', error: 'This payment requires support review before its address can be shown.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 },
+        );
+      }
       return new Response(
         JSON.stringify({
           success: true,
@@ -981,8 +1070,17 @@ serve(async (req) => {
       );
     }
 
+    const providerPriceUsd = parseFloat(authoritativeUsdAmount.toFixed(2));
+    if (!validProviderPayment(payment, orderReference, crypto_type, providerPriceUsd, userAmount)) {
+      console.error('NowPayments returned an incomplete or mismatched payment invoice.');
+      return new Response(
+        JSON.stringify({ success: false, error: 'Crypto payment could not be verified. Please contact support.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 502 },
+      );
+    }
+
     // Save transaction to database
-    const { data: transaction, error: dbError } = await supabaseClient
+    const { data: transaction, error: dbError } = await supabaseAdmin
       .from('crypto_transactions')
       .insert({
         user_id: user.id,
@@ -998,7 +1096,7 @@ serve(async (req) => {
         payment_provider: 'nowpayments',
         
         // NowPayments fields
-        nowpayments_payment_id: payment.payment_id,
+        nowpayments_payment_id: String(payment.payment_id),
         nowpayments_purchase_id: payment.purchase_id,
         nowpayments_pay_address: payment.pay_address,
         nowpayments_payin_extra_id: payment.payin_extra_id,
@@ -1019,9 +1117,16 @@ serve(async (req) => {
       .single();
 
     if (dbError) {
-      console.error('Database error:', dbError);
-      throw new Error(`Failed to save transaction: ${dbError.message}`);
+      console.error('Could not save crypto payment receipt.');
+      throw new Error('CRYPTO_RECEIPT_UNAVAILABLE');
     }
+
+    if (!transaction?.id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(transaction.id)) {
+      throw new Error('CRYPTO_RECEIPT_UNAVAILABLE');
+    }
+    await registerWalletQuote(supabaseAdmin, transaction.id, user.id, String(payment.payment_id),
+      orderReference, serverNairaAmount, Number(payment.pay_amount),
+      String(payment.pay_currency).toLowerCase(), String(payment.pay_address));
 
     await recordRevenueEvent(supabaseAdmin, {
       eventType: 'PAYMENT_STARTED',

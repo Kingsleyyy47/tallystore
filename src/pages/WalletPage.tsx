@@ -6,6 +6,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Calendar,
+  Bitcoin,
   CheckCircle,
   Clock,
   CreditCard,
@@ -426,6 +427,11 @@ export default function WalletPage() {
                 </Link>
               </div>
             </div>
+
+            <Link to="/crypto-exchange" className="flex items-center gap-3 rounded-2xl border border-teal-200 bg-teal-50 p-4 transition hover:bg-teal-100 dark:border-teal-800 dark:bg-teal-950/30 dark:hover:bg-teal-950/50">
+              <span className="grid h-10 w-10 place-items-center rounded-xl bg-teal-600 text-white"><Bitcoin className="h-5 w-5" /></span>
+              <span><strong className="block text-sm">Pay with crypto</strong><span className="text-xs text-muted-foreground">Choose a coin and network to fund your wallet.</span></span>
+            </Link>
 
             {recordedBalanceNeedsReview && (
               <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-500/40 dark:bg-amber-950/20 dark:text-amber-100">

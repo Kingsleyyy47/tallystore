@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, Suspense } from 'react'
 import { Navigate, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
-import { AuthProvider } from '@/contexts/SimpleAuth'
+import { AuthProvider, useAuth } from '@/contexts/SimpleAuth'
 import { CurrencyProvider } from '@/contexts/CurrencyContext'
 import { ProtectedRoute, PublicRoute } from '@/components/SimpleProtectedRoute'
 import InstallPromptBanner from '@/components/InstallPromptBanner'
@@ -37,8 +37,9 @@ const PaymentCallbackPage = lazy(() => import('@/pages/PaymentCallbackPage'))
 const PaymentSuccessPage = lazy(() => import('@/pages/PaymentSuccessPage'))
 const WalletPage = lazy(() => import('@/pages/WalletPage'))
 const Dashboard = lazy(() => import('@/pages/Dashboard'))
-const ReferralsPage = lazy(() => import('@/pages/ReferralsPage'))
-const CustomerApiPage = lazy(() => import('@/pages/CustomerApiPage'))
+const UpcomingFeaturePage = lazy(() => import('@/pages/UpcomingFeaturePage'))
+const CryptoExchange = lazy(() => import('@/pages/CryptoExchange'))
+const CryptoHistory = lazy(() => import('@/pages/CryptoHistory'))
 const HowItWorksPage = lazy(() => import('@/pages/HowItWorksPage'))
 const SupportPage = lazy(() => import('@/pages/SupportPage'))
 const TermsPage = lazy(() => import('@/pages/TermsPage'))
@@ -49,8 +50,6 @@ const WebServicesPage = lazy(() => import('@/pages/WebServicesPage'))
 const AdminPage = lazy(() => import('@/pages/AdminPage'))
 const StaffAdminPage = lazy(() => import('@/pages/StaffAdminPage'))
 const EmailConfirmation = lazy(() => import('@/pages/EmailConfirmation'))
-const ReferralWithdrawal = lazy(() => import('@/pages/ReferralWithdrawal'))
-const BillsPayment = lazy(() => import('@/pages/BillsPayment'))
 const GiftCardsEsims = lazy(() => import('@/pages/GiftCardsEsims'))
 const SocialBoostPage = lazy(() => import('@/pages/SocialBoostPage'))
 const GetIP = lazy(() => import('@/pages/GetIP'))
@@ -60,6 +59,11 @@ const TravelVisaPage = lazy(() => import('@/pages/TravelVisaPage'))
 const NotFound = lazy(() => import('@/pages/NotFound'))
 
 const queryClient = new QueryClient();
+
+function HomeEntry() {
+  const { user } = useAuth()
+  return user ? <Navigate to="/dashboard" replace /> : <Index />
+}
 
 const App = () => {
   // Show maintenance page when enabled (except on local dev)
@@ -90,7 +94,7 @@ const App = () => {
             <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading page...</div>}>
             <Routes>
               {/* Public Routes */}
-              <Route path="/" element={<Index />} />
+              <Route path="/" element={<HomeEntry />} />
               <Route path="/products" element={<ProductsPage />} />
               <Route path="/category/:categoryId" element={<CategoryPage />} />
               <Route path="/product/:productId" element={<ProductDetailPage />} />
@@ -125,7 +129,7 @@ const App = () => {
               {/* Auth callback for OAuth - not needed for email/password auth */}
 
               {/* Protected Routes - require authentication */}
-              <Route path="/developer-api" element={<ProtectedRoute requireRole="user"><CustomerApiPage /></ProtectedRoute>} />
+              <Route path="/developer-api" element={<ProtectedRoute requireRole="user"><UpcomingFeaturePage feature="api" /></ProtectedRoute>} />
               <Route
                 path="/dashboard"
                 element={
@@ -170,7 +174,7 @@ const App = () => {
                 path="/referrals"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <ReferralsPage />
+                    <UpcomingFeaturePage feature="circle" />
                   </ProtectedRoute>
                 }
               />
@@ -194,7 +198,7 @@ const App = () => {
                 path="/crypto-exchange"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <Navigate to="/wallet" replace />
+                    <CryptoExchange />
                   </ProtectedRoute>
                 }
               />
@@ -202,7 +206,7 @@ const App = () => {
                 path="/bills"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <BillsPayment />
+                    <UpcomingFeaturePage feature="bills" />
                   </ProtectedRoute>
                 }
               />
@@ -226,7 +230,7 @@ const App = () => {
                 path="/referral-withdrawal"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <ReferralWithdrawal />
+                    <Navigate to="/referrals" replace />
                   </ProtectedRoute>
                 }
               />
@@ -234,7 +238,7 @@ const App = () => {
                 path="/crypto-history"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <Navigate to="/wallet" replace />
+                    <CryptoHistory />
                   </ProtectedRoute>
                 }
               />

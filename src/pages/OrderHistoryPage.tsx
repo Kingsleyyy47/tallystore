@@ -33,7 +33,7 @@ import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { isPurchasingPausedByProfile } from '@/lib/walletReviewPolicy'
 import { useCurrency } from '@/contexts/CurrencyContext'
-import { detectAccountFormat, SITE_FORMAT_HEADERS } from '@/lib/supabase'
+import { normalizeOrderCredential, normalizeOrderCredentials } from '@/lib/orderCredentials'
 import { getUserOrders } from '@/lib/supabase'
 import {
   getAllProductGroups,
@@ -81,11 +81,11 @@ const statusIcons = {
 }
 
 const credentialFields = [
-  { keys: ['username', 'id', 'login', 'account_id'], label: 'ID', tone: 'text-slate-700 dark:text-slate-300' },
+  { keys: ['username', 'id', 'login', 'account_id'], label: 'USERNAME / ID', tone: 'text-slate-700 dark:text-slate-300' },
   { keys: ['password', 'pass'], label: 'PASSWORD', tone: 'text-rose-500' },
-  { keys: ['two_fa_code', 'two_factor', 'two_factor_code', '2fa', '2fa_key'], label: '2FA KEY', tone: 'text-purple-500' },
   { keys: ['email', 'mail'], label: 'EMAIL', tone: 'text-emerald-500' },
   { keys: ['email_password', 'mail_password', 'mail_pass', 'mailpass'], label: 'MAIL PASS', tone: 'text-orange-500' },
+  { keys: ['two_fa_code', 'two_factor', 'two_factor_code', '2fa', '2fa_key'], label: '2FA KEY', tone: 'text-purple-500' },
   { keys: ['recovery', 'recovery_email', 'backup_email'], label: 'RECOVERY', tone: 'text-sky-500' },
   { keys: ['recovery_email_password', 'recovery_password', 'backup_email_password', 'backup_password'], label: 'RECOVERY PASS', tone: 'text-cyan-500' },
   { keys: ['additional_info', 'notes', 'note'], label: 'NOTES', tone: 'text-slate-500 dark:text-slate-400' },
@@ -99,11 +99,11 @@ function getOrderAccounts(order: any) {
   if (!isCredentialVisibleOrder(order)) return []
 
   if (Array.isArray(order?.account_details?.accounts)) {
-    return order.account_details.accounts
+    return normalizeOrderCredentials(order.account_details.accounts)
   }
 
   if (order?.account_details?.username || order?.account_details?.email || order?.account_details?.password) {
-    return [{
+    return [normalizeOrderCredential({
       username: order.account_details.username,
       password: order.account_details.password,
       email: order.account_details.email,
@@ -113,7 +113,7 @@ function getOrderAccounts(order: any) {
       recovery: order.account_details.recovery,
       recovery_email: order.account_details.recovery_email,
       recovery_email_password: order.account_details.recovery_email_password,
-    }]
+    })]
   }
 
   return []
@@ -122,6 +122,15 @@ function getOrderAccounts(order: any) {
 function readCredentialValue(account: any, keys: string[]) {
   const key = keys.find((candidate) => account?.[candidate] !== undefined && account?.[candidate] !== null && String(account[candidate]).trim() !== '')
   return key ? String(account[key]) : ''
+}
+
+function credentialLabel(order: any, account: any, field: typeof credentialFields[number]) {
+  if (field.keys[0] !== 'username') return field.label
+  const product = getOrderProductName(order).toLowerCase()
+  const username = readCredentialValue(account, field.keys)
+  return product.includes('discord') && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username)
+    ? 'USERNAME / LOGIN EMAIL'
+    : field.label
 }
 
 function formatCredentialDisplay(label: string, value: string) {
@@ -173,7 +182,7 @@ function buildCredentialText(order: any) {
     lines.push(`Account ${index + 1}`)
     credentialFields.forEach((field) => {
       const value = readCredentialValue(account, field.keys)
-      if (value) lines.push(`${field.label}: ${value}`)
+      if (value) lines.push(`${credentialLabel(order, account, field)}: ${value}`)
     })
     lines.push('')
   })
@@ -301,24 +310,16 @@ function OrderDetailsView({
                 <div className="grid grid-cols-[1.6rem_minmax(0,1fr)] gap-2 sm:grid-cols-[2rem_minmax(0,1fr)] sm:gap-3">
                   <div className="grid h-7 w-7 place-items-center rounded-lg bg-purple-100 text-xs font-black text-purple-700 dark:bg-purple-500/15 dark:text-purple-200">{index + 1}</div>
                   <div className="min-w-0 space-y-1.5">
-                    {(() => {
-                      const fmt = detectAccountFormat(account)
-                      const header = SITE_FORMAT_HEADERS[fmt]
-                      return header ? (
-                        <div className="mb-2 rounded-lg bg-slate-100 px-3 py-1.5 font-mono text-[11px] text-slate-500 dark:bg-white/[0.06] dark:text-slate-400 select-none">
-                          {header}
-                        </div>
-                      ) : null
-                    })()}
                     {credentialFields.map((field) => {
                       const value = readCredentialValue(account, field.keys)
                       if (!value) return null
                       const displayValue = formatCredentialDisplay(field.label, value)
+                      const label = credentialLabel(order, account, field)
 
                       return (
-                        <div key={field.label} className="grid min-w-0 grid-cols-[4.8rem_minmax(0,1fr)_1.8rem] items-center gap-1.5 text-xs sm:grid-cols-[7rem_minmax(0,1fr)_2rem] sm:gap-2 sm:text-sm">
-                          <span className={`truncate text-[10px] font-black uppercase tracking-normal sm:text-[11px] sm:tracking-[0.12em] ${field.tone}`}>
-                            {field.label}
+                        <div key={field.label} className="grid min-w-0 grid-cols-[6.5rem_minmax(0,1fr)_1.8rem] items-center gap-1.5 text-xs sm:grid-cols-[10rem_minmax(0,1fr)_2rem] sm:gap-2 sm:text-sm">
+                          <span className={`break-words text-[10px] font-black uppercase tracking-normal sm:text-[11px] sm:tracking-[0.08em] ${field.tone}`}>
+                            {label}
                           </span>
                           <span
                             className="min-w-0 truncate rounded-lg bg-slate-100 px-2 py-1.5 font-mono text-xs leading-5 text-slate-800 dark:bg-white/[0.06] dark:text-slate-200 sm:text-sm"
@@ -328,9 +329,9 @@ function OrderDetailsView({
                           </span>
                           <button
                             type="button"
-                            onClick={() => onCopyText(value, `${field.label} copied`)}
+                            onClick={() => onCopyText(value, `${label} copied`)}
                             className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-purple-600 dark:hover:bg-white/10 dark:hover:text-purple-300"
-                            aria-label={`Copy ${field.label}`}
+                            aria-label={`Copy ${label}`}
                           >
                             <Copy className="h-4 w-4" />
                           </button>

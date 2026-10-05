@@ -1,10 +1,11 @@
 import { useState, useEffect, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { Button, type ButtonProps } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { CreditCard, Loader2, Plus, Copy, Check, Landmark } from 'lucide-react';
+import { CreditCard, Loader2, Plus, Copy, Check, Landmark, Bitcoin } from 'lucide-react';
 import { useAuth } from '@/contexts/SimpleAuth';
 import { initiatePayment, type PaymentData } from '@/services/ercaspay';
 import { getOrCreatePocketFiAccount, type PocketFiAccount } from '@/services/pocketfi';
@@ -399,6 +400,9 @@ export function TopUpWallet({
                 Bank Transfer
               </Button>
             </div>
+            <Button asChild variant="outline" className="w-full justify-start gap-2">
+              <Link to="/crypto-exchange" onClick={() => setIsOpen(false)}><Bitcoin className="h-4 w-4" />Pay with crypto</Link>
+            </Button>
           </div>
 
           {gateway === 'ercaspay' && (

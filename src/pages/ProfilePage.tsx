@@ -1,336 +1,162 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { Bell, Calendar, CreditCard, KeyRound, Mail, PackageCheck, ShieldCheck, User, Wallet } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ArrowRight, CircleHelp, KeyRound, LogOut, Mail, Package, ShieldCheck, User, Wallet } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import NavbarAuth from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useCurrency } from '@/contexts/CurrencyContext'
-import { getUserTransactions, supabase } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
 import { useToast } from '@/hooks/use-toast'
-import { trackRevenueEvent } from '@/lib/revenue-os'
-import {
-  RevampCard,
-  RevampFeature,
-  RevampHero,
-  RevampPage,
-  RevampSectionTitle,
-  RevampVisual,
-} from '@/components/RevampLayout'
+
+type CommunicationPrefs = { email_lifecycle_opt_in: boolean; email_promotions_opt_in: boolean }
+const initialPrefs: CommunicationPrefs = { email_lifecycle_opt_in: false, email_promotions_opt_in: false }
+
+const accountLinks = [
+  { title: 'Wallet', detail: 'Fund and review your balance', href: '/wallet', icon: Wallet },
+  { title: 'Order history', detail: 'Find purchases and credentials', href: '/orders', icon: Package },
+  { title: 'Help Centre', detail: 'Get support for your account', href: '/support', icon: CircleHelp },
+] as const
 
 export default function ProfilePage() {
-  const { user, walletBalance, walletLoading, walletBalanceUnavailable, showBalances } = useAuth()
+  const { user, signOut, walletBalance, walletLoading, walletBalanceUnavailable, showBalances } = useAuth()
   const { formatPrice } = useCurrency()
   const { toast } = useToast()
-  const [transactions, setTransactions] = useState<any[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [communicationPrefs, setCommunicationPrefs] = useState({
-    email_lifecycle_opt_in: false,
-    email_promotions_opt_in: false,
-  })
+  const navigate = useNavigate()
+  const [prefs, setPrefs] = useState<CommunicationPrefs>(initialPrefs)
+  const [prefsLoading, setPrefsLoading] = useState(true)
+  const [prefsError, setPrefsError] = useState(false)
   const [prefsSaving, setPrefsSaving] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordSaving, setPasswordSaving] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
 
   useEffect(() => {
-    const loadUserData = async () => {
-      if (!user?.id) return
+    let active = true
+    setPrefs(initialPrefs)
+    setPrefsError(false)
+    if (!user?.id) { setPrefsLoading(false); return () => { active = false } }
+    setPrefsLoading(true)
+    const controller = new AbortController()
+    const timer = setTimeout(() => { controller.abort(); if (active) { setPrefsError(true); setPrefsLoading(false) } }, 12000)
+    void supabase.from('customer_communication_preferences' as any)
+      .select('email_lifecycle_opt_in,email_promotions_opt_in')
+      .eq('user_id', user.id)
+      .maybeSingle()
+      .abortSignal(controller.signal)
+      .then(({ data, error }) => {
+        if (!active) return
+        if (error) setPrefsError(true)
+        else if (data) setPrefs({
+          email_lifecycle_opt_in: !!data.email_lifecycle_opt_in,
+          email_promotions_opt_in: !!data.email_promotions_opt_in,
+        })
+        setPrefsLoading(false)
+      }).catch(() => { if (active) { setPrefsError(true); setPrefsLoading(false) } }).finally(() => clearTimeout(timer))
+    return () => { active = false; controller.abort(); clearTimeout(timer) }
+  }, [user?.id])
 
-      setIsLoading(true)
-      try {
-        const userTransactions = await getUserTransactions(user.id)
-        setTransactions(userTransactions)
-        const { data: prefs } = await supabase
-          .from('customer_communication_preferences' as any)
-          .select('email_lifecycle_opt_in,email_promotions_opt_in')
-          .eq('user_id', user.id)
-          .maybeSingle()
-        if (prefs) {
-          setCommunicationPrefs({
-            email_lifecycle_opt_in: !!prefs.email_lifecycle_opt_in,
-            email_promotions_opt_in: !!prefs.email_promotions_opt_in,
-          })
-        }
-      } catch (error) {
-        console.error('Failed to load user data:', error)
-      } finally {
-        setIsLoading(false)
-      }
-    }
+  if (!user) return (
+    <div className="min-h-screen bg-background"><NavbarAuth /><main className="mx-auto max-w-4xl px-4 py-12"><Alert variant="destructive"><AlertDescription>Please log in to view your account.</AlertDescription></Alert></main><Footer /></div>
+  )
 
-    if (user) {
-      trackRevenueEvent({
-        eventType: 'PAGE_VIEWED',
-        userId: user.id,
-        surface: 'profile',
-      })
-      loadUserData()
-    }
-  }, [user])
+  const fullName = typeof user.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : ''
+  const displayName = fullName || user.email?.split('@')[0] || 'Your account'
+  const initials = String(displayName).slice(0, 2).toUpperCase()
+  const balance = walletLoading ? 'Checking…' : walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(walletBalance) : '••••••'
 
-  const totalSpent = Math.abs(transactions
-    .filter((transaction) => transaction.type === 'purchase' && transaction.status === 'completed')
-    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0))
-
-  const totalTopups = transactions
-    .filter((transaction) => transaction.type === 'topup' && transaction.status === 'completed')
-    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0)
-
-  const purchaseCount = transactions.filter((transaction) => transaction.type === 'purchase').length
-  const topupCount = transactions.filter((transaction) => transaction.type === 'topup').length
-
-  const getInitials = (name: string) => {
-    if (!name) return 'U'
-    return name.split('@')[0].slice(0, 2).toUpperCase()
-  }
-
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-background">
-        <NavbarAuth />
-        <RevampPage className="max-w-4xl">
-          <Alert variant="destructive">
-            <AlertDescription>Please log in to view your profile.</AlertDescription>
-          </Alert>
-        </RevampPage>
-        <Footer />
-      </div>
-    )
-  }
-
-  const username = user.email?.split('@')[0] || 'User'
-
-  const saveCommunicationPrefs = async () => {
+  const savePrefs = async () => {
     setPrefsSaving(true)
     try {
-      const { error } = await supabase
-        .from('customer_communication_preferences' as any)
-        .upsert({
-          user_id: user.id,
-          email_lifecycle_opt_in: communicationPrefs.email_lifecycle_opt_in,
-          email_promotions_opt_in: communicationPrefs.email_promotions_opt_in,
-          consent_source: 'profile_page',
-          consent_updated_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'user_id' })
+      const { error } = await supabase.from('customer_communication_preferences' as any).upsert({
+        user_id: user.id,
+        ...prefs,
+        consent_source: 'profile_page',
+        consent_updated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'user_id' })
       if (error) throw error
-      trackRevenueEvent({
-        eventType: communicationPrefs.email_lifecycle_opt_in || communicationPrefs.email_promotions_opt_in ? 'OFFER_ACCEPTED' : 'OFFER_DISMISSED',
-        userId: user.id,
-        surface: 'profile_communication_preferences',
-        metadata: {
-          email_lifecycle_opt_in: communicationPrefs.email_lifecycle_opt_in,
-          email_promotions_opt_in: communicationPrefs.email_promotions_opt_in,
-        },
-      })
-      toast({
-        title: 'Preferences saved',
-        description: communicationPrefs.email_lifecycle_opt_in
-          ? 'You can receive useful follow-up and repeat-purchase emails.'
-          : 'Lifecycle follow-up emails are off.',
-      })
-    } catch (error: any) {
-      toast({
-        title: 'Could not save preferences',
-        description: error?.message || 'Please try again.',
-        variant: 'destructive',
-      })
-    } finally {
-      setPrefsSaving(false)
+      toast({ title: 'Communication preferences saved' })
+    } catch {
+      toast({ title: 'Could not save preferences', description: 'Please try again.', variant: 'destructive' })
+    } finally { setPrefsSaving(false) }
+  }
+
+  const changePassword = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (newPassword.length < 8 || newPassword !== confirmPassword) {
+      toast({ title: 'Check your new password', description: 'Use at least 8 characters and make both entries match.', variant: 'destructive' })
+      return
     }
+    setPasswordSaving(true)
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword })
+      if (error) throw error
+      setNewPassword('')
+      setConfirmPassword('')
+      toast({ title: 'Password updated', description: 'Use your new password the next time you sign in.' })
+    } catch {
+      toast({ title: 'Password could not be updated', description: 'Please try again or contact support.', variant: 'destructive' })
+    } finally { setPasswordSaving(false) }
+  }
+
+  const handleSignOut = async () => {
+    setSigningOut(true)
+    try { await signOut(); navigate('/login', { replace: true }) }
+    catch { toast({ title: 'Could not sign out', description: 'Please try again.', variant: 'destructive' }); setSigningOut(false) }
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-[#f7f7fb] text-slate-950 dark:bg-background dark:text-foreground">
       <NavbarAuth />
-      <RevampPage>
-        <RevampHero
-          eyebrow="Account"
-          title="Your TallyStore profile,"
-          accent="wallet and activity."
-          description="Manage the account identity connected to your wallet, orders, support messages, and purchase history."
-          primaryHref="/wallet"
-          primaryLabel="Open Wallet"
-          secondaryHref="/orders"
-          secondaryLabel="Order History"
-        >
-          <RevampVisual
-            title={username}
-            subtitle="One profile for wallet, orders, rewards, and secure access."
-            icon={User}
-          />
-        </RevampHero>
+      <main className="mx-auto max-w-5xl space-y-7 px-4 pb-20 pt-7 sm:px-6 sm:pt-10">
+        <header><p className="text-sm font-semibold text-violet-700 dark:text-violet-300">Account</p><h1 className="mt-1 text-3xl font-black tracking-tight sm:text-4xl">Your profile</h1><p className="mt-2 text-sm text-slate-600 dark:text-slate-400">Manage your account, security and communication choices.</p></header>
 
-        <section className="mt-10 grid gap-4 lg:grid-cols-[0.85fr_1.15fr]">
-          <RevampCard>
-            <div className="flex flex-col items-center text-center">
-              <Avatar className="h-24 w-24 border-4 border-purple-200 dark:border-purple-400/20">
-                <AvatarFallback className="bg-gradient-to-br from-purple-500 to-violet-800 text-xl font-black text-white">
-                  {getInitials(user.email || 'User')}
-                </AvatarFallback>
-              </Avatar>
-              <h2 className="mt-4 text-2xl font-black text-slate-950 dark:text-white">{username}</h2>
-              <p className="mt-1 max-w-full break-words text-sm text-slate-600 dark:text-slate-400">{user.email}</p>
-              <Badge className="mt-3 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300">
-                <ShieldCheck className="mr-1 h-3.5 w-3.5" />
-                Active account
-              </Badge>
+        <section className="grid gap-4 md:grid-cols-[1.25fr_0.75fr]" aria-label="Account summary">
+          <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-card">
+            <Avatar className="h-16 w-16 border-2 border-violet-100 dark:border-violet-400/20"><AvatarFallback className="bg-violet-700 text-lg font-bold text-white">{initials}</AvatarFallback></Avatar>
+            <div className="min-w-0"><h2 className="truncate text-xl font-black">{displayName}</h2><p className="mt-1 break-all text-sm text-slate-600 dark:text-slate-400">{user.email}</p><p className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300"><ShieldCheck className="h-3.5 w-3.5" /> Signed in</p></div>
+          </div>
+          <div className="rounded-2xl bg-violet-900 p-5 text-white shadow-sm"><p className="flex items-center gap-2 text-sm font-semibold text-violet-100"><Wallet className="h-4 w-4" /> Wallet balance</p><p className="mt-3 break-words text-2xl font-black">{balance}</p><Link to="/wallet" className="mt-4 inline-flex items-center gap-1 text-sm font-bold text-white underline underline-offset-4">Add funds <ArrowRight className="h-4 w-4" /></Link></div>
+        </section>
+
+        <section aria-labelledby="account-actions-heading"><h2 id="account-actions-heading" className="mb-3 text-xl font-black">Account actions</h2><div className="grid gap-3 md:grid-cols-3">
+          {accountLinks.map(({ title, detail, href, icon: Icon }) => <Link key={href} to={href} className="group flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-violet-300 dark:border-white/10 dark:bg-card"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-200"><Icon className="h-5 w-5" /></span><span className="min-w-0 flex-1"><span className="block font-bold">{title}</span><span className="block text-xs text-slate-500 dark:text-slate-400">{detail}</span></span><ArrowRight className="h-4 w-4 text-slate-400 group-hover:text-violet-600" /></Link>)}
+        </div></section>
+
+        <section className="grid gap-4 lg:grid-cols-2" aria-label="Account settings">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-card sm:p-6">
+            <h2 className="flex items-center gap-2 text-lg font-black"><KeyRound className="h-5 w-5 text-violet-600" /> Change password</h2>
+            <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Choose a new password for this signed-in account.</p>
+            <form onSubmit={changePassword} className="mt-5 space-y-3">
+              <div><Label htmlFor="new-password">New password</Label><Input id="new-password" type="password" autoComplete="new-password" minLength={8} value={newPassword} onChange={event => setNewPassword(event.target.value)} required className="mt-1" /></div>
+              <div><Label htmlFor="confirm-password">Confirm new password</Label><Input id="confirm-password" type="password" autoComplete="new-password" minLength={8} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} required className="mt-1" /></div>
+              <Button type="submit" disabled={passwordSaving}>{passwordSaving ? 'Updating…' : 'Update password'}</Button>
+            </form>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-card sm:p-6">
+            <h2 className="flex items-center gap-2 text-lg font-black"><Mail className="h-5 w-5 text-violet-600" /> Email preferences</h2>
+            <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Optional emails are off unless you turn them on.</p>
+            <div className="mt-5 space-y-4">
+              {prefsError && <p className="text-sm text-amber-700 dark:text-amber-300">Preferences are unavailable. Please reload this page to try again.</p>}
+              <label className="flex items-center justify-between gap-3"><span className="text-sm font-medium">Useful purchase follow-ups</span><Switch checked={prefs.email_lifecycle_opt_in} disabled={prefsLoading || prefsSaving || prefsError} onCheckedChange={checked => setPrefs(previous => ({ ...previous, email_lifecycle_opt_in: checked }))} /></label>
+              <label className="flex items-center justify-between gap-3"><span className="text-sm font-medium">Offers and product updates</span><Switch checked={prefs.email_promotions_opt_in} disabled={prefsLoading || prefsSaving || prefsError} onCheckedChange={checked => setPrefs(previous => ({ ...previous, email_promotions_opt_in: checked }))} /></label>
+              <Button variant="outline" onClick={savePrefs} disabled={prefsLoading || prefsSaving || prefsError}>{prefsSaving ? 'Saving…' : 'Save preferences'}</Button>
             </div>
-
-            <div className="mt-6 grid gap-3 text-sm">
-              <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3 dark:bg-white/[0.035]">
-                <span className="text-slate-600 dark:text-slate-400">Wallet Balance</span>
-                <strong className="text-purple-700 dark:text-purple-300">{walletLoading ? 'Checking...' : walletBalanceUnavailable ? 'Unavailable' : showBalances ? formatPrice(walletBalance) : '***'}</strong>
-              </div>
-              <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3 dark:bg-white/[0.035]">
-                <span className="text-slate-600 dark:text-slate-400">Total Spent</span>
-                <strong>{showBalances ? formatPrice(totalSpent) : '***'}</strong>
-              </div>
-              <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3 dark:bg-white/[0.035]">
-                <span className="text-slate-600 dark:text-slate-400">Total Top-ups</span>
-                <strong>{showBalances ? formatPrice(totalTopups) : '***'}</strong>
-              </div>
-            </div>
-          </RevampCard>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <RevampFeature
-              icon={Wallet}
-              title="Wallet"
-              description="Top up, review payment movement, and keep balances private when needed."
-              tone="purple"
-            />
-            <RevampFeature
-              icon={PackageCheck}
-              title="Orders"
-              description="Find completed purchases and return to credentials from Order History."
-              tone="emerald"
-            />
-            <RevampFeature
-              icon={CreditCard}
-              title="Payments"
-              description="Payment recovery and funding history stay connected to this account."
-              tone="sky"
-            />
-            <RevampFeature
-              icon={KeyRound}
-              title="Access"
-              description="Your sign-in keeps staff/admin privileges separated from customer access."
-              tone="amber"
-            />
           </div>
         </section>
 
-        <section className="mt-10">
-          <RevampSectionTitle
-            eyebrow="Account details"
-            title="Profile information"
-            description="These details identify your account for support, wallet records, and order history."
-          />
-          <div className="grid gap-4 lg:grid-cols-3">
-            <RevampCard>
-              <Mail className="mb-4 h-5 w-5 text-purple-600 dark:text-purple-300" />
-              <p className="text-xs font-black uppercase text-slate-500">Email address</p>
-              <p className="mt-2 break-words text-sm font-bold text-slate-950 dark:text-white">{user.email}</p>
-            </RevampCard>
-            <RevampCard>
-              <Calendar className="mb-4 h-5 w-5 text-purple-600 dark:text-purple-300" />
-              <p className="text-xs font-black uppercase text-slate-500">Account created</p>
-              <p className="mt-2 text-sm font-bold text-slate-950 dark:text-white">
-                {user.created_at ? new Date(user.created_at).toLocaleDateString() : 'N/A'}
-              </p>
-            </RevampCard>
-            <RevampCard>
-              <PackageCheck className="mb-4 h-5 w-5 text-purple-600 dark:text-purple-300" />
-              <p className="text-xs font-black uppercase text-slate-500">Activity</p>
-              <p className="mt-2 text-sm font-bold text-slate-950 dark:text-white">
-                {isLoading ? 'Loading...' : `${purchaseCount} purchases, ${topupCount} top-ups`}
-              </p>
-            </RevampCard>
-          </div>
-        </section>
+        <section aria-label="Upcoming account features" className="rounded-2xl border border-dashed border-slate-300 bg-white/70 p-5 dark:border-white/15 dark:bg-card/50"><h2 className="text-sm font-bold text-slate-700 dark:text-slate-200">Coming soon</h2><div className="mt-2 flex flex-wrap gap-2"><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">TallyCircle</span><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">API Access</span></div></section>
 
-        <section className="mt-10">
-          <RevampSectionTitle
-            eyebrow="Preferences"
-            title="Communication choices"
-            description="Control whether TallyStore can send useful purchase follow-ups or promotional emails. These are off unless you opt in."
-          />
-          <RevampCard>
-            <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
-              <div className="space-y-4">
-                <label className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 p-4 dark:bg-white/[0.035]">
-                  <span>
-                    <span className="flex items-center gap-2 font-black text-slate-950 dark:text-white">
-                      <Bell className="h-4 w-4 text-purple-600 dark:text-purple-300" />
-                      Helpful follow-up emails
-                    </span>
-                    <span className="mt-1 block text-sm text-slate-600 dark:text-slate-400">
-                      Product follow-ups, repeat-purchase suggestions, and account-use reminders based on your own activity.
-                    </span>
-                  </span>
-                  <Switch
-                    checked={communicationPrefs.email_lifecycle_opt_in}
-                    onCheckedChange={(checked) => setCommunicationPrefs((prev) => ({ ...prev, email_lifecycle_opt_in: checked }))}
-                  />
-                </label>
-                <label className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 p-4 dark:bg-white/[0.035]">
-                  <span>
-                    <span className="flex items-center gap-2 font-black text-slate-950 dark:text-white">
-                      <Mail className="h-4 w-4 text-purple-600 dark:text-purple-300" />
-                      Promotions and offers
-                    </span>
-                    <span className="mt-1 block text-sm text-slate-600 dark:text-slate-400">
-                      Occasional offers or product drops. No fake urgency, and you can turn this off anytime.
-                    </span>
-                  </span>
-                  <Switch
-                    checked={communicationPrefs.email_promotions_opt_in}
-                    onCheckedChange={(checked) => setCommunicationPrefs((prev) => ({ ...prev, email_promotions_opt_in: checked }))}
-                  />
-                </label>
-              </div>
-              <Button onClick={saveCommunicationPrefs} disabled={prefsSaving}>
-                {prefsSaving ? 'Saving...' : 'Save preferences'}
-              </Button>
-            </div>
-          </RevampCard>
-        </section>
-
-        <section className="mt-10 rounded-2xl border border-slate-200 bg-white/85 p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <Link
-              to="/wallet"
-              onClick={() => trackRevenueEvent({ eventType: 'OFFER_ACCEPTED', userId: user.id, surface: 'profile_quick_link', metadata: { destination: 'wallet' } })}
-              className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300"
-            >
-              Manage Wallet
-            </Link>
-            <Link
-              to="/orders"
-              onClick={() => trackRevenueEvent({ eventType: 'OFFER_ACCEPTED', userId: user.id, surface: 'profile_quick_link', metadata: { destination: 'orders' } })}
-              className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300"
-            >
-              View Orders
-            </Link>
-            <Link
-              to="/support"
-              onClick={() => trackRevenueEvent({ eventType: 'SUPPORT_HANDOFF', userId: user.id, surface: 'profile_quick_link', metadata: { destination: 'support' } })}
-              className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300"
-            >
-              Get Support
-            </Link>
-            <Link
-              to="/developer-api"
-              className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300"
-            >
-              Developer API
-            </Link>
-          </div>
-        </section>
-      </RevampPage>
+        <div className="flex items-center justify-between gap-4 border-t border-slate-200 pt-5 dark:border-white/10"><p className="flex items-center gap-2 text-sm text-slate-500"><User className="h-4 w-4" /> Account created {user.created_at ? new Date(user.created_at).toLocaleDateString('en-NG') : 'date unavailable'}</p><Button variant="outline" onClick={handleSignOut} disabled={signingOut} className="text-red-700 dark:text-red-300"><LogOut className="mr-2 h-4 w-4" /> {signingOut ? 'Signing out…' : 'Sign out'}</Button></div>
+      </main>
       <Footer />
     </div>
   )

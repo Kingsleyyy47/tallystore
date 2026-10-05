@@ -245,7 +245,7 @@ export default function CryptoExchange() {
       setShowDepositModal(true);
       setAmount("");
       setNairaAmount(0);
-      toast({ title: "Address Ready!", description: "Send crypto to the address shown to top up your wallet" });
+      toast({ title: "Address Ready!", description: "Send only the selected coin on the selected network. Your wallet updates after verified payment." });
     } catch (error: any) {
       toast({ title: "Failed to Create Order", description: error.message || "Please try again", variant: "destructive" });
     } finally {
@@ -417,7 +417,7 @@ export default function CryptoExchange() {
           <DialogHeader>
             <DialogTitle className="text-xl">Send {depositInfo?.cryptoType} to Top Up</DialogTitle>
             <DialogDescription>
-              Send exactly <strong>{depositInfo?.cryptoAmount} {depositInfo?.cryptoType}</strong> to the address below. Funds will be credited automatically.
+              Send exactly <strong>{depositInfo?.cryptoAmount} {depositInfo?.cryptoType}</strong> to the address below. Your wallet is credited only after the payment provider confirms the full payment.
             </DialogDescription>
           </DialogHeader>
 

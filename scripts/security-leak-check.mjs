@@ -271,7 +271,7 @@ function walk(path) {
   const files = []
   for (const entry of readdirSync(absolute, { withFileTypes: true })) {
     const item = join(absolute, entry.name)
-    if (entry.isDirectory()) files.push(...walk(relative(root, item)))
+    if (entry.isDirectory() && entry.name !== 'node_modules') files.push(...walk(relative(root, item)))
     else if (entry.isFile()) files.push(relative(root, item))
   }
   return files

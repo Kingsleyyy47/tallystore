@@ -13,13 +13,6 @@ interface Announcement {
 // Hardcoded announcements - can be moved to Supabase later
 const ANNOUNCEMENTS: Announcement[] = [
   {
-    id: 'bills-launch',
-    message: 'Buy Airtime & Data directly from your balance',
-    emoji: '📱',
-    link: '/bills',
-    linkText: 'Buy Now',
-  },
-  {
     id: 'premium-accounts',
     message: 'Premium social media accounts at best prices',
     emoji: '✨',
