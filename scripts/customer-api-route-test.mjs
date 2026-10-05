@@ -8,6 +8,8 @@ for (const prefix of prefixes) {
   assert.deepEqual(customerApiRoute(`${prefix}/v1/keys`, 'POST'), { kind: 'manage', path: '/v1/keys' })
   assert.deepEqual(customerApiRoute(`${prefix}/v1/wallet`, 'GET'), { kind: 'read', path: '/v1/wallet' })
   assert.deepEqual(customerApiRoute(`${prefix}/v1/purchases`, 'POST'), { kind: 'purchase', path: '/v1/purchases' })
+  assert.deepEqual(customerApiRoute(`${prefix}/v1/airtime/quote`, 'POST'), { kind: 'airtime', path: '/v1/airtime/quote' })
+  assert.deepEqual(customerApiRoute(`${prefix}/v1/airtime/quote`, 'GET'), { kind: 'read', path: '/v1/airtime/quote' })
 }
 
 let handler
@@ -20,7 +22,7 @@ globalThis.__customerApiRouteTest = {
   signCustomerCapability: () => { throw new Error('capability must not be issued') },
   customerApiRoute,
 }
-globalThis.Deno = { env: { get: () => 'test' } }
+globalThis.Deno = { env: { get: name => name === 'CUSTOMER_API_ENABLED' ? 'true' : 'test' } }
 const source = readFileSync(new URL('../supabase/functions/customer-api/index.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
@@ -36,6 +38,9 @@ for (const prefix of prefixes) {
     new Request(`${base}/v1/wallet?section=products`, { method: 'GET' }),
     new Request(`${base}/v1/purchases`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ section: 'products' }) }),
+    new Request(`${base}/v1/airtime/quote`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section: 'airtime', phone_number: '+14155550123', operator_id: 'operator-1',
+        product_id: 'operator-1', package_id: 'bundle-1' }) }),
   ]
   for (const request of requests) {
     const response = await handler(request)

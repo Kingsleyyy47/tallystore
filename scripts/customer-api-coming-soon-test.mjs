@@ -29,7 +29,9 @@ async function run(path,method='GET',enabled,authenticated=true){
 }
 for(const enabled of [undefined,'false','TRUE']){
  for(const [path,method] of [['/v1/keys','GET'],['/v1/keys','POST'],['/v1/purchases','POST'],
-  ['/v1/catalogue?section=products','GET'],['/v1/orders?section=sms','GET'],['/v1/wallet?section=social_boost','GET']]){
+  ['/v1/catalogue?section=products','GET'],['/v1/orders?section=sms','GET'],['/v1/wallet?section=social_boost','GET'],
+  ['/v1/airtime/check-phone','POST'],['/v1/airtime/quote','POST'],['/v1/airtime/status','POST'],
+  ['/v1/orders?section=airtime','GET']]){
   const r=await run(path,method,enabled);assert.equal(r.status,503);assert.equal(r.data.code,'coming_soon');assert.equal(r.clients,0)
  }
 }

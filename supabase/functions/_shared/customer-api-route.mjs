@@ -5,6 +5,9 @@ export function customerApiRoute(pathname, method) {
     return { kind: 'manage', path }
   }
   if (path === '/v1/purchases' && method === 'POST') return { kind: 'purchase', path }
+  if (method === 'POST' && ['/v1/airtime/check-phone', '/v1/airtime/quote', '/v1/airtime/status'].includes(path)) {
+    return { kind: 'airtime', path }
+  }
   if (method === 'GET') return { kind: 'read', path }
   return { kind: 'not_found', path }
 }

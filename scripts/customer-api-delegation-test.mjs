@@ -23,11 +23,11 @@ const admin = { rpc: async (_name, args) => {
   used.add(args.p_nonce)
   return { data: true, error: null }
 } }
-const request = (capability, payload = body) => new Request('https://tallystore.invalid/functions/v1/process-purchase', {
+const request = (capability, payload = body, target = 'process-purchase') => new Request(`https://tallystore.invalid/functions/v1/${target}`, {
   method: 'POST', headers: { 'x-tally-api-capability': capability }, body: payload,
 })
 const authorize = (capability, payload = body, section = 'products', target = 'process-purchase') =>
-  authenticateCustomerRequest(request(capability, payload), admin, section, target)
+  authenticateCustomerRequest(request(capability, payload, target), admin, section, target)
 
 const first = await signCustomerCapability(identity, 'process-purchase', body)
 assert.deepEqual(await authorize(first), { id: identity.user_id })
@@ -42,4 +42,20 @@ const [encoded, signature] = (await signCustomerCapability(identity, 'process-pu
 const modified = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
 modified.user_id = '10000000-0000-4000-8000-000000000099'
 await assert.rejects(authorize(`${Buffer.from(JSON.stringify(modified)).toString('base64url')}.${signature}`), /Unauthorized/)
+identity.section = 'airtime'
+const airtimeBody = JSON.stringify({ action: 'purchase', phone_number: '+14155550123',
+  product_id: 'operator-one', operator_id: 'operator-one', package_id: 'bundle-one',
+  expected_amount_ngn: 100, idempotency_key: 'airtime-order-001' })
+const airtime = await signCustomerCapability(identity, 'customer-airtime', airtimeBody)
+assert.deepEqual(await authorize(airtime, airtimeBody, 'airtime', 'customer-airtime'), { id: identity.user_id })
+await assert.rejects(authorize(airtime, airtimeBody, 'airtime', 'customer-airtime'), /Unauthorized/)
+await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-airtime', airtimeBody),
+  airtimeBody.replace('operator-one', 'operator-two'), 'airtime', 'customer-airtime'), /Unauthorized/)
+await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-airtime', airtimeBody),
+  airtimeBody, 'products', 'customer-airtime'), /Unauthorized/)
+await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-airtime', airtimeBody),
+  airtimeBody, 'airtime', 'smsbus'), /Unauthorized/)
+revoked = true
+await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-airtime', airtimeBody),
+  airtimeBody, 'airtime', 'customer-airtime'), /Unauthorized/)
 console.log('customer API capability checks passed')

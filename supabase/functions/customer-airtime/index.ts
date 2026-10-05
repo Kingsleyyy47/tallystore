@@ -1,11 +1,55 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { AirtimeProvider } from '../_shared/customer-airtime-provider.ts'
 import { checkedOperators, chooseUnit, e164, productOptions, safeId, safeMoney, safePackageId, unwrapData, verifiedAirtimeDelivery, type AirtimeQuote } from '../_shared/customer-airtime-contract.ts'
+import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts'
 
 const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info', 'Access-Control-Allow-Methods': 'POST, OPTIONS' }
 const send = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers })
 const uuid = (s: unknown) => typeof s === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(s)
 const safeOrder = (row: any) => row && ({ id: row.id, status: row.status, recipient_phone: row.recipient_phone, product_name: row.product_name, amount_ngn: row.amount_ngn, currency: row.currency, created_at: row.created_at })
+
+const API_ACTION_FIELDS: Record<string, readonly string[]> = {
+  check_phone: ['action', 'phone_number'],
+  quote: ['action', 'phone_number', 'operator_id', 'product_id', 'package_id', 'unit_value'],
+  purchase: ['action', 'phone_number', 'operator_id', 'product_id', 'package_id', 'unit_value', 'idempotency_key', 'expected_amount_ngn'],
+  status: ['action', 'order_id'],
+  orders: ['action'],
+}
+
+// Read only a bounded clone. The original bytes remain available for the HMAC
+// body's hash check; a tee cancellation must never delay a timeout response.
+async function readBody(req: Request): Promise<Record<string, unknown>> {
+  const maximum = 16 * 1024
+  const length = req.headers.get('Content-Length')
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maximum)) throw new Error('REQUEST_TOO_LARGE')
+  const reader = req.clone().body?.getReader()
+  if (!reader) throw new Error('INVALID_REQUEST')
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('REQUEST_TIMEOUT')), 5000) })
+  try {
+    const chunks: Uint8Array[] = []
+    let size = 0
+    for (;;) {
+      const part = await Promise.race([reader.read(), expired])
+      if (part.done) break
+      if (part.value.byteLength === 0) throw new Error('INVALID_REQUEST')
+      size += part.value.byteLength
+      if (size > maximum) throw new Error('REQUEST_TOO_LARGE')
+      chunks.push(part.value)
+    }
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+    let body: unknown
+    try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch { throw new Error('INVALID_REQUEST') }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('INVALID_REQUEST')
+    return body as Record<string, unknown>
+  } finally {
+    clearTimeout(timer)
+    void reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+}
 
 function merchantBalance(value: unknown, currency: string): number | null {
   const number = typeof value === 'number' ? value
@@ -348,28 +392,36 @@ Deno.serve(async req => {
   if (req.method !== 'POST') return send({ success: false, error: 'Method not allowed' }, 405)
   try {
     const authHeader = req.headers.get('Authorization') || ''
-    if (!authHeader.startsWith('Bearer ')) return send({ success: false, error: 'Unauthorized' }, 401)
+    const delegated = req.headers.has('x-tally-api-capability')
+    if (delegated && Deno.env.get('CUSTOMER_API_ENABLED') !== 'true') return send({ success: false, error: 'Unauthorized' }, 401)
+    if (!delegated && !authHeader.startsWith('Bearer ')) return send({ success: false, error: 'Unauthorized' }, 401)
     const url = Deno.env.get('SUPABASE_URL') || ''
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY') || ''
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
     if (!url || !anonKey || !serviceKey) throw new Error('SERVICE_UNAVAILABLE')
-    const auth = createClient(url, anonKey, { auth: { persistSession: false } })
-    const { data, error } = await auth.auth.getUser(authHeader.slice(7))
-    if (error || !data?.user?.id) return send({ success: false, error: 'Unauthorized' }, 401)
-    const body = await req.json()
+    if (!delegated && authHeader.replace(/^Bearer\s+/, '').trim() === serviceKey) return send({ success: false, error: 'Unauthorized' }, 401)
+    const body = await readBody(req)
+    if (delegated) {
+      const fields = typeof body.action === 'string' && Object.prototype.hasOwnProperty.call(API_ACTION_FIELDS, body.action) && API_ACTION_FIELDS[body.action]
+      if (!fields) return send({ success: false, code: 'CUSTOMER_API_ACTION_DENIED', error: 'Action is not available.' }, 403)
+      if (Object.keys(body).some(field => !fields.includes(field))) return send({ success: false, code: 'INVALID_REQUEST', error: 'Invalid request.' }, 400)
+    }
     const admin = createClient(url, serviceKey, { auth: { persistSession: false } })
+    let user: { id: string }
+    try { user = await authenticateCustomerRequest(req, admin, 'airtime', 'customer-airtime') }
+    catch { return send({ success: false, error: 'Unauthorized' }, 401) }
     // Dedicated activation gate. Legacy purchase-bitrefill remains paused.
     if ((body?.action === 'purchase') && Deno.env.get('CUSTOMER_AIRTIME_ENABLED') !== 'true') return send({ success: false, code: 'AIRTIME_PAUSED', error: 'Airtime checkout is temporarily unavailable.' }, 503)
     if (body?.action === 'admin_pricing_get'
       || (body?.action === 'admin_pricing_set'
         && (body.remove === true || body.scope === 'global' || body.kind === 'sms'))) {
-      return send(await handle(body, admin, null as unknown as AirtimeProvider, data.user.id))
+      return send(await handle(body, admin, null as unknown as AirtimeProvider, user.id))
     }
     const provider = new AirtimeProvider(Deno.env.get('BITREFILL_API_KEY') || '')
-    return send(await handle(body, admin, provider, data.user.id))
+    return send(await handle(body, admin, provider, user.id))
   } catch (error) {
     const code = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : 'AIRTIME_UNAVAILABLE'
-    const status = code.startsWith('INVALID_') ? 400 : code === 'ORDER_NOT_FOUND' ? 404 : code === 'PRICE_CHANGED' ? 409 : 503
+    const status = code === 'REQUEST_TOO_LARGE' ? 413 : code === 'REQUEST_TIMEOUT' ? 408 : code.startsWith('INVALID_') ? 400 : code === 'ORDER_NOT_FOUND' ? 404 : code === 'PRICE_CHANGED' ? 409 : 503
     return send({ success: false, code, error: code === 'AIRTIME_UNAVAILABLE' ? 'Airtime is temporarily unavailable.' : code }, status)
   }
 })

@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
 import esbuild from 'esbuild'
+import { createHash, createHmac, randomUUID, webcrypto } from 'node:crypto'
 
 const build = await esbuild.build({
   entryPoints: ['supabase/functions/customer-airtime/index.ts'], bundle: true,
@@ -21,11 +22,14 @@ const product = { data: { id: 'gosmart-usa', name: 'GoSmart', recipient_type: 'p
   packages: [{ id: 'gosmart-usa<&>25', value: 25, amount: 25, price: 29038 }] } }
 const invoiceId = 'invoice-test'
 const providerOrderId = 'provider-order-test'
+const delegationSecret = 'test-only-airtime-success-capability-secret-1234567890'
+const customerKeyId = '33333333-3333-4333-8333-333333333333'
 function response(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } }) }
 
-function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusReady = false, invoicePrice = 29038, prepayPhone = phone, merchantBalance = 100000000, owner = false } = {}) {
+function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusReady = false, invoicePrice = 29038, prepayPhone = phone, merchantBalance = 100000000, owner = false, delegated = false } = {}) {
   let edge
-  const calls = { create: 0, pay: 0, reserve: 0, claimDispatch: 0, bind: 0, claimPay: 0, unknown: 0, completed: 0, rejected: 0, alerts: 0, pricingWrites: 0 }
+  const calls = { create: 0, pay: 0, reserve: 0, claimDispatch: 0, bind: 0, claimPay: 0, unknown: 0, completed: 0, rejected: 0, alerts: 0, pricingWrites: 0, consume: 0 }
+  const nonces = new Set()
   let invoiceReads = statusReady ? 1 : 0
   let publicStatus = statusReady ? 'processing' : 'pending'
   const admin = {
@@ -43,7 +47,16 @@ function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusRea
       }
       throw new Error(`unexpected table ${table}`)
     },
-    async rpc(name) {
+    async rpc(name, args) {
+      if (name === 'customer_api_consume_capability') {
+        calls.consume++
+        assert.equal(args.p_key_id, customerKeyId)
+        assert.equal(args.p_user_id, userId)
+        assert.equal(args.p_section, 'airtime')
+        assert.equal(nonces.has(args.p_nonce), false)
+        nonces.add(args.p_nonce)
+        return { data: true, error: null }
+      }
       if (name === 'record_supplier_balance_alert') { calls.alerts++; return { data: null, error: null } }
       if (name === 'list_customer_bitrefill_pricing') return { data: owner ? { success: true, global: { mode: 'percent', value: 0 }, overrides: [] }
         : { success: false, code: 'OWNER_DENIED' }, error: null }
@@ -56,6 +69,9 @@ function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusRea
       if (name === 'get_customer_bitrefill_pricing') return { data: { success: true, mode: 'percent', value: 0, source: 'global' }, error: null }
       if (name === 'authorize_customer_airtime_purchase') {
         calls.reserve++
+        assert.equal(args.p_user_id, userId)
+        assert.equal(args.p_quote.amount_ngn, 37460)
+        assert.equal(args.p_quote.recipient_phone, phone)
         return reserve === 'fail' ? { data: { success: false, code: 'INSUFFICIENT_FUNDS' }, error: null }
           : { data: { success: true, order_id: orderId, idempotent_replay: replay, state: replay ? 'unknown' : 'prepared' }, error: null }
       }
@@ -73,10 +89,10 @@ function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusRea
     },
   }
   const context = {
-    module: { exports: {} }, exports: {}, Response, Request, AbortSignal, URL, Date, console,
+    module: { exports: {} }, exports: {}, Response, Request, AbortSignal, URL, Date, console, TextEncoder, TextDecoder, Uint8Array, setTimeout, clearTimeout, crypto: webcrypto, atob, btoa,
     Deno: { serve(handler) { edge = handler }, env: { get(name) {
       return ({ SUPABASE_URL: 'https://synthetic.invalid', SUPABASE_ANON_KEY: 'public-test', SUPABASE_SERVICE_ROLE_KEY: 'synthetic-service',
-        BITREFILL_API_KEY: 'synthetic-provider', CUSTOMER_AIRTIME_ENABLED: 'true' })[name] || ''
+        BITREFILL_API_KEY: 'synthetic-provider', CUSTOMER_AIRTIME_ENABLED: 'true', CUSTOMER_API_ENABLED: 'true', CUSTOMER_API_DELEGATION_SECRET: delegationSecret })[name] || ''
     } } },
     async fetch(input, options = {}) {
       const url = String(input)
@@ -109,11 +125,21 @@ function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusRea
   }
   context.globalThis = context
   context.__createClient = (_url, token) => token === 'public-test'
-    ? { auth: { async getUser() { return { data: { user: { id: userId } }, error: null } } } } : admin
+    ? { auth: { async getUser(jwt) { return jwt === 'synthetic-jwt' ? { data: { user: { id: userId } }, error: null }
+      : { data: { user: null }, error: { message: 'Unauthorized' } } } } } : admin
   vm.runInNewContext(bundled, context, { timeout: 5000 })
-  const post = body => edge(new Request('https://synthetic.invalid/functions/v1/customer-airtime', {
-    method: 'POST', headers: { Authorization: 'Bearer synthetic-jwt', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  })).then(async result => ({ status: result.status, body: await result.json() }))
+  const post = body => {
+    const raw = JSON.stringify(body)
+    const headers = { Authorization: delegated ? 'Bearer synthetic-service' : 'Bearer synthetic-jwt', 'Content-Type': 'application/json' }
+    if (delegated) {
+      const encoded = Buffer.from(JSON.stringify({ key_id: customerKeyId, user_id: userId, section: 'airtime', target: 'customer-airtime',
+        body_hash: createHash('sha256').update(raw).digest('hex'), nonce: randomUUID(), expires_at: Date.now() + 30000 })).toString('base64url')
+      headers['x-tally-api-capability'] = encoded + '.' + createHmac('sha256', delegationSecret).update(encoded).digest('hex')
+    }
+    return edge(new Request('https://synthetic.invalid/functions/v1/customer-airtime', {
+      method: 'POST', headers, body: raw,
+    })).then(async result => ({ status: result.status, body: await result.json() }))
+  }
   return { post, calls }
 }
 
@@ -211,4 +237,25 @@ result = await h.post({ action: 'status', order_id: orderId })
 assert.equal(result.body.order.status, 'completed', 'status can capture GET-verified delivery')
 assert.equal(h.calls.pay, 0, 'status never resends a provider payment')
 assert.equal(h.calls.create, 0, 'status never creates another invoice')
+
+// The real signed capability reaches the same reserve/bind/pay/capture flow.
+// Provider and database adapters are synthetic, so this incurs no charge.
+h = harness({ delegated: true })
+result = await h.post(request)
+assert.equal(result.status, 200)
+assert.equal(result.body.order.status, 'completed')
+assert.equal(h.calls.consume, 1)
+assert.equal(h.calls.reserve, 1)
+assert.equal(h.calls.claimDispatch, 1)
+assert.equal(h.calls.bind, 1)
+assert.equal(h.calls.claimPay, 1)
+assert.equal(h.calls.create, 1)
+assert.equal(h.calls.pay, 1)
+assert.equal(h.calls.completed, 1)
+h = harness({ delegated: true, replay: true })
+result = await h.post(request)
+assert.equal(result.body.idempotent_replay, true)
+assert.equal(h.calls.consume, 1)
+assert.equal(h.calls.create, 0)
+assert.equal(h.calls.pay, 0)
 console.log('customer airtime Edge runtime fixtures passed')

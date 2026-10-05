@@ -3,9 +3,9 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { sha256Hex, signCustomerCapability } from '../_shared/customer-api-delegation.ts'
 import { customerApiRoute } from '../_shared/customer-api-route.mjs'
 
-type Section = 'products' | 'sms' | 'social_boost'
-const sections = new Set<Section>(['products', 'sms', 'social_boost'])
-const defaultSections: Section[] = ['products', 'sms', 'social_boost']
+type Section = 'products' | 'sms' | 'social_boost' | 'airtime'
+const sections = new Set<Section>(['products', 'sms', 'social_boost', 'airtime'])
+const defaultSections: Section[] = ['products', 'sms', 'social_boost', 'airtime']
 const smmQuantityTypes = new Set([
   'Default','Mentions','Mentions with Hashtags','Mentions Hashtag',
   'Mentions User Followers','Mentions Media Likers','Comment Likes',
@@ -43,9 +43,36 @@ async function sessionUser(req: Request, admin: any) {
 }
 async function body(req: Request) {
   if (req.headers.get('content-type')?.split(';')[0].trim() !== 'application/json') throw new Error('Invalid JSON request')
-  const raw = await req.text()
-  if (new TextEncoder().encode(raw).length > 16_384) throw new Error('Request too large')
-  const parsed = JSON.parse(raw)
+  const size = Number(req.headers.get('content-length'))
+  if (Number.isFinite(size) && size > 16_384) throw new Error('Request too large')
+  if (!req.body) throw new Error('Invalid JSON request')
+  const reader = req.body.getReader()
+  const parts: Uint8Array[] = []
+  let length = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let raw: string
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Request timed out')), 5_000)
+    })
+    while (true) {
+      const next = await Promise.race([reader.read(), timeout])
+      if (next.done) break
+      if (next.value.byteLength === 0) throw new Error('Invalid JSON request')
+      length += next.value.byteLength
+      if (length > 16_384) throw new Error('Request too large')
+      parts.push(next.value)
+    }
+    const bytes = new Uint8Array(length)
+    let offset = 0
+    for (const part of parts) { bytes.set(part, offset); offset += part.byteLength }
+    raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch (error) {
+    if (error instanceof Error && (error.message === 'Request too large' || error.message === 'Request timed out')) throw error
+    throw new Error('Invalid JSON request')
+  } finally { if (timer) clearTimeout(timer); void reader.cancel().catch(() => undefined) }
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) } catch { throw new Error('Invalid JSON request') }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid JSON request')
   return parsed as Record<string, unknown>
 }
@@ -202,7 +229,7 @@ async function manage(req: Request, path: string, admin: any) {
 }
 
 async function authorize(req: Request, admin: any, requested: Section) {
-  const rawKey = /^Bearer\s+(tlyc_(?:products|sms|social_boost)_[a-f0-9]{64})$/i.exec(req.headers.get('authorization') || '')?.[1]
+  const rawKey = /^Bearer\s+(tlyc_(?:products|sms|social_boost|airtime)_[a-f0-9]{64})$/i.exec(req.headers.get('authorization') || '')?.[1]
   if (!rawKey) return { error: fail('invalid_key', 401) }
   const { data, error } = await admin.rpc('customer_api_authorize', {
     p_hash: await sha256Hex(rawKey), p_section: requested, p_limit: 60,
@@ -211,32 +238,72 @@ async function authorize(req: Request, admin: any, requested: Section) {
   if (!data.ok) return { error: fail(data.code, data.code === 'rate_limited' ? 429 : 401) }
   return { identity: data as { key_id: string; user_id: string; section: Section } }
 }
-async function purchase(req: Request, admin: any) {
-  const input = await body(req)
-  const requested = section(input.section)
-  if (!requested) return fail('invalid_section')
-  const authorization = await authorize(req, admin, requested)
-  if (authorization.error) return authorization.error
-  const target = requested === 'products' ? 'process-purchase' :
-    requested === 'sms' ? 'smsbus' : 'smm-create-order'
-  const payload = { ...input }
-  delete payload.section
-  if (requested === 'sms') payload.action = 'create_otp'
-  // The target route owns pricing, verified-wallet checks, idempotency,
-  // supplier dispatch, and its current pause flag.
+type AirtimeAction = 'check_phone' | 'quote' | 'purchase' | 'status'
+const airtimeId = (value: unknown) => typeof value === 'string' && value.length <= 180 &&
+  /^[A-Za-z0-9][A-Za-z0-9:_./-]*$/.test(value)
+function validAirtimeInput(input: Record<string, unknown>, action: AirtimeAction) {
+  const fields = action === 'check_phone' ? ['section', 'phone_number'] :
+    action === 'status' ? ['section', 'order_id'] :
+    ['section', 'phone_number', 'operator_id', 'product_id', 'package_id', 'unit_value',
+      ...(action === 'purchase' ? ['expected_amount_ngn', 'idempotency_key'] : [])]
+  if (input.section !== 'airtime' || Object.keys(input).some(key => !fields.includes(key))) return false
+  if (action === 'status') return typeof input.order_id === 'string' && uuid.test(input.order_id)
+  if (typeof input.phone_number !== 'string' || !/^\+[1-9]\d{7,14}$/.test(input.phone_number)) return false
+  if (action === 'check_phone') return true
+  if (!airtimeId(input.product_id) || input.operator_id !== input.product_id) return false
+  if (input.package_id !== undefined && (typeof input.package_id !== 'string' ||
+      input.package_id.length > 180 || !/^[\x20-\x7e]+$/.test(input.package_id) || /["'\\]/.test(input.package_id))) return false
+  if (input.unit_value !== undefined && (typeof input.unit_value !== 'number' || !Number.isFinite(input.unit_value)
+      || input.unit_value <= 0 || Math.abs(input.unit_value * 100 - Math.round(input.unit_value * 100)) > 1e-7)) return false
+  if (input.package_id === undefined && input.unit_value === undefined) return false
+  if (action === 'purchase' && (typeof input.expected_amount_ngn !== 'number' ||
+      !Number.isSafeInteger(input.expected_amount_ngn) || input.expected_amount_ngn <= 0 || input.expected_amount_ngn > 1_000_000_000 ||
+      typeof input.idempotency_key !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9:_-]{9,119}$/.test(input.idempotency_key))) return false
+  return true
+}
+async function callTarget(identity: { key_id: string; user_id: string; section: Section },
+  target: 'process-purchase' | 'smsbus' | 'smm-create-order' | 'customer-airtime',
+  payload: Record<string, unknown>, timeoutMs: number) {
   const rawBody = JSON.stringify(payload)
-  const capability = await signCustomerCapability(authorization.identity!, target, rawBody)
+  const capability = await signCustomerCapability(identity, target, rawBody)
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
   const url = `${Deno.env.get('SUPABASE_URL') || ''}/functions/v1/${target}`
   const response = await fetch(url, {
     method: 'POST', headers: {
       Authorization: `Bearer ${serviceKey}`, apikey: serviceKey,
       'Content-Type': 'application/json', 'x-tally-api-capability': capability,
-    }, body: rawBody, signal: AbortSignal.timeout(45_000),
+    }, body: rawBody, signal: AbortSignal.timeout(timeoutMs),
   })
   const result = await response.json().catch(() => null)
-  if (!result) return fail('purchase_outcome_unknown', 503)
-  return json(result, response.status)
+  return result ? json(result, response.status) : fail('purchase_outcome_unknown', 503)
+}
+async function airtimeAction(req: Request, path: string, admin: any) {
+  const action: AirtimeAction = path === '/v1/airtime/check-phone' ? 'check_phone' :
+    path === '/v1/airtime/quote' ? 'quote' : 'status'
+  const input = await body(req)
+  if (!validAirtimeInput(input, action)) return fail('invalid_request')
+  const authorization = await authorize(req, admin, 'airtime')
+  if (authorization.error) return authorization.error
+  const payload = { ...input }
+  delete payload.section
+  return callTarget(authorization.identity!, 'customer-airtime', { ...payload, action }, action === 'quote' ? 30_000 : 20_000)
+}
+async function purchase(req: Request, admin: any) {
+  const input = await body(req)
+  const requested = section(input.section)
+  if (!requested) return fail('invalid_section')
+  if (requested === 'airtime' && !validAirtimeInput(input, 'purchase')) return fail('invalid_request')
+  const authorization = await authorize(req, admin, requested)
+  if (authorization.error) return authorization.error
+  const target = requested === 'products' ? 'process-purchase' :
+    requested === 'sms' ? 'smsbus' : requested === 'airtime' ? 'customer-airtime' : 'smm-create-order'
+  const payload = { ...input }
+  delete payload.section
+  if (requested === 'sms') payload.action = 'create_otp'
+  if (requested === 'airtime') payload.action = 'purchase'
+  // The target route owns pricing, verified-wallet checks, idempotency,
+  // supplier dispatch, and its current pause flag.
+  return callTarget(authorization.identity!, target, payload, 45_000)
 }
 async function read(req: Request, path: string, admin: any) {
   const url = new URL(req.url)
@@ -252,6 +319,7 @@ async function read(req: Request, path: string, admin: any) {
     return json({ success: true, data: { currency: 'NGN', spendable_ngn: Number(data.confirmed_spendable) } })
   }
   if (path === '/v1/catalogue') {
+    if (requested === 'airtime') return fail('use_airtime_check_phone', 400)
     if (requested === 'products') {
       const circlePct = await circlePercent(admin, userId)
       const { data, error } = await admin.from('product_groups')
@@ -297,9 +365,11 @@ async function read(req: Request, path: string, admin: any) {
     return await productQuote(admin, userId, url)
   }
   if (path === '/v1/orders') {
-    const table = requested === 'products' ? 'orders' : requested === 'sms' ? 'sms_orders' : 'smm_orders'
+    const table = requested === 'products' ? 'orders' : requested === 'sms' ? 'sms_orders' :
+      requested === 'airtime' ? 'customer_airtime_orders' : 'smm_orders'
     const fields = requested === 'products' ? 'id, status, amount, created_at, product_group_id' :
       requested === 'sms' ? 'id, status, price_ngn, created_at, service_id' :
+      requested === 'airtime' ? 'id, status, recipient_phone, product_name, amount_ngn, currency, created_at' :
       'id, status, amount_ngn, created_at, service_id'
     const { data, error } = await admin.from(table).select(fields).eq('user_id', userId)
       .order('created_at', { ascending: false }).limit(100)
@@ -309,11 +379,14 @@ async function read(req: Request, path: string, admin: any) {
   const orderMatch = /^\/v1\/orders\/([a-f0-9-]{36})$/.exec(path)
   if (orderMatch) {
     if (!uuid.test(orderMatch[1])) return fail('invalid_request')
-    const table = requested === 'products' ? 'orders' : requested === 'sms' ? 'sms_orders' : 'smm_orders'
+    const table = requested === 'products' ? 'orders' : requested === 'sms' ? 'sms_orders' :
+      requested === 'airtime' ? 'customer_airtime_orders' : 'smm_orders'
     const fields = requested === 'products'
       ? 'id, status, amount, created_at, product_group_id, account_details, financial_authorization_status'
       : requested === 'sms'
       ? 'id, status, price_ngn, created_at, service_id, phone_number, messages'
+      : requested === 'airtime'
+      ? 'id, status, recipient_phone, product_name, amount_ngn, currency, created_at'
       : 'id, status, amount_ngn, created_at, service_id, quantity, link'
     const { data, error } = await admin.from(table).select(fields)
       .eq('user_id', userId).eq('id', orderMatch[1]).maybeSingle()
@@ -350,11 +423,15 @@ serve(async (req) => {
     const admin = adminClient()
     if (route.kind === 'manage') return await manage(req, route.path, admin)
     if (route.kind === 'purchase') return await purchase(req, admin)
+    if (route.kind === 'airtime') return await airtimeAction(req, route.path, admin)
     if (route.kind === 'read') return await read(req, route.path, admin)
     return fail('not_found', 404)
   } catch (error) {
     console.error('Customer API request failed', error instanceof Error ? error.name : 'unknown')
     if (error instanceof Error && error.message === 'Unauthorized') return fail('unauthorized', 401)
+    if (error instanceof Error && error.message === 'Request too large') return fail('request_too_large', 413)
+    if (error instanceof Error && error.message === 'Request timed out') return fail('request_timeout', 408)
+    if (error instanceof Error && error.message === 'Invalid JSON request') return fail('invalid_request', 400)
     return fail('unavailable', 503)
   }
 })
