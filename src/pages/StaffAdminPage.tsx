@@ -107,7 +107,7 @@ function autoApproves(perms: PermissionMap, key: PermissionKey) {
   return key !== 'action_adjust_balance' && perms[key]?.is_enabled === true && perms[key]?.auto_approve === true
 }
 function hasSettingsPermission(perms: PermissionMap) {
-  return can(perms, 'setting_rate') || can(perms, 'setting_referral_pct') || can(perms, 'setting_ercas') || can(perms, 'setting_support_links')
+  return can(perms, 'setting_rate') || can(perms, 'setting_ercas') || can(perms, 'setting_support_links')
 }
 
 const MAX_STAFF_BULK_ROWS = 5_000
@@ -191,8 +191,6 @@ export default function StaffAdminPage() {
   // Rate / referral settings
   const [ngnUsdRate, setNgnUsdRate] = useState('')
   const [savingRate, setSavingRate] = useState(false)
-  const [referralPct, setReferralPct] = useState('5')
-  const [savingReferral, setSavingReferral] = useState(false)
   const [ercasEnabled, setErcasEnabled] = useState(false)
   const [savingErcas, setSavingErcas] = useState(false)
 
@@ -552,9 +550,6 @@ export default function StaffAdminPage() {
     }
     if (can(perms, 'setting_rate')) {
       getAppSetting('ngn_usd_rate').then(v => setNgnUsdRate(v || ''))
-    }
-    if (can(perms, 'setting_referral_pct')) {
-      getAppSetting('referral_commission_pct').then(v => setReferralPct(v || '5'))
     }
     if (can(perms, 'setting_ercas')) {
       getAppSetting('ercas_enabled').then(v => setErcasEnabled(v === 'true'))
@@ -2277,26 +2272,6 @@ export default function StaffAdminPage() {
                       setSavingRate(false)
                     }} disabled={savingRate}>
                       {savingRate ? <Loader2 className="h-4 w-4 animate-spin" /> : autoApproves(perms, 'setting_rate') ? 'Save' : 'Submit'}
-                    </Button>
-                  </CardContent>
-                </Card>
-              )}
-              {can(perms, 'setting_referral_pct') && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Referral Commission %</CardTitle>
-                    {!autoApproves(perms, 'setting_referral_pct') && <Badge variant="outline" className="w-fit flex items-center gap-1"><Clock className="h-3 w-3" /> Requires approval</Badge>}
-                  </CardHeader>
-                  <CardContent className="flex gap-2">
-                    <Input type="number" value={referralPct} onChange={e => setReferralPct(e.target.value)} placeholder="e.g. 5" className="max-w-xs" />
-                    <Button onClick={async () => {
-                      const val = parseFloat(referralPct)
-                      if (isNaN(val) || val < 0 || val > 100) return
-                      setSavingReferral(true)
-                      await handleSettingChange('setting_referral_pct', 'referral_commission_pct', referralPct, 'referral commission')
-                      setSavingReferral(false)
-                    }} disabled={savingReferral}>
-                      {savingReferral ? <Loader2 className="h-4 w-4 animate-spin" /> : autoApproves(perms, 'setting_referral_pct') ? 'Save' : 'Submit'}
                     </Button>
                   </CardContent>
                 </Card>

@@ -339,6 +339,8 @@ type ApiPartner = {
   allowed_sections: string[]
   markup_percent: number
   balance_ngn: number
+  unlimited_credit: boolean
+  owner_reviewed_at?: string | null
   webhook_url?: string | null
   notes?: string | null
   has_webhook_secret?: boolean
@@ -782,6 +784,7 @@ function AdminControlSection({
 
 export default function AdminPage() {
   const { user } = useAuth()
+  const isPartnerOwner = user?.id === 'c1396bda-86e2-4dfc-94bb-0d95469d1d36'
   const { toast } = useToast()
 
   // Real data state
@@ -925,10 +928,6 @@ export default function AdminPage() {
   const [evaluationRunning, setEvaluationRunning] = useState(false)
   const [salesErrors, setSalesErrors] = useState<Record<string, string>>({})
 
-  // Referral commission setting
-  const [referralCommissionPct, setReferralCommissionPct] = useState('5')
-  const [savingReferralPct, setSavingReferralPct] = useState(false)
-  const [loadingReferralPct, setLoadingReferralPct] = useState(true)
 
   // NGN/USD rate override setting
   const [ngnUsdRate, setNgnUsdRate] = useState('')
@@ -1029,6 +1028,7 @@ export default function AdminPage() {
   const [editingAccount, setEditingAccount] = useState<IndividualAccount | null>(null)
   const [editingCategory, setEditingCategory] = useState<Category | null>(null)
   const [editingTemplate, setEditingTemplate] = useState<any | null>(null)
+  const [resettingSupplierFallbackId, setResettingSupplierFallbackId] = useState<string | null>(null)
 
   // Product suggestions ("trending category" panel)
   const [productSuggestions, setProductSuggestions] = useState<ProductSuggestion[]>([])
@@ -1067,10 +1067,14 @@ export default function AdminPage() {
   const [apiPartnerSaving, setApiPartnerSaving] = useState<string | null>(null)
   const [generatedApiCredentials, setGeneratedApiCredentials] = useState<{ apiKey: string; webhookSecret: string } | null>(null)
   const [apiPartnerEditDrafts, setApiPartnerEditDrafts] = useState<Record<string, ApiPartnerEditDraft>>({})
+  const [apiPartnerCreditReasons, setApiPartnerCreditReasons] = useState<Record<string, string>>({})
+  const [apiPartnerBalanceDrafts, setApiPartnerBalanceDrafts] = useState<Record<string, { amount: string; reason: string }>>({})
   const [newApiPartner, setNewApiPartner] = useState({
     name: '',
     allowed_sections: PARTNER_SECTIONS.map((section) => section.key),
     webhook_url: '',
+    unlimited_credit: false,
+    credit_reason: '',
   })
 
   // SMS Orders management
@@ -1173,8 +1177,8 @@ export default function AdminPage() {
   }, [invokePartnerAdmin, toast])
 
   const createApiPartner = useCallback(async () => {
-    if (PARTNER_API_INCIDENT_PAUSED) {
-      toast({ title: 'Partner API paused', description: 'Partner creation is locked during the wallet security review.', variant: 'destructive' })
+    if (!isPartnerOwner) {
+      toast({ title: 'Owner access required', variant: 'destructive' })
       return
     }
     if (!newApiPartner.name.trim()) {
@@ -1188,11 +1192,15 @@ export default function AdminPage() {
         name: newApiPartner.name,
         webhook_url: newApiPartner.webhook_url,
         allowed_sections: newApiPartner.allowed_sections,
+        unlimited_credit: newApiPartner.unlimited_credit,
+        credit_reason: newApiPartner.credit_reason,
       })
       setNewApiPartner({
         name: '',
         allowed_sections: PARTNER_SECTIONS.map((section) => section.key),
         webhook_url: '',
+        unlimited_credit: false,
+        credit_reason: '',
       })
       toast({ title: 'API partner created' })
       await loadApiPartners()
@@ -1201,7 +1209,7 @@ export default function AdminPage() {
     } finally {
       setApiPartnerSaving(null)
     }
-  }, [invokePartnerAdmin, loadApiPartners, newApiPartner, toast])
+  }, [invokePartnerAdmin, isPartnerOwner, loadApiPartners, newApiPartner, toast])
 
   const updateApiPartner = useCallback(async (partnerId: string, updates: Record<string, unknown>) => {
     if (PARTNER_API_INCIDENT_PAUSED) {
@@ -1280,8 +1288,8 @@ export default function AdminPage() {
   }, [apiPartnerEditDrafts, cancelApiPartnerEdit, invokePartnerAdmin, loadApiPartners, toast])
 
   const generateApiPartnerKey = useCallback(async (partnerId: string) => {
-    if (PARTNER_API_INCIDENT_PAUSED) {
-      toast({ title: 'Partner API paused', description: 'Key generation is locked during the wallet security review.', variant: 'destructive' })
+    if (!isPartnerOwner) {
+      toast({ title: 'Owner access required', variant: 'destructive' })
       return
     }
     setApiPartnerSaving(`key-${partnerId}`)
@@ -1303,11 +1311,11 @@ export default function AdminPage() {
     } finally {
       setApiPartnerSaving(null)
     }
-  }, [invokePartnerAdmin, loadApiPartners, toast])
+  }, [invokePartnerAdmin, isPartnerOwner, loadApiPartners, toast])
 
   const revokeApiPartnerKey = useCallback(async (keyId: string) => {
-    if (PARTNER_API_INCIDENT_PAUSED) {
-      toast({ title: 'Partner API paused', description: 'Key changes are locked during the wallet security review.', variant: 'destructive' })
+    if (!isPartnerOwner) {
+      toast({ title: 'Owner access required', variant: 'destructive' })
       return
     }
     setApiPartnerSaving(`revoke-${keyId}`)
@@ -1320,7 +1328,50 @@ export default function AdminPage() {
     } finally {
       setApiPartnerSaving(null)
     }
-  }, [invokePartnerAdmin, loadApiPartners, toast])
+  }, [invokePartnerAdmin, isPartnerOwner, loadApiPartners, toast])
+
+  const setApiPartnerCredit = useCallback(async (partner: ApiPartner) => {
+    if (!isPartnerOwner) return
+    const reason = apiPartnerCreditReasons[partner.id]?.trim() || ''
+    if (reason.length < 10) {
+      toast({ title: 'Enter a credit decision reason of at least 10 characters', variant: 'destructive' })
+      return
+    }
+    setApiPartnerSaving(`credit-${partner.id}`)
+    try {
+      await invokePartnerAdmin({ action: 'admin_set_unlimited_credit', partner_id: partner.id,
+        enabled: !partner.unlimited_credit, reason })
+      setApiPartnerCreditReasons(prev => ({ ...prev, [partner.id]: '' }))
+      toast({ title: partner.unlimited_credit ? 'Prepaid mode set' : 'Unlimited credit granted' })
+      await loadApiPartners()
+    } catch (err: any) {
+      toast({ title: 'Credit mode update failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setApiPartnerSaving(null)
+    }
+  }, [apiPartnerCreditReasons, invokePartnerAdmin, isPartnerOwner, loadApiPartners, toast])
+
+  const adjustApiPartnerBalance = useCallback(async (partner: ApiPartner) => {
+    if (!isPartnerOwner) return
+    const draft = apiPartnerBalanceDrafts[partner.id]
+    const amount = Number(draft?.amount)
+    if (!Number.isFinite(amount) || amount === 0 || Math.abs(Math.round(amount * 100) - amount * 100) > 1e-7 || !draft?.reason.trim()) {
+      toast({ title: 'Enter a non-zero amount and an audit reason', variant: 'destructive' })
+      return
+    }
+    setApiPartnerSaving(`balance-${partner.id}`)
+    try {
+      await invokePartnerAdmin({ action: 'admin_adjust_balance', partner_id: partner.id,
+        amount_ngn: amount, reason: draft.reason.trim() })
+      setApiPartnerBalanceDrafts(prev => ({ ...prev, [partner.id]: { amount: '', reason: '' } }))
+      toast({ title: 'Partner prepaid balance adjusted' })
+      await loadApiPartners()
+    } catch (err: any) {
+      toast({ title: 'Balance adjustment failed', description: err.message, variant: 'destructive' })
+    } finally {
+      setApiPartnerSaving(null)
+    }
+  }, [apiPartnerBalanceDrafts, invokePartnerAdmin, isPartnerOwner, loadApiPartners, toast])
 
   useEffect(() => {
     loadApiPartners()
@@ -1625,23 +1676,6 @@ export default function AdminPage() {
     loadSupportLinks()
   }, [])
 
-  // ==================== REFERRAL SETTINGS ====================
-
-  useEffect(() => {
-    const loadReferralPct = async () => {
-      setLoadingReferralPct(true)
-      try {
-        const value = await getAppSetting('referral_commission_pct')
-        if (value) setReferralCommissionPct(value)
-      } catch (err) {
-        console.error('Failed to load referral commission %:', err)
-      } finally {
-        setLoadingReferralPct(false)
-      }
-    }
-    loadReferralPct()
-  }, [])
-
   // ==================== PRODUCT SUGGESTIONS ====================
   // "Trending category, want to add a product?" panel - trigger is your own
   // store's sales velocity (see computeAndUpsertTrendSuggestions). Accepting
@@ -1742,25 +1776,6 @@ export default function AdminPage() {
       toast({ title: 'Failed to save', variant: 'destructive' })
     } finally {
       setSavingSupportLinks(false)
-    }
-  }
-
-  const handleSaveReferralPct = async () => {
-    const pct = parseFloat(referralCommissionPct)
-    if (isNaN(pct) || pct < 0 || pct > 100) {
-      toast({ title: 'Invalid value', description: 'Enter a percentage between 0 and 100', variant: 'destructive' })
-      return
-    }
-    setSavingReferralPct(true)
-    try {
-      const ok = await upsertAppSetting('referral_commission_pct', pct.toString())
-      if (ok) {
-        toast({ title: 'Saved', description: `Referral commission set to ${pct}%` })
-      } else {
-        toast({ title: 'Failed to save', description: 'Please try again', variant: 'destructive' })
-      }
-    } finally {
-      setSavingReferralPct(false)
     }
   }
 
@@ -3491,6 +3506,53 @@ export default function AdminPage() {
   // Edit template
   const handleEditTemplate = (template: any) => {
     setEditingTemplate(template)
+  }
+
+  const handleResetSupplierFallback = async (templateId: string) => {
+    if (!isPartnerOwner || resettingSupplierFallbackId) return
+    setResettingSupplierFallbackId(templateId)
+    try {
+      const { data, error } = await supabase.functions.invoke('supplier-catalog-maintenance', {
+        body: { action: 'reset_fallback', product_group_id: templateId },
+      })
+      let responseCode = data?.code as string | undefined
+      let responseStatus: number | undefined
+      if (error) {
+        const context = (error as { context?: unknown }).context
+        if (context instanceof Response) {
+          responseStatus = context.status
+          const body = await context.clone().json().catch(() => null)
+          responseCode = body?.code || responseCode
+        }
+      }
+      if (error || data?.success !== true) {
+        const reconciliationPending = responseCode === 'SUPPLIER_RECONCILIATION_PENDING' || responseStatus === 409
+        toast({
+          title: reconciliationPending ? 'Supplier order needs review' : 'Supplier fallback could not be retried',
+          description: reconciliationPending
+            ? 'An earlier supplier purchase is still being confirmed. Review that order before retrying this product.'
+            : 'The supplier setting could not be confirmed. Please try again later.',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      const updatedGroups = await getManagedProductGroups()
+      setProductGroups(updatedGroups)
+      setEditingTemplate((current: any) => current?.id === templateId
+        ? updatedGroups.find((group) => group.id === templateId) || current
+        : current)
+      toast({ title: 'Supplier fallback ready to retry', description: 'Availability was refreshed for this product.' })
+    } catch (error) {
+      console.error('Could not reset supplier fallback:', error)
+      toast({
+        title: 'Supplier fallback could not be retried',
+        description: 'The supplier setting could not be confirmed. Please try again later.',
+        variant: 'destructive',
+      })
+    } finally {
+      setResettingSupplierFallbackId(null)
+    }
   }
 
   const handleToggleFavoriteTemplate = async (templateId: string) => {
@@ -6111,26 +6173,8 @@ export default function AdminPage() {
                 )}
               </AdminControlSection>
 
-            {/* Referral Settings */}
-              <AdminControlSection title="Referral Settings">
-                <div className="flex flex-col sm:flex-row sm:items-end gap-3">
-                  <div className="flex-1">
-                    <Label htmlFor="referralPct">Commission % (per referred purchase)</Label>
-                    <Input
-                      id="referralPct"
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="0.1"
-                      value={referralCommissionPct}
-                      onChange={(e) => setReferralCommissionPct(e.target.value)}
-                      disabled={loadingReferralPct}
-                    />
-                  </div>
-                  <Button onClick={handleSaveReferralPct} disabled={savingReferralPct || loadingReferralPct}>
-                    {savingReferralPct ? 'Saving...' : 'Save'}
-                  </Button>
-                </div>
+              <AdminControlSection title="Tally Circle">
+                <p className="text-sm text-muted-foreground">Customers qualify for purchase discounts through verified referrals. Referral commissions have been retired.</p>
               </AdminControlSection>
 
             {/* NGN/USD Exchange Rate Settings */}
@@ -10783,6 +10827,25 @@ export default function AdminPage() {
                         Test mode
                       </label>
                     </div>
+                    {isPartnerOwner && editingTemplate.id && productGroups.some((group) =>
+                      group.id === editingTemplate.id && group.auto_fulfill_enabled
+                      && Boolean(group.muabanvia_product_id || group.shopclone_product_id || group.shopviaclone_product_id)
+                    ) && (
+                      <div className="mt-3 space-y-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={resettingSupplierFallbackId !== null}
+                          onClick={() => handleResetSupplierFallback(editingTemplate.id)}
+                        >
+                          {resettingSupplierFallbackId === editingTemplate.id ? 'Checking supplier fallback...' : 'Retry supplier fallback'}
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                          Use after supplier stock or balance is restored. Orders still being confirmed require review first.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Dry run result */}
@@ -10889,7 +10952,7 @@ export default function AdminPage() {
                       <div>
                         <p className="text-sm font-black">Partner API paused</p>
                         <p className="mt-1 text-xs opacity-80">
-                          Catalogue, checkout, order creation, key generation, partner edits, and partner balance changes are locked while the wallet security review is unresolved. Existing records remain visible for audit.
+                          Partner traffic remains paused. The owner can create reviewed partners, issue or revoke keys, and choose prepaid or unlimited credit with an audit reason. Existing partner activation and external paid orders remain locked.
                         </p>
                       </div>
                     </div>
@@ -10942,17 +11005,17 @@ export default function AdminPage() {
                   <div className="rounded-2xl border p-4">
                     <p className="text-sm font-black">Catalogue</p>
                     <p className="mt-2 font-mono text-xs">{'{ "action": "catalogue", "section": "products" }'}</p>
-                    <p className="mt-2 text-xs text-muted-foreground">Sections include products, SMS, social boost, bills, gift cards, crypto, and Telegram.</p>
+                    <p className="mt-2 text-xs text-muted-foreground">Read access requires the server-side partner API gate. Sections include products, SMS, social boost, bills, gift cards, crypto, and Telegram.</p>
                   </div>
                   <div className="rounded-2xl border p-4">
                     <p className="text-sm font-black">Wallet orders</p>
                     <p className="mt-2 font-mono text-xs">{'{ "action": "create_order", "item_type": "sms", "idempotency_key": "..." }'}</p>
-                    <p className="mt-2 text-xs text-muted-foreground">TallyStore calculates price and stock server-side before debiting partner balance.</p>
+                    <p className="mt-2 text-xs text-muted-foreground">External paid orders remain paused. Reviewed local product orders require a separate server-side gate.</p>
                   </div>
                   <div className="rounded-2xl border p-4 lg:col-span-3">
                     <p className="text-sm font-black">PocketFi checkout</p>
                     <p className="mt-2 break-all font-mono text-xs">{'{ "action": "create_checkout", "item_type": "product", "item_id": "...", "customer_reference": "partner-user-123", "customer_email": "buyer@example.com", "idempotency_key": "..." }'}</p>
-                    <p className="mt-2 text-xs text-muted-foreground">Returns a permanent PocketFi account number for that partner customer. After bank transfer confirmation, TallyStore fulfills the order and sends the partner webhook.</p>
+                    <p className="mt-2 text-xs text-muted-foreground">PocketFi checkout is paused pending a separate payment and fulfillment review.</p>
                   </div>
                 </div>
 
@@ -10968,11 +11031,11 @@ export default function AdminPage() {
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="space-y-1">
                           <Label>Name</Label>
-                          <Input value={newApiPartner.name} onChange={(event) => setNewApiPartner(prev => ({ ...prev, name: event.target.value }))} placeholder="Partner website" disabled={PARTNER_API_INCIDENT_PAUSED} />
+                          <Input value={newApiPartner.name} onChange={(event) => setNewApiPartner(prev => ({ ...prev, name: event.target.value }))} placeholder="Partner website" disabled={!isPartnerOwner} />
                         </div>
                         <div className="space-y-1">
                           <Label>Webhook URL</Label>
-                          <Input value={newApiPartner.webhook_url} onChange={(event) => setNewApiPartner(prev => ({ ...prev, webhook_url: event.target.value }))} placeholder="https://partner.com/webhook" disabled={PARTNER_API_INCIDENT_PAUSED} />
+                          <Input value={newApiPartner.webhook_url} onChange={(event) => setNewApiPartner(prev => ({ ...prev, webhook_url: event.target.value }))} placeholder="https://partner.com/webhook" disabled={!isPartnerOwner} />
                         </div>
                       </div>
 
@@ -10983,7 +11046,7 @@ export default function AdminPage() {
                             <label key={section.key} className="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold">
                               <Checkbox
                                 checked={newApiPartner.allowed_sections.includes(section.key)}
-                                disabled={PARTNER_API_INCIDENT_PAUSED}
+                                disabled={!isPartnerOwner}
                                 onCheckedChange={(checked) => setNewApiPartner(prev => ({
                                   ...prev,
                                   allowed_sections: checked
@@ -10997,9 +11060,20 @@ export default function AdminPage() {
                         </div>
                       </div>
 
-                      <Button type="button" onClick={createApiPartner} disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === 'create'} className="w-full">
+                      <label className="flex items-center gap-2 text-sm font-semibold">
+                        <Checkbox checked={newApiPartner.unlimited_credit} disabled={!isPartnerOwner}
+                          onCheckedChange={(checked) => setNewApiPartner(prev => ({ ...prev, unlimited_credit: checked === true }))} />
+                        Unlimited partner credit (owner grant)
+                      </label>
+                      {newApiPartner.unlimited_credit && <div className="space-y-1">
+                        <Label>Credit decision reason</Label>
+                        <Input value={newApiPartner.credit_reason} minLength={10} maxLength={500}
+                          onChange={(event) => setNewApiPartner(prev => ({ ...prev, credit_reason: event.target.value }))}
+                          placeholder="Why this partner has unlimited credit" disabled={!isPartnerOwner} />
+                      </div>}
+                      <Button type="button" onClick={createApiPartner} disabled={!isPartnerOwner || apiPartnerSaving === 'create' || (newApiPartner.unlimited_credit && newApiPartner.credit_reason.trim().length < 10)} className="w-full">
                         {apiPartnerSaving === 'create' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-                        {PARTNER_API_INCIDENT_PAUSED ? 'Partner API paused' : 'Create partner'}
+                        {isPartnerOwner ? 'Create reviewed partner' : 'Owner only'}
                       </Button>
                     </CardContent>
                   </Card>
@@ -11084,6 +11158,8 @@ export default function AdminPage() {
                                     <div className="flex flex-wrap items-center gap-2">
                                       <p className="font-black">{partner.name}</p>
                                       <Badge variant={partner.is_active ? 'default' : 'secondary'}>{partner.is_active ? 'Active' : 'Paused'}</Badge>
+                                      <Badge variant={partner.unlimited_credit ? 'default' : 'secondary'}>{partner.unlimited_credit ? 'Unlimited credit' : `Prepaid · ₦${Number(partner.balance_ngn || 0).toLocaleString()}`}</Badge>
+                                      {!partner.owner_reviewed_at && <Badge variant="destructive">Legacy review required</Badge>}
                                       <Badge variant="outline">{activeKeys.length} active key(s)</Badge>
                                       <Badge variant={partner.has_webhook_secret ? 'outline' : 'destructive'}>
                                         {partner.has_webhook_secret ? 'Webhook secret stored' : 'No webhook secret'}
@@ -11122,7 +11198,7 @@ export default function AdminPage() {
                                     <Button size="sm" variant="outline" onClick={() => updateApiPartner(partner.id, { is_active: !partner.is_active })} disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === partner.id}>
                                       {partner.is_active ? 'Pause' : 'Enable'}
                                     </Button>
-                                    <Button size="sm" onClick={() => generateApiPartnerKey(partner.id)} disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === `key-${partner.id}`}>
+                                    <Button size="sm" onClick={() => generateApiPartnerKey(partner.id)} disabled={!isPartnerOwner || !partner.owner_reviewed_at || apiPartnerSaving === `key-${partner.id}`}>
                                       {apiPartnerSaving === `key-${partner.id}` ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
                                       Generate API key + secret
                                     </Button>
@@ -11130,6 +11206,37 @@ export default function AdminPage() {
                                 )}
                               </div>
                             </div>
+
+                            {isPartnerOwner && <div className="mt-4 flex flex-wrap items-end gap-2 border-t pt-3">
+                              <label className="min-w-56 flex-1 space-y-1 text-xs font-semibold">
+                                Credit decision reason
+                                <Input value={apiPartnerCreditReasons[partner.id] || ''} maxLength={500}
+                                  onChange={(event) => setApiPartnerCreditReasons(prev => ({ ...prev, [partner.id]: event.target.value }))}
+                                  placeholder="Explain this credit mode change" />
+                              </label>
+                              <Button size="sm" variant="outline" onClick={() => void setApiPartnerCredit(partner)}
+                                disabled={apiPartnerSaving === `credit-${partner.id}` || (apiPartnerCreditReasons[partner.id]?.trim().length || 0) < 10}>
+                                {partner.unlimited_credit ? 'Switch to prepaid' : 'Grant unlimited credit'}
+                              </Button>
+                            </div>}
+
+                            {isPartnerOwner && !partner.unlimited_credit && <div className="mt-3 flex flex-wrap items-end gap-2">
+                              <label className="space-y-1 text-xs font-semibold">Prepaid adjustment (₦)
+                                <Input type="number" step="0.01" className="w-36"
+                                  value={apiPartnerBalanceDrafts[partner.id]?.amount || ''}
+                                  onChange={(event) => setApiPartnerBalanceDrafts(prev => ({ ...prev,
+                                    [partner.id]: { amount: event.target.value, reason: prev[partner.id]?.reason || '' } }))} />
+                              </label>
+                              <label className="min-w-48 flex-1 space-y-1 text-xs font-semibold">Adjustment reason
+                                <Input value={apiPartnerBalanceDrafts[partner.id]?.reason || ''}
+                                  onChange={(event) => setApiPartnerBalanceDrafts(prev => ({ ...prev,
+                                    [partner.id]: { amount: prev[partner.id]?.amount || '', reason: event.target.value } }))} />
+                              </label>
+                              <Button size="sm" variant="outline" onClick={() => void adjustApiPartnerBalance(partner)}
+                                disabled={apiPartnerSaving === `balance-${partner.id}` || !apiPartnerBalanceDrafts[partner.id]?.amount || !apiPartnerBalanceDrafts[partner.id]?.reason.trim()}>
+                                Adjust balance
+                              </Button>
+                            </div>}
 
                             {(partner.api_partner_keys || []).length > 0 && (
                               <div className="mt-4 space-y-2">
@@ -11141,7 +11248,7 @@ export default function AdminPage() {
                                     {key.revoked_at ? (
                                       <Badge variant="secondary">Revoked</Badge>
                                     ) : (
-                                      <Button size="sm" variant="destructive" onClick={() => revokeApiPartnerKey(key.id)} disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === `revoke-${key.id}`}>
+                                      <Button size="sm" variant="destructive" onClick={() => revokeApiPartnerKey(key.id)} disabled={!isPartnerOwner || apiPartnerSaving === `revoke-${key.id}`}>
                                         Revoke
                                       </Button>
                                     )}

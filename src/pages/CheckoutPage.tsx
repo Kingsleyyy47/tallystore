@@ -4,10 +4,11 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { CheckCircle, CreditCard, Wallet, Loader2, Copy, Download, ChevronDown, Minus, Plus } from 'lucide-react'
+import { CheckCircle, CreditCard, Wallet, Loader2, Copy, Download, ChevronDown, Minus, Plus, Clock } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import NavbarAuth from '@/components/NavbarAuth'
+import CategoryLogo from '@/components/CategoryLogo'
 import { BackToProducts } from '@/components/ui/back-button'
 import { useAuth } from '@/contexts/SimpleAuth'
 import {
@@ -18,6 +19,7 @@ import {
   computeDiscountedTotal,
   previewDiscountCode,
   DISCOUNTS_ENABLED,
+  supabase,
   type PublicAccount,
   type PurchasedAccountCredentials,
   type ProductGroup,
@@ -27,7 +29,7 @@ import { Input } from '@/components/ui/input'
 import { Tag, X } from 'lucide-react'
 import { blockStaffPurchase } from '@/lib/staffPurchaseGuard'
 import { getRevenueRequestContext, trackRevenueEvent } from '@/lib/revenue-os'
-import { isCustomerSellableProduct } from '@/lib/productAvailability'
+import { canAutoFulfillProduct, isCustomerSellableProduct } from '@/lib/productAvailability'
 import { useCurrency } from '@/contexts/CurrencyContext'
 
 const credentialFields: Array<{
@@ -85,6 +87,7 @@ export default function CheckoutPage() {
   const { accountId: navigationAccountId, productGroup: navigationProductGroup, category: navigationCategory, croAssignment = null } = location.state || {}
   const checkoutParams = new URLSearchParams(location.search)
   const productId = navigationProductGroup?.id || checkoutParams.get('product')
+  const pendingPurchaseStorageKey = user?.id && productId ? `tallystore:pending-purchase:${user.id}:${productId}` : null
   const accountId = navigationAccountId || checkoutParams.get('account')
   const requestedQuantity = Number(location.state?.quantity ?? checkoutParams.get('quantity') ?? 1)
   const [quantity, setQuantity] = useState(() => Number.isSafeInteger(requestedQuantity) && requestedQuantity > 0 ? requestedQuantity : 1)
@@ -94,6 +97,8 @@ export default function CheckoutPage() {
   const [checkoutProductGroup, setCheckoutProductGroup] = useState<ProductGroup | null>(null)
   const [loading, setLoading] = useState(true)
   const [purchasing, setPurchasing] = useState(false)
+  const [pendingOrderId, setPendingOrderId] = useState<string | null>(null)
+  const [purchaseStatusUnknown, setPurchaseStatusUnknown] = useState(false)
   const [serverInsufficientFunds, setServerInsufficientFunds] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState('wallet')
   const [paymentDetailsOpen, setPaymentDetailsOpen] = useState(true)
@@ -107,6 +112,38 @@ export default function CheckoutPage() {
   const paymentAttemptedRef = useRef(false)
   const purchaseCompletedRef = useRef(false)
   const checkoutAttemptRef = useRef(`checkout_${Date.now()}_${crypto.randomUUID()}`)
+  const purchaseIdempotencyKeyRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!pendingPurchaseStorageKey) return
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(pendingPurchaseStorageKey) || 'null')
+      purchaseIdempotencyKeyRef.current = typeof saved?.idempotencyKey === 'string' ? saved.idempotencyKey : null
+      setPendingOrderId(typeof saved?.orderId === 'string' ? saved.orderId : null)
+      setPurchaseStatusUnknown(Boolean(saved?.idempotencyKey))
+    } catch {
+      setPurchaseStatusUnknown(false)
+    }
+  }, [pendingPurchaseStorageKey])
+
+  const rememberPendingPurchase = (idempotencyKey: string, orderId?: string) => {
+    setPendingOrderId(orderId || null)
+    setPurchaseStatusUnknown(true)
+    if (pendingPurchaseStorageKey) {
+      try {
+        sessionStorage.setItem(pendingPurchaseStorageKey, JSON.stringify({ idempotencyKey, orderId: orderId || null }))
+      } catch (storageError) {
+        console.error('Could not retain pending purchase in this browser session:', storageError)
+      }
+    }
+  }
+
+  const clearPendingPurchase = () => {
+    purchaseIdempotencyKeyRef.current = null
+    if (pendingPurchaseStorageKey) {
+      try { sessionStorage.removeItem(pendingPurchaseStorageKey) } catch { /* Session storage is optional. */ }
+    }
+  }
 
   // Discount code state - applied on top of any quantity discount tier.
   // The percentOff here is preview-only; the edge function re-validates and
@@ -115,7 +152,40 @@ export default function CheckoutPage() {
   const [checkingCode, setCheckingCode] = useState(false)
   const [codeError, setCodeError] = useState('')
   const [appliedCode, setAppliedCode] = useState<{ code: string; percentOff: number } | null>(null)
+  const [circleStatus, setCircleStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [circleMember, setCircleMember] = useState(false)
+  const [circleUserId, setCircleUserId] = useState<string | null>(null)
+  const [circleRetry, setCircleRetry] = useState(0)
   const productGroup = checkoutProductGroup || navigationProductGroup
+
+  useEffect(() => {
+    if (!user?.id) {
+      setCircleStatus('error')
+      setCircleUserId(null)
+      return
+    }
+
+    let active = true
+    setCircleStatus('loading')
+    setCircleUserId(null)
+    void supabase.rpc('get_my_tally_circle_status').then(({ data, error }) => {
+      if (!active) return
+      if (error || !data || typeof data.is_member !== 'boolean' || data.discount_percent !== 3) {
+        console.error('Failed to verify Tally Circle checkout status:', error)
+        setCircleStatus('error')
+        return
+      }
+      setCircleMember(data.is_member)
+      setCircleUserId(user.id)
+      setCircleStatus('ready')
+    }).catch((error) => {
+      if (!active) return
+      console.error('Failed to verify Tally Circle checkout status:', error)
+      setCircleStatus('error')
+    })
+
+    return () => { active = false }
+  }, [user?.id, circleRetry])
 
   // Calculate total based on quantity, applying any quantity discount tier
   const { total: tierTotal, discountPct, originalTotal } = productGroup
@@ -123,17 +193,26 @@ export default function CheckoutPage() {
     : { total: 0, discountPct: 0, originalTotal: 0 }
 
   // Then apply the discount code (if any) on top of the tier price
-  const totalAmount = appliedCode
+  const preCircleTotal = appliedCode
     ? Math.round(tierTotal * (1 - appliedCode.percentOff / 100))
     : tierTotal
-  const codeDiscountAmount = appliedCode ? tierTotal - totalAmount : 0
+  const codeDiscountAmount = appliedCode ? tierTotal - preCircleTotal : 0
+  const preCircleTotalMinor = Math.round(preCircleTotal * 100)
+  const totalAmountMinor = circleStatus === 'ready' && circleUserId === user?.id && circleMember
+    ? Math.round(preCircleTotalMinor * 97 / 100)
+    : preCircleTotalMinor
+  const totalAmount = totalAmountMinor / 100
+  const circleSavings = (preCircleTotalMinor - totalAmountMinor) / 100
 
   const isBulk = quantity > 1
-  const maxQuantity = Number(productGroup?.stock_count) > 0 ? Number(productGroup.stock_count) : 10
+  const maxQuantity = accountId ? 1 : productGroup && canAutoFulfillProduct(productGroup)
+    ? 100
+    : Math.max(1, Number(productGroup?.stock_count) || 1)
 
   const changeQuantity = (next: number) => {
-    if (purchasing || completedPurchase) return
+    if (purchasing || completedPurchase || purchaseStatusUnknown) return
     setQuantity(Math.max(1, Math.min(maxQuantity, next)))
+    purchaseIdempotencyKeyRef.current = null
     setAppliedCode(null)
     setCodeError('')
     setServerInsufficientFunds(false)
@@ -257,7 +336,10 @@ export default function CheckoutPage() {
       }
       setCheckoutProductGroup(latestProductGroup)
       const stock = Number(latestProductGroup.stock_count)
-      setQuantity((current) => Math.min(current, stock > 0 ? stock : 10))
+      const latestMaxQuantity = accountId ? 1 : canAutoFulfillProduct(latestProductGroup)
+        ? 100
+        : Math.max(1, Number.isFinite(stock) ? stock : 1)
+      setQuantity((current) => Math.max(1, Math.min(current, latestMaxQuantity)))
       if (navigationCategory) setCategory(navigationCategory)
       if (!navigationCategory) {
         void getCategoryById(latestProductGroup.category_id).then(setCategory).catch(() => setCategory(null))
@@ -356,12 +438,15 @@ export default function CheckoutPage() {
 
   const handlePurchase = async () => {
     if (!productGroup || !user) return
+    if (pendingOrderId || purchaseStatusUnknown) return
+    if (circleStatus !== 'ready' || circleUserId !== user.id) return
     if (blockStaffPurchase(isStaff, isAdmin, toast)) return
 
     setPurchasing(true)
     setServerInsufficientFunds(false)
     paymentAttemptedRef.current = true
-    const idempotencyKey = `purchase_${user.id.substring(0, 8)}_${productGroup.id.substring(0, 8)}_${quantity}_${Date.now()}_${crypto.randomUUID()}`
+    const idempotencyKey = purchaseIdempotencyKeyRef.current || `purchase_${user.id.substring(0, 8)}_${productGroup.id.substring(0, 8)}_${quantity}_${Date.now()}_${crypto.randomUUID()}`
+    purchaseIdempotencyKeyRef.current = idempotencyKey
     
     try {
       // SECURE: Use Edge Function for purchase (server-side processing)
@@ -391,6 +476,7 @@ export default function CheckoutPage() {
       }, quantity === 1 ? account?.id || accountId || null : null, totalAmount, idempotencyKey)
       
       if (result.success) {
+        clearPendingPurchase()
         purchaseCompletedRef.current = true
         const purchaseType = quantity > 1 ? 'Bulk Purchase' : 'Purchase'
         const accountText = quantity > 1 ? `${quantity} accounts` : '1 account'
@@ -410,7 +496,7 @@ export default function CheckoutPage() {
           productName: result.account_details?.product_name || result.product_name || productGroup.name,
           quantity: result.account_details?.quantity || quantity,
         })
-        setCredentialsModalOpen(true)
+        if (deliveredCredentials.length) setCredentialsModalOpen(true)
 
         // If the purchase earned a reward code, surface it prominently
         if (result.reward_code) {
@@ -423,6 +509,17 @@ export default function CheckoutPage() {
           }, 1500)
         }
       } else {
+        if (result.code === 'SUPPLIER_CONFIRMATION_PENDING' || result.code === 'PURCHASE_CONFIRMATION_PENDING' || result.code === 'PURCHASE_STATUS_UNKNOWN') {
+          rememberPendingPurchase(idempotencyKey, result.order_id)
+          toast({
+            title: 'Order being checked',
+            description: result.order_id
+              ? `Order ${result.order_id} is being checked. See your order history or contact support before trying again.`
+              : 'Your purchase status is being checked. See your order history or contact support before trying again.',
+          })
+          return
+        }
+        clearPendingPurchase()
         trackRevenueEvent({
           eventType: 'PAYMENT_FAILED',
           userId: user.id,
@@ -460,43 +557,10 @@ export default function CheckoutPage() {
       
     } catch (error) {
       console.error('❌ Purchase error:', error)
-      trackRevenueEvent({
-        eventType: 'PAYMENT_FAILED',
-        userId: user.id,
-        productGroupId: productGroup.id,
-        categoryId: productGroup.category_id,
-        surface: 'checkout',
-        experimentId: croAssignment?.experimentId || null,
-        variantId: croAssignment?.variantId || null,
-        metadata: { quantity, amount: totalAmount, error: error instanceof Error ? error.message : 'Unexpected purchase error', assignmentMode: croAssignment?.mode || 'unknown' },
-        eventId: `PAYMENT_FAILED:checkout:${idempotencyKey}`,
-      })
-      
-      // Parse error for better messaging
-      let errorTitle = "Purchase Failed";
-      let errorDescription = "An unexpected error occurred during purchase";
-      
-      if (error instanceof Error) {
-        if (error.message.includes('OUT_OF_STOCK')) {
-          errorTitle = "Out of Stock 📦";
-          errorDescription = error.message.replace('OUT_OF_STOCK: ', '');
-        } else if (error.message.includes('INSUFFICIENT_STOCK')) {
-          errorTitle = "Limited Stock Available 📦";
-          errorDescription = error.message.replace('INSUFFICIENT_STOCK: ', '');
-        } else if (error.message.includes('Insufficient wallet balance')) {
-          errorTitle = "Insufficient Balance 💰";
-          errorDescription = "Please top up your wallet to complete this purchase.";
-          setServerInsufficientFunds(true)
-          void refreshWalletBalance()
-        } else {
-          errorDescription = error.message;
-        }
-      }
-      
+      rememberPendingPurchase(idempotencyKey)
       toast({
-        variant: "destructive",
-        title: errorTitle,
-        description: errorDescription
+        title: 'Order being checked',
+        description: 'We could not confirm the purchase status. Check order history or contact support before placing it again.',
       })
     } finally {
       setPurchasing(false)
@@ -537,68 +601,57 @@ export default function CheckoutPage() {
   }
 
   const walletBalanceReady = !walletLoading && !walletBalanceUnavailable
-  const canAfford = walletBalanceReady && walletBalance >= totalAmount
-  const insufficientFunds = walletBalanceReady && walletBalance < totalAmount
+  const circlePriceReady = circleStatus === 'ready' && circleUserId === user?.id
+  const canAfford = walletBalanceReady && circlePriceReady && walletBalance >= totalAmount
+  const insufficientFunds = walletBalanceReady && circlePriceReady && walletBalance < totalAmount
   const balanceAfter = walletBalance - totalAmount
 
   return (
     <div className="min-h-[100dvh] bg-background">
       <NavbarAuth />
 
-      <main className="mx-auto flex min-h-[calc(100dvh-72px)] w-full max-w-xl items-start px-4 pb-20 pt-20 md:items-center md:py-24">
-        <Card className="w-full overflow-hidden border-primary/25 bg-card/95 shadow-2xl">
-          <CardHeader className="space-y-2 p-4 pb-2 sm:p-5 sm:pb-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="mb-2 flex items-center gap-2">
-                  {category && <Badge variant="secondary" className="max-w-full truncate">{category.name}</Badge>}
-                  <Badge variant="outline" className="shrink-0 text-green-600">
-                    {Number(productGroup.stock_count) > 0 ? `${productGroup.stock_count} in stock` : 'Availability checked at purchase'}
-                  </Badge>
-                </div>
-                <CardTitle className="truncate text-xl font-black sm:text-2xl">{productGroup.name}</CardTitle>
-                <p className="mt-1 truncate text-sm text-muted-foreground">
-                  {productGroup.description || (isBulk ? `${quantity} accounts` : 'Instant account delivery')}
-                </p>
-              </div>
-              <div className="shrink-0 text-right">
-                <p className="text-xs text-muted-foreground">Total</p>
-                <p className="text-xl font-black text-primary sm:text-2xl">{formatPrice(totalAmount)}</p>
-              </div>
+      <main className="mx-auto flex min-h-[calc(100dvh-72px)] w-full max-w-md items-start px-3 pb-24 pt-6 sm:px-4 md:items-center md:py-12">
+        <Card className="w-full overflow-hidden rounded-3xl border-slate-200 bg-card shadow-2xl dark:border-white/10">
+          <CardHeader className="border-b border-slate-100 p-4 dark:border-white/10 sm:p-5">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="text-lg font-bold">Purchase</CardTitle>
+              <Link to="/products" className="text-xs font-semibold text-muted-foreground hover:text-primary">Back to products</Link>
             </div>
           </CardHeader>
 
-          <CardContent className="space-y-3 p-4 pt-2 sm:p-5 sm:pt-2">
-            <div className="rounded-2xl border bg-muted/30 p-3 sm:p-4">
-              <div className="grid grid-cols-3 gap-3 text-sm">
-                <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground">Price</p>
-                  <p className="truncate font-bold">{formatPrice(productGroup.price)}</p>
-                </div>
-                <div className="text-center">
-                  <p className="text-xs text-muted-foreground">Quantity</p>
-                  <p className="font-bold">{quantity}</p>
-                </div>
-                <div className="min-w-0 text-right">
-                  <p className="text-xs text-muted-foreground">Pay</p>
-                  <p className="truncate font-bold text-primary">{formatPrice(totalAmount)}</p>
+          <CardContent className="space-y-3 p-4 sm:p-5">
+            <div className="flex items-start gap-3">
+              <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-slate-100 dark:bg-white/10"><CategoryLogo name={category?.name || productGroup.name} className="h-9 w-9" iconClassName="h-8 w-8" /></span>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-base font-bold leading-snug">{productGroup.name}</h2>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  {category && <Badge variant="secondary" className="rounded-full text-xs">{category.name}</Badge>}
+                  <Badge variant="outline" className="rounded-full text-xs text-emerald-600">{canAutoFulfillProduct(productGroup) ? 'Available on demand' : `${productGroup.stock_count} in stock`}</Badge>
+                  <Badge variant="outline" className="rounded-full text-xs font-bold text-purple-600">{formatPrice(productGroup.price)} each</Badge>
                 </div>
               </div>
+            </div>
 
-              <div className="mt-3 flex items-center justify-between border-t pt-3">
-                <span className="text-sm font-semibold">How many accounts?</span>
+            <div className="rounded-2xl bg-slate-50 p-3 dark:bg-white/5">
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">Description</p>
+              <p className="max-h-32 overflow-y-auto text-sm leading-relaxed">{productGroup.description || 'Product details will be shown with your order after purchase.'}</p>
+            </div>
+
+            <div className="rounded-2xl bg-slate-50 p-3 dark:bg-white/5">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm font-semibold">Quantity</span>
                 <div className="flex items-center gap-1" aria-label="Purchase quantity">
-                  <Button type="button" variant="outline" size="icon" className="h-11 w-11" aria-label="Decrease quantity" disabled={quantity <= 1 || purchasing || !!completedPurchase} onClick={() => changeQuantity(quantity - 1)}>
+                  <Button type="button" variant="outline" size="icon" className="h-9 w-9 rounded-xl" aria-label="Decrease quantity" disabled={quantity <= 1 || purchasing || !!completedPurchase || purchaseStatusUnknown} onClick={() => changeQuantity(quantity - 1)}>
                     <Minus className="h-4 w-4" />
                   </Button>
                   <span className="min-w-9 text-center font-bold" aria-live="polite">{quantity}</span>
-                  <Button type="button" variant="outline" size="icon" className="h-11 w-11" aria-label="Increase quantity" disabled={quantity >= maxQuantity || purchasing || !!completedPurchase} onClick={() => changeQuantity(quantity + 1)}>
+                  <Button type="button" variant="outline" size="icon" className="h-9 w-9 rounded-xl" aria-label="Increase quantity" disabled={quantity >= maxQuantity || purchasing || !!completedPurchase || purchaseStatusUnknown} onClick={() => changeQuantity(quantity + 1)}>
                     <Plus className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
 
-              {(discountPct > 0 || appliedCode) && (
+              {(discountPct > 0 || appliedCode || circleSavings > 0) && (
                 <div className="mt-3 border-t pt-3 text-sm">
                   {discountPct > 0 && (
                     <div className="flex justify-between gap-3 text-green-600">
@@ -610,6 +663,12 @@ export default function CheckoutPage() {
                     <div className="flex justify-between gap-3 text-green-600">
                       <span className="truncate">Code {appliedCode.code}</span>
                       <span className="shrink-0">-{formatPrice(codeDiscountAmount)}</span>
+                    </div>
+                  )}
+                  {circleSavings > 0 && (
+                    <div className="flex justify-between gap-3 text-green-600">
+                      <span className="truncate">Tally Circle (3% off)</span>
+                      <span className="shrink-0">-{formatPrice(circleSavings)}</span>
                     </div>
                   )}
                 </div>
@@ -643,7 +702,7 @@ export default function CheckoutPage() {
                   <div className="min-w-0 text-right">
                     <p className="text-xs text-muted-foreground">After purchase</p>
                     <p className={`truncate text-xs font-bold ${balanceAfter >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {!walletBalanceReady ? '—' : showBalances ? formatPrice(balanceAfter) : '***'}
+                      {!walletBalanceReady || !circlePriceReady ? '—' : showBalances ? formatPrice(balanceAfter) : '***'}
                     </p>
                   </div>
                 </div>
@@ -707,6 +766,21 @@ export default function CheckoutPage() {
               </Alert>
             )}
 
+            {circleStatus !== 'ready' && !completedPurchase && (
+              <Alert>
+                <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                  <span>{circleStatus === 'loading'
+                    ? 'Checking your Tally Circle price...'
+                    : 'Tally Circle pricing is unavailable. Check again before buying.'}</span>
+                  {circleStatus === 'error' && (
+                    <Button type="button" variant="outline" size="sm" onClick={() => setCircleRetry((value) => value + 1)}>
+                      Retry pricing
+                    </Button>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
+
             {(insufficientFunds || serverInsufficientFunds) && !completedPurchase && (
               <Alert>
                 <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
@@ -718,14 +792,26 @@ export default function CheckoutPage() {
               </Alert>
             )}
 
+            <div className="flex items-center justify-between rounded-2xl bg-purple-50 px-4 py-3 dark:bg-purple-500/10">
+              <span className="text-sm font-semibold text-muted-foreground">Total</span>
+              <strong className="text-xl font-black text-purple-700 dark:text-purple-300">
+                {circlePriceReady ? formatPrice(totalAmount) : circleStatus === 'loading' ? 'Checking...' : 'Unavailable'}
+              </strong>
+            </div>
+
             {completedPurchase ? (
               <Button className="w-full" size="lg" disabled>
                 <CheckCircle className="h-4 w-4 mr-2" />
                 Purchase Complete
               </Button>
+            ) : purchaseStatusUnknown ? (
+              <Button className="w-full" size="lg" disabled>
+                <Clock className="h-4 w-4 mr-2" />
+                Order Being Checked
+              </Button>
             ) : insufficientFunds || serverInsufficientFunds ? (
               <Link to="/wallet" className="block">
-                <Button className="w-full" variant="outline" size="lg">
+                <Button className="w-full rounded-xl" variant="outline" size="lg">
                   <Wallet className="h-4 w-4 mr-2" />
                   Top Up Wallet
                 </Button>
@@ -733,11 +819,16 @@ export default function CheckoutPage() {
             ) : (
               <Button
                 onClick={handlePurchase}
-                disabled={purchasing || walletLoading}
-                className="w-full"
+                disabled={purchasing || walletLoading || !circlePriceReady}
+                className="w-full rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 font-bold text-white shadow-lg shadow-purple-600/20 hover:from-purple-700 hover:to-indigo-700"
                 size="lg"
               >
-                {walletLoading ? (
+                {!circlePriceReady ? (
+                  <>
+                    {circleStatus === 'loading' && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    {circleStatus === 'loading' ? 'Checking Price...' : 'Price Unavailable'}
+                  </>
+                ) : walletLoading ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Checking Wallet...
@@ -754,6 +845,13 @@ export default function CheckoutPage() {
                   </>
                 )}
               </Button>
+            )}
+            {purchaseStatusUnknown && (
+              <Alert>
+                <AlertDescription>
+                  This purchase is awaiting confirmation{pendingOrderId ? ` (order ${pendingOrderId})` : ''}. Check <Link to="/orders" className="font-semibold underline">order history</Link> or contact support before placing it again.
+                </AlertDescription>
+              </Alert>
             )}
 
           </CardContent>

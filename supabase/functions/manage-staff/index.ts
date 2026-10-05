@@ -827,38 +827,9 @@ async function updateProductGroupStock(admin: any, productGroupId: string) {
 
   if (error) throw new Error(error.message)
 
-  const { data: productGroup } = await admin
-    .from('product_groups')
-    .select('is_active,is_sellable,availability_status,auto_fulfill_enabled,muabanvia_product_id,shopclone_product_id,shopviaclone_product_id')
-    .eq('id', productGroupId)
-    .maybeSingle()
-
-  const nextStock = count || 0
-  const hasLiveProvider = Boolean(
-    productGroup?.auto_fulfill_enabled &&
-      (productGroup?.muabanvia_product_id ||
-        productGroup?.shopclone_product_id ||
-        productGroup?.shopviaclone_product_id),
-  )
-  const currentlyBlocked = productGroup?.is_sellable === false || ['UNAVAILABLE', 'PAUSED'].includes(String(productGroup?.availability_status || '').toUpperCase())
-  const stockStateUpdate = nextStock > 0
-    ? {
-        stock_count: nextStock,
-        availability_status: nextStock <= 3 ? 'LOW_STOCK' : 'AVAILABLE',
-        is_sellable: productGroup?.is_active !== false,
-      }
-    : {
-        stock_count: 0,
-        availability_status: hasLiveProvider && !currentlyBlocked ? 'UNLIMITED' : 'UNAVAILABLE',
-        is_sellable: hasLiveProvider && !currentlyBlocked && productGroup?.is_active !== false,
-      }
-
-  const { error: updateError } = await admin
-    .from('product_groups')
-    .update(stockStateUpdate)
-    .eq('id', productGroupId)
-
-  if (updateError) throw new Error(updateError.message)
+  // Statement triggers have already refreshed count and availability. A staff
+  // inventory update must not overwrite PAUSED or confer supplier readiness.
+  if (count == null) throw new Error('Inventory count unavailable')
 }
 
 function isLikelyCredentialEmail(value?: string | null) {
@@ -1280,11 +1251,7 @@ function sanitizeAllowedStaffSettingValue(permissionKey: string, key: string, ra
   }
 
   if (permissionKey === 'setting_referral_pct' && key === 'referral_commission_pct') {
-    const percent = Number(value)
-    if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
-      throw new Error('Referral commission must be between 0 and 100')
-    }
-    return String(percent)
+    throw new Error('Referral commissions have been retired. Tally Circle uses purchase discounts.')
   }
 
   if (permissionKey === 'setting_ercas' && key === 'ercas_enabled') {
@@ -1716,6 +1683,19 @@ serve(async (req) => {
     const body = await req.json().catch(() => ({})) as Record<string, any>
     const { action } = body
 
+    if (action === 'supplier_balance_alerts') {
+      const { data: warningProfile, error: warningProfileError } = await admin
+        .from('profiles').select('is_admin, is_staff, account_suspended').eq('id', user.id).single()
+      if (warningProfileError || !warningProfile || warningProfile.account_suspended === true ||
+        (warningProfile.is_admin !== true && warningProfile.is_staff !== true)) {
+        return json({ error: 'Staff access required' }, 403)
+      }
+      const { data: alerts, error: alertsError } = await admin.from('supplier_balance_alerts')
+        .select('provider, alert_code, last_seen_at').is('resolved_at', null).order('provider').limit(3)
+      if (alertsError) return json({ error: 'Supplier warning status is unavailable' }, 503)
+      return json({ alerts: alerts || [] })
+    }
+
     if (action === 'submit_staff_action') {
       return await submitStaffAction(admin, user, body)
     }
@@ -1787,6 +1767,9 @@ serve(async (req) => {
     if (action === 'set_permission') {
       const { user_id, permission_key, is_enabled } = body
       if (!user_id || !permission_key) return json({ error: 'user_id and permission_key required' }, 400)
+      if (permission_key === 'setting_referral_pct') {
+        return json({ error: 'Referral commissions have been retired' }, 400)
+      }
       if (!STAFF_PERMISSION_KEYS.has(String(permission_key))) {
         return json({ error: 'Unknown staff permission' }, 400)
       }

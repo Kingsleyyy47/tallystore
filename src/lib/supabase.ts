@@ -2,7 +2,6 @@ import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
-const liveAccountFulfillmentEnabled = import.meta.env.VITE_LIVE_ACCOUNT_FULFILLMENT_ENABLED === 'true'
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables')
@@ -1326,38 +1325,10 @@ export async function updateProductGroupStock(productGroupId: string): Promise<b
       return false
     }
 
-    const productGroup = await getManagedProductGroup(productGroupId)
-
-    const nextStock = count || 0
-    const hasLiveProvider = Boolean(
-      liveAccountFulfillmentEnabled &&
-      productGroup?.auto_fulfill_enabled &&
-      (productGroup?.muabanvia_product_id || productGroup?.shopclone_product_id || productGroup?.shopviaclone_product_id),
-    )
-    const currentlyBlocked = productGroup?.is_sellable === false || ['UNAVAILABLE', 'PAUSED'].includes(String(productGroup?.availability_status || '').toUpperCase())
-    const stockStateUpdate = nextStock > 0
-      ? {
-          stock_count: nextStock,
-          availability_status: nextStock <= 3 ? 'LOW_STOCK' : 'AVAILABLE',
-          is_sellable: productGroup?.is_active !== false,
-        }
-      : {
-          stock_count: 0,
-          availability_status: hasLiveProvider && !currentlyBlocked ? 'UNLIMITED' : 'UNAVAILABLE',
-          is_sellable: hasLiveProvider && !currentlyBlocked && productGroup?.is_active !== false,
-        }
-
-    // Update the product group stock
-    const { error: updateError } = await supabase
-      .from('product_groups')
-      .update(stockStateUpdate)
-      .eq('id', productGroupId)
-
-    if (updateError) {
-      console.error('❌ Error updating stock:', updateError)
-      return false
-    }
-
+    // The inventory statement trigger has already refreshed the authoritative
+    // count and availability. Invalidate the browser cache after verification.
+    if (count == null) return false
+    _pgCache = null
     return true
   } catch (error) {
     console.error('❌ Failed to update stock:', error)
@@ -1904,7 +1875,7 @@ export async function processPurchaseSecure(
   preferredAccountId?: string | null,
   expectedAmountNgn?: number,
   clientIdempotencyKey?: string,
-): Promise<{ success: boolean; error?: string; order_id?: string; amount?: number; new_balance?: number; product_name?: string; reward_code?: string; account_details?: PurchaseAccountDetails; accounts?: PurchasedAccountCredentials[] }> {
+): Promise<{ success: boolean; error?: string; code?: string; order_id?: string; amount?: number; new_balance?: number; product_name?: string; reward_code?: string; account_details?: PurchaseAccountDetails; accounts?: PurchasedAccountCredentials[] }> {
   try {
     // Get current session for user ID
     const { data: { session } } = await supabase.auth.getSession();
@@ -1929,25 +1900,26 @@ export async function processPurchaseSecure(
 
     if (error) {
       console.error('❌ Edge Function error:', error);
-      
-      // Try to extract detailed error message from response context
-      let errorMessage = error.message || 'Purchase failed';
-      
-      // Check if error has context with the actual error response
-      if (error.context && typeof error.context === 'object') {
-        const context = error.context as any;
-        if (context.error) {
-          errorMessage = context.error;
-        } else if (context.message) {
-          errorMessage = context.message;
-        }
+      const context = error.context as any;
+      let payload: any = null;
+      try {
+        if (context instanceof Response) payload = await context.clone().json();
+        else if (typeof context?.body === 'string') payload = JSON.parse(context.body);
+        else if (context?.body && typeof context.body === 'object') payload = context.body;
+        else if (context && typeof context === 'object') payload = context;
+      } catch (parseError) {
+        console.error('Failed to parse purchase response:', parseError);
       }
-      
-      return { success: false, error: errorMessage };
+      return {
+        success: false,
+        error: payload?.error || payload?.message || error.message || 'Purchase status unavailable',
+        code: payload?.code || (payload ? undefined : 'PURCHASE_STATUS_UNKNOWN'),
+        order_id: payload?.order_id,
+      };
     }
 
     if (!data?.success) {
-      return { success: false, error: data?.error || 'Purchase failed' };
+      return { success: false, error: data?.error || 'Purchase failed', code: data?.code, order_id: data?.order_id };
     }
 
     return {
@@ -1991,7 +1963,7 @@ export async function processPurchaseSecure(
       }
     }
     
-    return { success: false, error: errorMessage };
+    return { success: false, error: errorMessage, code: 'PURCHASE_STATUS_UNKNOWN' };
   }
 }
 

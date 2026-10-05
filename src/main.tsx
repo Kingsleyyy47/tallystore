@@ -3,14 +3,9 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App.tsx'
 import './index.css'
 import { registerSW } from 'virtual:pwa-register'
-import { notifyPwaUpdate } from './lib/pwaUpdate'
 
-const updateSW = registerSW({
+registerSW({
   immediate: true,
-
-  onNeedRefresh() {
-    notifyPwaUpdate(() => updateSW(true))
-  },
 
   onRegisteredSW(_swUrl, registration) {
     if (!registration) return;

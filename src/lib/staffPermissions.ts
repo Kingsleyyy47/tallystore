@@ -25,7 +25,6 @@ export const PERMISSIONS = [
   { key: 'tab_email',               label: 'Email Broadcast tab',    description: 'Send emails to opted-in customers', group: 'Tabs' },
   // ── Settings sections
   { key: 'setting_rate',            label: 'NGN/USD Rate',           description: 'Override the exchange rate shown to customers', group: 'Settings' },
-  { key: 'setting_referral_pct',    label: 'Referral Commission',    description: 'Change the referral reward percentage', group: 'Settings' },
   { key: 'setting_ercas',           label: 'Ercas Pay Toggle',       description: 'Enable or disable the Ercas Pay gateway', group: 'Settings' },
   { key: 'setting_support_links',   label: 'Support Links & Login Announcement', description: 'Change support links and the message customers see when they log in', group: 'Settings' },
   // ── Specific actions

@@ -300,7 +300,7 @@ export default function ProfilePage() {
         </section>
 
         <section className="mt-10 rounded-2xl border border-slate-200 bg-white/85 p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Link
               to="/wallet"
               onClick={() => trackRevenueEvent({ eventType: 'OFFER_ACCEPTED', userId: user.id, surface: 'profile_quick_link', metadata: { destination: 'wallet' } })}
@@ -321,6 +321,12 @@ export default function ProfilePage() {
               className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300"
             >
               Get Support
+            </Link>
+            <Link
+              to="/developer-api"
+              className="rounded-xl border border-slate-200 p-4 text-sm font-black transition hover:border-purple-300 hover:text-purple-700 dark:border-white/10 dark:hover:text-purple-300"
+            >
+              Developer API
             </Link>
           </div>
         </section>

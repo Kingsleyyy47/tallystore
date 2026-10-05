@@ -66,14 +66,18 @@ const statusColors = {
   completed: 'default',
   processing: 'secondary', 
   failed: 'destructive',
-  pending: 'outline'
+  pending: 'outline',
+  cancelled: 'outline',
+  refunded: 'outline',
 } as const
 
 const statusIcons = {
   completed: CheckCircle,
   processing: RefreshCw,
   failed: XCircle,
-  pending: Clock
+  pending: Clock,
+  cancelled: XCircle,
+  refunded: RefreshCw,
 }
 
 const credentialFields = [
@@ -282,7 +286,9 @@ function OrderDetailsView({
               <KeyRound className="mx-auto h-10 w-10 text-muted-foreground" />
               <p className="mt-3 font-black">Credentials are not available yet</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                This order is {order.status}. Completed orders will show the purchased account details here.
+                {order.status === 'processing'
+                  ? 'This order is being confirmed. Please do not place it again. Contact support with the order ID if you need help.'
+                  : `This order is ${order.status}. Completed orders will show the purchased account details here.`}
               </p>
             </CardContent>
           </Card>
@@ -980,6 +986,8 @@ export default function OrderHistoryPage() {
                   <SelectItem value="processing">Processing</SelectItem>
                   <SelectItem value="failed">Failed</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
+                  <SelectItem value="refunded">Refunded</SelectItem>
                 </SelectContent>
               </Select>
               
@@ -1025,7 +1033,7 @@ export default function OrderHistoryPage() {
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">
             {filteredOrders.map((order) => {
-              const StatusIcon = statusIcons[order.status as keyof typeof statusIcons]
+              const StatusIcon = statusIcons[order.status as keyof typeof statusIcons] || Clock
               const { date, time } = formatDate(order.created_at)
               const productName = getOrderProductName(order)
               const platform = getOrderPlatform(order)
@@ -1050,7 +1058,7 @@ export default function OrderHistoryPage() {
                               {productName}
                             </h3>
                           </div>
-                          <Badge variant={statusColors[order.status as keyof typeof statusColors]} className="shrink-0 gap-1 px-2 py-1 text-[10px]">
+                          <Badge variant={statusColors[order.status as keyof typeof statusColors] || 'outline'} className="shrink-0 gap-1 px-2 py-1 text-[10px]">
                             <StatusIcon className="h-3 w-3" />
                             {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
                           </Badge>

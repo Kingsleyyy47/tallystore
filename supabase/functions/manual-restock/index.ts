@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { recordSupplierBalanceFailure, resolveSupplierBalanceAlert } from '../_shared/supplier-balance-alerts.mjs'
 
 // Admin-triggered, one-off "buy N units now" action - used for the "Test
 // Stock" button on a freshly-accepted product suggestion (see
@@ -186,10 +187,12 @@ serve(async (req) => {
         form.set('amount', String(remaining))
         form.set('api_key', apiKey)
 
+        const attemptStartedAt = new Date().toISOString()
         const fulfillResponse = await fetch(baseUrl, { method: 'POST', body: form })
         const fulfillResult = await fulfillResponse.json().catch(() => null) as any
 
         if (!fulfillResponse.ok || fulfillResult?.status !== 'success') {
+          await recordSupplierBalanceFailure(supabaseAdmin, { provider: provider.name, productGroupId: product_group_id, source: 'manual-restock', response: fulfillResult, httpStatus: fulfillResponse.status })
           throw new Error('Provider purchase was not confirmed')
         }
 
@@ -220,6 +223,7 @@ serve(async (req) => {
         }
 
         remaining -= insertedAccounts.length
+        await resolveSupplierBalanceAlert(supabaseAdmin, { provider: provider.name, attemptStartedAt })
         totalBought += insertedAccounts.length
         attempts.push({ provider: provider.name, success: true, fulfilled: insertedAccounts.length })
       } catch {
@@ -227,22 +231,7 @@ serve(async (req) => {
       }
     }
 
-    // Keep stock_count in sync with however many units actually landed.
-    const { count: newStock } = await supabaseAdmin
-      .from('individual_accounts')
-      .select('*', { count: 'exact', head: true })
-      .eq('product_group_id', product_group_id)
-      .eq('status', 'available')
-
-    const nextStock = newStock || 0
-    await supabaseAdmin
-      .from('product_groups')
-      .update({
-        stock_count: nextStock,
-        availability_status: nextStock > 0 ? nextStock <= 3 ? 'LOW_STOCK' : 'AVAILABLE' : 'UNAVAILABLE',
-        is_sellable: nextStock > 0,
-      })
-      .eq('id', product_group_id)
+    // Inventory triggers own the projection and preserve PAUSED/readiness.
 
     if (totalBought === 0) {
       return json({ success: false, error: 'No provider could fulfill this - check provider IDs and API keys.', attempts }, 502)

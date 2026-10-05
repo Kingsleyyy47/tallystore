@@ -1,4 +1,5 @@
 import { supabase, type Category, type ProductGroup } from '@/lib/supabase'
+import { canAutoFulfillProduct, isCustomerSellableProduct } from '@/lib/productAvailability'
 
 export type RevenueEventType =
   | 'SESSION_STARTED'
@@ -1066,15 +1067,13 @@ export function getProductTokens(product: ProductGroup, category?: Category) {
 }
 
 function canAutoFulfill(product: ProductGroup) {
-  return import.meta.env.VITE_LIVE_ACCOUNT_FULFILLMENT_ENABLED === 'true' &&
-    product.is_sellable !== false &&
-    String(product.availability_status || '').toUpperCase() === 'UNLIMITED'
+  return canAutoFulfillProduct(product)
 }
 
 export function evaluateProductEligibility(product: ProductGroup): ProductEligibility {
   const reasons: string[] = []
   const exists = !!product?.id
-  const active = product?.is_active !== false
+  const active = product?.is_active === true
   const published = active
   const validPrice = Number.isFinite(Number(product?.price)) && Number(product.price) > 0
   const autoFulfillable = canAutoFulfill(product)
@@ -1084,7 +1083,7 @@ export function evaluateProductEligibility(product: ProductGroup): ProductEligib
   const statusSellable = ['AVAILABLE', 'LOW_STOCK', 'PREORDER', 'BACKORDER', 'UNLIMITED'].includes(explicitAvailabilityStatus)
   const statusBlocked = ['UNAVAILABLE', 'PAUSED'].includes(explicitAvailabilityStatus)
   const blocked = explicitSellable === false || statusBlocked
-  const available = !blocked && (statusSellable || stock > 0 || autoFulfillable)
+  const available = isCustomerSellableProduct(product)
   const purchasable = validPrice && available && !blocked
 
   if (!exists) reasons.push('missing_product')

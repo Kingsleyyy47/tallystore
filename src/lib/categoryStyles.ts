@@ -13,6 +13,7 @@ import {
   Tv,
   Music,
   LucideIcon,
+  Code2,
 } from 'lucide-react'
 
 interface CategoryStyle {
@@ -23,14 +24,18 @@ interface CategoryStyle {
 }
 
 const STYLE_MAP: Array<{ match: RegExp; style: CategoryStyle }> = [
-  { match: /instagram/i, style: { icon: Instagram, color: 'text-pink-600', bg: 'bg-pink-50 dark:bg-pink-950/30', image: 'https://cdn.simpleicons.org/instagram/E4405F' } },
+  { match: /instagram|\big\b/i, style: { icon: Instagram, color: 'text-pink-600', bg: 'bg-pink-50 dark:bg-pink-950/30', image: 'https://cdn.simpleicons.org/instagram/E4405F' } },
   { match: /twitter|x\.com|^x$/i, style: { icon: Twitter, color: 'text-sky-500', bg: 'bg-sky-50 dark:bg-sky-950/30', image: 'https://cdn.simpleicons.org/x/111827' } },
-  { match: /facebook/i, style: { icon: Facebook, color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-950/30', image: 'https://cdn.simpleicons.org/facebook/1877F2' } },
+  { match: /facebook|\bfb\b/i, style: { icon: Facebook, color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-950/30', image: 'https://cdn.simpleicons.org/facebook/1877F2' } },
   { match: /youtube/i, style: { icon: Youtube, color: 'text-red-600', bg: 'bg-red-50 dark:bg-red-950/30', image: 'https://cdn.simpleicons.org/youtube/FF0000' } },
   { match: /discord/i, style: { icon: MessageCircle, color: 'text-indigo-500', bg: 'bg-indigo-50 dark:bg-indigo-950/30', image: 'https://cdn.simpleicons.org/discord/5865F2' } },
   { match: /whatsapp/i, style: { icon: MessageCircle, color: 'text-green-600', bg: 'bg-green-50 dark:bg-green-950/30', image: 'https://cdn.simpleicons.org/whatsapp/25D366' } },
   { match: /telegram/i, style: { icon: MessageCircle, color: 'text-sky-500', bg: 'bg-sky-50 dark:bg-sky-950/30', image: 'https://cdn.simpleicons.org/telegram/26A5E4' } },
-  { match: /email|gmail|mail/i, style: { icon: Mail, color: 'text-amber-600', bg: 'bg-amber-50 dark:bg-amber-950/30', image: 'https://cdn.simpleicons.org/gmail/EA4335' } },
+  { match: /threads/i, style: { icon: MessageCircle, color: 'text-slate-900 dark:text-white', bg: 'bg-slate-100 dark:bg-slate-900', image: 'https://cdn.simpleicons.org/threads/6B7280' } },
+  { match: /hotmail|outlook/i, style: { icon: Mail, color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-950/30' } },
+  { match: /proxy/i, style: { icon: Globe, color: 'text-sky-600', bg: 'bg-sky-50 dark:bg-sky-950/30' } },
+  { match: /gmail/i, style: { icon: Mail, color: 'text-amber-600', bg: 'bg-amber-50 dark:bg-amber-950/30', image: 'https://cdn.simpleicons.org/gmail/EA4335' } },
+  { match: /email|mail|gmx/i, style: { icon: Mail, color: 'text-amber-600', bg: 'bg-amber-50 dark:bg-amber-950/30' } },
   { match: /tiktok/i, style: { icon: Music, color: 'text-fuchsia-600', bg: 'bg-fuchsia-50 dark:bg-fuchsia-950/30', image: 'https://cdn.simpleicons.org/tiktok/000000' } },
   { match: /snapchat/i, style: { icon: MessageCircle, color: 'text-yellow-500', bg: 'bg-yellow-50 dark:bg-yellow-950/30', image: 'https://cdn.simpleicons.org/snapchat/FFFC00' } },
   { match: /spotify/i, style: { icon: Music, color: 'text-green-600', bg: 'bg-green-50 dark:bg-green-950/30', image: 'https://cdn.simpleicons.org/spotify/1DB954' } },
@@ -40,6 +45,7 @@ const STYLE_MAP: Array<{ match: RegExp; style: CategoryStyle }> = [
   { match: /netflix/i, style: { icon: Tv, color: 'text-red-600', bg: 'bg-red-50 dark:bg-red-950/30', image: 'https://cdn.simpleicons.org/netflix/E50914' } },
   { match: /tv|stream/i, style: { icon: Tv, color: 'text-purple-600', bg: 'bg-purple-50 dark:bg-purple-950/30' } },
   { match: /sms|number|phone/i, style: { icon: Smartphone, color: 'text-indigo-600', bg: 'bg-indigo-50 dark:bg-indigo-950/30' } },
+  { match: /programming|coding|\bhtml\b|\bcss\b/i, style: { icon: Code2, color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-950/30' } },
   { match: /shop|store|account/i, style: { icon: ShoppingBag, color: 'text-orange-600', bg: 'bg-orange-50 dark:bg-orange-950/30' } },
 ]
 
@@ -48,4 +54,10 @@ const DEFAULT_STYLE: CategoryStyle = { icon: Globe, color: 'text-primary', bg: '
 export function getCategoryStyle(categoryName: string): CategoryStyle {
   const found = STYLE_MAP.find(entry => entry.match.test(categoryName))
   return found ? found.style : DEFAULT_STYLE
+}
+
+// Account age, country and delivery details are not a platform identity.
+export function getProductIconName(productName: string, categoryName: string): string {
+  const specific = /\b(?:instagram|ig|twitter|facebook|fb|youtube|discord|whatsapp|telegram|threads|hotmail|outlook|gmail|gmx|tiktok|snapchat|spotify|reddit|twitch|quora|netflix|proxy|vpn|programming|coding|html|css)\b|x\.com|mail\.com/i
+  return specific.test(productName) ? productName : categoryName
 }

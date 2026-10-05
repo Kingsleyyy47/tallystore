@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { recordSupplierBalanceFailure, resolveSupplierBalanceAlert } from '../_shared/supplier-balance-alerts.mjs'
 
 // Proactive auto-restock job. Meant to be triggered on a schedule (e.g. every
 // few hours via Supabase's Edge Function Cron, or pg_cron + pg_net), NOT by a
@@ -311,6 +312,7 @@ serve(async (req) => {
         }
 
         if (providerBalance !== null && providerBalance <= 0) {
+          await recordSupplierBalanceFailure(supabaseAdmin, { provider: provider.name, productGroupId: pg.id, source: 'auto-restock', confirmedBalance: providerBalance })
           console.log(`⏭️ ${provider.name} reports 0 balance, skipping to next provider.`)
           await supabaseAdmin.from('auto_restock_logs').insert([{
             product_group_id: pg.id,
@@ -337,10 +339,12 @@ serve(async (req) => {
           form.set('amount', String(buyQty))
           form.set('api_key', apiKey)
 
+          const attemptStartedAt = new Date().toISOString()
           const fulfillResponse = await fetch(baseUrl, { method: 'POST', body: form })
           const fulfillResult = await fulfillResponse.json().catch(() => null) as any
 
           if (!fulfillResponse.ok || fulfillResult?.status !== 'success') {
+            await recordSupplierBalanceFailure(supabaseAdmin, { provider: provider.name, productGroupId: pg.id, source: 'auto-restock', response: fulfillResult, httpStatus: fulfillResponse.status })
             throw new Error('Provider purchase was not confirmed')
           }
 
@@ -371,6 +375,7 @@ serve(async (req) => {
           }
 
           shortfall -= insertedAccounts.length
+          await resolveSupplierBalanceAlert(supabaseAdmin, { provider: provider.name, attemptStartedAt })
           totalBoughtThisRun += insertedAccounts.length
 
           console.log(`✅ ${provider.name} auto-restocked ${insertedAccounts.length} unit(s) for ${pg.name}`)
@@ -411,14 +416,7 @@ serve(async (req) => {
         .eq('status', 'available')
 
       const nextStock = newStock || 0
-      await supabaseAdmin
-        .from('product_groups')
-        .update({
-          stock_count: nextStock,
-          availability_status: nextStock > 0 ? nextStock <= 3 ? 'LOW_STOCK' : 'AVAILABLE' : 'UNAVAILABLE',
-          is_sellable: nextStock > 0,
-        })
-        .eq('id', pg.id)
+      // Inventory triggers own the projection and preserve PAUSED/readiness.
 
       runSummary.push({
         product_group_id: pg.id,

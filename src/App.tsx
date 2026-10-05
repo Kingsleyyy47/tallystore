@@ -9,11 +9,11 @@ import { AuthProvider } from '@/contexts/SimpleAuth'
 import { CurrencyProvider } from '@/contexts/CurrencyContext'
 import { ProtectedRoute, PublicRoute } from '@/components/SimpleProtectedRoute'
 import InstallPromptBanner from '@/components/InstallPromptBanner'
-import UpdatePromptBanner from '@/components/UpdatePromptBanner'
 import AnnouncementBanner from '@/components/AnnouncementBanner'
 import MaintenancePage from '@/components/MaintenancePage'
 import GlobalPaymentChecker from '@/components/GlobalPaymentChecker'
 import LoginWelcomeDialog from '@/components/LoginWelcomeDialog'
+import SupplierWarningDialog from '@/components/SupplierWarningDialog'
 import ChatWidget from '@/components/ChatWidget'
 import MobileBottomNav from '@/components/MobileBottomNav'
 import VisitorTracker from '@/components/VisitorTracker'
@@ -38,6 +38,7 @@ const PaymentSuccessPage = lazy(() => import('@/pages/PaymentSuccessPage'))
 const WalletPage = lazy(() => import('@/pages/WalletPage'))
 const Dashboard = lazy(() => import('@/pages/Dashboard'))
 const ReferralsPage = lazy(() => import('@/pages/ReferralsPage'))
+const CustomerApiPage = lazy(() => import('@/pages/CustomerApiPage'))
 const HowItWorksPage = lazy(() => import('@/pages/HowItWorksPage'))
 const SupportPage = lazy(() => import('@/pages/SupportPage'))
 const TermsPage = lazy(() => import('@/pages/TermsPage'))
@@ -79,9 +80,9 @@ const App = () => {
           <Sonner />
           <AnnouncementBanner />
           <InstallPromptBanner />
-          <UpdatePromptBanner />
           <AuthProvider>
           <LoginWelcomeDialog />
+          <SupplierWarningDialog />
           <CurrencyProvider>
             <VisitorTracker />
             <GlobalPaymentChecker />
@@ -124,6 +125,7 @@ const App = () => {
               {/* Auth callback for OAuth - not needed for email/password auth */}
 
               {/* Protected Routes - require authentication */}
+              <Route path="/developer-api" element={<ProtectedRoute requireRole="user"><CustomerApiPage /></ProtectedRoute>} />
               <Route
                 path="/dashboard"
                 element={

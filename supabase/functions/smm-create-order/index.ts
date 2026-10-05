@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts';
 
 async function applyWalletTransaction(
   supabaseAdmin: any,
@@ -617,34 +618,11 @@ serve(async (req) => {
   }
 
   try {
-    // Get user from auth header
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      throw new Error('Missing authorization header');
-    }
-
-    // Initialize Supabase client
-    const supabaseClient = createClient(
+    const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      {
-        global: {
-          headers: { Authorization: authHeader },
-        },
-        auth: {
-          persistSession: false,
-        },
-      }
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
-
-    // Get authenticated user
-    const { data: { user }, error: userError } = await supabaseClient.auth.getUser(
-      authHeader.replace('Bearer ', '')
-    );
-
-    if (userError || !user) {
-      throw new Error('Unauthorized');
-    }
+    const user = await authenticateCustomerRequest(req, supabaseAdmin, 'social_boost', 'smm-create-order');
 
     // Parse request body - accept all possible fields for different service types
     const { 
@@ -674,11 +652,6 @@ serve(async (req) => {
       throw new Error('Valid idempotency_key is required');
     }
 
-    // Initialize admin client for database operations
-    const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    );
     await assertPurchasingCustomer(supabaseAdmin, user.id, req);
 
     // Check for duplicate order (idempotency)

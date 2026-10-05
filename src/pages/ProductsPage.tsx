@@ -1,32 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import {
-  ArrowRight,
-  ChevronLeft,
-  ChevronRight,
-  Grid,
-  LayoutGrid,
-  List,
-  Loader2,
-  MoreHorizontal,
-  Package,
-  RefreshCw,
-  Search,
-} from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { useNavigate } from 'react-router-dom'
+import { Loader2, RefreshCw, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
-import ProductTemplateCard from '@/components/ProductTemplateCard'
-import CategorySidebar from '@/components/CategorySidebar'
-import CategoryLogo from '@/components/CategoryLogo'
+import GroupedProductCatalog from '@/components/GroupedProductCatalog'
 import PageBreadcrumb from '@/components/PageBreadcrumb'
 import { useAuth } from '@/contexts/SimpleAuth'
-import { isCustomerSellableProduct } from '@/lib/productAvailability'
+import { isCustomerSellableProduct, isCustomerVisibleProduct } from '@/lib/productAvailability'
 import {
   getAllProductGroups,
-  getAvailableAccountIdsByProductGroup,
   getCategories,
   getAppSetting,
   getRecentlyRestockedProductGroupIds,
@@ -38,10 +22,6 @@ import {
   type ProductGroup,
 } from '@/lib/supabase'
 import {
-  auditCroDecision,
-  decideNextBestCommerceAction,
-  estimatePurchaseIntent,
-  getCustomerPressureState,
   getRevenueVisitorId,
   loadCustomerRelationshipBoosts,
   loadRevenueOsSettings,
@@ -54,10 +34,8 @@ import {
   type RevenueOsSettings,
 } from '@/lib/revenue-os'
 
-type ProductCollection = 'popular' | 'refilled' | 'new'
-type SortMode = 'recommended' | 'newest' | 'price-low' | 'price-high' | 'stock'
+type SortMode = 'recommended' | 'newest' | 'az' | 'price-low' | 'price-high' | 'stock'
 
-const PAGE_SIZE = 12
 const CORE_LOAD_TIMEOUT_MS = 8000
 const OPTIONAL_LOAD_TIMEOUT_MS = 3500
 const VISIBLE_REFRESH_COOLDOWN_MS = 3 * 60 * 1000
@@ -105,7 +83,6 @@ export default function ProductsPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [restockedIds, setRestockedIds] = useState<string[]>([])
-  const [, setAccountMap] = useState<Record<string, string>>({})
   const [topSellingIds, setTopSellingIds] = useState<string[]>([])
   const [favoriteProductIds, setFavoriteProductIds] = useState<string[]>([])
   const [myProductGroupCounts, setMyProductGroupCounts] = useState<Record<string, number>>({})
@@ -119,12 +96,8 @@ export default function ProductsPage() {
   const [runningCroExperiments, setRunningCroExperiments] = useState<any[]>([])
   const [runningCroActionPlans, setRunningCroActionPlans] = useState<any[]>([])
   const [searchTerm, setSearchTerm] = useState('')
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
-  const [showAllCategories, setShowAllCategories] = useState(false)
-  const [activeCollection, setActiveCollection] = useState<ProductCollection>('popular')
   const [sortMode, setSortMode] = useState<SortMode>('recommended')
-  const [currentPage, setCurrentPage] = useState(1)
   const didTrackInitialFilter = useRef(false)
   const didTrackInitialSort = useRef(false)
   const loadInFlight = useRef(false)
@@ -152,8 +125,7 @@ export default function ProductsPage() {
       setError(null)
       setLoading(false)
 
-      const [accountMapData, topSellingData, favoriteIds, automationSetting, revenueSettings, experiments, actionPlans, recentlyRestocked] = await Promise.all([
-        withTimeout(getAvailableAccountIdsByProductGroup(), OPTIONAL_LOAD_TIMEOUT_MS, {}, 'Available account map'),
+      const [topSellingData, favoriteIds, automationSetting, revenueSettings, experiments, actionPlans, recentlyRestocked] = await Promise.all([
         withTimeout(getTopSellingProductGroupIds(12), OPTIONAL_LOAD_TIMEOUT_MS, [], 'Top sellers'),
         withTimeout(getFavoriteProductGroupIds(), OPTIONAL_LOAD_TIMEOUT_MS, [], 'Favorite products'),
         withTimeout(getAppSetting('sales_recommendation_automation_enabled'), OPTIONAL_LOAD_TIMEOUT_MS, null, 'Recommendation automation setting'),
@@ -164,7 +136,6 @@ export default function ProductsPage() {
       ])
 
       const automationEnabled = automationSetting !== 'false' && revenueSettings.enabled
-      setAccountMap(accountMapData)
       setTopSellingIds(automationEnabled ? topSellingData : [])
       setFavoriteProductIds(automationEnabled ? favoriteIds : [])
       setRecommendationAutomationEnabled(automationEnabled)
@@ -252,10 +223,6 @@ export default function ProductsPage() {
   }, [loadData])
 
   useEffect(() => {
-    setCurrentPage(1)
-  }, [searchTerm, selectedCategory, sortMode])
-
-  useEffect(() => {
     const query = searchTerm.trim()
     if (query.length < 2) return
 
@@ -305,7 +272,7 @@ export default function ProductsPage() {
   }, [sortMode, user?.id])
 
   const activeProductGroups = useMemo(
-    () => productGroups.filter(isCustomerSellableProduct),
+    () => productGroups.filter(isCustomerVisibleProduct),
     [productGroups],
   )
 
@@ -362,7 +329,7 @@ export default function ProductsPage() {
 
   const revenueOsRankedProducts = useMemo(() => {
     if (!recommendationAutomationEnabled) return []
-    return rankProductsForRevenueOs(retrievedProductGroups, categories, {
+    return rankProductsForRevenueOs(retrievedProductGroups.filter(isCustomerSellableProduct), categories, {
       surface: 'products',
       query: searchTerm,
       selectedCategoryId: selectedCategory,
@@ -387,28 +354,6 @@ export default function ProductsPage() {
     return new Map(revenueOsRankedProducts.map((ranked) => [ranked.product.id, ranked]))
   }, [revenueOsRankedProducts])
   const revenueOsCanRank = recommendationAutomationEnabled && croAssignment.rankingEnabled
-  const nextBestAction = useMemo(() => decideNextBestCommerceAction(revenueOsRankedProducts, {
-    purchaseIntent: estimatePurchaseIntent({
-      query: searchTerm,
-      selectedCategoryId: selectedCategory,
-      hasRequestedProduct: searchTerm.trim().length >= 4 && revenueOsRankedProducts.some((ranked) => ranked.reasons.includes('query_relevance')),
-      pressure: getCustomerPressureState(),
-    }),
-    surface: 'products',
-    query: searchTerm,
-    selectedCategoryId: selectedCategory,
-    customer: {
-      productGroupCounts: myProductGroupCounts,
-      categoryCounts: myCategoryCounts,
-      lastPurchasedAtByProductGroup: myProductLastPurchasedAt,
-      lastPurchasedAtByCategory: myCategoryLastPurchasedAt,
-      lastProductGroupId: myLastProductGroupId,
-    },
-    pressure: getCustomerPressureState(),
-    settings: revenueOsSettings || undefined,
-    assignment: croAssignment,
-  }), [croAssignment, myCategoryCounts, myCategoryLastPurchasedAt, myLastProductGroupId, myProductGroupCounts, myProductLastPurchasedAt, revenueOsRankedProducts, revenueOsSettings, searchTerm, selectedCategory])
-
   const sortedProductGroups = useMemo(() => {
     const query = searchTerm.trim()
     const searched = [...retrievedProductGroups]
@@ -421,6 +366,8 @@ export default function ProductsPage() {
       if (sortMode === 'price-low') return a.price - b.price
       if (sortMode === 'price-high') return b.price - a.price
       if (sortMode === 'stock') return b.stock_count - a.stock_count
+      if (sortMode === 'newest') return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      if (sortMode === 'az') return a.name.trim().localeCompare(b.name.trim(), undefined, { numeric: true, sensitivity: 'base' })
 
       if (sortMode === 'recommended' && revenueOsCanRank) {
         if (query.length > 0) {
@@ -433,182 +380,19 @@ export default function ProductsPage() {
         if (scoreA !== scoreB) return scoreB - scoreA
       }
 
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      return a.name.trim().localeCompare(b.name.trim(), undefined, { numeric: true, sensitivity: 'base' })
     })
   }, [retrievalScoreById, retrievedProductGroups, revenueOsCanRank, revenueOsScoreById, searchTerm, sortMode])
 
-  const collectionRankedProducts = useMemo(() => {
-    if (!recommendationAutomationEnabled || !revenueOsCanRank) return []
-    return rankProductsForRevenueOs(activeProductGroups, categories, {
-      surface: 'products_collection_rails',
-      query: '',
-      selectedCategoryId: 'all',
-      topSellingIds,
-      favoriteProductIds,
-      restockedIds,
-      actionPlans: runningCroActionPlans,
-      relationshipBoosts,
-      customer: {
-        productGroupCounts: myProductGroupCounts,
-        categoryCounts: myCategoryCounts,
-        lastPurchasedAtByProductGroup: myProductLastPurchasedAt,
-        lastPurchasedAtByCategory: myCategoryLastPurchasedAt,
-        lastProductGroupId: myLastProductGroupId,
-      },
-      settings: revenueOsSettings || undefined,
-      assignment: croAssignment,
-    })
-  }, [activeProductGroups, categories, croAssignment, favoriteProductIds, myCategoryCounts, myCategoryLastPurchasedAt, myLastProductGroupId, myProductGroupCounts, myProductLastPurchasedAt, recommendationAutomationEnabled, relationshipBoosts, restockedIds, revenueOsCanRank, revenueOsSettings, runningCroActionPlans, topSellingIds])
-
-  const topSellingProductGroups = useMemo(() => {
-    const safeFallback = [...activeProductGroups]
-      .filter(isPurchasable)
-      .sort((a, b) => {
-        if (b.stock_count !== a.stock_count) return b.stock_count - a.stock_count
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      })
-      .slice(0, 9)
-
-    if (!revenueOsCanRank) return safeFallback
-
-    const byId = new Map(activeProductGroups.map((productGroup) => [productGroup.id, productGroup]))
-    const pushUnique = (target: ProductGroup[], productGroup?: ProductGroup | null) => {
-      if (!productGroup || !isPurchasable(productGroup) || target.some((item) => item.id === productGroup.id)) return
-      target.push(productGroup)
-    }
-
-    const result: ProductGroup[] = []
-    favoriteProductIds.forEach((id) => pushUnique(result, byId.get(id)))
-    collectionRankedProducts
-      .filter((ranked) => ranked.reasons.some((reason) => ['customer_repeat_purchase_fit', 'customer_related_product', 'customer_category_affinity', 'customer_recent_category_interest'].includes(reason)))
-      .forEach((ranked) => pushUnique(result, ranked.product))
-    topSellingIds.forEach((id) => pushUnique(result, byId.get(id)))
-    restockedIds.forEach((id) => pushUnique(result, byId.get(id)))
-    collectionRankedProducts.forEach((ranked) => pushUnique(result, ranked.product))
-
-    const fillIns = [...activeProductGroups]
-      .filter((productGroup) => isPurchasable(productGroup) && !result.some((rankedProduct) => rankedProduct.id === productGroup.id))
-      .sort((a, b) => a.stock_count - b.stock_count)
-
-    const mixed = [...result, ...fillIns].slice(0, 9)
-    return mixed.length > 0 ? mixed : safeFallback
-  }, [activeProductGroups, collectionRankedProducts, favoriteProductIds, restockedIds, revenueOsCanRank, topSellingIds])
-
-  const restockedProductGroups = useMemo(
-    () =>
-      restockedIds
-        .map((id) => activeProductGroups.find((productGroup) => productGroup.id === id))
-        .filter((productGroup): productGroup is ProductGroup => !!productGroup)
-        .slice(0, 9),
-    [activeProductGroups, restockedIds],
-  )
-
-  const newProductGroups = useMemo(
-    () =>
-      [...activeProductGroups]
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-        .slice(0, 9),
-    [activeProductGroups],
-  )
-
-  const collectionGroups = {
-    popular: topSellingProductGroups,
-    refilled: restockedProductGroups,
-    new: newProductGroups,
-  }
-
-  const totalPages = Math.max(1, Math.ceil(sortedProductGroups.length / PAGE_SIZE))
-  const pageProductGroups = sortedProductGroups.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
-
-  useEffect(() => {
-    if (!recommendationAutomationEnabled || revenueOsRankedProducts.length === 0) return
-    auditCroDecision({
-      userId: user?.id || null,
-      surface: 'products',
-      selected: nextBestAction.selected || revenueOsRankedProducts[0] || null,
-      candidates: revenueOsRankedProducts.slice(0, 12),
-      metadata: {
-        searchTerm,
-        selectedCategory,
-        sortMode,
-        nextBestAction: nextBestAction.action,
-        actionReason: nextBestAction.reason,
-        actionConfidence: nextBestAction.confidence,
-        expectedValue: nextBestAction.expectedValue,
-        pressureScore: nextBestAction.pressureScore,
-        actionCandidates: nextBestAction.candidates.slice(0, 8),
-        actionArbitration: nextBestAction.arbitration,
-      },
-      assignment: croAssignment,
-    })
-  }, [croAssignment, nextBestAction, recommendationAutomationEnabled, revenueOsRankedProducts, searchTerm, selectedCategory, sortMode, user?.id])
-
-  useEffect(() => {
-    if (!revenueOsCanRank || !nextBestAction.selected || nextBestAction.action === 'DO_NOTHING') return
-    const today = new Date().toISOString().slice(0, 10)
-    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
-    trackRevenueEvent({
-      eventType: 'RECOMMENDATION_SHOWN',
-      userId: user?.id || null,
-      productGroupId: nextBestAction.selected.product.id,
-      categoryId: nextBestAction.selected.product.category_id,
-      surface: 'products_next_best_action',
-      experimentId: croAssignment.experimentId,
-      variantId: croAssignment.variantId,
-      metadata: {
-        action: nextBestAction.action,
-        reason: nextBestAction.reason,
-        confidence: nextBestAction.confidence,
-        pressureScore: nextBestAction.pressureScore,
-        assignmentMode: croAssignment.mode,
-      },
-      eventId: `RECOMMENDATION_SHOWN:${today}:${actorKey}:products:${croAssignment.variantId || croAssignment.mode}:${nextBestAction.action}:${nextBestAction.selected.product.id}`,
-    })
-  }, [croAssignment.experimentId, croAssignment.mode, croAssignment.variantId, nextBestAction, revenueOsCanRank, user?.id])
-
-  useEffect(() => {
-    const today = new Date().toISOString().slice(0, 10)
-    const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
-    pageProductGroups.forEach((productGroup, index) => {
-      trackRevenueEvent({
-        eventType: 'PRODUCT_IMPRESSION',
-        userId: user?.id || null,
-        productGroupId: productGroup.id,
-        categoryId: productGroup.category_id,
-        surface: 'products_grid',
-        experimentId: croAssignment.experimentId,
-        variantId: croAssignment.variantId,
-        metadata: { position: index + 1, page: currentPage, sortMode, selectedCategory, assignmentMode: croAssignment.mode },
-        eventId: `PRODUCT_IMPRESSION:${today}:${actorKey}:products:${currentPage}:${croAssignment.variantId || croAssignment.mode}:${productGroup.id}`,
-      })
-    })
-  }, [croAssignment.experimentId, croAssignment.mode, croAssignment.variantId, currentPage, pageProductGroups, selectedCategory, sortMode, user?.id])
-
   const goToProduct = (productGroup: ProductGroup) => {
     const category = categoryForProduct(productGroup)
-    const isRecommendationShow = !!(
-      nextBestAction.selected?.product.id === productGroup.id &&
-      ['SHOW_REQUESTED_PRODUCT', 'SHOW_ALTERNATIVE', 'SHOW_UPGRADE', 'SHOW_DOWNGRADE', 'SHOW_COMPLEMENT', 'SHOW_TRENDING', 'POST_PURCHASE_RECOMMENDATION'].includes(nextBestAction.action)
-    )
-    const productClickType = isRecommendationShow ? 'RECOMMENDATION_CLICKED' : 'PRODUCT_CLICKED'
-
-    trackRevenueEvent({
-      eventType: productClickType,
-      userId: user?.id || null,
-      productGroupId: productGroup.id,
-      categoryId: productGroup.category_id,
-      surface: 'products_grid',
-      experimentId: croAssignment.experimentId,
-      variantId: croAssignment.variantId,
-      metadata: { sortMode, selectedCategory, assignmentMode: croAssignment.mode },
-      eventId: `${productClickType}:${crypto.randomUUID()}:products_grid:${productGroup.id}:${nextBestAction.action || 'none'}`,
-    })
+    if (!category || !isCustomerSellableProduct(productGroup)) return
     trackRevenueEvent({
       eventType: 'BUY_CLICKED',
       userId: user?.id || null,
       productGroupId: productGroup.id,
       categoryId: productGroup.category_id,
-      surface: 'products_grid',
+      surface: 'products_catalog',
       experimentId: croAssignment.experimentId,
       variantId: croAssignment.variantId,
       metadata: { price: productGroup.price, assignmentMode: croAssignment.mode },
@@ -624,46 +408,15 @@ export default function ProductsPage() {
     })
   }
 
-  const handlePurchase = (productGroupId: string, quantity: number) => {
-    const productGroup = productGroups.find((pg) => pg.id === productGroupId)
-    const category = productGroup ? categoryForProduct(productGroup) : null
-
-    if (productGroup && category) {
-      navigate('/checkout', {
-        state: {
-          productGroup,
-          category,
-          quantity,
-          isBulkPurchase: quantity > 1,
-          croAssignment,
-        },
-      })
-    }
-  }
-
-  const handleProductView = (productGroup: ProductGroup) => {
-    const category = categoryForProduct(productGroup)
-    const isRecommendationShow = !!(
-      nextBestAction.selected?.product.id === productGroup.id &&
-      ['SHOW_REQUESTED_PRODUCT', 'SHOW_ALTERNATIVE', 'SHOW_UPGRADE', 'SHOW_DOWNGRADE', 'SHOW_COMPLEMENT', 'SHOW_TRENDING', 'POST_PURCHASE_RECOMMENDATION'].includes(nextBestAction.action)
-    )
-    const productClickType = isRecommendationShow ? 'RECOMMENDATION_CLICKED' : 'PRODUCT_CLICKED'
-
+  const handleImpression = useCallback((product: ProductGroup) => {
     trackRevenueEvent({
-      eventType: productClickType,
-      userId: user?.id || null,
-      productGroupId: productGroup.id,
-      categoryId: productGroup.category_id,
-      surface: 'products_grid',
-      experimentId: croAssignment.experimentId,
-      variantId: croAssignment.variantId,
+      eventType: 'PRODUCT_IMPRESSION', userId: user?.id || null,
+      productGroupId: product.id, categoryId: product.category_id,
+      surface: 'products_catalog', experimentId: croAssignment.experimentId, variantId: croAssignment.variantId,
       metadata: { sortMode, selectedCategory, assignmentMode: croAssignment.mode },
-      eventId: `${productClickType}:${Date.now()}:products_grid:${productGroup.id}:${nextBestAction.action || 'none'}`,
+      eventId: ['PRODUCT_IMPRESSION', new Date().toISOString().slice(0, 10), user?.id || getRevenueVisitorId() || 'anonymous', 'products_catalog', croAssignment.variantId || croAssignment.mode, product.id].join(':'),
     })
-    navigate('/checkout', {
-      state: { productGroup, category, quantity: 1, croAssignment },
-    })
-  }
+  }, [user?.id, croAssignment, sortMode, selectedCategory])
 
   if (loading) {
     return (
@@ -701,288 +454,48 @@ export default function ProductsPage() {
   return (
     <div className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_20%_0%,rgba(168,85,247,0.10),transparent_30rem),linear-gradient(180deg,#ffffff_0%,#f7f9fc_55%,#eef3f8_100%)] text-slate-950 dark:bg-[radial-gradient(circle_at_20%_0%,rgba(126,51,231,0.16),transparent_30rem),linear-gradient(180deg,#05070d_0%,#07111d_100%)] dark:text-white">
       <Navbar />
-
-      <main className="mx-auto w-full max-w-7xl overflow-x-hidden px-3 pb-12 pt-5 sm:px-6 lg:px-8">
+      <main className="mx-auto w-full max-w-5xl px-3 pb-16 pt-5 sm:px-6">
         <PageBreadcrumb items={[{ label: 'Products' }]} className="mb-5" />
+        <header className="mb-5">
+          <h1 className="text-2xl font-extrabold sm:text-3xl">Products</h1>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Browse by platform, compare stock and price, then choose your quantity at checkout.</p>
+        </header>
 
-        <section className="mb-7">
-          <div className="mb-4 flex items-center justify-between">
-            <h1 className="text-xl font-black tracking-normal">Browse Categories</h1>
-            {categoryChips.length > 7 && <button type="button" onClick={() => setShowAllCategories((current) => !current)} className="hidden items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 sm:inline-flex">
-              {showAllCategories ? 'Show fewer categories' : 'View all categories'}
-              <ArrowRight className="h-4 w-4" />
-            </button>}
+        <div className="relative mb-4">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Input aria-label="Search products" placeholder="Search products..." value={searchTerm} onChange={(event) => {
+            setSearchTerm(event.target.value)
+            if (event.target.value.trim()) setSelectedCategory('all')
+          }} className="h-11 rounded-xl border-slate-200 bg-white pl-10 dark:border-white/10 dark:bg-card" />
+        </div>
+
+        <nav aria-label="Product categories" className="mb-4 flex gap-2 overflow-x-auto pb-2">
+          <button type="button" onClick={() => setSelectedCategory('all')} className={`shrink-0 rounded-xl px-4 py-2 text-xs font-bold transition ${selectedCategory === 'all' ? 'bg-purple-600 text-white shadow-md' : 'border border-slate-200 bg-white text-slate-600 hover:border-purple-300 dark:border-white/10 dark:bg-card dark:text-slate-300'}`}>All ({activeProductGroups.length})</button>
+          {categoryChips.map(({ category, count }) => <button key={category.id} type="button" onClick={() => setSelectedCategory(category.id)} className={`shrink-0 rounded-xl px-4 py-2 text-xs font-bold transition ${selectedCategory === category.id ? 'bg-purple-600 text-white shadow-md' : 'border border-slate-200 bg-white text-slate-600 hover:border-purple-300 dark:border-white/10 dark:bg-card dark:text-slate-300'}`}>{category.name.trim()} ({count})</button>)}
+        </nav>
+
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">{sortedProductGroups.length} product{sortedProductGroups.length === 1 ? '' : 's'} found</p>
+          <div className="flex items-center gap-2">
+            <select aria-label="Sort products" value={sortMode} onChange={(event) => setSortMode(event.target.value as SortMode)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold dark:border-white/10 dark:bg-card">
+              <option value="recommended">Recommended</option>
+              <option value="newest">Newest</option>
+              <option value="az">A–Z</option>
+              <option value="stock">Most stock</option>
+              <option value="price-low">Lowest price</option>
+              <option value="price-high">Highest price</option>
+            </select>
+            <Button type="button" variant="outline" size="sm" onClick={() => loadData(false)} disabled={refreshing} className="h-10 rounded-xl">
+              {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh
+            </Button>
           </div>
+        </div>
 
-          <div className="grid min-w-0 grid-cols-[repeat(5,minmax(0,1fr))] gap-1.5 sm:grid-cols-4 sm:gap-3 lg:grid-cols-8">
-            <button
-              type="button"
-              onClick={() => setSelectedCategory('all')}
-              className={`flex min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border px-1 py-2 text-center transition sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
-                selectedCategory === 'all'
-                  ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
-                  : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
-              }`}
-            >
-              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-purple-500/20 sm:h-9 sm:w-9">
-                <LayoutGrid className="h-4 w-4 sm:h-5 sm:w-5" />
-              </span>
-              <span className="min-w-0 max-w-full">
-                <strong className="block max-w-full break-words text-[10px] leading-tight sm:text-sm">All</strong>
-                <small className={selectedCategory === 'all' ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{activeProductGroups.length}</small>
-              </span>
-            </button>
-
-            {categoryChips.map(({ category, count }, index) => {
-              const active = selectedCategory === category.id
-              const visibility = showAllCategories || index < 3
-                ? 'flex'
-                : index < 7
-                  ? 'hidden sm:flex'
-                  : 'hidden'
-              return (
-                <button
-                  key={category.id}
-                  type="button"
-                  onClick={() => setSelectedCategory(category.id)}
-                  className={`${visibility} min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border px-1 py-2 text-center transition sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left ${
-                    active
-                      ? 'border-purple-400 bg-purple-600 text-white shadow-lg shadow-purple-600/20'
-                      : 'border-slate-200 bg-white/85 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06]'
-                  }`}
-                >
-                  <CategoryLogo name={category.name} className="h-7 w-7 sm:h-9 sm:w-9" iconClassName={active ? 'h-6 w-6 text-white sm:h-7 sm:w-7' : 'h-6 w-6 sm:h-7 sm:w-7'} />
-                  <span className="min-w-0 max-w-full">
-                    <strong className="block max-w-full break-words text-[9px] leading-tight sm:text-sm">{category.name}</strong>
-                    <small className={active ? 'text-white/75' : 'text-slate-500 dark:text-slate-400'}>{count}</small>
-                  </span>
-                </button>
-              )
-            })}
-
-            {categoryChips.length > 3 && <button
-              type="button"
-              onClick={() => setShowAllCategories((current) => !current)}
-              aria-expanded={showAllCategories}
-              aria-label={showAllCategories ? 'Show fewer categories' : 'Show more categories'}
-              className={`${categoryChips.length <= 7 && !showAllCategories ? 'sm:hidden' : 'sm:flex'} flex min-h-16 min-w-0 max-w-full flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-1 py-2 text-center transition hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:bg-white/[0.06] sm:flex-row sm:justify-start sm:gap-3 sm:p-3 sm:text-left`}
-            >
-              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-slate-100 dark:bg-white/10 sm:h-9 sm:w-9">
-                <MoreHorizontal className="h-4 w-4 sm:h-5 sm:w-5" />
-              </span>
-              <span className="min-w-0 max-w-full">
-                <strong className="block max-w-full break-words text-[10px] leading-tight sm:text-sm">{showAllCategories ? 'Less' : 'More'}</strong>
-                {!showAllCategories && <small className="text-slate-500 dark:text-slate-400"><span className="sm:hidden">{categoryChips.length - 3}</span><span className="hidden sm:inline">{Math.max(0, categoryChips.length - 7)}</span></small>}
-              </span>
-            </button>}
-          </div>
-        </section>
-
-        <section className="mb-8 hidden lg:block">
-          <div className="mb-3 flex min-w-0 items-center gap-3">
-            <div className="grid min-w-0 flex-1 grid-cols-3 items-center gap-1">
-              {([
-                ['popular', 'Popular'],
-                ['refilled', 'Refilled'],
-                ['new', 'New'],
-              ] as Array<[ProductCollection, string]>).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setActiveCollection(value)}
-                  className={`relative min-w-0 px-1 py-2 text-center text-xs font-black transition sm:px-4 sm:text-sm ${
-                    activeCollection === value ? 'text-purple-700 dark:text-purple-300' : 'text-slate-500 hover:text-slate-950 dark:hover:text-white'
-                  }`}
-                >
-                  {label}
-                  {activeCollection === value && <span className="absolute inset-x-3 -bottom-0.5 h-0.5 rounded-full bg-purple-600" />}
-                </button>
-              ))}
-            </div>
-            <Link to="/products" className="hidden shrink-0 items-center gap-2 text-xs font-black text-purple-700 dark:text-purple-300 lg:inline-flex">
-              View all
-              <ArrowRight className="h-4 w-4" />
-            </Link>
-          </div>
-
-          <div className="grid min-w-0 gap-2.5 lg:grid-cols-3">
-            {collectionGroups[activeCollection].slice(0, 9).map((productGroup) => (
-              (() => {
-                const category = categoryForProduct(productGroup)
-                return (
-                  <button
-                    key={productGroup.id}
-                    type="button"
-                    onClick={() => goToProduct(productGroup)}
-                    className="flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden rounded-lg border border-slate-200 bg-white/85 px-3 py-2.5 text-left text-[10px] font-black shadow-sm transition hover:border-purple-300 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-purple-300/30 dark:hover:bg-white/[0.06] sm:px-4 sm:py-3 sm:text-sm"
-                    title={productGroup.name}
-                  >
-                    <span className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-                      {category ? (
-                        <CategoryLogo name={category.name} className="h-4 w-4" iconClassName="h-4 w-4" />
-                      ) : (
-                        <Package className="h-4 w-4 shrink-0 text-purple-600 dark:text-purple-300" />
-                      )}
-                      <span className="block min-w-0 max-w-full whitespace-normal break-words leading-tight [overflow-wrap:anywhere]">
-                        {productGroup.name}
-                      </span>
-                    </span>
-                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
-                  </button>
-                )
-              })()
-            ))}
-          </div>
-        </section>
-
-        <section>
-          <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-3">
-              <h2 className="text-xl font-black tracking-normal">Available Products</h2>
-              <Badge className="rounded-full bg-purple-100 text-purple-700 hover:bg-purple-100 dark:bg-purple-500/15 dark:text-purple-300">
-                {sortedProductGroups.length} products
-              </Badge>
-            </div>
-
-            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2.5 sm:grid-cols-[minmax(210px,1fr)_160px_auto_auto] sm:gap-3 lg:min-w-[620px]">
-              <div className="relative col-span-2 min-w-0 sm:col-span-1">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <Input
-                  aria-label="Search products"
-                  placeholder="Search products..."
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
-                  className="h-10 min-w-0 rounded-lg border-slate-200 bg-white/85 pl-10 dark:border-white/10 dark:bg-white/[0.035]"
-                />
-              </div>
-
-              <select
-                aria-label="Sort products"
-                value={sortMode}
-                onChange={(event) => setSortMode(event.target.value as SortMode)}
-                className="h-10 min-w-0 rounded-lg border border-slate-200 bg-white/85 px-3 text-sm font-semibold outline-none dark:border-white/10 dark:bg-[#080d15]"
-              >
-                <option value="recommended">Recommended</option>
-                <option value="newest">Newest</option>
-                <option value="stock">Most stock</option>
-                <option value="price-low">Lowest price</option>
-                <option value="price-high">Highest price</option>
-              </select>
-
-              <div className="flex items-center gap-2">
-                <Button aria-label="Grid view" aria-pressed={viewMode === 'grid'} variant={viewMode === 'grid' ? 'default' : 'outline'} size="icon" onClick={() => setViewMode('grid')} className="h-10 w-10 rounded-lg">
-                  <Grid className="h-4 w-4" />
-                </Button>
-                <Button aria-label="List view" aria-pressed={viewMode === 'list'} variant={viewMode === 'list' ? 'default' : 'outline'} size="icon" onClick={() => setViewMode('list')} className="h-10 w-10 rounded-lg">
-                  <List className="h-4 w-4" />
-                </Button>
-              </div>
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => loadData(false)}
-                disabled={refreshing}
-                className="col-span-2 h-10 min-w-0 rounded-lg sm:col-span-1"
-              >
-                {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                Refresh Stock
-              </Button>
-            </div>
-          </div>
-
-          <div className="grid min-w-0 gap-5 lg:grid-cols-[210px_minmax(0,1fr)]">
-            <aside className="hidden rounded-xl border border-slate-200 bg-white/85 p-3 shadow-sm dark:border-white/10 dark:bg-white/[0.035] lg:block">
-              <CategorySidebar
-                categories={categories}
-                productGroups={activeProductGroups}
-                selectedCategory={selectedCategory}
-                onSelectCategory={setSelectedCategory}
-              />
-            </aside>
-
-            <div className="min-w-0">
-              {pageProductGroups.length === 0 ? (
-                <div className="rounded-xl border border-slate-200 bg-white/85 px-5 py-16 text-center shadow-sm dark:border-white/10 dark:bg-white/[0.035]">
-                  <Package className="mx-auto h-12 w-12 text-slate-400" />
-                  <h3 className="mt-4 text-xl font-black">No products found</h3>
-                  <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Try a different category or search term.</p>
-                </div>
-              ) : (
-                <div className={`grid min-w-0 ${
-                  viewMode === 'grid'
-                    ? 'grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4'
-                    : 'grid-cols-1 gap-4'
-                }`}>
-                  {pageProductGroups.map((productGroup) => {
-                    const category = categoryForProduct(productGroup)
-                    return category ? (
-                    <ProductTemplateCard
-                        key={productGroup.id}
-                        productGroup={productGroup}
-                        category={category}
-                        onPurchase={handlePurchase}
-                        onView={handleProductView}
-                      />
-                    ) : null
-                  })}
-                </div>
-              )}
-
-              <div className="mt-6 flex flex-col gap-3 text-xs font-semibold text-slate-500 dark:text-slate-400 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center justify-center gap-2 sm:justify-start">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 rounded-lg"
-                    onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-                    disabled={currentPage <= 1}
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </Button>
-                  {Array.from({ length: Math.min(5, totalPages) }, (_, index) => index + 1).map((page) => (
-                    <Button
-                      key={page}
-                      variant={currentPage === page ? 'default' : 'outline'}
-                      size="icon"
-                      className="h-9 w-9 rounded-lg"
-                      onClick={() => setCurrentPage(page)}
-                    >
-                      {page}
-                    </Button>
-                  ))}
-                  {totalPages > 5 && <span className="px-1">...</span>}
-                  {totalPages > 5 && (
-                    <Button
-                      variant={currentPage === totalPages ? 'default' : 'outline'}
-                      size="icon"
-                      className="h-9 w-9 rounded-lg"
-                      onClick={() => setCurrentPage(totalPages)}
-                    >
-                      {totalPages}
-                    </Button>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 rounded-lg"
-                    onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
-                    disabled={currentPage >= totalPages}
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </Button>
-                </div>
-
-                <span className="text-center sm:text-right">
-                  Showing {sortedProductGroups.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}-
-                  {Math.min(currentPage * PAGE_SIZE, sortedProductGroups.length)} of {sortedProductGroups.length} products
-                </span>
-              </div>
-            </div>
-          </div>
-        </section>
+        <GroupedProductCatalog categories={categories} products={sortedProductGroups} selectedCategory={selectedCategory} onImpression={handleImpression} searching={Boolean(searchTerm.trim())} onSelectCategory={setSelectedCategory} onBuy={(id) => {
+          const product = productGroups.find((item) => item.id === id)
+          if (product) goToProduct(product)
+        }} />
       </main>
-
       <Footer />
     </div>
   )

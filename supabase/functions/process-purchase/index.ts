@@ -1,6 +1,8 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { ngnMinorUnits } from '../_shared/ngn-amount.mjs';
+import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts';
+import { configuredSuppliers, fulfillSupplierShortfall } from '../_shared/supplier-purchase.mjs';
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -355,6 +357,9 @@ const customerPurchaseErrors = new Set([
   'This discount code is not valid for this category',
   'This discount code is not valid for your account',
   'Selected account is no longer available',
+  'Referral pricing could not be verified. Please retry.',
+  'Supplier stock is unavailable. Your wallet has not been charged.',
+  'Your order is awaiting supplier confirmation. Do not place it again; contact support with your order ID.',
 ])
 
 function publicPurchaseError(message: string) {
@@ -400,38 +405,21 @@ serve(async (req) => {
     idempotencyKey?: string | null;
     requestContext?: RevenueRequestContext | null;
   } = {};
+  let authorizedOrderContext: {
+    orderId: string;
+    reservationId: string;
+    productGroupId: string;
+    userId: string;
+    supplier: boolean;
+  } | null = null;
 
   try {
-    // Get authorization header
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      throw new Error('Missing authorization header');
-    }
-
-    // Initialize user client (to get authenticated user)
-    const supabaseUser = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      {
-        global: { headers: { Authorization: authHeader } },
-        auth: { persistSession: false },
-      }
-    );
-
-    // Verify the user
-    const { data: { user }, error: userError } = await supabaseUser.auth.getUser(
-      authHeader.replace('Bearer ', '')
-    );
-
-    if (userError || !user) {
-      throw new Error('Unauthorized');
-    }
-
-    // Initialize admin client (bypasses RLS)
+    if (req.method !== 'POST') return new Response('Method not allowed', { status: 405, headers: corsHeaders });
     supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
+    const user = await authenticateCustomerRequest(req, supabaseAdmin, 'products', 'process-purchase');
     await assertPurchasingCustomer(supabaseAdmin, user.id, req);
     revenueContext.userId = user.id;
 
@@ -525,6 +513,12 @@ serve(async (req) => {
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
+      if (['cancelled', 'canceled', 'failed'].includes(String(existingOrder.status || '').toLowerCase())) {
+        return new Response(JSON.stringify({ success: false, order_id: existingOrder.id, code: 'PURCHASE_CLOSED', error: 'This purchase attempt is closed. Please refresh before placing another order.' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      if (existingOrder.financial_authorization_status === 'outcome_unknown') {
+        return new Response(JSON.stringify({ success: false, order_id: existingOrder.id, code: 'SUPPLIER_CONFIRMATION_PENDING', error: 'Your order is awaiting supplier confirmation. Do not place it again; contact support with your order ID.' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
 
       if (!existingOrder.wallet_reservation_id) {
         return new Response(
@@ -588,22 +582,16 @@ serve(async (req) => {
       throw new Error('Product is no longer available for purchase');
     }
     const availabilityStatus = String(productGroup.availability_status || '').toUpperCase();
-    if (productGroup.is_sellable === false || ['UNAVAILABLE', 'PAUSED'].includes(availabilityStatus)) {
+    if (!existingOrder && (productGroup.is_sellable === false || ['UNAVAILABLE', 'PAUSED'].includes(availabilityStatus))) {
       throw new Error('Product is currently out of stock');
     }
     if (unitPriceMinor === null || !Number.isSafeInteger(unitPriceMinor * quantity)) {
       throw new Error('Product has an invalid customer price');
     }
-    // Incident containment: live supplier purchases must stay hard-paused until
-    // this flow is migrated to authorize/reserve backed funds before any paid
-    // supplier call. A stored wallet-balance preflight is not delivery authority.
-    const liveAccountFulfillmentEnabled = false;
+    const liveAccountFulfillmentEnabled = Deno.env.get('LIVE_ACCOUNT_FULFILLMENT_ENABLED') === 'true';
+    const suppliers = configuredSuppliers(productGroup, (name: string) => Deno.env.get(name));
     const productHasLiveProvider = Boolean(
-      liveAccountFulfillmentEnabled &&
-        productGroup.auto_fulfill_enabled &&
-        (productGroup.muabanvia_product_id ||
-          productGroup.shopclone_product_id ||
-          productGroup.shopviaclone_product_id),
+      liveAccountFulfillmentEnabled && productGroup.supplier_fallback_ready === true && !productGroup.supplier_fallback_blocked && suppliers.length > 0,
     );
     revenueContext.categoryId = productGroup.category_id;
 
@@ -672,6 +660,20 @@ serve(async (req) => {
       totalPrice = totalPriceMinor / 100;
       appliedDiscountCode = { id: codeRow.id, code: codeRow.code };
     }
+    const { data: qualifiedReferrals, error: circleStatusError } = await supabaseAdmin.rpc(
+      'tally_circle_qualified_count',
+      { p_user_id: user.id },
+    );
+    if (circleStatusError || !Number.isInteger(qualifiedReferrals) || qualifiedReferrals < 0) {
+      throw new Error('Referral pricing could not be verified. Please retry.');
+    }
+    const circleDiscountPercent = qualifiedReferrals >= 5 ? 3 : 0;
+    const beforeCircleDiscountMinor = totalPriceMinor;
+    if (circleDiscountPercent > 0) {
+      totalPriceMinor = Math.round(totalPriceMinor * 97 / 100);
+      totalPrice = totalPriceMinor / 100;
+    }
+    const circleDiscountAmount = (beforeCircleDiscountMinor - totalPriceMinor) / 100;
     if (!Number.isSafeInteger(totalPriceMinor) || totalPriceMinor <= 0) {
       throw new Error('Product has an invalid customer price');
     }
@@ -749,13 +751,14 @@ serve(async (req) => {
       original_amount_ngn: originalTotal,
       charged_amount_ngn: totalPrice,
       discount_code_id: appliedDiscountCode?.id || null,
+      tally_circle_discount_percent: circleDiscountPercent,
+      tally_circle_discount_amount_ngn: circleDiscountAmount,
       expected_amount_ngn: expectedAmountNgn,
       category_id: productGroup.category_id,
+      supplier_configured_providers: suppliers.map((supplier: any) => supplier.name),
     };
 
-    const { data: authorization, error: authorizationError } = await supabaseAdmin.rpc(
-      'authorize_product_purchase',
-      {
+    const authorizationArgs = {
         p_user_id: user.id,
         p_product_group_id: product_group_id,
         p_quantity: quantity,
@@ -764,8 +767,20 @@ serve(async (req) => {
         p_order_metadata: authorizationMetadata,
         p_preferred_account_id: preferredAccountId,
         p_financial_security_version: requestedSecurityVersion,
-      },
+    };
+    const existingSupplierOrder = (existingOrder?.account_details as any)?.financial_authorization === 'supplier_reserve_first';
+    let { data: authorization, error: authorizationError } = await supabaseAdmin.rpc(
+      existingSupplierOrder ? 'authorize_supplier_product_purchase' : 'authorize_product_purchase',
+      existingSupplierOrder ? Object.fromEntries(Object.entries(authorizationArgs).filter(([key]) => key !== 'p_preferred_account_id')) : authorizationArgs,
     );
+    if (!authorizationError && authorization?.code === 'INSUFFICIENT_STOCK' && productHasLiveProvider && !preferredAccountId) {
+      if (quantity > 100) throw new Error('INSUFFICIENT_STOCK: Supplier orders support at most 100 accounts.');
+      ({ data: authorization, error: authorizationError } = await supabaseAdmin.rpc('authorize_supplier_product_purchase', Object.fromEntries(Object.entries(authorizationArgs).filter(([key]) => key !== 'p_preferred_account_id'))));
+      // Local stock may have been replenished between the two authorizations.
+      if (!authorizationError && authorization?.code === 'LOCAL_STOCK_AVAILABLE') {
+        ({ data: authorization, error: authorizationError } = await supabaseAdmin.rpc('authorize_product_purchase', authorizationArgs));
+      }
+    }
 
     if (authorizationError) {
       throw new Error(authorizationError.message || 'Product financial authorization failed');
@@ -788,13 +803,37 @@ serve(async (req) => {
 
     const orderId = String(authorizationResult.order_id || '');
     const reservationId = String(authorizationResult.reservation_id || '');
-    const accountIds = Array.isArray(authorizationResult.account_ids)
+    let accountIds = Array.isArray(authorizationResult.account_ids)
       ? authorizationResult.account_ids.map((id: unknown) => String(id)).filter(Boolean)
       : [];
 
-    if (!orderId || !reservationId || accountIds.length !== quantity) {
+    if (!orderId || !reservationId) {
       throw new Error('Product authorization returned incomplete reservation evidence');
     }
+    const supplierQuantity = Number(authorizationResult.supplier_quantity || 0);
+    authorizedOrderContext = {
+      orderId,
+      reservationId,
+      productGroupId: product_group_id,
+      userId: user.id,
+      supplier: supplierQuantity > 0 || existingSupplierOrder,
+    };
+    if (supplierQuantity > 0 && accountIds.length < quantity) {
+      if (!liveAccountFulfillmentEnabled || suppliers.length === 0) throw new Error('Supplier fulfillment is currently paused');
+      const fulfillment = await fulfillSupplierShortfall(supabaseAdmin, { orderId, reservationId, quantity: supplierQuantity, product: productGroup, suppliers, idempotencyKey: idempotency_key, allowPaidSend: Deno.env.get('LIVE_ACCOUNT_FULFILLMENT_ENABLED') === 'true' });
+      if (fulfillment.outcome === 'exhausted') {
+        const { data: cancellation, error: cancelError } = await supabaseAdmin.rpc('cancel_exhausted_supplier_purchase', { p_order_id: orderId, p_reservation_id: reservationId });
+        if (cancelError || !cancellation?.success) throw new Error('Supplier rejection requires reconciliation');
+        authorizedOrderContext = null;
+        throw new Error('Supplier stock is unavailable. Your wallet has not been charged.');
+      }
+      if (fulfillment.outcome !== 'succeeded') {
+        await supabaseAdmin.rpc('block_supplier_product_fallback', { p_product_group_id: product_group_id });
+        return new Response(JSON.stringify({ success: false, order_id: orderId, code: 'SUPPLIER_CONFIRMATION_PENDING', error: 'Your order is awaiting supplier confirmation. Do not place it again; contact support with your order ID.' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      accountIds = fulfillment.accountIds;
+    }
+    if (!Array.isArray(accountIds) || accountIds.length !== quantity) throw new Error('Product authorization returned incomplete inventory evidence');
 
     const { data: purchasedAccounts, error: purchasedAccountsError } = await supabaseAdmin
       .from('individual_accounts')
@@ -829,6 +868,8 @@ serve(async (req) => {
       charged_amount_ngn: totalPrice,
       discount_pct: discountPct,
       discount_code: appliedDiscountCode?.code || null,
+      tally_circle_discount_percent: circleDiscountPercent,
+      tally_circle_discount_amount_ngn: circleDiscountAmount,
     };
 
     const { data: completion, error: completionError } = await supabaseAdmin.rpc(
@@ -905,21 +946,7 @@ serve(async (req) => {
 
     // The completion RPC already marked the reserved accounts sold atomically.
     // Refresh the catalogue projection after the financial transaction.
-    const { count: remainingStock } = await supabaseAdmin
-      .from('individual_accounts')
-      .select('*', { count: 'exact', head: true })
-      .eq('product_group_id', product_group_id)
-      .eq('status', 'available');
-
-    const nextStock = remainingStock || 0;
-    await supabaseAdmin
-      .from('product_groups')
-      .update({
-        stock_count: nextStock,
-        availability_status: nextStock > 0 ? nextStock <= 3 ? 'LOW_STOCK' : 'AVAILABLE' : productHasLiveProvider ? 'UNLIMITED' : 'UNAVAILABLE',
-        is_sellable: nextStock > 0 || productHasLiveProvider,
-      })
-      .eq('id', product_group_id);
+    await supabaseAdmin.rpc('refresh_supplier_product_availability', { p_product_group_id: product_group_id, p_fallback_enabled: productHasLiveProvider });
 
     await Promise.all([
       recordRevenueEvent(supabaseAdmin, {
@@ -987,6 +1014,64 @@ serve(async (req) => {
     const internalMessage = error instanceof Error ? error.message : 'Unknown error';
     const message = publicPurchaseError(internalMessage);
     console.error('Purchase failed:', message);
+
+    // An RPC response can fail after its transaction committed. Find the order
+    // by the authenticated user and request key before deciding whether this
+    // was an ordinary pre-authorization error or an unresolved paid attempt.
+    let pendingOrder: any = null;
+    if (supabaseAdmin && revenueContext.userId && revenueContext.idempotencyKey) {
+      try {
+        const { data, error: lookupError } = await supabaseAdmin.from('orders')
+          .select('id,user_id,product_group_id,status,financial_authorization_status,wallet_reservation_id,account_details')
+          .eq('user_id', revenueContext.userId)
+          .eq('idempotency_key', revenueContext.idempotencyKey)
+          .maybeSingle();
+        if (lookupError) throw lookupError;
+        pendingOrder = data;
+      } catch (lookupError) {
+        console.error('Could not verify purchase state after error:', lookupError);
+      }
+    }
+    const knownOrderId = pendingOrder?.id || authorizedOrderContext?.orderId;
+    const knownReservationId = pendingOrder?.wallet_reservation_id || authorizedOrderContext?.reservationId;
+    if (pendingOrder?.user_id === revenueContext.userId
+      && pendingOrder.status === 'completed'
+      && pendingOrder.financial_authorization_status === 'captured'
+      && knownReservationId) {
+      return new Response(JSON.stringify({
+        success: true,
+        order_id: pendingOrder.id,
+        status: 'completed',
+        idempotency_hit: true,
+        message: 'Purchase completed. Open Order History for delivery details.',
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+    const orderConfirmedClosed = pendingOrder
+      && ['cancelled', 'canceled', 'failed'].includes(String(pendingOrder.status || '').toLowerCase())
+      && pendingOrder.financial_authorization_status === 'released';
+    if (knownOrderId && !orderConfirmedClosed) {
+      const supplierOrder = authorizedOrderContext?.supplier
+        || pendingOrder?.account_details?.financial_authorization === 'supplier_reserve_first';
+      if (supplierOrder && supabaseAdmin) {
+        try {
+          const { error: blockError } = await supabaseAdmin.rpc('block_supplier_product_fallback', {
+            p_product_group_id: pendingOrder?.product_group_id || authorizedOrderContext?.productGroupId,
+          });
+          if (blockError) console.error('Could not block supplier fallback after unresolved order:', blockError);
+        } catch (blockError) {
+          console.error('Could not block supplier fallback after unresolved order:', blockError);
+        }
+      }
+      const pendingMessage = supplierOrder
+        ? 'Your order is awaiting supplier confirmation. Do not place it again; contact support with your order ID.'
+        : 'Your order is awaiting purchase confirmation. Do not place it again; contact support with your order ID.';
+      return new Response(JSON.stringify({
+        success: false,
+        order_id: knownOrderId,
+        code: supplierOrder ? 'SUPPLIER_CONFIRMATION_PENDING' : 'PURCHASE_CONFIRMATION_PENDING',
+        error: pendingMessage,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
 
     if (revenueContext.userId && supabaseAdmin) {
       await recordRevenueEvent(supabaseAdmin, {

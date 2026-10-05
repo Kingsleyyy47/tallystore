@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts'
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -773,7 +774,19 @@ type SmsCatalogItem = {
   pricing_mode: 'auto_markup' | 'manual_margin' | 'override'
 }
 
-async function requireAuth(req: Request) {
+async function requireAuth(req: Request, action: string) {
+  if (req.headers.has('x-tally-api-capability')) {
+    if (!['services', 'orders', 'create_otp', 'check_otp', 'cancel_otp'].includes(action)) {
+      throw new Error('Unauthorized')
+    }
+    const admin = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      { auth: { persistSession: false } },
+    )
+    const user = await authenticateCustomerRequest(req, admin, 'sms', 'smsbus')
+    return { user, admin }
+  }
   const authHeader = req.headers.get('Authorization')
   if (!authHeader) throw new Error('Missing authorization header')
   const anonClient = createClient(
@@ -2037,6 +2050,7 @@ serve(async (req) => {
   }
 
   try {
+    const authRequest = req.clone()
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
     const action = String(body.action || '')
     if (action === 'create_otp' && !smsOtpOrdersEnabled()) {
@@ -2046,7 +2060,7 @@ serve(async (req) => {
         code: 'SMS_OTP_PAUSED',
       }, 503)
     }
-    const { user, admin } = await requireAuth(req)
+    const { user, admin } = await requireAuth(authRequest, action)
 
     switch (action) {
       case 'health':       return await handleHealth()

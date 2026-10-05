@@ -12,6 +12,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { RecommendationProduct } from '@/components/RecommendationCard'
+import { isCustomerSellableProduct } from '@/lib/productAvailability'
+import type { ProductGroup } from '@/lib/supabase'
 
 export type UseRecommendationsOptions = {
   excludeProductId?: string | null
@@ -52,9 +54,10 @@ export function useRecommendations({
 
         let query = supabase
           .from('product_groups')
-          .select('id, name, price, description, category_id, is_active, stock_count, categories(name)')
+          .select('id, name, price, description, category_id, is_active, stock_count, is_sellable, availability_status, categories(name)')
           .eq('is_active', true)
-          .gt('stock_count', 0)
+          .gt('price', 0)
+          .or('stock_count.gt.0,and(is_sellable.eq.true,availability_status.eq.UNLIMITED)')
           .limit(fetchLimit)
 
         if (excludeProductId) query = query.neq('id', excludeProductId)
@@ -66,7 +69,7 @@ export function useRecommendations({
         if (error || !data?.length) return
 
         // Shuffle and take `limit`
-        const shuffled = [...data].sort(() => Math.random() - 0.5).slice(0, limit)
+        const shuffled = data.filter((product) => isCustomerSellableProduct(product as unknown as ProductGroup)).sort(() => Math.random() - 0.5).slice(0, limit)
 
         const recs: RecommendationProduct[] = shuffled.map((g: any) => ({
           id:           g.id,

@@ -414,88 +414,6 @@ function extractStatus(payload: any): string {
   ).toLowerCase()
 }
 
-// Milestone referral reward: the referrer earns a commission only on every
-// 10th deposit made by their referred user (deposit #10, #20, #30, …).
-// On those milestones the referrer gets referral_commission_pct % of that
-// deposit amount (admin-configurable in app_settings, default 5%).
-// Non-blocking: any failure must never affect the top-up that already completed.
-async function creditReferrerForTopup(
-  supabaseAdmin: any,
-  userId: string,
-  amount: number,
-) {
-  try {
-    const { data: buyerProfile } = await supabaseAdmin
-      .from('profiles')
-      .select('referred_by')
-      .eq('id', userId)
-      .single()
-
-    if (!buyerProfile?.referred_by) return
-
-    // Count total completed deposits by this user (current one already inserted)
-    const { count: depositCount } = await supabaseAdmin
-      .from('transactions')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId)
-      .eq('type', 'topup')
-      .eq('status', 'completed')
-
-    // Referral rewards only apply to the first 10 deposits (deposits 1–10).
-    // After that, no more commission — the referrer has had their full reward.
-    const REFERRAL_DEPOSIT_LIMIT = 10
-    if (!depositCount || depositCount > REFERRAL_DEPOSIT_LIMIT) {
-      console.log(`ℹ️ Deposit #${depositCount} is outside referral reward window.`)
-      return
-    }
-
-    console.log(`🎯 Deposit #${depositCount}/${REFERRAL_DEPOSIT_LIMIT} is eligible for referral reward.`)
-
-    const referrerId = buyerProfile.referred_by
-
-    const { data: pctSetting } = await supabaseAdmin
-      .from('app_settings')
-      .select('value')
-      .eq('key', 'referral_commission_pct')
-      .maybeSingle()
-
-    const commissionPct = pctSetting?.value ? parseFloat(pctSetting.value) : 5
-    const commissionAmount = (amount * commissionPct) / 100
-    if (commissionAmount <= 0) return
-
-    await applyWalletTransaction(supabaseAdmin, {
-      userId: referrerId,
-      type: 'referral_credit',
-      amount: commissionAmount,
-      reference: `REF-${userId}-${depositCount}`,
-      description: `Referral commission from deposit #${depositCount}`,
-      idempotencyKey: `referral:${userId}:${depositCount}`,
-      balanceType: 'referral',
-      metadata: {
-        source: 'webhook-pocketfi',
-        referred_user_id: userId,
-        deposit_count: depositCount,
-        order_amount: amount,
-        commission_pct: commissionPct,
-      },
-    })
-
-    await supabaseAdmin
-      .from('referral_earnings')
-      .insert([{
-        referrer_id: referrerId,
-        referred_user_id: userId,
-        order_amount: amount,
-        commission_pct: commissionPct,
-        commission_amount: commissionAmount,
-      }])
-
-    console.log(`✅ Milestone referral reward credited for deposit #${depositCount}.`)
-  } catch (referralError) {
-    console.error('⚠️ Referral top-up reward error (non-blocking):', referralError)
-  }
-}
-
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -778,7 +696,6 @@ serve(async (req) => {
 
     console.log('PocketFi webhook payment processed successfully.')
 
-    await creditReferrerForTopup(supabase, userId, amount)
     await recordRevenueEvent(supabase, {
       eventType: 'PAYMENT_COMPLETED',
       eventId: `wallet_topup:PAYMENT_COMPLETED:pocketfi:${reference}`,

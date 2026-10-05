@@ -9,7 +9,7 @@ const corsHeaders = {
 
 const ALL_SECTIONS = ['products', 'sms', 'social_boost', 'bills_airtime', 'giftcards', 'crypto', 'telegram_stars']
 const DEFAULT_SCOPES = ['catalogue:read', 'orders:create', 'orders:read', 'wallet:read']
-const API_PARTNER_ADMIN_SELECT = 'id, name, contact_email, is_active, allowed_sections, markup_percent, balance_ngn, webhook_url, notes, created_at, updated_at'
+const API_PARTNER_ADMIN_SELECT = 'id, name, contact_email, is_active, allowed_sections, markup_percent, balance_ngn, unlimited_credit, credit_granted_at, owner_reviewed_at, webhook_url, notes, created_at, updated_at'
 const DEFAULT_DAISY_BASE = 'https://daisysms.io/stubs/handler_api.php'
 const DAISY_COUNTRY = 187
 const DEFAULT_SMS_MARGIN_NGN = 700
@@ -21,14 +21,18 @@ const NOWPAYMENTS_API_URL = 'https://api.nowpayments.io/v1'
 const NIGERIAN_NETWORKS = ['MTN', 'GLO', 'AIRTEL', '9MOBILE'] as const
 // Hard pause partner-facing API traffic during the wallet security review.
 // Reopening should be a code change after the wallet/fulfillment gates are verified.
-const PARTNER_API_PAUSED = true
-const PARTNER_ADMIN_MUTATIONS_PAUSED = true
-const PARTNER_ADMIN_MUTATION_ACTIONS = new Set([
+const PARTNER_API_PAUSED = Deno.env.get('PARTNER_API_READ_ENABLED') !== 'true'
+// Independent purchase gate: reopening read-only partner endpoints must not
+// accidentally expose the legacy balance, inventory, or supplier order paths.
+const PARTNER_PURCHASES_PAUSED = true
+const PARTNER_LOCAL_PRODUCTS_ENABLED = Deno.env.get('PARTNER_LOCAL_PRODUCTS_ENABLED') === 'true'
+const OWNER_USER_ID = 'c1396bda-86e2-4dfc-94bb-0d95469d1d36'
+const OWNER_REVIEWED_ADMIN_ACTIONS = new Set([
   'admin_create_partner',
-  'admin_update_partner',
   'admin_generate_key',
   'admin_revoke_key',
   'admin_adjust_balance',
+  'admin_set_unlimited_credit',
 ])
 
 type SupabaseAdmin = any
@@ -234,6 +238,7 @@ async function requirePartner(req: Request, admin: SupabaseAdmin): Promise<Partn
 
   if (error || !key || !key.api_partners) throw new Error('Invalid API key')
   if (key.api_partners.is_active === false) throw new Error('Partner API access is disabled')
+  if (!key.api_partners.owner_reviewed_at) throw new Error('Partner requires owner review')
 
   await admin.from('api_partner_keys').update({ last_used_at: new Date().toISOString() }).eq('id', key.id)
   return { partner: key.api_partners, key }
@@ -1049,7 +1054,7 @@ async function handleCatalogue(admin: SupabaseAdmin, auth: PartnerAuth, body: Re
 
 async function handleBalance(auth: PartnerAuth): Promise<ApiResult> {
   if (!hasScope(auth, 'wallet:read')) throw new Error('Missing wallet:read scope')
-  return { body: { success: true, data: { balance_ngn: Number(auth.partner.balance_ngn || 0), currency: 'NGN' } } }
+  return { body: { success: true, data: { balance_ngn: Number(auth.partner.balance_ngn || 0), unlimited_credit: auth.partner.unlimited_credit === true, currency: 'NGN' } } }
 }
 
 async function createPartnerOrder(admin: SupabaseAdmin, partnerId: string, body: Record<string, unknown>, seed: Record<string, unknown>) {
@@ -1284,89 +1289,24 @@ async function getOrCreatePartnerPocketFiCustomer(admin: SupabaseAdmin, partner:
   return inserted
 }
 
-async function handleProductOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>) {
-  if (!hasSection(auth.partner, 'products')) throw new Error('Products are not enabled for this API key')
-  const productGroupId = cleanText(body.item_id || body.product_group_id, 80)
-  const quantity = Math.max(1, Math.round(Number(body.quantity || 1)))
-  if (!productGroupId) throw new Error('item_id is required')
-
-  const { data: product, error: productError } = await admin
-    .from('product_groups')
-    .select('*, categories(name)')
-    .eq('id', productGroupId)
-    .eq('is_active', true)
-    .single()
-  if (productError || !product) throw new Error('Product not found')
-
-  const availability = String(product.availability_status || '').toUpperCase()
-  if (product.is_sellable === false || ['UNAVAILABLE', 'PAUSED'].includes(availability)) throw new Error('Product is out of stock')
-  const stock = Number(product.stock_count || 0)
-  if (stock < quantity) throw new Error(`Only ${stock} unit(s) available`)
-
-  const price = partnerMarkup(auth.partner, Number(product.price || 0) * quantity)
-  const gatewayMode = isGatewayMode(body)
-  const { order, idempotencyHit } = await getOrCreatePartnerOrder(admin, auth, body, {
-    item_type: 'product',
-    item_id: productGroupId,
-    item_name: product.name,
-    quantity,
-    amount_ngn: price,
-    status: 'pending',
+async function handleSafeProductOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>): Promise<ApiResult> {
+  if (!hasSection(auth.partner, 'products') || !hasScope(auth, 'orders:create')) {
+    throw new Error('Products are not enabled for this API key')
+  }
+  const { data, error } = await admin.rpc('purchase_api_partner_local_product', {
+    p_key_id: auth.key.id,
+    p_product_group_id: cleanText(body.item_id || body.product_group_id, 80),
+    p_quantity: Number(body.quantity),
+    p_expected_amount: Number(body.expected_amount_ngn),
+    p_idempotency_key: cleanText(body.idempotency_key, 160),
+    p_partner_reference: cleanText(body.partner_reference || body.reference, 180),
   })
-  if (idempotencyHit) return { success: true, data: order, idempotency_hit: true }
-
-  const accountIds = await admin
-    .from('individual_accounts')
-    .select('*')
-    .eq('product_group_id', productGroupId)
-    .eq('status', 'available')
-    .limit(quantity)
-  if (accountIds.error || !accountIds.data || accountIds.data.length < quantity) {
-    await updatePartnerOrderAndNotify(admin, auth.partner, order.id, { status: 'failed', error_message: 'Not enough stock available' }, 'partner.order.failed')
-    throw new Error('Not enough stock available')
+  if (error || !data) throw new Error('Partner product purchase is unavailable')
+  if (data.success && !data.idempotency_hit && data.data?.id) {
+    const { data: order } = await admin.from('api_partner_orders').select('*').eq('id', data.data.id).maybeSingle()
+    if (order) await deliverPartnerWebhook(admin, auth.partner, order, 'partner.order.completed').catch(() => undefined)
   }
-
-  const ids = accountIds.data.map((account: any) => account.id)
-  const { data: reserved } = await admin.from('individual_accounts').update({ status: 'reserved' }).in('id', ids).eq('status', 'available').select('*')
-  if (!reserved || reserved.length < quantity) {
-    await updatePartnerOrderAndNotify(admin, auth.partner, order.id, { status: 'failed', error_message: 'Stock was taken before reservation' }, 'partner.order.failed')
-    throw new Error('Stock was taken before reservation')
-  }
-
-  try {
-    const debit = gatewayMode ? null : await debitPartner(admin, auth.partner.id, price)
-    await admin.from('individual_accounts').update({ status: 'sold', sold_at: new Date().toISOString() }).in('id', ids)
-    const { count } = await admin.from('individual_accounts').select('*', { count: 'exact', head: true }).eq('product_group_id', productGroupId).eq('status', 'available')
-    await admin.from('product_groups').update({
-      stock_count: count || 0,
-      availability_status: (count || 0) > 0 ? (count || 0) <= 3 ? 'LOW_STOCK' : 'AVAILABLE' : 'UNAVAILABLE',
-      is_sellable: (count || 0) > 0,
-    }).eq('id', productGroupId)
-    const completed = await updatePartnerOrderAndNotify(admin, auth.partner, order.id, {
-      status: 'completed',
-      completed_at: new Date().toISOString(),
-      response_payload: {
-        product_name: product.name,
-        category: product.categories?.name || null,
-        accounts: reserved.map((account: any) => ({
-          username: account.username,
-          password: account.password,
-          email: account.email,
-          email_password: account.email_password,
-          two_fa_code: account.two_fa_code,
-          recovery_email: account.recovery_email,
-          recovery_email_password: account.recovery_email_password,
-          additional_info: account.additional_info,
-        })),
-        partner_balance_after: debit?.next ?? null,
-      },
-    }, 'partner.order.completed')
-    return { success: true, data: completed }
-  } catch (error) {
-    await admin.from('individual_accounts').update({ status: 'available' }).in('id', ids)
-    await updatePartnerOrderAndNotify(admin, auth.partner, order.id, { status: 'failed', error_message: error instanceof Error ? error.message : 'Product order failed' }, 'partner.order.failed')
-    throw error
-  }
+  return { body: data, status: data.success ? 200 : data.code === 'INSUFFICIENT_PARTNER_BALANCE' ? 402 : 409 }
 }
 
 async function handleSmsOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>) {
@@ -2019,7 +1959,7 @@ async function handleCreateOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: 
   const itemType = cleanText(body.item_type || body.type, 40)
   if (!itemType) throw new Error('item_type is required')
 
-  if (itemType === 'product') return { body: await handleProductOrder(admin, auth, body) }
+  if (itemType === 'product') return await handleSafeProductOrder(admin, auth, body)
   if (itemType === 'sms') return { body: await handleSmsOrder(admin, auth, body) }
   if (itemType === 'social_boost') return { body: await handleSocialOrder(admin, auth, body) }
   if (itemType === 'bills_airtime') return { body: await handleBillsOrder(admin, auth, body) }
@@ -2284,6 +2224,20 @@ async function handleOrderStatus(admin: SupabaseAdmin, auth: PartnerAuth, body: 
   return { body: { success: true, data: order } }
 }
 
+// Historical order_status performs provider polling and may issue a balance
+// refund. During the purchase review, expose only the stored result.
+async function handleStoredOrderStatus(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>): Promise<ApiResult> {
+  if (!hasScope(auth, 'orders:read')) throw new Error('Missing orders:read scope')
+  const id = cleanText(body.order_id, 80)
+  const partnerReference = cleanText(body.partner_reference || body.reference, 180)
+  if (!id && !partnerReference) throw new Error('order_id or partner_reference is required')
+  let query = admin.from('api_partner_orders').select('*').eq('partner_id', auth.partner.id)
+  query = id ? query.eq('id', id) : query.eq('partner_reference', partnerReference)
+  const { data, error } = await query.maybeSingle()
+  if (error || !data) throw new Error('Partner order not found')
+  return { body: { success: true, data: publicPartnerOrder(data) } }
+}
+
 async function handleAdminList(admin: SupabaseAdmin) {
   const { data: partners, error } = await admin
     .from('api_partners')
@@ -2300,17 +2254,18 @@ async function handleAdminList(admin: SupabaseAdmin) {
   return { success: true, data: { partners: safePartners, orders: orders || [], logs: logs || [], webhooks: webhooks || [] } }
 }
 
-async function handleAdminCreate(admin: SupabaseAdmin, body: Record<string, unknown>) {
-  const { data, error } = await admin.from('api_partners').insert({
-    name: cleanText(body.name, 120) || 'API Partner',
-    contact_email: cleanEmail(body.contact_email),
-    is_active: body.is_active !== false,
-    allowed_sections: allowedSections(body.allowed_sections),
-    markup_percent: 0,
-    balance_ngn: 0,
-    webhook_url: cleanUrl(body.webhook_url),
-    notes: null,
-  }).select(API_PARTNER_ADMIN_SELECT).single()
+async function handleAdminCreate(admin: SupabaseAdmin, body: Record<string, unknown>, actorId: string) {
+  if (!Array.isArray(body.allowed_sections) || body.allowed_sections.length === 0) {
+    throw new Error('Choose at least one partner section')
+  }
+  const { data, error } = await admin.rpc('create_api_partner_owner', {
+    p_name: cleanText(body.name, 120),
+    p_webhook_url: cleanUrl(body.webhook_url),
+    p_sections: allowedSections(body.allowed_sections),
+    p_unlimited: body.unlimited_credit === true,
+    p_reason: cleanText(body.credit_reason, 500),
+    p_actor_id: actorId,
+  })
   if (error || !data) throw new Error(`Failed to create partner: ${error?.message}`)
   return { success: true, data }
 }
@@ -2329,54 +2284,61 @@ async function handleAdminUpdate(admin: SupabaseAdmin, body: Record<string, unkn
   return { success: true, data }
 }
 
-async function handleAdminGenerateKey(admin: SupabaseAdmin, body: Record<string, unknown>) {
+async function handleAdminGenerateKey(admin: SupabaseAdmin, body: Record<string, unknown>, actorId: string) {
   const partnerId = cleanText(body.partner_id, 80)
   if (!partnerId) throw new Error('partner_id is required')
   const apiKey = `tly_live_${randomHex(32)}`
   const webhookSecret = `tly_whsec_${randomHex(32)}`
   const keyHash = await sha256Hex(apiKey)
-  const { data, error } = await admin.from('api_partner_keys').insert({
-    partner_id: partnerId,
-    key_name: cleanText(body.key_name, 120) || 'Default key',
-    key_prefix: apiKey.slice(0, 16),
-    key_hash: keyHash,
-    scopes: asStringArray(body.scopes, DEFAULT_SCOPES).filter((scope) => DEFAULT_SCOPES.includes(scope)),
-  }).select('id, partner_id, key_name, key_prefix, scopes, created_at').single()
+  const { data, error } = await admin.rpc('create_api_partner_key_owner', {
+    p_partner_id: partnerId,
+    p_key_name: cleanText(body.key_name, 120) || 'Default key',
+    p_key_prefix: apiKey.slice(0, 16),
+    p_key_hash: keyHash,
+    p_scopes: asStringArray(body.scopes, DEFAULT_SCOPES).filter((scope) => DEFAULT_SCOPES.includes(scope)),
+    p_webhook_secret: webhookSecret,
+    p_actor_id: actorId,
+  })
   if (error || !data) throw new Error(`Failed to create API key: ${error?.message}`)
-  const { error: secretError } = await admin
-    .from('api_partners')
-    .update({ webhook_secret: webhookSecret, updated_at: new Date().toISOString() })
-    .eq('id', partnerId)
-  if (secretError) throw new Error(`Failed to save webhook secret: ${secretError.message}`)
   return { success: true, data: { ...data, api_key: apiKey, webhook_secret: webhookSecret } }
 }
 
-async function handleAdminRevokeKey(admin: SupabaseAdmin, body: Record<string, unknown>) {
+async function handleAdminRevokeKey(admin: SupabaseAdmin, body: Record<string, unknown>, actorId: string) {
   const keyId = cleanText(body.key_id, 80)
   if (!keyId) throw new Error('key_id is required')
-  const { error } = await admin.from('api_partner_keys').update({ revoked_at: new Date().toISOString() }).eq('id', keyId)
+  const { error } = await admin.rpc('revoke_api_partner_key_owner', {
+    p_key_id: keyId, p_actor_id: actorId,
+  })
   if (error) throw new Error(`Failed to revoke key: ${error.message}`)
   return { success: true }
 }
 
-async function handleAdminAdjustBalance(admin: SupabaseAdmin, body: Record<string, unknown>) {
+async function handleAdminAdjustBalance(admin: SupabaseAdmin, body: Record<string, unknown>, actorId: string) {
   const partnerId = cleanText(body.partner_id, 80)
-  const amount = Math.round(Number(body.amount_ngn || 0))
-  if (!partnerId || !Number.isFinite(amount) || amount === 0) throw new Error('partner_id and non-zero amount_ngn are required')
-  const { data: partner, error } = await admin.from('api_partners').select('balance_ngn').eq('id', partnerId).single()
-  if (error || !partner) throw new Error('Partner not found')
-  const next = Number(partner.balance_ngn || 0) + amount
-  if (next < 0) throw new Error('Adjustment would make partner balance negative')
-  const { data, error: updateError } = await admin.from('api_partners').update({ balance_ngn: next, updated_at: new Date().toISOString() }).eq('id', partnerId).select(API_PARTNER_ADMIN_SELECT).single()
-  if (updateError || !data) throw new Error(`Failed to adjust partner balance: ${updateError?.message}`)
-  await admin.from('api_partner_logs').insert({
-    partner_id: partnerId,
-    action: 'admin_adjust_balance',
-    method: 'POST',
-    status_code: 200,
-    success: true,
-    metadata: { amount_ngn: amount, reason: cleanText(body.reason, 500) },
+  const amount = Number(body.amount_ngn)
+  if (!partnerId || !Number.isFinite(amount) || amount === 0 ||
+      !Number.isSafeInteger(Math.round(amount * 100)) ||
+      Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) {
+    throw new Error('partner_id and a valid non-zero amount_ngn are required')
+  }
+  const { data, error } = await admin.rpc('adjust_api_partner_balance_atomic', {
+    p_partner_id: partnerId, p_amount: amount,
+    p_reason: cleanText(body.reason, 500), p_actor_id: actorId,
   })
+  if (error || !data) throw new Error('Failed to adjust partner balance')
+  return { success: true, data }
+}
+
+async function handleAdminSetUnlimitedCredit(admin: SupabaseAdmin, body: Record<string, unknown>, actorId: string) {
+  const partnerId = cleanText(body.partner_id, 80)
+  const reason = cleanText(body.reason, 500)
+  if (!partnerId || typeof body.enabled !== 'boolean' || !reason || reason.length < 10) {
+    throw new Error('partner_id, enabled, and a reason of at least 10 characters are required')
+  }
+  const { data, error } = await admin.rpc('set_api_partner_unlimited_credit', {
+    p_partner_id: partnerId, p_enabled: body.enabled, p_actor_id: actorId, p_reason: reason,
+  })
+  if (error || !data) throw new Error('Failed to set partner credit')
   return { success: true, data }
 }
 
@@ -2401,25 +2363,35 @@ serve(async (req) => {
       }, 503)
     }
 
+    if (PARTNER_PURCHASES_PAUSED && (
+      action === 'create_checkout' || action === 'internal_confirm_checkout' ||
+      (action === 'create_order' && (!PARTNER_LOCAL_PRODUCTS_ENABLED ||
+        String(body.item_type || body.type || '') !== 'product'))
+    )) {
+      return json({ success: false, code: 'PARTNER_PURCHASES_PAUSED', error: 'Partner purchases are temporarily unavailable.' }, 503)
+    }
+
     if (action === 'internal_confirm_checkout') {
       return json(await handleInternalConfirmCheckout(admin, req, body))
     }
 
     if (action.startsWith('admin_')) {
-      await requireAdmin(req, admin)
+      const adminUser = await requireAdmin(req, admin)
       if (action === 'admin_list_partners') return json(await handleAdminList(admin))
-      if (PARTNER_ADMIN_MUTATIONS_PAUSED && PARTNER_ADMIN_MUTATION_ACTIONS.has(action)) {
+      if (action === 'admin_update_partner' ||
+        (OWNER_REVIEWED_ADMIN_ACTIONS.has(action) && adminUser.id !== OWNER_USER_ID)) {
         return json({
           success: false,
-          error: 'Partner API management is temporarily read-only while TallyStore completes a wallet security review.',
-          code: 'PARTNER_API_ADMIN_PAUSED',
-        }, 503)
+          error: action === 'admin_update_partner' ? 'Partner edits and activation remain paused.' : 'Owner access required.',
+          code: action === 'admin_update_partner' ? 'PARTNER_API_ADMIN_PAUSED' : 'PARTNER_OWNER_REQUIRED',
+        }, action === 'admin_update_partner' ? 503 : 403)
       }
-      if (action === 'admin_create_partner') return json(await handleAdminCreate(admin, body))
+      if (action === 'admin_create_partner') return json(await handleAdminCreate(admin, body, adminUser.id))
       if (action === 'admin_update_partner') return json(await handleAdminUpdate(admin, body))
-      if (action === 'admin_generate_key') return json(await handleAdminGenerateKey(admin, body))
-      if (action === 'admin_revoke_key') return json(await handleAdminRevokeKey(admin, body))
-      if (action === 'admin_adjust_balance') return json(await handleAdminAdjustBalance(admin, body))
+      if (action === 'admin_generate_key') return json(await handleAdminGenerateKey(admin, body, adminUser.id))
+      if (action === 'admin_revoke_key') return json(await handleAdminRevokeKey(admin, body, adminUser.id))
+      if (action === 'admin_adjust_balance') return json(await handleAdminAdjustBalance(admin, body, adminUser.id))
+      if (action === 'admin_set_unlimited_credit') return json(await handleAdminSetUnlimitedCredit(admin, body, adminUser.id))
       throw new Error('Unknown admin action')
     }
 
@@ -2430,7 +2402,9 @@ serve(async (req) => {
     else if (action === 'balance') result = await handleBalance(auth)
     else if (action === 'create_order') result = await handleCreateOrder(admin, auth, body)
     else if (action === 'create_checkout') result = await handleCreateCheckout(admin, auth, body)
-    else if (action === 'order_status') result = await handleOrderStatus(admin, auth, body)
+    else if (action === 'order_status') result = PARTNER_PURCHASES_PAUSED
+      ? await handleStoredOrderStatus(admin, auth, body)
+      : await handleOrderStatus(admin, auth, body)
     else throw new Error('Unknown partner API action')
 
     await writeLog(admin, req, auth, action, result.status || 200, true)

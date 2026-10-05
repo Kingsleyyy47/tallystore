@@ -10,6 +10,14 @@ verify_jwt = false
 [functions.partner-api]
 verify_jwt = false
 
+# Customer API authenticates its own hash-only section keys and user sessions.
+[functions.customer-api]
+verify_jwt = false
+
+# Owner JWT or SUPPLIER_CATALOG_SECRET is verified inside this supplier maintenance route.
+[functions.supplier-catalog-maintenance]
+verify_jwt = false
+
 [functions.record-site-visit]
 verify_jwt = false
 
