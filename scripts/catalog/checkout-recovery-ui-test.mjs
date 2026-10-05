@@ -52,11 +52,13 @@ const mocks = {
       window.__checkoutFixture.paidCalls.push({ key: args.at(-1), stored: localStorage.getItem(window.__checkoutFixture.storageKey) });
       if (mode === 'visual-single' || mode === 'visual-bulk') return { success: true, order_id: 'synthetic-visual-order', account_details: { accounts: Array.from({ length: mode === 'visual-bulk' ? 3 : 1 }, (_, i) => ({
         username: 'synthetic-long-login-' + (i + 1) + '-'.repeat(72) + '@example.invalid',
-        password: 'synthetic-password-' + (i + 1) + '-'.repeat(54),
+        password: '  synthetic-password-' + (i + 1) + '-'.repeat(54) + '  ',
         two_fa_code: 'SYNTHETIC-2FA-' + (i + 1),
         email: 'synthetic-mail-' + (i + 1) + '@example.invalid',
         email_password: 'synthetic-mail-password-' + (i + 1),
-        additional_info: 'Synthetic setup note for account ' + (i + 1) + '.\\nKeep this line and the next line visible.',
+        recovery_email: 'recovery-' + (i + 1) + '@example.invalid',
+        recovery_email_password: 'recovery-pass-' + (i + 1),
+        additional_info: '  Synthetic setup note for account ' + (i + 1) + '.\\nKeep this line and the next line visible.  ',
       })) } };
       if (mode === 'success') return { success: true, order_id: 'synthetic-order', account_details: { accounts: [
         { username: 'synthetic-user', password: 'synthetic-password' },
@@ -129,6 +131,7 @@ try {
   const context = await browser.newContext()
   context.setDefaultTimeout(30000)
   const origin = `http://127.0.0.1:${port}`
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin })
   await context.route('**/*', route => route.request().url().startsWith(origin) ? route.continue() : route.abort())
   const page = await context.newPage()
   const errors = []
@@ -227,32 +230,71 @@ try {
   await page.getByRole('button', { name: 'Buy Now' }).click()
   const dialog = page.getByTestId('credentials-dialog')
   await dialog.waitFor()
-  const region = page.getByTestId('credential-scroll-region')
+  const waitForCenteredModal = async () => page.waitForFunction(() => {
+    const element = document.querySelector('[data-testid="credentials-dialog"]')
+    if (!element) return false
+    const rect = element.getBoundingClientRect()
+    return Math.abs(rect.y - (innerHeight - rect.height) / 2) < 3
+  }, null, { timeout: 10000 })
+  await waitForCenteredModal()
   const shortMetrics = await page.evaluate(() => {
     const modal = document.querySelector('[data-testid="credentials-dialog"]')
-    const scroll = document.querySelector('[data-testid="credential-scroll-region"]')
     const rect = modal.getBoundingClientRect()
-    const value = scroll.querySelector('section span.select-text')
+    const value = modal.querySelector('[data-testid="credential-value"]')
+    const style = getComputedStyle(value)
     return { x: rect.x, width: rect.width, y: rect.y, bottom: rect.bottom,
-      scrollHeight: scroll.scrollHeight, clientHeight: scroll.clientHeight,
       valueWidth: value.clientWidth, valueScrollWidth: value.scrollWidth,
+      textOverflow: style.textOverflow, whiteSpace: style.whiteSpace, overflowX: style.overflowX,
+      modalOverflowY: getComputedStyle(modal).overflowY,
+      modalScrollHeight: modal.scrollHeight, modalClientHeight: modal.clientHeight,
+      scrollableChildren: Array.from(modal.querySelectorAll('*')).filter(element => {
+        const overflow = getComputedStyle(element).overflowY
+        return (overflow === 'auto' || overflow === 'scroll') && element.scrollHeight > element.clientHeight + 1
+      }).length,
       viewportWidth: innerWidth, viewportHeight: innerHeight }
   })
-  assert.ok(shortMetrics.width <= 420 && shortMetrics.x >= 0 && shortMetrics.bottom <= 560,
+  assert.ok(shortMetrics.width <= 340 && shortMetrics.x >= 0 && shortMetrics.bottom <= 560,
     `Short-screen modal must fit horizontally and vertically: ${JSON.stringify(shortMetrics)}`)
-  assert.ok(shortMetrics.bottom-shortMetrics.y <= 560*0.82+1,'Credential modal must remain compact on short screens')
+  assert.ok(shortMetrics.bottom-shortMetrics.y <= 420,'Credential modal must remain compact on short screens')
   assert.ok(Math.abs(shortMetrics.y - (560 - (shortMetrics.bottom - shortMetrics.y)) / 2) < 5,
     'Short-screen modal should be centered')
-  assert.ok(shortMetrics.scrollHeight > shortMetrics.clientHeight,
-    'Short-screen credentials need their own scroll region')
-  assert.ok(shortMetrics.valueScrollWidth <= shortMetrics.valueWidth + 2,
-    'Long credential must wrap instead of being clipped')
+  assert.equal(await page.getByTestId('credential-scroll-region').count(), 0, 'Modal must not use an internal scroll panel')
+  assert.equal(shortMetrics.textOverflow, 'ellipsis')
+  assert.equal(shortMetrics.whiteSpace, 'nowrap')
+  assert.ok(shortMetrics.modalScrollHeight <= shortMetrics.modalClientHeight + 1,
+    'Modal must not hide vertically overflowing content')
+  assert.equal(shortMetrics.scrollableChildren, 0, 'No inner pane should need scrolling')
+  process.stdout.write(`Credential compact metrics: ${JSON.stringify(shortMetrics)}\n`)
+  assert.ok(shortMetrics.valueScrollWidth > shortMetrics.valueWidth + 2, 'Long value should be visually ellipsized')
   assert.equal(await page.getByRole('button', { name: 'Copy USERNAME / ID for account 1' }).count(), 1)
-  const headerY = await dialog.getByText('Account credentials').evaluate(element => element.getBoundingClientRect().y)
-  const downloadY = await dialog.getByRole('button', { name: 'Download TXT' }).evaluate(element => element.getBoundingClientRect().y)
-  await region.evaluate(element => { element.scrollTop = element.scrollHeight })
-  assert.equal(await dialog.getByText('Account credentials').evaluate(element => element.getBoundingClientRect().y), headerY)
-  assert.equal(await dialog.getByRole('button', { name: 'Download TXT' }).evaluate(element => element.getBoundingClientRect().y), downloadY)
+  await page.evaluate(() => {
+    window.__clipboardWrites = []
+    const originalWriteText = navigator.clipboard.writeText.bind(navigator.clipboard)
+    navigator.clipboard.writeText = async value => {
+      window.__clipboardWrites.push(value)
+      return originalWriteText(value)
+    }
+  })
+  const fullLongLogin = 'synthetic-long-login-1' + '-'.repeat(72) + '@example.invalid'
+  assert.equal(await page.getByTestId('credential-value').first().textContent(), fullLongLogin,
+    'Ellipsis must be CSS only; the value in the DOM stays complete')
+  await page.getByRole('button', { name: 'Copy USERNAME / ID for account 1' }).click()
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), fullLongLogin,
+    'Copy must include the full long login, not its visual ellipsis')
+  const fullPassword = '  synthetic-password-1' + '-'.repeat(54) + '  '
+  await page.getByRole('button', { name: 'Copy PASSWORD for account 1' }).click()
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), fullPassword,
+    'Copy must preserve leading and trailing spaces')
+  await page.getByRole('button', { name: 'Next fields' }).click()
+  await page.getByRole('button', { name: 'Next fields' }).click()
+  const fullExtra = '  Synthetic setup note for account 1.\nKeep this line and the next line visible.  '
+  await page.getByRole('button', { name: 'Copy EXTRA for account 1' }).click()
+  assert.equal(await page.evaluate(() => window.__clipboardWrites.at(-1)), fullExtra,
+    'Copy must pass the exact original multiline note to clipboard.writeText')
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), fullExtra.replace(/\n/g, '\r\n'),
+    'Windows clipboard may normalize LF to CRLF, but must retain all lines and surrounding spaces')
+  await page.getByRole('button', { name: 'Previous fields' }).click()
+  await page.getByRole('button', { name: 'Previous fields' }).click()
   await page.screenshot({ path: join(visualDir, 'checkout-credentials-390x560.png') })
 
   await page.evaluate(key => { localStorage.removeItem(key); sessionStorage.removeItem(key) }, storageKey)
@@ -262,11 +304,41 @@ try {
   await page.getByRole('button', { name: 'Increase quantity' }).click()
   await page.getByRole('button', { name: 'Buy Now' }).click()
   await dialog.waitFor()
-  assert.equal(await dialog.getByRole('region', { name: /^Account \d$/ }).count(), 3)
-  assert.equal(await dialog.getByRole('button', { name: /Copy PASSWORD for account/ }).count(), 3)
-  assert.equal(await region.evaluate(element => element.scrollHeight > element.clientHeight), true)
-  await region.evaluate(element => { element.scrollTop = element.scrollHeight })
+  await waitForCenteredModal()
+  assert.equal(await dialog.getByRole('region', { name: /^Account \d$/ }).count(), 1,
+    'Only one account should be visible at a time')
+  assert.equal(await dialog.getByRole('button', { name: /Copy PASSWORD for account/ }).count(), 1)
+  const bulkBounds = await dialog.boundingBox()
+  assert.ok(bulkBounds && bulkBounds.x >= 0 && bulkBounds.x + bulkBounds.width <= 390
+    && bulkBounds.y >= 0 && bulkBounds.y + bulkBounds.height <= 700
+    && bulkBounds.height <= 420, `Bulk credentials must fit compactly: ${JSON.stringify(bulkBounds)}`)
   await page.screenshot({ path: join(visualDir, 'checkout-credentials-bulk-390x700.png') })
+  for (let account = 1; account <= 3; account++) {
+    await dialog.getByText(`Account ${account} of 3`).waitFor()
+    const seen = []
+    for (let fieldPage = 0; fieldPage < 3; fieldPage++) {
+      seen.push(...await dialog.locator('button[aria-label^="Copy "]').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))))
+      if (fieldPage < 2) await dialog.getByRole('button', { name: 'Next fields' }).click()
+    }
+    assert.equal(seen.length, 8, `All eight credential fields must be reachable for account ${account}`)
+    assert.equal(await dialog.getByRole('button', { name: `Copy EXTRA for account ${account}` }).count(), 1)
+    if (account < 3) {
+      await dialog.getByRole('button', { name: 'Next account' }).click()
+      await dialog.getByText('Fields 1–3 of 8').waitFor()
+    }
+  }
+  const downloadPromise = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'Download all as TXT' }).click()
+  const download = await downloadPromise
+  const downloadedText = await readFile(await download.path(), 'utf8')
+  for (let account = 1; account <= 3; account++) {
+    assert.ok(downloadedText.includes(`Account ${account}`), `TXT must contain account ${account}`)
+    assert.ok(downloadedText.includes(`PASSWORD:   synthetic-password-${account}${'-'.repeat(54)}  `),
+      `TXT must preserve account ${account}'s full password`)
+    assert.ok(downloadedText.includes(`EXTRA:   Synthetic setup note for account ${account}.\nKeep this line and the next line visible.  `),
+      `TXT must preserve account ${account}'s multiline extra text`)
+  }
+  await page.screenshot({ path: join(visualDir, 'checkout-credentials-bulk-last-390x700.png') })
   assert.deepEqual(errors, [], 'Browser component raised an error')
   process.stdout.write('Checkout recovery browser tests passed (pre-dispatch persistence, reload/unknown/missing, completed/released, credentials before wallet refresh).\n')
 } finally {

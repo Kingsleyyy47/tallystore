@@ -47,10 +47,11 @@ const credentialFields: Array<{
   { key: 'recovery_email_password', label: 'RECOVERY PASS', labelClassName: 'text-amber-400' },
   { key: 'additional_info', label: 'EXTRA', labelClassName: 'text-cyan-300' },
 ]
+const CREDENTIAL_FIELDS_PER_PAGE = 3
 
 function credentialValue(value: unknown) {
   if (value == null) return ''
-  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'string') return value
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
   return JSON.stringify(value, null, 2)
 }
@@ -79,7 +80,7 @@ function normalizePurchasedCredentials(
     recovery_email: credentialValue(item.recovery_email),
     recovery_email_password: credentialValue(item.recovery_email_password),
     additional_info: credentialValue(item.additional_info),
-  })).filter((item) => credentialFields.some((field) => credentialValue(item[field.key])))
+  })).filter((item) => credentialFields.some((field) => credentialValue(item[field.key]).trim()))
 }
 
 export default function CheckoutPage() {
@@ -118,6 +119,11 @@ function CheckoutAccount() {
   const [paymentDetailsOpen, setPaymentDetailsOpen] = useState(true)
   const [credentialsModalOpen, setCredentialsModalOpen] = useState(false)
   const [purchasedCredentials, setPurchasedCredentials] = useState<PurchasedAccountCredentials[]>([])
+  const [credentialAccountIndex, setCredentialAccountIndex] = useState(0)
+  const [credentialFieldPage, setCredentialFieldPage] = useState(0)
+  useEffect(() => {
+    if (credentialsModalOpen) { setCredentialAccountIndex(0); setCredentialFieldPage(0) }
+  }, [credentialsModalOpen, purchasedCredentials])
   const [completedPurchase, setCompletedPurchase] = useState<{
     orderId?: string
     productName?: string
@@ -345,7 +351,7 @@ function CheckoutAccount() {
       lines.push(`Account ${index + 1}`)
       credentialFields.forEach((field) => {
         const value = credentialValue(credential[field.key])
-        if (value) lines.push(`${checkoutCredentialLabel(field, credential, completedPurchase?.productName || productGroup?.name)}: ${value}`)
+        if (value.trim()) lines.push(`${checkoutCredentialLabel(field, credential, completedPurchase?.productName || productGroup?.name)}: ${value}`)
       })
       lines.push('')
     })
@@ -720,6 +726,15 @@ function CheckoutAccount() {
   const canAfford = walletBalanceReady && circlePriceReady && walletBalance >= totalAmount
   const insufficientFunds = walletBalanceReady && circlePriceReady && walletBalance < totalAmount
   const balanceAfter = walletBalance - totalAmount
+  const activeCredentialIndex = Math.min(credentialAccountIndex, Math.max(0, purchasedCredentials.length - 1))
+  const activeCredential = purchasedCredentials[activeCredentialIndex]
+  const activeCredentialFields = activeCredential ? credentialFields
+    .map((field) => ({ ...field, label: checkoutCredentialLabel(field, activeCredential, completedPurchase?.productName || productGroup.name), value: credentialValue(activeCredential[field.key]) }))
+    .filter((field) => field.value.trim()) : []
+  const credentialPageCount = Math.max(1, Math.ceil(activeCredentialFields.length / CREDENTIAL_FIELDS_PER_PAGE))
+  const activeCredentialPage = Math.min(credentialFieldPage, credentialPageCount - 1)
+  const displayedCredentialFields = activeCredentialFields.slice(activeCredentialPage * CREDENTIAL_FIELDS_PER_PAGE,
+    (activeCredentialPage + 1) * CREDENTIAL_FIELDS_PER_PAGE)
 
   return (
     <div className="min-h-[100dvh] bg-background">
@@ -985,63 +1000,57 @@ function CheckoutAccount() {
       </main>
 
       <Dialog open={credentialsModalOpen} onOpenChange={setCredentialsModalOpen}>
-        <DialogContent data-testid="credentials-dialog" className="flex max-h-[min(82dvh,560px)] w-[calc(100vw-1.5rem)] max-w-[420px] flex-col gap-0 overflow-hidden rounded-2xl border-slate-700/70 bg-[#050818] p-0 text-white shadow-2xl">
-          <DialogHeader className="shrink-0 border-b border-white/10 px-4 py-3 pr-12 text-left">
-            <div className="min-w-0">
-              <DialogTitle className="text-lg font-black leading-tight text-white">Account credentials</DialogTitle>
-              <DialogDescription className="mt-0.5 text-xs leading-5 text-slate-300">
-                {purchasedCredentials.length} {purchasedCredentials.length === 1 ? 'account' : 'accounts'} delivered. Copy a field or save the TXT file.
-              </DialogDescription>
-            </div>
+        <DialogContent data-testid="credentials-dialog" className="w-[calc(100vw-1.5rem)] max-w-[340px] gap-0 overflow-hidden rounded-2xl border-slate-700/70 bg-[#050818] p-0 text-white shadow-2xl">
+          <DialogHeader className="border-b border-white/10 px-3 py-2.5 pr-10 text-left">
+            <DialogTitle className="text-base font-black leading-tight text-white">Account credentials</DialogTitle>
+            <DialogDescription className="mt-0.5 text-[11px] text-slate-300">Copy the full value or download every account.</DialogDescription>
           </DialogHeader>
 
-          <div data-testid="credential-scroll-region" className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-3 sm:px-4">
-            {purchasedCredentials.length === 0 ? (
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-5 text-sm text-slate-300">
-                The purchase completed, but no credentials were returned to this screen. Open Order History to view the saved order credentials.
-              </div>
-            ) : (
-              purchasedCredentials.map((credential, index) => {
-                const visibleFields = credentialFields
-                  .map((field) => ({ ...field, label: checkoutCredentialLabel(field, credential, completedPurchase?.productName || productGroup.name), value: credentialValue(credential[field.key]) }))
-                  .filter((field) => field.value)
-
-                return (
-                  <section key={`${credential.username || 'account'}-${index}`} aria-label={`Account ${index + 1}`} className="rounded-xl border border-slate-700/80 bg-[#0b1028] p-3">
-                    <div className="mb-2 flex items-center gap-2">
-                      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-violet-500/20 text-xs font-black text-violet-200">{index + 1}</span>
-                      <h4 className="text-sm font-bold text-white">Account {index + 1}</h4>
+          {purchasedCredentials.length === 0 ? (
+            <p className="px-3 py-4 text-xs text-slate-300">The purchase completed, but no credentials were returned here. Open Order History to view the saved credentials.</p>
+          ) : (
+            <div className="min-w-0 space-y-2 px-3 py-2.5">
+              {purchasedCredentials.length > 1 ? <div className="flex items-center justify-between gap-2 text-xs" aria-label="Account navigation">
+                <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-slate-200 hover:bg-white/10 hover:text-white"
+                  disabled={activeCredentialIndex === 0} onClick={() => { setCredentialAccountIndex(activeCredentialIndex - 1); setCredentialFieldPage(0) }}
+                  aria-label="Previous account">Previous</Button>
+                <strong className="text-center text-violet-200">Account {activeCredentialIndex + 1} of {purchasedCredentials.length}</strong>
+                <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-slate-200 hover:bg-white/10 hover:text-white"
+                  disabled={activeCredentialIndex >= purchasedCredentials.length - 1}
+                  onClick={() => { setCredentialAccountIndex(activeCredentialIndex + 1); setCredentialFieldPage(0) }}
+                  aria-label="Next account">Next</Button>
+              </div> : <p className="text-center text-xs font-bold text-violet-200">Account 1</p>}
+              <section aria-label={`Account ${activeCredentialIndex + 1}`} className="min-w-0 space-y-1.5 rounded-xl border border-slate-700/80 bg-[#0b1028] p-2">
+                {displayedCredentialFields.map((field) => (
+                  <div key={field.key} className="flex min-w-0 items-center gap-1.5 rounded-lg bg-white/[0.06] px-2 py-1">
+                    <div className="min-w-0 flex-1">
+                      <span className={`block truncate text-[10px] font-bold uppercase tracking-wide ${field.labelClassName}`}>{field.label}</span>
+                      <span data-testid="credential-value" className="block max-w-full truncate whitespace-nowrap font-mono text-xs leading-4 text-slate-100">{field.value}</span>
                     </div>
-
-                    <div className="space-y-2">
-                      {visibleFields.map((field) => (
-                        <div key={field.key} className="flex min-w-0 items-start gap-2 rounded-lg bg-white/[0.06] px-3 py-2">
-                          <div className="min-w-0 flex-1">
-                            <span className={`block text-[11px] font-bold uppercase tracking-wide ${field.labelClassName}`}>{field.label}</span>
-                            <span className="mt-0.5 block select-text whitespace-pre-wrap break-all font-mono text-sm leading-5 text-slate-100 [overflow-wrap:anywhere]">{field.value}</span>
-                          </div>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => copyCredential(field.value, field.label)}
-                            className="h-9 w-9 shrink-0 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white"
-                            aria-label={`Copy ${field.label} for account ${index + 1}`}
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                )
-              })
-            )}
-          </div>
-          <div className="shrink-0 border-t border-white/10 bg-[#050818] px-3 py-3 sm:px-4">
+                    <Button type="button" variant="ghost" size="icon"
+                      onClick={() => copyCredential(field.value, field.label)}
+                      className="h-8 w-8 shrink-0 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white"
+                      aria-label={`Copy ${field.label} for account ${activeCredentialIndex + 1}`}>
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </section>
+              {credentialPageCount > 1 && <div className="flex items-center justify-between gap-2 text-xs" aria-label="Credential fields navigation">
+                <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-slate-200 hover:bg-white/10 hover:text-white"
+                  disabled={activeCredentialPage === 0} onClick={() => setCredentialFieldPage(activeCredentialPage - 1)}
+                  aria-label="Previous fields">Previous</Button>
+                <span className="text-center text-slate-300">Fields {activeCredentialPage * CREDENTIAL_FIELDS_PER_PAGE + 1}–{Math.min((activeCredentialPage + 1) * CREDENTIAL_FIELDS_PER_PAGE, activeCredentialFields.length)} of {activeCredentialFields.length}</span>
+                <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-slate-200 hover:bg-white/10 hover:text-white"
+                  disabled={activeCredentialPage >= credentialPageCount - 1} onClick={() => setCredentialFieldPage(activeCredentialPage + 1)}
+                  aria-label="Next fields">Next</Button>
+              </div>}
+            </div>
+          )}
+          <div className="border-t border-white/10 bg-[#050818] px-3 py-2.5">
             <Button type="button" onClick={downloadCredentialsTxt} disabled={!purchasedCredentials.length}
-              className="h-10 w-full rounded-xl bg-violet-500 text-sm font-bold text-white hover:bg-violet-400 disabled:opacity-50">
-              <Download className="mr-2 h-4 w-4" />Download TXT
+              className="h-9 w-full rounded-xl bg-violet-500 text-xs font-bold text-white hover:bg-violet-400 disabled:opacity-50">
+              <Download className="mr-2 h-3.5 w-3.5" />Download all as TXT
             </Button>
           </div>
         </DialogContent>

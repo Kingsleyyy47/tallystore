@@ -1148,7 +1148,7 @@ function OrderHistoryAccount() {
                           <div className="min-w-0">
                             <p className="font-bold text-muted-foreground">Preview</p>
                             <p className="truncate font-black text-slate-950 dark:text-white">
-                              {credentialPreview ? (previewName.startsWith('@') ? previewName : `@${previewName}`) : previewName}
+                              {previewName}
                             </p>
                           </div>
                           <Badge variant="outline" className="shrink-0 text-[10px]">

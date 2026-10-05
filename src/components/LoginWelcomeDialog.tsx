@@ -32,7 +32,7 @@ function TelegramIcon({ className }: { className?: string }) {
 export default function LoginWelcomeDialog() {
   const [open, setOpen] = useState(false)
   const { user, loading, roleLookupError, isAdmin, isStaff } = useAuth()
-  const settings = useSupportSettings()
+  const settings = useSupportSettings(user?.id)
   const userId = user?.id
 
   useEffect(() => {
