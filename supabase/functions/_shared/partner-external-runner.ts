@@ -90,10 +90,32 @@ function normalizedOutcome(value: unknown, section: PartnerExternalSection): Par
     giftcards: { source: 'bitrefill', statuses: ['processing', 'completed'] },
     telegram_stars: { source: 'istar', statuses: ['processing', 'completed'] },
   }
+  const allowedPayload: Record<PartnerExternalSection, string[]> = {
+    sms: ['service_name', 'phone_number', 'raw_phone_number', 'provider_order_id'],
+    social_boost: ['provider_order_id'],
+    bills_airtime: ['provider_reference', 'provider_status', 'transaction_type'],
+    giftcards: ['invoice_id', 'provider_order_id', 'provider_status'],
+    telegram_stars: ['provider_order_id', 'provider_status', 'telegram_type'],
+  }
   try {
-    const id = boundedText(outcome.id, 200, true)!
+    const id = boundedText(outcome.id, 160, true)!
+    if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,159}$/.test(id)) return { kind: 'unknown' }
     if (outcome.source !== allowed[section].source || !allowed[section].statuses.includes(String(outcome.status))) return { kind: 'unknown' }
-    return { kind: 'accepted', source: outcome.source as 'daisy', id, status: outcome.status as 'active', payload: publicPayload(outcome.payload) }
+    const cleaned = publicPayload(outcome.payload)
+    const payload: Record<string, unknown> = {}
+    for (const field of allowedPayload[section]) {
+      const value = cleaned[field]
+      if (value === undefined) continue
+      if (value === null && section === 'giftcards' && field === 'provider_order_id') { payload[field] = null; continue }
+      if (typeof value !== 'string' || value.length > 512) return { kind: 'unknown' }
+      // eslint-disable-next-line no-control-regex -- Public provider fields cannot carry control bytes.
+      if (/[\u0000-\u001f\u007f]/.test(value)) return { kind: 'unknown' }
+      payload[field] = value
+    }
+    const identityField = section === 'bills_airtime' ? 'provider_reference' : section === 'giftcards' ? 'invoice_id' : 'provider_order_id'
+    if (payload[identityField] !== undefined && payload[identityField] !== id) return { kind: 'unknown' }
+    if (new TextEncoder().encode(JSON.stringify(payload)).length > 4096) return { kind: 'unknown' }
+    return { kind: 'accepted', source: outcome.source as 'daisy', id, status: outcome.status as 'active', payload }
   } catch { return { kind: 'unknown' } }
 }
 function safeSummary(data: unknown, plan: PartnerPurchasePlan, orderId?: string, pending = false) {
@@ -118,7 +140,9 @@ export async function executePartnerExternalPurchase(
 ): Promise<{ body: Record<string, unknown>; status?: number }> {
   let args: Record<string, unknown>
   try {
-    if (!body || typeof body !== 'object' || Array.isArray(body) || !sections.has(plan.section) || !uuid.test(auth?.key?.id ?? '') || typeof plan.dispatch !== 'function') return failure('INVALID_REQUEST')
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !sections.has(plan.section)
+      || !uuid.test(auth?.key?.id ?? '') || !uuid.test(auth?.partner?.id ?? '')
+      || typeof plan.dispatch !== 'function') return failure('INVALID_REQUEST')
     if (Object.keys(body).some(key => overrides.has(keyName(key)) || keyName(key).startsWith('force') || /skip.*(?:balance|debit|fund)/.test(keyName(key)))
       || String(body.payment_mode ?? '').trim().toLowerCase() === 'gateway') return failure('INVALID_REQUEST')
     if (!Number.isInteger(plan.quantity) || plan.quantity < 1 || plan.quantity > 1000000 || (['sms', 'bills_airtime'].includes(plan.section) && plan.quantity !== 1) || (plan.section === 'giftcards' && plan.quantity > 20)) return failure('INVALID_REQUEST')
@@ -184,6 +208,21 @@ export async function executePartnerExternalPurchase(
     p_public_payload: outcome.kind === 'accepted' ? outcome.payload : {},
     p_status: outcome.kind === 'accepted' ? outcome.status : outcome.kind === 'rejected' ? 'failed' : 'processing',
     p_reason_code: outcome.kind === 'rejected' ? outcome.reason : null,
+  }
+  try {
+    const receipt = await admin.rpc('record_api_partner_dispatch_receipt', {
+      ...outcomeArgs, p_key_id: auth.key.id, p_partner_id: auth.partner.id,
+      p_request_fingerprint: args.p_request_fingerprint,
+      p_amount_ngn: plan.amountNgn,
+    })
+    if (receipt.error || receipt.data?.success !== true) {
+      return { body: { success: false, code: 'PURCHASE_OUTCOME_UNKNOWN',
+        data: safeSummary(null, plan, orderId, true) }, status: 202 }
+    }
+  } catch {
+    // A paid send is never repeated or refunded because its receipt failed.
+    return { body: { success: false, code: 'PURCHASE_OUTCOME_UNKNOWN',
+      data: safeSummary(null, plan, orderId, true) }, status: 202 }
   }
   try {
     const recorded = await admin.rpc('record_api_partner_external_outcome', outcomeArgs)

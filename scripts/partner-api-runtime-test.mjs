@@ -24,9 +24,10 @@ const purchase = { action: 'create_order', item_type: 'sms', item_id: 'ds', quan
 
 async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {},
   key = 'tly_live_TEST_ONLY_KEY', admission = { ok: true, key_id: keyId, partner_id: partnerId },
-  rpcFailure = '', claimed = true, actor = owner, adminAccount = false, products = null } = {}) {
+  rpcFailure = '', claimed = true, actor = owner, adminAccount = false, signedIn = adminAccount,
+  staffAccount = false, suspended = false, products = null } = {}) {
   let handler
-  const calls = { rpc: [], tables: [], dispatch: 0, plans: 0, logs: [] }
+  const calls = { rpc: [], tables: [], dispatch: 0, plans: 0, logs: [], reconciliation: [] }
   const partner = { id: partnerId, is_active: true, owner_reviewed_at: '2026-10-05',
     allowed_sections: ['sms', 'products'], balance_ngn: 500, unlimited_credit: false, markup_percent: 10 }
   const db = {
@@ -34,7 +35,7 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
       calls.tables.push(table)
       const q = { select() { return this }, eq() { return this }, is() { return this },
         order() { return this }, limit() { return this },
-        async single() { return { data: table === 'profiles' ? { is_admin: adminAccount, account_suspended: false } : null, error: null } },
+        async single() { return { data: table === 'profiles' ? { is_admin: adminAccount, is_staff: staffAccount, account_suspended: suspended } : null, error: null } },
         async maybeSingle() { return { data: table === 'api_partner_keys' ? {
           id: keyId, partner_id: partnerId, scopes, api_partners: partner,
         } : null, error: null } },
@@ -54,6 +55,9 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
       if (name === 'claim_api_partner_external_dispatch') return { data: {
         success: claimed, send_allowed: claimed, order_id: orderId, dispatch_state: claimed ? 'sending' : 'accepted',
       }, error: null }
+      if (name === 'record_api_partner_dispatch_receipt') return { data: {
+        success: true, idempotent_replay: false, proof_hash: 'a'.repeat(64),
+      }, error: null }
       if (name === 'record_api_partner_external_outcome') return { data: {
         success: true, data: { id: orderId, status: args.p_status, response_payload: args.p_public_payload },
       }, error: null }
@@ -65,6 +69,13 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
     Deno: { env: { get: name => ({ SUPABASE_URL: 'https://fixture.invalid',
       SUPABASE_SERVICE_ROLE_KEY: 'PRIVATE_SERVICE_CREDENTIAL', ...env })[name] } },
     executePartnerExternalPurchase: runnerExports.executePartnerExternalPurchase,
+    listPartnerExternalReconciliationCases: async (_admin, actorId) => {
+      calls.reconciliation.push(['list', actorId]); return { body: { success: true, cases: [] }, status: 200 }
+    },
+    probePartnerExternalReconciliationCase: async (_admin, actorId, request) => {
+      calls.reconciliation.push(['probe', actorId, request.order_id]);
+      return { body: { success: true, observation: 'provider_id_unavailable', financial_decision: 'none' }, status: 200 }
+    },
     preparePartnerSmsPlan: async () => { calls.plans++; return {
       section: 'sms', itemId: 'ds', itemName: 'Discord', quantity: 1, amountNgn: 100,
       requestPayload: { service: 'ds' }, dispatch: async () => { calls.dispatch++; return {
@@ -84,7 +95,7 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
     smsCatalogue = async () => { throw new Error('PRIVATE_PROVIDER_CREDENTIAL'); };`, context)
   const request = new Request('https://fixture.invalid/functions/v1/partner-api', {
     method, headers: { 'Content-Type': 'application/json', ...(key ? { 'x-tally-api-key': key } : {}),
-      ...(adminAccount ? { Authorization: 'Bearer FIXTURE_USER_JWT' } : {}) },
+      ...(signedIn ? { Authorization: 'Bearer FIXTURE_USER_JWT' } : {}) },
     ...(['GET', 'HEAD'].includes(method) ? {} : { body: raw ?? JSON.stringify(body) }),
   })
   const response = await handler(request)
@@ -122,6 +133,21 @@ result = await run({ env: enabled, body: { action: 'catalogue', quote_quantity: 
 assert.equal(result.status, 400)
 result = await run({ env: enabled, adminAccount: true, actor: '40000000-0000-4000-8000-000000000001', body: { action: 'admin_list_partners' } })
 assert.equal(result.status, 403); assert.equal(result.calls.tables.includes('api_partners'), false)
+result = await run({ env: enabled, adminAccount: true, actor: '40000000-0000-4000-8000-000000000001', body: { action: 'admin_reconciliation_probe', order_id: orderId } })
+assert.equal(result.status, 403); assert.equal(result.calls.reconciliation.length, 0)
+result = await run({ env: enabled, body: { action: 'admin_reconciliation_probe', order_id: orderId } })
+assert.equal(result.status, 401); assert.equal(result.calls.reconciliation.length, 0)
+for (const account of [{ signedIn:true },{ signedIn:true,staffAccount:true },{ adminAccount:true,suspended:true }]) {
+  result=await run({ env:enabled,...account,body:{action:'admin_reconciliation_probe',order_id:orderId} })
+  assert.equal(result.status,403)
+  assert.equal(result.calls.reconciliation.length,0)
+  assert.equal(result.calls.dispatch,0)
+}
+result = await run({ env: enabled, adminAccount: true, body: { action: 'admin_reconciliation_cases' } })
+assert.equal(result.status, 200); assert.equal(result.calls.reconciliation[0][0], 'list')
+result = await run({ env: enabled, adminAccount: true, body: { action: 'admin_reconciliation_probe', order_id: orderId } })
+assert.equal(result.status, 200); assert.equal(result.calls.reconciliation[0][0], 'probe')
+assert.equal(result.calls.dispatch, 0)
 result = await run({ env: enabled, adminAccount: true, body: { action: 'admin_create_partner',
   name: 'Fixture', allowed_sections: ['invalid-section'] } })
 assert.equal(result.status, 400)
@@ -145,7 +171,8 @@ assert.equal(result.calls.dispatch, 0)
 result = await run({ env: smsEnabled, body: purchase })
 assert.equal(result.status, 200); assert.equal(result.calls.dispatch, 1)
 assert.deepEqual(result.calls.rpc.map(c => c.name), ['authorize_api_partner_request',
-  'reserve_api_partner_external_order', 'claim_api_partner_external_dispatch', 'record_api_partner_external_outcome'])
+  'reserve_api_partner_external_order', 'claim_api_partner_external_dispatch',
+  'record_api_partner_dispatch_receipt', 'record_api_partner_external_outcome'])
 assert.equal(result.calls.rpc[1].args.p_amount_ngn, 100)
 for (const [raw, status] of [['[]', 400], ['null', 400], ['x'.repeat(32769), 413]]) {
   result = await run({ env: enabled, raw }); assert.equal(result.status, status)

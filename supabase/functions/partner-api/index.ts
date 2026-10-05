@@ -7,6 +7,7 @@ import { preparePartnerBillsPlan, preparePartnerGiftcardPlan, preparePartnerTele
 import { handlePartnerExternalOrderStatus } from '../_shared/partner-external-status.ts'
 import { deliverPartnerWebhookSafely, validatePartnerWebhookUrl } from '../_shared/partner-webhook-delivery.ts'
 import { createRuntimePinnedWebhookTransport } from '../_shared/partner-webhook-transport.ts'
+import { listPartnerExternalReconciliationCases, probePartnerExternalReconciliationCase } from '../_shared/partner-external-reconciliation.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -2380,7 +2381,7 @@ async function readPartnerBody(req: Request, url: URL): Promise<Record<string, u
 
 function publicRequestError(error: unknown): { code: string; status: number } {
   const message = error instanceof Error ? error.message : ''
-  if (['INVALID_KEY', 'Missing TallyStore API key', 'Invalid API key', 'Unauthorized', 'Unauthorized internal request'].includes(message)) return { code: 'INVALID_KEY', status: 401 }
+  if (['INVALID_KEY', 'Missing TallyStore API key', 'Invalid API key', 'Missing admin authorization', 'Unauthorized', 'Unauthorized internal request'].includes(message)) return { code: 'INVALID_KEY', status: 401 }
   if (['PARTNER_DISABLED', 'SCOPE_DENIED', 'SECTION_UNAVAILABLE', 'Admin access required', 'Owner access required'].includes(message)) return { code: message.replaceAll(' ', '_').toUpperCase(), status: 403 }
   if (message === 'RATE_LIMITED') return { code: message, status: 429 }
   if (message === 'REQUEST_TOO_LARGE') return { code: message, status: 413 }
@@ -2436,6 +2437,33 @@ serve(async (req) => {
         return json({ success: false, code: 'PARTNER_OWNER_REQUIRED', error: 'Owner access required.' }, 403)
       }
       if (action === 'admin_list_partners') return json(await handleAdminList(admin))
+      if (action === 'admin_reconciliation_cases' || action === 'admin_reconciliation_probe') {
+        const result = action === 'admin_reconciliation_cases'
+          ? await listPartnerExternalReconciliationCases(admin, adminUser.id, body)
+          : await probePartnerExternalReconciliationCase(admin, adminUser.id, body, {
+            daisyStatus: id => daisyGet(Deno.env.get('DAISYSMS_API_KEY') || '', { action: 'getStatus', id }),
+            smmStatus: id => smmRequest({ action: 'status', order: id }),
+            bitrefillInvoice: id => getBitrefillClient().getInvoice(id),
+            istarOrder: id => istarGet(`/orders/${encodeURIComponent(id)}`),
+          })
+        let auditTimer: ReturnType<typeof setTimeout> | undefined
+        try {
+          const audit = admin.from('api_partner_logs').insert({
+            action, method: req.method, status_code: result.status,
+            success: result.body.success === true,
+            error_message: result.body.success === true ? null : String(result.body.code || 'PARTNER_API_UNAVAILABLE'),
+            metadata: { owner_id: adminUser.id,
+              ...(typeof result.body.observation === 'string' ? { observation: result.body.observation } : {}),
+              ...(typeof body.order_id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.order_id)
+                ? { order_id: body.order_id } : {}) },
+          })
+          await Promise.race([Promise.resolve(audit), new Promise((_, reject) => {
+            auditTimer = setTimeout(() => reject(new Error('read audit timeout')), 2_000)
+          })])
+        } catch { /* A best-effort read audit cannot block status observations or change money. */ }
+        finally { if (auditTimer) clearTimeout(auditTimer) }
+        return json(result.body, result.status)
+      }
       if (action === 'admin_update_partner' ||
         (OWNER_REVIEWED_ADMIN_ACTIONS.has(action) && adminUser.id !== OWNER_USER_ID)) {
         return json({

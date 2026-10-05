@@ -18,7 +18,7 @@ const body={expected_amount_ngn:100,idempotency_key:'partner-fixture-request-1',
 const accepted={kind:'accepted',source:'daisy',id:'activation-fixture',status:'active',payload:{phone_number:'fixture-phone',api_key:'private-key-marker',raw_provider_response:{secret:'private-provider-marker'},raw_request:'private-provider-marker',vendor_message:'private-provider-marker',nested:{password:'private-password-marker',public_status:'active'}}}
 function model(options={}) {
   let stored=null
-  const counters={reserve:0,claim:0,send:0,record:0,holds:0,captures:0,releases:0}
+  const counters={reserve:0,claim:0,send:0,receipt:0,record:0,holds:0,captures:0,releases:0}
   const args=[]
   const summary=()=>({id:orderId,status:stored?.status??'pending',response_payload:stored?.payload??{},api_key:'private-key-marker',request_payload:{secret:'private-provider-marker'},customer_email:'private-email-marker'})
   const admin={rpc:async(name,input)=>{
@@ -38,6 +38,19 @@ function model(options={}) {
       if(stored.state!=='prepared')return{data:{success:false,code:'DISPATCH_ALREADY_CLAIMED',dispatch_state:stored.state},error:null}
       stored.state='sending';stored.status='processing';counters.send++
       return{data:{success:true,send_allowed:true,order_id:orderId,dispatch_state:'sending'},error:null}
+    }
+    if(name==='record_api_partner_dispatch_receipt') {
+      counters.receipt++
+      assert.equal(stored.state,'sending','receipt must follow the single paid-send claim')
+      assert.equal(input.p_order_id,orderId)
+      assert.equal(input.p_partner_id,partnerId)
+      assert.equal(input.p_key_id,keyId)
+      assert.equal(input.p_request_fingerprint,stored.fingerprint)
+      assert.equal(input.p_amount_ngn,100)
+      if(options.receiptFailure)return{data:null,error:{message:'private-provider-marker'}}
+      if(options.receiptThrow)throw new Error('private-provider-marker')
+      stored.receipt=structuredClone(input)
+      return{data:{success:true,proof_hash:'a'.repeat(64)},error:null}
     }
     assert.equal(name,'record_api_partner_external_outcome','Runner must use only the partner journal RPCs, never customer wallets')
     counters.record++
@@ -73,9 +86,14 @@ const race=model();let raceDispatch=0
 const concurrentPlan=plan(async()=>{raceDispatch++;await new Promise(resolve=>setImmediate(resolve));return accepted})
 const races=await Promise.all([execute(race.admin,auth,body,concurrentPlan),execute(race.admin,auth,body,concurrentPlan)])
 assert.equal(raceDispatch,1);assert.equal(race.counters.holds,1);assert.equal(race.counters.send,1);assert.equal(race.counters.captures,1)
+assert.equal(race.counters.receipt,1)
 races.forEach(safe)
+const raceNames=race.args.map(call=>call.name)
+assert.ok(raceNames.indexOf('record_api_partner_dispatch_receipt')<raceNames.indexOf('record_api_partner_external_outcome'))
+assert.equal(JSON.stringify(race.stored.receipt).includes('private-key-marker'),false)
+assert.equal(JSON.stringify(race.stored.receipt).includes('private-provider-marker'),false)
 assert.equal(race.args.find(call=>call.name==='record_api_partner_external_outcome').input.p_public_payload.api_key,undefined)
-assert.equal(race.args.find(call=>call.name==='record_api_partner_external_outcome').input.p_public_payload.nested.password,undefined)
+assert.equal(race.args.find(call=>call.name==='record_api_partner_external_outcome').input.p_public_payload.nested,undefined)
 const replay=await execute(race.admin,auth,body,concurrentPlan)
 assert.equal(raceDispatch,1);assert.equal(replay.body.idempotent_replay,true);assert.equal(replay.body.data.status,'active');safe(replay)
 
@@ -97,9 +115,24 @@ for(const config of [{recordFailure:true},{recordThrow:true}]) {
   const requestPlan=plan(async()=>{dispatched++;return accepted})
   const result=await execute(db.admin,auth,body,requestPlan)
   assert.equal(result.body.success,false)
+  assert.equal(db.counters.receipt,1)
   assert.equal(result.status,202);assert.equal(result.body.data.status,'processing');assert.equal(db.counters.releases,0);assert.equal(db.stored.state,'sending')
   await execute(db.admin,auth,body,requestPlan)
   assert.equal(dispatched,1);assert.equal(db.counters.holds,1);assert.equal(db.counters.releases,0);safe(result)
+}
+for(const config of [{receiptFailure:true},{receiptThrow:true}]) {
+  const db=model(config);let dispatched=0
+  const requestPlan=plan(async()=>{dispatched++;return accepted})
+  const result=await execute(db.admin,auth,body,requestPlan)
+  assert.equal(result.body.code,'PURCHASE_OUTCOME_UNKNOWN')
+  assert.equal(result.status,202)
+  assert.equal(db.counters.receipt,1)
+  assert.equal(db.counters.record,0,'financial finalizer must not run without durable receipt')
+  assert.equal(db.stored.state,'sending')
+  assert.equal(db.counters.releases,0)
+  await execute(db.admin,auth,body,requestPlan)
+  assert.equal(dispatched,1,'receipt failure must never cause a second paid send')
+  safe(result)
 }
 for(const dispatch of [async()=>{throw new Error('private-provider-marker')},async()=>({kind:'unknown'}),async()=>({kind:'accepted',source:'smm',id:'wrong',status:'completed',payload:{}}),async()=>({kind:'rejected',reason:'NO_STOCK',payload:{delivered:true}}),async()=>({kind:'rejected',reason:'UNRECOGNIZED_VENDOR_ERROR'})]) {
   const db=model();const result=await execute(db.admin,auth,body,plan(dispatch))
@@ -125,4 +158,4 @@ for(const [newBody,newPlan] of [[{...body,partner_reference:'other'},samePlan],[
 }
 assert.equal(semanticDispatch,1)
 assert.ok(semantic.args.filter(call=>call.name==='reserve_api_partner_external_order').every(call=>/^[a-f0-9]{64}$/.test(call.input.p_request_fingerprint)))
-console.log('Partner external runner: reserve authorization, single claim, safe prepared replay, held unknown/save failures, definitive rejection release, canonical conflict and secret-safe summaries passed.')
+console.log('Partner external runner: reserve authorization, single claim, durable receipt before settlement, held unknown/save failures, definitive rejection release, canonical conflict and secret-safe summaries passed.')

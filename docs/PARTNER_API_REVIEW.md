@@ -2,7 +2,7 @@
 
 `partner-api` defaults to paused. On October 5, 2026 the reviewed function and migrations were deployed to the existing source project. Its read and atomic local-product flags are enabled. Existing partner rows were made inactive by `20260919007000_pause_existing_api_partners.sql`; this work does not reactivate them.
 
-Migration `20261005015000_partner_owner_admin_actions.sql` adds an owner review marker. Only the verified owner can create a reviewed partner, issue a key for that partner, revoke a key, choose the initial prepaid or unlimited credit mode, or later change credit mode. Provisioning, key issuance, revocation, and their audit rows are transactional. Historical partners do not receive the review marker or new keys automatically. Owner balance adjustments and credit changes use the atomic RPCs from migration `11000`. Other admin accounts can inspect records, but cannot perform these actions. Partner metadata edits and activation remain disabled.
+Migration `20261005015000_partner_owner_admin_actions.sql` adds an owner review marker. Only the verified owner can create a reviewed partner, issue a key for that partner, revoke a key, choose the initial prepaid or unlimited credit mode, or later change credit mode. Provisioning, key issuance, revocation, and their audit rows are transactional. Historical partners do not receive the review marker or new keys automatically. Owner balance adjustments and credit changes use the atomic RPCs from migration `11000`. All partner administration, including inspecting records, requires the verified owner. Partner metadata edits and activation remain disabled.
 
 Migration `20261005016000_partner_table_lockdown.sql` removes the older direct authenticated-admin table grants and policies. Without it, an admin could bypass the owner RPCs by writing partner, key, order, or log rows directly through PostgREST. Administrative reads now use the redacted Edge listing.
 
@@ -41,6 +41,18 @@ External SMS, Social Boost, bills, gift cards and Telegram adapters are deployed
 The follow-up audit found that hiding the customer API page did not close its key-creation endpoint. `customer-api` version 7 now defaults to a server-side launch gate, with `CUSTOMER_API_ENABLED=false` stored only in Supabase secrets. Key issuance, API reads and delegated purchases return `coming_soon` before creating a database client. Authenticated users can still revoke their own existing keys; the verified owner can prepare future access. Live checks confirmed that the browser cannot execute the key-creation, authorization or capability-consumption database RPCs directly. Future self-service API availability is still part of the requested work, once its complete service and recovery paths are ready.
 
 Before broader activation: finish an owner-reviewed reconciliation path for unknown sends and save failures; replace the paused legacy PocketFi checkout/confirmation and crypto partner paths with verified journaled operations; connect product supplier fallback to the same financial boundary; and complete customer service adapters with ordinary wallet limits and no partner credit privileges. These remain part of the full requested API work.
+
+Migration `20261005024000_partner_external_dispatch_receipts.sql` is now applied
+and recorded in the source project. `partner-api` version 36 saves a private,
+immutable, section-restricted dispatch receipt before financial settlement.
+Failed receipt or outcome writes retain the hold and never authorize another
+provider send. Owner-only reconciliation reads list uncertain orders and poll
+only matching persisted provider IDs; these observations cannot settle, refund
+or change a balance. A live rollback probe verified claimed-order bindings,
+replay, browser denial and unchanged financial rows before deployment. The
+receipt records the dispatcher observation; it does not resolve a crash before
+that observation was saved. See `PARTNER_API_RECONCILIATION_PLAN.md` for the
+remaining financial recovery and independent evidence requirements.
 
 ## Outgoing webhook delivery
 

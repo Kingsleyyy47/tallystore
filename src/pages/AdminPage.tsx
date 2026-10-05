@@ -54,6 +54,7 @@ import { isBalanceNeutralLedgerEvidence } from '@/lib/walletTransactions'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import AdminAlerts from '@/components/AdminAlerts'
+import PartnerReconciliationPanel from '@/components/PartnerReconciliationPanel'
 import { 
   getCategories, 
   getManagedProductGroups,
@@ -11265,6 +11266,15 @@ export default function AdminPage() {
                   </Card>
                 </div>
               </AdminControlSection>
+
+              {isPartnerOwner && user?.id && (
+                <PartnerReconciliationPanel
+                  key={user.id}
+                  ownerId={user.id}
+                  active={adminTab === 'api-partners'}
+                  invoke={invokePartnerAdmin}
+                />
+              )}
 
               <div className="grid gap-6 xl:grid-cols-2">
                 <AdminControlSection title="Recent API Orders" description="Latest reseller orders created through partner-api.">
