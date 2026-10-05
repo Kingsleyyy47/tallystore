@@ -74,8 +74,9 @@ export function parseGiftCardProduct(raw: unknown, expectedId: string): GiftCard
     || !validName(source.name) || typeof source.currency !== 'string' || !CURRENCY.test(source.currency)
     || (source.recipient_type !== undefined && source.recipient_type !== null
       && source.recipient_type !== '' && source.recipient_type !== 'none')) return null
+  const packageMap = object(source.packages)
   const entries = Array.isArray(source.packages) ? source.packages
-    : object(source.packages) ? Object.values(source.packages) : []
+    : packageMap ? Object.values(packageMap) : []
   if (entries.length > 100) return null
   const seen = new Set<string>()
   const packages: GiftCardProduct['packages'] = []

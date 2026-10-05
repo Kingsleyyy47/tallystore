@@ -94,6 +94,8 @@ async function blockedProducts(admin: any): Promise<Set<string>> {
 }
 
 async function makeQuote(provider: AirtimeProvider, admin: any, body: any): Promise<{ quote: AirtimeQuote, providerPrice: number, billingCurrency: string, merchantAvailable: number }> {
+  const priceUnit = Deno.env.get('BITREFILL_PRICE_UNIT')
+  if (priceUnit !== 'major' && priceUnit !== 'satoshi') throw new Error('PRICE_UNAVAILABLE')
   const phone = e164(body.phone_number)
   const operatorId = safeId(body.operator_id)
   const productId = safeId(body.product_id)
@@ -120,11 +122,13 @@ async function makeQuote(provider: AirtimeProvider, admin: any, body: any): Prom
   // Never convert the face value as though it were the supplier's price.
   // Unsupported billing currencies remain unavailable until a verified rate exists.
   if (billingCurrency !== 'USD' && billingCurrency !== 'NGN' && billingCurrency !== 'BTC') throw new Error('PRICE_UNAVAILABLE')
+  if ((billingCurrency === 'BTC' && priceUnit !== 'satoshi') ||
+    (billingCurrency !== 'BTC' && priceUnit !== 'major')) throw new Error('PRICE_UNAVAILABLE')
   if (billingCurrency === 'BTC' && (!Number.isSafeInteger(unit.provider_price) || unit.provider_price > 1_000_000_000)) throw new Error('PRICE_UNAVAILABLE')
   const merchantAvailable = merchantBalance(balance?.balance, billingCurrency)
   if (merchantAvailable === null) throw new Error('PRICE_UNAVAILABLE')
   const rate = await rateToNgn(billingCurrency, admin)
-  const supplierPrice = billingCurrency === 'BTC' ? unit.provider_price / 100_000_000 : unit.provider_price
+  const supplierPrice = priceUnit === 'satoshi' ? unit.provider_price / 100_000_000 : unit.provider_price
   const adjustment = Number(pricing.value)
   if (!Number.isFinite(adjustment) || adjustment < 0 || adjustment > 1_000_000_000) throw new Error('PRICE_UNAVAILABLE')
   const supplierNgn = supplierPrice * rate
@@ -181,7 +185,7 @@ function invoiceCostNgn(raw: any, billingCurrency: string, rate: number, expecte
     : typeof rawPrice === 'string' && /^\d+(?:\.\d+)?$/.test(rawPrice) ? Number(rawPrice) : NaN
   const currency = String(payment?.currency || '').toUpperCase().replace(/^XBT$/, 'BTC')
   if (!Number.isFinite(price) || price <= 0 || currency !== billingCurrency) return null
-  // Existing Bitrefill merchant integration and product.price use satoshis.
+  // The quote has already required the owner-verified unit for this currency.
   // A fractional BTC amount is ambiguous and cannot authorize a payment.
   if (currency === 'BTC' && (!Number.isSafeInteger(price) || price > 1_000_000_000)) return null
   if (Math.abs(price - expectedProviderPrice) > Math.max(2, expectedProviderPrice * 0.03)) return null

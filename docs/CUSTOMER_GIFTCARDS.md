@@ -10,6 +10,12 @@ both locally and on SOURCE. Post-apply verification matched the recorded SQL,
 passed all 79 privilege checks and confirmed existing financial rows were
 unchanged. The destination project was not modified.
 
+Migration `20261005035000` was then applied and verified on SOURCE with 16 access
+checks. It adds `customer-giftcards` to the existing service-only supplier warning
+sources. Existing warnings, warning routines, grants and financial rows were
+preserved. This allows a confirmed supplier balance shortfall to reach the existing
+staff warning flow when the new checkout is enabled.
+
 ## Database contract
 
 Migration `20261005034000` creates safe customer order summaries and a private
@@ -42,6 +48,9 @@ The new shared provider client uses the fixed Bitrefill API origin, bounded
 requests and response reads, no redirects and no automatic POST retries. It
 creates an unpaid balance invoice, then exposes a separate explicit payment
 method that the future handler must fence with its database claim.
+The Personal API uses the fixed `https://api.bitrefill.com/v2` origin and a Bearer
+key stored only in Supabase, as documented in the
+[Bitrefill Personal API quickstart](https://docs.bitrefill.com/docs/quickstart-2).
 
 Unpaid invoices may list only child IDs; the handler must fetch every corresponding
 child detail and verify its product and value before payment. Optional echoed
@@ -62,6 +71,8 @@ reminder or supplier payment was created.
 1. Verify the merchant account's product-price billing units and rounding against
    real read-only responses. Product denomination currency does not prove billing
    currency, and price candidates must not be assumed to be satoshis or major units.
+   Only then set the Supabase-only `BITREFILL_PRICE_UNIT` to `major` for USD/NGN or
+   `satoshi` for BTC. An absent or mismatched setting cannot authorize a wallet hold.
 2. Implement and test the authenticated `customer-giftcards` handler with strict
    field allowlists, stable retries, owner pricing from migration 290, and exact
    invoice checks before its payment claim. Keep its purchase gate off during this.

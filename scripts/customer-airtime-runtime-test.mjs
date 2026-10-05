@@ -26,7 +26,7 @@ const delegationSecret = 'test-only-airtime-success-capability-secret-1234567890
 const customerKeyId = '33333333-3333-4333-8333-333333333333'
 function response(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } }) }
 
-function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusReady = false, invoicePrice = 29038, prepayPhone = phone, merchantBalance = 100000000, owner = false, delegated = false } = {}) {
+function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusReady = false, invoicePrice = 29038, prepayPhone = phone, merchantBalance = 100000000, owner = false, delegated = false, priceUnit = 'satoshi', billingCurrency = 'BTC', providerPrice = 29038 } = {}) {
   let edge
   const calls = { create: 0, pay: 0, reserve: 0, claimDispatch: 0, bind: 0, claimPay: 0, unknown: 0, completed: 0, rejected: 0, alerts: 0, pricingWrites: 0, consume: 0 }
   const nonces = new Set()
@@ -92,15 +92,18 @@ function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusRea
     module: { exports: {} }, exports: {}, Response, Request, AbortSignal, URL, Date, console, TextEncoder, TextDecoder, Uint8Array, setTimeout, clearTimeout, crypto: webcrypto, atob, btoa,
     Deno: { serve(handler) { edge = handler }, env: { get(name) {
       return ({ SUPABASE_URL: 'https://synthetic.invalid', SUPABASE_ANON_KEY: 'public-test', SUPABASE_SERVICE_ROLE_KEY: 'synthetic-service',
-        BITREFILL_API_KEY: 'synthetic-provider', CUSTOMER_AIRTIME_ENABLED: 'true', CUSTOMER_API_ENABLED: 'true', CUSTOMER_API_DELEGATION_SECRET: delegationSecret })[name] || ''
+        BITREFILL_API_KEY: 'synthetic-provider', BITREFILL_PRICE_UNIT: priceUnit,
+        CUSTOMER_AIRTIME_ENABLED: 'true', CUSTOMER_API_ENABLED: 'true', CUSTOMER_API_DELEGATION_SECRET: delegationSecret })[name] || ''
     } } },
     async fetch(input, options = {}) {
       const url = String(input)
+      if (url.includes('bitrefill')) assert.ok(url.startsWith('https://api.bitrefill.com/v2/'), 'provider must use official dotted HTTPS origin')
       if (url.includes('BTC-USD/ticker')) return response({ price: '86000', time: new Date().toISOString() })
       if (url.endsWith('/check_phone_number?phone_number=%2B15551234567')) return response({ operator_found: true,
         data: [{ id: 'gosmart-usa', name: 'GoSmart', country: 'US', recipient_type: 'phone_number' }] })
-      if (url.endsWith('/products/gosmart-usa')) return response(product)
-      if (url.endsWith('/accounts/balance')) return response({ data: { currency: 'BTC', balance: merchantBalance } })
+      if (url.endsWith('/products/gosmart-usa')) return response({ data: { ...product.data,
+        packages: [{ ...product.data.packages[0], price: providerPrice }] } })
+      if (url.endsWith('/accounts/balance')) return response({ data: { currency: billingCurrency, balance: merchantBalance } })
       if (url.endsWith('/invoices') && options.method === 'POST') {
         calls.create++
         const payload = JSON.parse(options.body)
@@ -115,7 +118,7 @@ function harness({ reserve = 'ok', paid = 'delivered', replay = false, statusRea
       }
       if (url.endsWith(`/invoices/${invoiceId}`)) {
         invoiceReads++
-        return response({ data: { id: invoiceId, status: invoiceReads < 2 ? 'unpaid' : 'complete', payment: { price: invoicePrice, currency: 'BTC' },
+        return response({ data: { id: invoiceId, status: invoiceReads < 2 ? 'unpaid' : 'complete', payment: { price: invoicePrice, currency: billingCurrency },
           orders: [{ id: providerOrderId, product_id: 'gosmart-usa' }] } })
       }
       if (url.endsWith(`/orders/${providerOrderId}`)) return response({ data: { id: providerOrderId, status: calls.pay > 0 || statusReady ? 'delivered' : 'created', phone_number: calls.pay > 0 || statusReady ? phone : prepayPhone,
@@ -154,6 +157,27 @@ assert.equal(result.body.country_code, 'US')
 assert.equal(result.body.operators[0].products[0].packages[0].unit_value, 25)
 assert.ok(!JSON.stringify(result.body).includes('29038'), 'supplier pricing must not reach browser')
 assert.equal(h.calls.create, 0)
+
+for (const config of [
+  { priceUnit: '' },
+  { priceUnit: 'SATOSHI' },
+  { priceUnit: 'major' },
+  { priceUnit: 'satoshi', billingCurrency: 'USD' },
+]) {
+  h = harness(config)
+  result = await h.post(request)
+  assert.equal(result.body.code, 'PRICE_UNAVAILABLE', 'unset, unknown, or currency-mismatched unit fails closed')
+  assert.equal(h.calls.reserve, 0, 'unverified price unit cannot authorize a wallet hold')
+  assert.equal(h.calls.create, 0)
+  assert.equal(h.calls.pay, 0)
+}
+h = harness({ priceUnit: 'major', billingCurrency: 'USD', providerPrice: 1.25 })
+result = await h.post({ action: 'quote', phone_number: phone, operator_id: 'gosmart-usa',
+  product_id: 'gosmart-usa', package_id: 'gosmart-usa<&>25' })
+assert.equal(result.body.success, true)
+assert.equal(result.body.quote.amount_ngn, 1880, 'major USD price 1.25 at 1500 NGN/USD rounds up to NGN 10')
+assert.equal(h.calls.reserve, 0)
+assert.equal(h.calls.pay, 0)
 
 h = harness({ owner: true })
 result = await h.post({ action: 'admin_pricing_set', kind: 'airtime', scope: 'denomination', product_id: 'gosmart-usa',

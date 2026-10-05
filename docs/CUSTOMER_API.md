@@ -38,6 +38,13 @@ SMS uses `section: "sms"`, `service_id`, `expected_price_ngn`, and `idempotency_
 
 International Airtime uses an `airtime` section key. It has no generic `GET /v1/catalogue`; send the phone number in a JSON POST body, never in a query URL. `POST /v1/airtime/check-phone` accepts `{ "section": "airtime", "phone_number": "+14155550123" }`. Use its operator and product IDs with either a package ID or a denomination in `POST /v1/airtime/quote`:
 
+The airtime checkout additionally requires the supplier price units to be verified
+and stored in the Supabase-only `BITREFILL_PRICE_UNIT` setting. `major` is accepted
+only for USD/NGN merchant billing; `satoshi` only for BTC. An unset, unknown or
+mismatched setting returns `PRICE_UNAVAILABLE` before wallet reservation or
+supplier invoice/payment. This is a server check, separate from the customer API
+Coming Soon gate.
+
 ```json
 {
   "section": "airtime",

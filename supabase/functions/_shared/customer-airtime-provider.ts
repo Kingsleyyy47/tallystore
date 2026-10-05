@@ -1,7 +1,7 @@
 import { safeId } from './customer-airtime-contract.ts'
 
 // Fixed official Bitrefill origin. Keep the bearer token in Supabase secrets.
-const ORIGIN = 'https://api-bitrefill.com/v2'
+const ORIGIN = 'https://api.bitrefill.com/v2'
 
 export class AirtimeProvider {
   constructor(private readonly token: string, private readonly doFetch: typeof fetch = fetch) {
