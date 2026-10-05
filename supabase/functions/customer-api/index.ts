@@ -324,6 +324,17 @@ async function read(req: Request, path: string, admin: any) {
 serve(async (req) => {
   if (req.method === 'OPTIONS') return json({ success: true })
   const route = customerApiRoute(new URL(req.url).pathname, req.method)
+  // The customer feature is advertised as Coming soon. Hiding its page is not
+  // authorization: key issuance, delegated purchases and API reads must all
+  // remain unavailable until the server-side launch gate is explicitly enabled.
+  // Existing owners may still revoke keys, and the owner may prepare access.
+  const pausedControl = route.kind === 'manage' && (
+    (req.method === 'DELETE' && /^\/v1\/keys\/[a-f0-9-]{36}$/.test(route.path)) ||
+    (req.method === 'POST' && route.path === '/v1/admin/access')
+  )
+  if (route.kind !== 'not_found' && Deno.env.get('CUSTOMER_API_ENABLED') !== 'true' && !pausedControl) {
+    return fail('coming_soon', 503)
+  }
   try {
     const admin = adminClient()
     if (route.kind === 'manage') return await manage(req, route.path, admin)
