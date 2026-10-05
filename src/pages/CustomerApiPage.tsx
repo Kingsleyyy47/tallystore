@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/SimpleAuth'
 import { customerApiRequest, type CustomerApiKey, type CustomerApiOverview, type CustomerApiSection } from '@/lib/customerApi'
 
 const labels: Record<CustomerApiSection, string> = {
-  products: 'Products', sms: 'SMS', social_boost: 'Social Boost',
+  products: 'Products', sms: 'SMS', social_boost: 'Social Boost', airtime: 'International Airtime',
 }
 
 export default function CustomerApiPage() {
@@ -17,7 +17,10 @@ export default function CustomerApiPage() {
 
 function CustomerApiAccount({ userId }: { userId: string | null }) {
   const active = useRef(true)
+  const reloadSequence = useRef(0)
+  const accountAbort = useRef(new AbortController())
   const [overview, setOverview] = useState<CustomerApiOverview | null>(null)
+  const [overviewState, setOverviewState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [section, setSection] = useState<CustomerApiSection>('products')
   const [label, setLabel] = useState('')
   const [newKey, setNewKey] = useState('')
@@ -25,41 +28,59 @@ function CustomerApiAccount({ userId }: { userId: string | null }) {
   const [error, setError] = useState('')
 
   const reload = useCallback(async () => {
-    if (!userId) return
-    const data = await customerApiRequest<CustomerApiOverview>('/v1/keys')
-    if (!active.current) return
-    setOverview(data)
-    setSection(current => data.access.allowed_sections.includes(current)
-      ? current : (data.access.allowed_sections[0] || 'products'))
+    const sequence = ++reloadSequence.current
+    setOverviewState('loading')
+    setError('')
+    try {
+      if (!userId) throw new Error('Sign in to manage your API keys.')
+      const data = await customerApiRequest<CustomerApiOverview>('/v1/keys', 'GET', undefined,
+        { expectedUserId: userId, signal: accountAbort.current.signal })
+      if (!active.current || sequence !== reloadSequence.current) return
+      setOverview(data)
+      setSection(current => data.access.allowed_sections.includes(current)
+        ? current : (data.access.allowed_sections[0] || 'products'))
+      setOverviewState('ready')
+    } catch {
+      if (!active.current || sequence !== reloadSequence.current) return
+      setOverviewState('error')
+      setError('Unable to load API keys. Please try again.')
+    }
   }, [userId])
   useEffect(() => {
+    const currentReloadSequence = reloadSequence
     active.current = true
-    void reload().catch((cause) => {
-      if (active.current) setError(cause instanceof Error ? cause.message : 'Unable to load API keys.')
-    })
-    return () => { active.current = false }
+    if (accountAbort.current.signal.aborted) accountAbort.current = new AbortController()
+    void reload()
+    return () => {
+      active.current = false
+      currentReloadSequence.current++
+      accountAbort.current.abort()
+      setNewKey('')
+    }
   }, [reload])
 
   const createKey = async () => {
     setBusy(true); setError(''); setNewKey('')
     try {
-      const data = await customerApiRequest<CustomerApiKey & { api_key: string }>('/v1/keys', 'POST', { section, label })
+      const data = await customerApiRequest<CustomerApiKey & { api_key: string }>('/v1/keys', 'POST', { section, label },
+        { expectedUserId: userId || undefined, signal: accountAbort.current.signal })
       if (!active.current) return
       setNewKey(data.api_key)
       setLabel('')
       await reload()
-    } catch (cause) {
-      if (active.current) setError(cause instanceof Error ? cause.message : 'Unable to create key.')
+    } catch {
+      if (active.current) setError('Unable to create key. Please try again.')
     } finally { if (active.current) setBusy(false) }
   }
   const revokeKey = async (keyId: string) => {
     setBusy(true); setError(''); setNewKey('')
     try {
-      await customerApiRequest(`/v1/keys/${keyId}`, 'DELETE')
+      await customerApiRequest(`/v1/keys/${keyId}`, 'DELETE', undefined,
+        { expectedUserId: userId || undefined, signal: accountAbort.current.signal })
       if (!active.current) return
       await reload()
-    } catch (cause) {
-      if (active.current) setError(cause instanceof Error ? cause.message : 'Unable to revoke key.')
+    } catch {
+      if (active.current) setError('Unable to revoke key. Please try again.')
     } finally { if (active.current) setBusy(false) }
   }
 
@@ -75,10 +96,15 @@ function CustomerApiAccount({ userId }: { userId: string | null }) {
         <p className="mt-1 text-sm text-muted-foreground">It is shown only once. Store it securely and keep it out of browser code.</p>
         <code className="mt-3 block break-all rounded bg-background p-3 text-sm">{newKey}</code>
         <Button type="button" variant="outline" className="mt-3" onClick={() => void navigator.clipboard.writeText(newKey)}>Copy key</Button>
+        <Button type="button" variant="ghost" className="mt-3 ml-2" onClick={() => setNewKey('')}>Close key</Button>
       </section>}
       <section className="mt-8 rounded-xl border p-5">
         <h2 className="text-xl font-semibold">Create a section key</h2>
-        {!overview?.access.is_active || !overview.access.allowed_sections.length
+        {overviewState === 'loading'
+          ? <p className="mt-2 text-sm text-muted-foreground">Loading access…</p>
+          : overviewState === 'error'
+          ? <p className="mt-2 text-sm text-muted-foreground">Access details are unavailable. Retry below.</p>
+          : !overview?.access.is_active || !overview.access.allowed_sections.length
           ? <p className="mt-2 text-sm text-muted-foreground">API access has not been enabled for this account. Contact an admin if you need it.</p>
           : <div className="mt-4 flex flex-wrap items-end gap-3">
               <label className="grid gap-1 text-sm">Service
@@ -94,7 +120,10 @@ function CustomerApiAccount({ userId }: { userId: string | null }) {
       </section>
       <section className="mt-8 rounded-xl border p-5">
         <h2 className="text-xl font-semibold">Your keys</h2>
-        {!overview ? <p className="mt-3 text-sm">Loading…</p> : overview.keys.length === 0
+        {overviewState === 'loading' ? <p className="mt-3 text-sm">Loading…</p>
+          : overviewState === 'error'
+          ? <div className="mt-3 flex flex-wrap items-center gap-3"><p className="text-sm text-muted-foreground">Unable to load your keys.</p><Button type="button" variant="outline" onClick={() => void reload()}>Retry</Button></div>
+          : !overview || overview.keys.length === 0
           ? <p className="mt-3 text-sm text-muted-foreground">No keys created yet.</p>
           : <ul className="mt-4 divide-y">{overview.keys.map((key) => <li key={key.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
             <div><div className="font-medium">{key.label} · {labels[key.section]}</div>
@@ -106,8 +135,9 @@ function CustomerApiAccount({ userId }: { userId: string | null }) {
       </section>
       <section className="mt-8 text-sm text-muted-foreground">
         <h2 className="font-semibold text-foreground">API endpoints</h2>
-        <p className="mt-2">Send your key as <code>Authorization: Bearer YOUR_KEY</code> to <code>/functions/v1/customer-api/v1/catalogue?section=products</code>, <code>/v1/wallet?section=products</code>, or <code>/v1/orders?section=products</code>. Replace the section with your key’s service.</p>
+        <p className="mt-2">Send your key as <code>Authorization: Bearer YOUR_KEY</code>. Products, SMS, and Social Boost have <code>/v1/catalogue?section=products</code>; replace the section with the matching key’s service. Every section has <code>/v1/wallet?section=products</code> and <code>/v1/orders?section=products</code> with the same section substitution.</p>
         <p className="mt-2">For a product total, call <code>/v1/quote?section=products&amp;product_group_id=UUID&amp;quantity=1</code>. It includes your Tally Circle discount when eligible. Create an order with <code>POST /v1/purchases</code>, the quote’s <code>expected_amount_ngn</code>, and a unique idempotency key. Retrieve delivered credentials with <code>GET /v1/orders/ORDER_UUID?section=products</code>.</p>
+        <p className="mt-2">International Airtime uses an <code>airtime</code> key and JSON POST requests to <code>/v1/airtime/check-phone</code> and <code>/v1/airtime/quote</code>. Pass the server quote’s total to <code>POST /v1/purchases</code>; use <code>/v1/airtime/status</code> to check an owned order. The phone number belongs in the request body.</p>
       </section>
     </main>
     <Footer />

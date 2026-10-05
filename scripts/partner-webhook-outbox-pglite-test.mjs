@@ -49,7 +49,7 @@ try {
   ["UPDATE public.api_partners SET is_active=false WHERE id=$1",[prepaid],"UPDATE public.api_partners SET is_active=true WHERE id=$1",[prepaid]],
   ["UPDATE public.api_partners SET owner_reviewed_at=NULL WHERE id=$1",[prepaid],"UPDATE public.api_partners SET owner_reviewed_at=now() WHERE id=$1",[prepaid]],
   ["UPDATE public.api_partners SET allowed_sections=ARRAY['products'] WHERE id=$1",[prepaid],"UPDATE public.api_partners SET allowed_sections=ARRAY['sms','products'] WHERE id=$1",[prepaid]],
-  ["UPDATE public.api_partners SET webhook_url='https://username:password@callbacks.example.com/tally' WHERE id=$1",[prepaid],"UPDATE public.api_partners SET webhook_url='https://callbacks.example.com/tally' WHERE id=$1",[prepaid]],
+  ["UPDATE public.api_partners SET webhook_url='https://username:password@example.com/tally' WHERE id=$1",[prepaid],"UPDATE public.api_partners SET webhook_url='https://callbacks.example.com/tally' WHERE id=$1",[prepaid]],
  ]
  for(const [i,[sql,args,restore,restoreArgs]]of denials.entries()){
   const order=await reserve(`outbox-denial-fixture-${i}`);const event=await complete(order.order_id)

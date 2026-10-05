@@ -22,7 +22,7 @@ export async function runSourceMigration(config) {
   catch {throw Error('Source management request failed or timed out; check recorded state before retrying')}
   if(!response.ok) {
    const data=await response.json().catch(()=>({}))
-   const category=String(data.message||data.error||'').match(/(?:bound_review|bitrefill_pricing|sms_pricing|partner_webhook|partner_webhook_scheduler)_probe_[a-z_]+|Partner webhook scheduler [A-Za-z ]+|partner_webhook_local_binding_patch_boundary|unexpected_airtime_unknown_state_boundary|Financial rows changed|Source webhook evidence changed|Source privilege guard failed|Source seed guard failed|Source routine changed|permission denied|must be owner of [A-Za-z_. ]+|does not exist|syntax error|violates [a-z ]+ constraint/)?.[0]||'unclassified database rejection'
+   const category=String(data.message||data.error||'').match(/(?:bound_review|bitrefill_pricing|sms_pricing|giftcard|partner_webhook|partner_webhook_scheduler)_probe_[a-z_]+|Partner webhook scheduler [A-Za-z ]+|partner_webhook_local_binding_patch_boundary|unexpected_airtime_unknown_state_boundary|Financial rows changed|Source webhook evidence changed|Source privilege guard failed|Source seed guard failed|Source routine changed|permission denied|must be owner of [A-Za-z_. ]+|does not exist|syntax error|violates [a-z ]+ constraint/)?.[0]||'unclassified database rejection'
    throw Error(`Source migration HTTP ${response.status}: ${category}`)
   }
   return response.json()
