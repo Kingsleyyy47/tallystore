@@ -1,5 +1,6 @@
 /** Paid partner adapters. The caller must reserve an external-order journal entry
  * and claim its one dispatch before calling plan.dispatch(). No adapter retries. */
+import { serverJson, serverText } from './server-json-transport.ts'
 
 export type PartnerExternalOutcome =
   | { kind: 'accepted'; source: 'daisy' | 'smm'; id: string; status: 'active' | 'processing' | 'completed'; payload: Record<string, unknown> }
@@ -34,7 +35,9 @@ type SocialDeps = Transport & {
 const DAISY_URL = 'https://daisysms.com/stubs/handler_api.php'
 const SMM_URL = 'https://thelordofthepanels.com/api/v2'
 const DEFAULT_TIMEOUT_MS = 20_000
-const MAX_TIMEOUT_MS = 30_000
+const MAX_TIMEOUT_MS = 25_000
+const MAX_SMS_RESPONSE_BYTES = 32_768
+const MAX_SOCIAL_RESPONSE_BYTES = 262_144
 const SMM_REQUIRED: Record<string, readonly string[]> = {
   Default: ['link', 'quantity'], Package: ['link'],
   'Custom Comments': ['link', 'comments'], 'Custom Comments Package': ['link', 'comments'],
@@ -57,9 +60,9 @@ function env(deps: Transport, name: string): string {
   return deps.env ? deps.env(name) || '' : deno?.env.get(name) || ''
 }
 
-function timeout(deps: Transport): AbortSignal {
+function timeoutMs(deps: Transport): number {
   const ms = deps.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : deps.timeoutMs
-  return AbortSignal.timeout(Number.isInteger(ms) && ms > 0 && ms <= MAX_TIMEOUT_MS ? ms : DEFAULT_TIMEOUT_MS)
+  return Number.isInteger(ms) && ms > 0 && ms <= MAX_TIMEOUT_MS ? ms : DEFAULT_TIMEOUT_MS
 }
 
 function text(value: unknown, max: number): string {
@@ -117,11 +120,10 @@ export async function preparePartnerSmsPlan(admin: Admin, partner: Partner, body
       url.searchParams.set('service', serviceCode)
       url.searchParams.set('max_price', maxPrice)
       try {
-        const response = await (deps.fetchImpl || fetch)(url, {
-          method: 'GET', headers: { Accept: 'text/plain' }, redirect: 'error', cache: 'no-store', signal: timeout(deps),
-        })
-        if (!response.ok) return { kind: 'unknown' }
-        const result = (await response.text()).trim()
+        const result = (await serverText(url.toString(), {
+          method: 'GET', headers: { Accept: 'text/plain' },
+        }, { timeoutMs: timeoutMs(deps), maxResponseBytes: MAX_SMS_RESPONSE_BYTES,
+          fetcher: deps.fetchImpl })).trim()
         const match = /^ACCESS_NUMBER:([1-9]\d*):([1-9]\d{6,16})$/.exec(result)
         if (match) return {
           kind: 'accepted', source: 'daisy', id: match[1], status: 'active',
@@ -207,12 +209,11 @@ export async function preparePartnerSocialPlan(admin: Admin, partner: Partner, b
       const form = new URLSearchParams({ key })
       for (const [name, value] of Object.entries(params)) form.set(name, String(value))
       try {
-        const response = await (deps.fetchImpl || fetch)(SMM_URL, {
+        const result = await serverJson(SMM_URL, {
           method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: form, redirect: 'error', cache: 'no-store', signal: timeout(deps),
-        })
-        if (!response.ok) return { kind: 'unknown' }
-        const result = await response.json()
+          body: form,
+        }, { timeoutMs: timeoutMs(deps), maxResponseBytes: MAX_SOCIAL_RESPONSE_BYTES,
+          fetcher: deps.fetchImpl })
         const orderId = result && typeof result === 'object' ? positiveInteger(result.order) : null
         if (!orderId || result.error) return { kind: 'unknown' }
         return { kind: 'accepted', source: 'smm', id: String(orderId), status: 'processing', payload: { provider_order_id: String(orderId) } }

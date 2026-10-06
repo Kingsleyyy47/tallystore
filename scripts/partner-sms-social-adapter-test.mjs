@@ -79,6 +79,33 @@ await assert.rejects(preparePartnerSmsPlan(admin, partner, { item_id: 'go' }, {
 }))
 assert.equal(calls.length, beforeInvalid)
 
+// A paid GET can finish after a local timeout. Never treat the absence of a
+// response as a rejection, retain a late body, or send another purchase.
+let lateSmsCancelled = false
+let lateSmsCalls = 0
+const lateSms = await preparePartnerSmsPlan(admin, partner, { item_id: 'go' }, {
+  ...smsDeps, timeoutMs: 5, fetchImpl: async (_url, options) => {
+    lateSmsCalls++
+    assert.equal(options.redirect, 'error')
+    assert.equal(options.credentials, 'omit')
+    await new Promise(resolve => setTimeout(resolve, 25))
+    return new Response(new ReadableStream({ cancel() { lateSmsCancelled = true } }))
+  },
+})
+assert.deepEqual(await lateSms.dispatch(uuid), { kind: 'unknown' })
+await new Promise(resolve => setTimeout(resolve, 35))
+assert.equal(lateSmsCancelled, true)
+assert.equal(lateSmsCalls, 1)
+let smsBodyCancelled = false
+const oversizedSms = await preparePartnerSmsPlan(admin, partner, { item_id: 'go' }, {
+  ...smsDeps, fetchImpl: async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(32_769)) },
+    cancel() { smsBodyCancelled = true },
+  })),
+})
+assert.deepEqual(await oversizedSms.dispatch(uuid), { kind: 'unknown' })
+assert.equal(smsBodyCancelled, true, 'SMS limit applies to actual bytes, not just headers')
+
 const body = { item_id: uuid, quantity: 200, link: 'https://example.com/post/1' }
 const social = await preparePartnerSocialPlan(admin, partner, body, socialDeps)
 assert.equal(social.amountNgn, 220)
@@ -92,6 +119,7 @@ const form = new URLSearchParams(calls.at(-1).options.body)
 assert.equal(form.get('key'), key)
 assert.equal(form.get('quantity'), '200')
 assert.equal(form.get('link'), body.link)
+assert.equal(calls.at(-1).options.credentials, 'omit')
 for (const result of [{ order: 0 }, { order: -1 }, { order: 'not-an-order' }, { error: 'No funds', order: 1 }]) {
   response = new Response(JSON.stringify(result))
   assert.deepEqual(await social.dispatch(uuid), { kind: 'unknown' })
@@ -109,6 +137,30 @@ for (const invalid of [
   { ...body, link: '' }, { ...body, link: 'javascript:alert(1)' },
 ]) await assert.rejects(preparePartnerSocialPlan(admin, partner, invalid, socialDeps))
 assert.equal(calls.length, beforeBadSocial)
+
+let hangingSocialCancelled = false
+let hangingSocialCalls = 0
+const hangingSocial = await preparePartnerSocialPlan(admin, partner, body, {
+  ...socialDeps, timeoutMs: 5, fetchImpl: async () => {
+    hangingSocialCalls++
+    return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{')) },
+      cancel() { hangingSocialCancelled = true },
+    }))
+  },
+})
+assert.deepEqual(await hangingSocial.dispatch(uuid), { kind: 'unknown' })
+assert.equal(hangingSocialCancelled, true, 'Social response body is covered by the request deadline')
+assert.equal(hangingSocialCalls, 1, 'uncertain paid POST is never retried')
+let socialBodyCancelled = false
+const oversizedSocial = await preparePartnerSocialPlan(admin, partner, body, {
+  ...socialDeps, fetchImpl: async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(262_145)) },
+    cancel() { socialBodyCancelled = true },
+  })),
+})
+assert.deepEqual(await oversizedSocial.dispatch(uuid), { kind: 'unknown' })
+assert.equal(socialBodyCancelled, true)
 
 socialService.service_type = 'Mentions Media Likers'
 const mediaPlan = await preparePartnerSocialPlan(admin, partner, { ...body, media: 'https://example.com/reel/1' }, {

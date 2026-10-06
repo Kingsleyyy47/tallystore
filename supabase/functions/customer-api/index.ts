@@ -322,7 +322,7 @@ async function targetJson(response: Response, signal: AbortSignal): Promise<Reco
 }
 async function callTarget(identity: { key_id: string; user_id: string; section: Section },
   target: 'process-purchase' | 'smsbus' | 'smm-create-order' | 'customer-airtime' | 'customer-giftcards' | 'telegram-stars',
-  payload: Record<string, unknown>, timeoutMs: number) {
+  payload: Record<string, unknown>, timeoutMs: number, failureCode: 'purchase_outcome_unknown' | 'unavailable' = 'purchase_outcome_unknown') {
   const rawBody = JSON.stringify(payload)
   const capability = await signCustomerCapability(identity, target, rawBody)
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
@@ -345,7 +345,7 @@ async function callTarget(identity: { key_id: string; user_id: string; section: 
       return json(await targetJson(response, signal), response.status)
     })()
     return await Promise.race([request, deadline])
-  } catch { return fail('purchase_outcome_unknown', 503) }
+  } catch { return fail(failureCode, 503) }
   finally { controller.abort(); clearTimeout(timer) }
 }
 async function airtimeAction(req: Request, path: string, admin: any) {
@@ -443,7 +443,8 @@ async function read(req: Request, path: string, admin: any) {
       if (!/^\d{1,7}$/.test(startRaw) || Number(startRaw) > 1_000_000 ||
         !/^\d{1,2}$/.test(limitRaw) || Number(limitRaw) < 1 || Number(limitRaw) > 50 ||
         (country !== null && !/^[A-Z]{2}$/.test(country)) ||
-        (query !== null && (!query.trim() || query.length > 100 || /[\u0000-\u001f\u007f]/.test(query)))) return fail('invalid_request')
+        (query !== null && (!query.trim() || query.length > 100 ||
+          [...query].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)))) return fail('invalid_request')
       const response = await callTarget(authorization.identity!, 'customer-giftcards', {
         action:'catalogue',start:Number(startRaw),limit:Number(limitRaw),
         ...(country === null ? {} : { country }),...(query === null ? {} : { query }),
@@ -487,17 +488,9 @@ async function read(req: Request, path: string, admin: any) {
           required_fields: contract.fields }
       }) })
     }
-    // SMS pricing depends on a live Daisy quote; use its existing catalogue.
-    const rawBody = JSON.stringify({ action: 'services' })
-    const capability = await signCustomerCapability(authorization.identity!, 'smsbus', rawBody)
-    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-    const response = await fetch(`${Deno.env.get('SUPABASE_URL') || ''}/functions/v1/smsbus`, {
-      method: 'POST', headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey,
-        'Content-Type': 'application/json', 'x-tally-api-capability': capability }, body: rawBody,
-      signal: AbortSignal.timeout(20_000),
-    })
-    const data = await response.json().catch(() => null)
-    return data ? json(data, response.status) : fail('unavailable', 503)
+    // SMS pricing depends on its live catalogue. Apply the same bounded,
+    // redirect-refusing transport used for every other delegated target.
+    return callTarget(authorization.identity!, 'smsbus', { action: 'services' }, 20_000, 'unavailable')
   }
   if (path === '/v1/quote') {
     if (requested === 'telegram') {

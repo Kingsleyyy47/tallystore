@@ -11,6 +11,7 @@ import { dispatchPartnerWebhookEvent } from '../_shared/partner-webhook-dispatch
 import { createRuntimePinnedWebhookTransport } from '../_shared/partner-webhook-transport.ts'
 import { listPartnerExternalReconciliationCases, probePartnerExternalReconciliationCase } from '../_shared/partner-external-reconciliation.ts'
 import { reconcilePartnerDispatchReceipt } from '../_shared/partner-receipt-recovery.ts'
+import { IStarProvider } from '../_shared/istar-provider.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -458,28 +459,16 @@ function normalizeNigerianPhone(value: unknown) {
   return phone
 }
 
-function istarHeaders() {
-  const apiKey = Deno.env.get('ISTAR_API_KEY') || ''
-  if (!apiKey) throw new Error('Telegram provider is not configured')
-  return { 'API-Key': apiKey, 'Content-Type': 'application/json' }
+function istarProvider() {
+  return new IStarProvider({ apiKey: Deno.env.get('ISTAR_API_KEY') || '', baseURL: ISTAR_BASE })
 }
 
-async function istarGet(path: string) {
-  const response = await fetch(`${ISTAR_BASE}${path}`, { headers: istarHeaders() })
-  const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(data?.message || data?.error || `iStar API error ${response.status}`)
-  return data
+async function istarGet(path: string): Promise<any> {
+  return istarProvider().get(path)
 }
 
-async function istarPost(path: string, body: unknown, idempotencyKey: string) {
-  const response = await fetch(`${ISTAR_BASE}${path}`, {
-    method: 'POST',
-    headers: { ...istarHeaders(), 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify(body),
-  })
-  const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(data?.message || data?.error || `iStar API error ${response.status}`)
-  return data
+async function istarPost(path: string, body: unknown, idempotencyKey: string): Promise<any> {
+  return istarProvider().post(path, body, idempotencyKey)
 }
 
 async function getTelegramStarPricing(admin: SupabaseAdmin) {

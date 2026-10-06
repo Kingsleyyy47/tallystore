@@ -1,5 +1,5 @@
 // One request per call. The deadline covers fetch, headers and streamed body.
-export async function serverJson(url: string, init: RequestInit,
+export async function serverText(url: string, init: RequestInit,
   options: { timeoutMs: number; maxResponseBytes?: number; fetcher?: typeof fetch }) {
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 25_000) throw new Error('Supplier request failed')
   const maxBytes = options.maxResponseBytes ?? 1_048_576
@@ -36,8 +36,15 @@ export async function serverJson(url: string, init: RequestInit,
     const bytes = new Uint8Array(size); let offset = 0
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
     if (expired) throw new Error('Supplier request failed')
-    try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) }
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
     catch { throw new Error('Supplier request failed') }
   } catch { throw new Error('Supplier request failed') }
   finally { clearTimeout(timer); cancel(); controller.abort() }
+}
+
+export async function serverJson(url: string, init: RequestInit,
+  options: { timeoutMs: number; maxResponseBytes?: number; fetcher?: typeof fetch }) {
+  const raw = await serverText(url, init, options)
+  try { return JSON.parse(raw) }
+  catch { throw new Error('Supplier request failed') }
 }
