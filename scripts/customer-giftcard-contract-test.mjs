@@ -167,7 +167,7 @@ const oversizedStream = new ReadableStream({
   cancel() { oversizedStreamCancelled = true },
 })
 const oversized = new GiftCardProvider('synthetic-secret', async () => new Response(oversizedStream))
-await assert.rejects(() => oversized.invoice('invoice-123'), /too large/)
+await assert.rejects(() => oversized.invoice('invoice-123'), /^Error: Supplier request failed$/)
 assert.equal(oversizedStreamCancelled, true, 'Oversized streamed responses must cancel before buffering more bytes')
 const realSetTimeout = globalThis.setTimeout
 try {
@@ -179,14 +179,22 @@ try {
     init.signal.addEventListener('abort', () => { aborted = true })
     return new Promise(() => {})
   })
-  await assert.rejects(() => hung.pay('invoice-123'), /deadline/)
+  await assert.rejects(() => hung.pay('invoice-123'), /^Error: Supplier request failed$/)
   assert.equal(attempted, 1, 'Timeout must not retry a paid request')
   assert.equal(aborted, true)
   let hungBodyCancelled = false
   const body = new ReadableStream({ cancel() { hungBodyCancelled = true } })
   const hungBody = new GiftCardProvider('synthetic-secret', async () => new Response(body))
-  await assert.rejects(() => hungBody.invoice('invoice-123'), /deadline/)
+  await assert.rejects(() => hungBody.invoice('invoice-123'), /^Error: Supplier request failed$/)
   assert.equal(hungBodyCancelled, true, 'Deadline must cancel a stalled response body reader')
+  let lateBodyCancelled = false
+  const late = new GiftCardProvider('synthetic-secret', async () => {
+    await new Promise(resolve => realSetTimeout(resolve, 20))
+    return new Response(new ReadableStream({ cancel() { lateBodyCancelled = true } }))
+  })
+  await assert.rejects(() => late.invoice('invoice-123'), /^Error: Supplier request failed$/)
+  await new Promise(resolve => realSetTimeout(resolve, 35))
+  assert.equal(lateBodyCancelled, true, 'Response arriving after deadline must not leave a reader open')
 } finally { globalThis.setTimeout = realSetTimeout }
 
 console.log('Customer gift-card pure contract and mocked provider tests passed')

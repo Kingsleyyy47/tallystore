@@ -23,7 +23,7 @@ const answer=value=>new Response(JSON.stringify(value),{headers:{'Content-Type':
 const copy=value=>JSON.parse(JSON.stringify(value))
 
 function fixture(options={}) {
-  const calls={rpc:[],post:[],get:[],authorize:0,create:0,pay:0,bind:0,completed:0,unknown:0,alerts:0}
+  const calls={rpc:[],post:[],get:[],rates:[],authorize:0,create:0,pay:0,bind:0,completed:0,unknown:0,alerts:0}
   let handler, finalQuote=options.finalized?copy(expectedQuote):null, status='pending', claimed=false, journal=null
   let balanceReads=0
   const env={SUPABASE_URL:'https://synthetic.invalid',SUPABASE_ANON_KEY:'synthetic-public',
@@ -35,7 +35,7 @@ function fixture(options={}) {
   const admin={
     from(table){const state={key:null};return {select(){return this},eq(key,value){if(key==='key')state.key=value;return this},
       async maybeSingle(){if(table==='profiles')return {data:{is_admin:false,is_staff:false,account_suspended:false},error:null}
-        if(table==='app_settings')return {data:state.key==='ngn_usd_rate'?{value:'100'}:
+        if(table==='app_settings')return {data:state.key==='ngn_usd_rate'?{value:options.noStoredUsdRate?null:'100'}:
           state.key==='ngn_eur_rate'?{value:'110'}:null,error:null}
         throw Error('unexpected table')},order(){return this},async limit(){return {data:[order()],error:null}}}},
     async rpc(name,args){calls.rpc.push({name,args:copy(args)})
@@ -103,6 +103,13 @@ function fixture(options={}) {
     Deno:{serve(fn){handler=fn},env:{get(name){return env[name]}}},
     async fetch(input,init={}){
       const url=String(input)
+      if(url==='https://open.er-api.com/v6/latest/USD'){
+        assert.equal(init.method,'GET');assert.equal(init.redirect,'error');assert.equal(init.credentials,'omit')
+        assert.equal(init.cache,'no-store');assert.ok(init.signal)
+        calls.rates.push(url)
+        return options.rateResponse || answer(options.exchangeRates || {result:'success',
+          time_last_update_unix:Math.floor(Date.now()/1000),rates:{NGN:100}})
+      }
       assert.ok(url.startsWith('https://api.bitrefill.com/v2/'),'only fixed supplier origin')
       assert.equal(init.redirect,'error');assert.equal(init.credentials,'omit')
       if(init.method==='POST')calls.post.push({url,body:JSON.parse(init.body)})
@@ -171,6 +178,20 @@ assert.equal(h.calls.create,1);assert.equal(h.calls.authorize,0)
 h=fixture({initialLowBalance:true});r=await h.post(quoteRequest)
 assert.equal(r.body.code,'PROVIDER_BALANCE_LOW');assert.equal(h.calls.alerts,1)
 assert.equal(h.calls.authorize,0);assert.equal(h.calls.pay,0)
+h=fixture({noStoredUsdRate:true});r=await h.post(quoteRequest)
+assert.equal(r.body.quote.amount_ngn,520);assert.equal(h.calls.rates.length,1)
+for(const exchangeRates of [
+  {result:'success',time_last_update_unix:Math.floor(Date.now()/1000)-200000,rates:{NGN:100}},
+  {result:'success',time_last_update_unix:Math.floor(Date.now()/1000)+1000,rates:{NGN:100}},
+  {result:'success',time_last_update_unix:Math.floor(Date.now()/1000),rates:{NGN:0}},
+  {result:'error',time_last_update_unix:Math.floor(Date.now()/1000),rates:{NGN:100}},
+]){
+  h=fixture({noStoredUsdRate:true,exchangeRates});r=await h.post(quoteRequest)
+  assert.equal(r.body.success,false);assert.equal(h.calls.authorize,0);assert.equal(h.calls.pay,0)
+}
+h=fixture({noStoredUsdRate:true,rateResponse:new Response('x'.repeat(65_537))});r=await h.post(quoteRequest)
+assert.equal(r.body.success,false);assert.equal(h.calls.rates.length,1)
+assert.equal(h.calls.authorize,0);assert.equal(h.calls.pay,0,'oversized exchange-rate response cannot authorize purchase')
 h=fixture();r=await h.post(quoteRequest)
 assert.equal(r.status,200);assert.equal(r.body.quote_id,quoteId)
 assert.equal(r.body.quote.amount_ngn,520);assert.equal(r.body.quote.unit_amount_ngn,260)

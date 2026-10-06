@@ -1,6 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts'
 import { GiftCardProvider } from '../_shared/customer-giftcard-provider.ts'
+import { serverJson } from '../_shared/server-json-transport.ts'
 import { partnerGiftCardCatalogue as giftCardCatalogue } from '../_shared/partner-giftcard-catalogue.ts'
 import {
   parseGiftCardSelection, selectGiftCardDenomination, unwrapGiftCardData, validateCanonicalGiftCardRequest,
@@ -137,17 +138,15 @@ async function rateToNgn(currency: GiftCardQuote['billing_currency'],admin: any)
   if (error) throw new Error('PRICE_UNAVAILABLE')
   let usdRate = Number(data?.value)
   if (!Number.isFinite(usdRate) || usdRate <= 0) {
-    const response = await fetch('https://open.er-api.com/v6/latest/USD',{ redirect:'error',signal:AbortSignal.timeout(8000) })
-    if (!response.ok || response.redirected) throw new Error('PRICE_UNAVAILABLE')
-    const rates = await response.json()
+    const rates = object(await serverJson('https://open.er-api.com/v6/latest/USD',
+      { method:'GET',headers:{ Accept:'application/json' } },{ timeoutMs:8000,maxResponseBytes:65_536 }))
     const age = Date.now() - Number(rates?.time_last_update_unix) * 1000
-    usdRate = Number(rates?.rates?.NGN)
+    usdRate = Number(object(rates?.rates)?.NGN)
     if (rates?.result !== 'success' || !Number.isFinite(usdRate) || usdRate <= 0 || !Number.isFinite(age) || age < -300000 || age > 172800000) throw new Error('PRICE_UNAVAILABLE')
   }
   if (currency === 'USD') return decimal(usdRate)
-  const response = await fetch('https://api.exchange.coinbase.com/products/BTC-USD/ticker',{ redirect:'error',signal:AbortSignal.timeout(8000) })
-  if (!response.ok || response.redirected) throw new Error('PRICE_UNAVAILABLE')
-  const ticker = await response.json()
+  const ticker = object(await serverJson('https://api.exchange.coinbase.com/products/BTC-USD/ticker',
+    { method:'GET',headers:{ Accept:'application/json' } },{ timeoutMs:8000,maxResponseBytes:65_536 }))
   const usd = Number(ticker?.price)
   const age = Date.now() - Date.parse(String(ticker?.time || ''))
   if (!Number.isFinite(usd) || usd <= 0 || !Number.isFinite(age) || age < -300000 || age > 300000) throw new Error('PRICE_UNAVAILABLE')

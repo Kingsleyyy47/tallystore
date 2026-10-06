@@ -1,4 +1,5 @@
 import { validateGiftCardPurchaseSelection, type GiftCardPurchaseSelection } from './customer-giftcard-contract.ts'
+import { serverJson } from './server-json-transport.ts'
 
 // Bitrefill Personal API: Bearer token with the api.bitrefill.com host.
 const ORIGIN = 'https://api.bitrefill.com/v2'
@@ -7,35 +8,6 @@ const PRODUCT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,179}$/
 const MAX_RESPONSE_BYTES = 1_000_000
 const GET_DEADLINE_MS = 12_000
 const POST_DEADLINE_MS = 20_000
-
-async function limitedJson(response: Response,
-  trackReader: (reader: ReadableStreamDefaultReader<Uint8Array> | null) => void): Promise<unknown> {
-  const declared = Number(response.headers?.get('content-length'))
-  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) throw new Error('Provider response too large')
-  if (!response.body) throw new Error('Provider invalid response')
-  let raw = ''
-  const reader = response.body.getReader()
-  trackReader(reader)
-  const decoder = new TextDecoder('utf-8', { fatal: true })
-  let bytes = 0
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      bytes += value.byteLength
-      if (bytes > MAX_RESPONSE_BYTES) throw new Error('Provider response too large')
-      raw += decoder.decode(value, { stream: true })
-    }
-    raw += decoder.decode()
-  } finally {
-    trackReader(null)
-    void reader.cancel().catch(() => {})
-  }
-  let parsed: unknown
-  try { parsed = JSON.parse(raw) } catch { throw new Error('Provider invalid response') }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Provider invalid response')
-  return parsed
-}
 
 // Only the caller decides whether a financial POST is allowed. This client
 // sends each call once, never retries, and never logs credentials or responses.
@@ -49,36 +21,14 @@ export class GiftCardProvider {
   }
 
   private async call(path: string, body?: Record<string, unknown>): Promise<unknown> {
-    const controller = new AbortController()
-    let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null
     const milliseconds = body === undefined ? GET_DEADLINE_MS : POST_DEADLINE_MS
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        controller.abort()
-        if (activeReader) void activeReader.cancel().catch(() => {})
-        reject(new Error('Provider deadline'))
-      }, milliseconds)
-    })
-    try {
-      const request = (async () => {
-        const response = await this.doFetch(`${ORIGIN}${path}`, {
-          method: body === undefined ? 'GET' : 'POST',
-          redirect: 'error',
-          credentials: 'omit',
-          cache: 'no-store',
-          headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          signal: controller.signal,
-        })
-        if (!response.ok || response.redirected) throw new Error('Provider unavailable')
-        return limitedJson(response, reader => { activeReader = reader })
-      })()
-      return await Promise.race([request, deadline])
-    } finally {
-      controller.abort()
-      if (timer) clearTimeout(timer)
-    }
+    const parsed = await serverJson(`${ORIGIN}${path}`, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }, { timeoutMs: milliseconds, maxResponseBytes: MAX_RESPONSE_BYTES, fetcher: this.doFetch })
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Provider invalid response')
+    return parsed
   }
 
   product(id: string) {

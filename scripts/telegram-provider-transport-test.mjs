@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {telegramProviderJson} from '../supabase/functions/_shared/telegram-provider-transport.ts'
+import {serverJson} from '../supabase/functions/_shared/server-json-transport.ts'
 const enc=new TextEncoder(),url='https://supplier.invalid/orders/star'
 let calls=0
 assert.deepEqual(await telegramProviderJson(url,{method:'POST',body:'{}'},{timeoutMs:100,fetcher:async(u,o)=>{
@@ -23,4 +24,10 @@ await reject(async()=>new Response(new ReadableStream({start(c){c.enqueue(new Ui
 assert.equal(canceled,true,'oversize streamed body cancelled')
 calls=0;await reject(async()=>{calls++;return Response.json({error:'no'},{status:500})});assert.equal(calls,1,'no automatic paid retry')
 await assert.rejects(telegramProviderJson(url,{}, {timeoutMs:25001,fetcher:async()=>{throw Error('must not run')}}))
+for (const maxResponseBytes of [0, -1, 1.5, 1_048_577])
+ await assert.rejects(serverJson(url,{}, {timeoutMs:100,maxResponseBytes,fetcher:async()=>{throw Error('must not run')}}))
+let cappedCancelled=false
+await assert.rejects(serverJson(url,{}, {timeoutMs:100,maxResponseBytes:65_536,fetcher:async()=>new Response(
+ new ReadableStream({start(c){c.enqueue(new Uint8Array(65_537))},cancel(){cappedCancelled=true}}))}))
+assert.equal(cappedCancelled,true,'exchange-rate-sized limit is enforced on actual streamed bytes')
 console.log('Telegram supplier transport: bounded headers/body deadline, ignored abort, active/late reader cancellation, 1 MiB cap, safe errors and exactly one paid request passed (offline).')

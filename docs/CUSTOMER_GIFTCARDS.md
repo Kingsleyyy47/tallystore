@@ -16,11 +16,20 @@ sources. Existing warnings, warning routines, grants and financial rows were
 preserved. This allows a confirmed supplier balance shortfall to reach the existing
 staff warning flow when the new checkout is enabled.
 
+The additional `20261006020000_customer_giftcard_invoice_quotes.sql` migration is
+prepared and tested locally, not applied to either live project. It replaces the
+price-candidate flow below with a quote backed by one verified unpaid invoice.
+It checks the exact existing function bodies, security attributes, owners,
+privileges, constraints, triggers and table shapes before changing authorization.
+It requires empty customer gift-card order and dispatch tables; existing orders
+need a separately reviewed migration.
+
 ## Database contract
 
 Migration `20261005034000` creates safe customer order summaries and a private
-immutable dispatch record. Quotes contain the selected product, denomination,
-quantity, approved NGN total and supplier billing-price candidate. The stable
+immutable dispatch record. The new invoice quote revision stores the selected
+product, denomination, quantity, verified invoice payment total and currency,
+complete child-order ID set, approved NGN total, owner and expiry. The stable
 request fingerprint also includes the approved NGN total. An identical request
 can retrieve its existing order before any supplier request; changing the same
 key's selection or approved amount is rejected.
@@ -28,7 +37,10 @@ key's selection or approved amount is rejected.
 Purchases use the existing canonical wallet reservation, capture and release
 functions. Stored wallet balance alone cannot authorize a purchase. The database
 checks ordinary customer role, suspension and financial security version before
-each one-use invoice creation or payment claim.
+each one-use quote consumption or payment claim. Quote creation is durably
+claimed before its unpaid provider POST. The same quote intent never recreates
+an invoice, including after a lost acknowledgement. New quote intents are rate
+limited and an unresolved creation blocks another intent for ten minutes.
 
 Completion requires a bound invoice and exactly the purchased number of distinct
 redemptions matching the product, denomination, package and currency. Each unit
@@ -46,8 +58,14 @@ functions, mutate orders, or read the private dispatch table.
 
 The new shared provider client uses the fixed Bitrefill API origin, bounded
 requests and response reads, no redirects and no automatic POST retries. It
-creates an unpaid balance invoice. The authenticated handler fences invoice
-creation and payment with separate one-use database claims.
+creates one unpaid balance invoice for a quote intent. The authenticated handler
+fences invoice creation and payment with separate one-use database claims.
+Purchase consumes the stored quote and pays that original invoice; it does not
+create a replacement invoice after reserving wallet funds. Every fixed package
+quote requires its explicit `unit_value` from product details. The public quote
+returns `quote_id`, `expires_at` and retail prices; supplier costs and invoice IDs
+remain private. Purchase binds the quote ID and exact selection to its separate
+idempotency key.
 The Personal API uses the fixed `https://api.bitrefill.com/v2` origin and a Bearer
 key stored only in Supabase, as documented in the
 [Bitrefill Personal API quickstart](https://docs.bitrefill.com/docs/quickstart-2).
@@ -68,19 +86,26 @@ before checking merchant currency and supplier price units. The owner deferred
 this key replacement and asked to be reminded only when they ask; no scheduled
 reminder or supplier payment was created.
 
-1. Verify the merchant account's product-price billing units and rounding against
-   real read-only responses. Product denomination currency does not prove billing
-   currency, and price candidates must not be assumed to be satoshis or major units.
-   Only then set the Supabase-only `BITREFILL_PRICE_UNIT` to `major` for USD/NGN or
-   `satoshi` for BTC. An absent or mismatched setting cannot authorize a wallet hold.
+1. Verify actual invoice payment and merchant-balance units. Product denomination
+   currency and catalogue price candidates do not prove invoice billing units.
+   Only then set the Supabase-only `BITREFILL_INVOICE_PRICE_UNIT` to `major` for
+   supported USD/EUR/NGN billing or `satoshi` for verified integer BTC units.
+   EUR billing also requires the configured NGN/EUR rate. This new setting is
+   separate from the existing airtime `BITREFILL_PRICE_UNIT` setting. An absent
+   or mismatched setting cannot authorize a wallet hold. Exchange-rate fallback
+   reads have full header/body deadlines, strict response-size limits and fresh
+   timestamp checks; malformed or stale rates cannot finalize a quote.
 2. Keep the `CUSTOMER_GIFTCARDS_ENABLED` purchase gate off until the supplier
    credentials and price units have been verified. The prepared authenticated
    handler has strict field allowlists, stable retries, owner pricing from
    migration 290, and exact invoice checks before its payment claim.
 3. Wire the customer page to server quotes and owned redemptions, preserving
    historical gift-card orders. Verify partial delivery and uncertain-payment UX.
-4. Add a separately reviewed customer API scope only after the engine is ready;
-   preserve partner access semantics and the customer's Coming Soon route.
+4. The Gift Cards customer API scope and quote/order routes are prepared locally
+   with section-bound delegation. Apply their reviewed migrations and deploy the
+   matching engine together; preserve explicit customer restrictions, partner
+   access semantics and the customer's Coming Soon route. See
+   [the prepared customer API contract](CUSTOMER_API.md).
 
 The focused wallet tests execute the actual reservation and settlement routines.
 The SOURCE migration runner proves the new access rules and rollback probe while
