@@ -19,7 +19,6 @@ import {
   Gift,
   Link2,
   Users,
-  Banknote,
   ShieldCheck,
   Tag,
   Sparkles,
@@ -56,7 +55,7 @@ export default function HowItWorksPage() {
           </h1>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
             Everything you need to know about buying accounts, funding your wallet,
-            earning rewards, and getting help if something's unclear.
+            Tally Circle, and getting help if something's unclear.
           </p>
         </div>
 
@@ -91,8 +90,8 @@ export default function HowItWorksPage() {
               },
               {
                 icon: KeyRound,
-                title: '4. Get Instant Access',
-                desc: 'Your account login details are delivered immediately to your Orders page — no waiting, no manual handoff.',
+                title: '4. View Your Order',
+                desc: 'Open Orders to see your delivered login details. Supplier orders may take a little longer; their progress is shown there too.',
                 color: 'from-orange-500 to-orange-600',
               },
             ].map((step) => {
@@ -192,8 +191,8 @@ export default function HowItWorksPage() {
             <CardContent className="p-5 flex items-start gap-3">
               <ShieldCheck className="h-5 w-5 text-primary mt-0.5 flex-shrink-0" />
               <p className="text-sm text-muted-foreground">
-                Both payment methods are connected directly to your account, and both credit your wallet
-                automatically — you never need to message support to confirm a deposit went through.
+                Both payment methods are connected directly to your account and credit your wallet
+                automatically once the payment is confirmed.
                 If a deposit doesn't reflect after a few minutes, check Wallet → Transaction History
                 before reaching out.
               </p>
@@ -207,7 +206,8 @@ export default function HowItWorksPage() {
             <div className="p-2.5 rounded-xl bg-gradient-to-r from-pink-500 to-rose-600">
               <Gift className="h-5 w-5 text-white" />
             </div>
-            <h2 className="text-2xl sm:text-3xl font-display font-bold">How to Refer</h2>
+            <h2 className="text-2xl sm:text-3xl font-display font-bold">Tally Circle</h2>
+            <Badge variant="outline">Coming soon</Badge>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -218,8 +218,8 @@ export default function HowItWorksPage() {
                 </div>
                 <h3 className="font-semibold mb-2">1. Get Your Link</h3>
                 <p className="text-sm text-muted-foreground">
-                  Every account has a unique reward code and link on the Rewards page. Copy it
-                  and share it however you like — DMs, group chats, your own posts.
+                  When Tally Circle launches, you will be able to share your referral link
+                  with friends from your Tally Circle page.
                 </p>
               </CardContent>
             </Card>
@@ -228,22 +228,22 @@ export default function HowItWorksPage() {
                 <div className="w-12 h-12 mx-auto mb-4 rounded-xl bg-gradient-to-r from-pink-500 to-rose-600 flex items-center justify-center">
                   <Users className="h-6 w-6 text-white" />
                 </div>
-                <h3 className="font-semibold mb-2">2. They Sign Up</h3>
+                <h3 className="font-semibold mb-2">2. Build Your Circle</h3>
                 <p className="text-sm text-muted-foreground">
-                  Anyone who registers through your link (or types your code in at signup) is linked
-                  to you for rewards, permanently.
+                  Friends who join through your link and make qualifying verified deposits
+                  will count towards your progress. The requirements will be shown on that page.
                 </p>
               </CardContent>
             </Card>
             <Card className="border-border/50">
               <CardContent className="p-6 text-center">
                 <div className="w-12 h-12 mx-auto mb-4 rounded-xl bg-gradient-to-r from-pink-500 to-rose-600 flex items-center justify-center">
-                  <Banknote className="h-6 w-6 text-white" />
+                  <Tag className="h-6 w-6 text-white" />
                 </div>
-                <h3 className="font-semibold mb-2">3. You Earn</h3>
+                <h3 className="font-semibold mb-2">3. Unlock Discounts</h3>
                 <p className="text-sm text-muted-foreground">
-                  Every time they make a purchase, a percentage is credited to your reward balance.
-                  Withdraw it whenever you like from the Rewards page.
+                  Reach the qualifying referral goal to unlock product discounts.
+                  Your Tally Circle page will explain which purchases qualify and how much you save.
                 </p>
               </CardContent>
             </Card>
@@ -261,7 +261,7 @@ export default function HowItWorksPage() {
             >
               <Button>
                 <Gift className="h-4 w-4 mr-2" />
-                Open Rewards
+                Tally Circle — Coming soon
               </Button>
             </Link>
           </div>
@@ -282,8 +282,8 @@ export default function HowItWorksPage() {
                 <AccordionItem value="q1">
                   <AccordionTrigger>How fast do I get my account after buying?</AccordionTrigger>
                   <AccordionContent>
-                    Instantly. As soon as your payment is confirmed, the login details are released
-                    to your Orders page — there's no manual approval step.
+                    Available local stock is usually delivered immediately. Supplier delivery may
+                    take longer. Check Orders for the status and your delivered login details.
                   </AccordionContent>
                 </AccordionItem>
 
@@ -325,10 +325,10 @@ export default function HowItWorksPage() {
                 </AccordionItem>
 
                 <AccordionItem value="q6">
-                  <AccordionTrigger>Is there a limit to how much I can earn from rewards?</AccordionTrigger>
+                  <AccordionTrigger>How will Tally Circle work?</AccordionTrigger>
                   <AccordionContent>
-                    No cap — every qualifying purchase from everyone you've referred earns you a
-                    commission, for as long as they keep buying.
+                    Tally Circle is coming soon. Qualifying referrals will help you unlock product
+                    discounts. The referral requirements and discount details will be shown when it launches.
                   </AccordionContent>
                 </AccordionItem>
 

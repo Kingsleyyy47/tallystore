@@ -393,6 +393,20 @@ async function telegramAction(req: Request, path: string, admin: any) {
   delete payload.section
   return callTarget(authorization.identity!, 'telegram-stars', payload, 25_000)
 }
+async function smsAction(req: Request, path: string, admin: any) {
+  const input = await body(req)
+  if (input.section !== 'sms' || typeof input.order_id !== 'string' || !uuid.test(input.order_id) ||
+      Object.keys(input).some(key => !['section', 'order_id'].includes(key)) ||
+      new URL(req.url).search !== '') return fail('invalid_request')
+  const authorization = await authorize(req, admin, 'sms')
+  if (authorization.error) return authorization.error
+  // The existing SMS handler scopes the order to the capability's customer.
+  // Cancellation refunds only a provider-confirmed cancellation; never retry
+  // an ambiguous cancellation here or turn it into another paid purchase.
+  return callTarget(authorization.identity!, 'smsbus', {
+    action: path === '/v1/sms/status' ? 'check_otp' : 'cancel_otp', order_id: input.order_id,
+  }, 25_000, path === '/v1/sms/status' ? 'unavailable' : 'purchase_outcome_unknown')
+}
 async function purchase(req: Request, admin: any) {
   const input = await body(req)
   const requested = section(input.section)
@@ -587,6 +601,7 @@ serve(async (req) => {
     if (route.kind === 'airtime') return await airtimeAction(req, route.path, admin)
     if (route.kind === 'giftcards') return await giftcardAction(req, route.path, admin)
     if (route.kind === 'telegram') return await telegramAction(req, route.path, admin)
+    if (route.kind === 'sms') return await smsAction(req, route.path, admin)
     if (route.kind === 'read') return await read(req, route.path, admin)
     return fail('not_found', 404)
   } catch (error) {

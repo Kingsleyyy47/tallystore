@@ -8,6 +8,8 @@ for (const prefix of prefixes) {
   assert.deepEqual(customerApiRoute(`${prefix}/v1/keys`, 'POST'), { kind: 'manage', path: '/v1/keys' })
   assert.deepEqual(customerApiRoute(`${prefix}/v1/wallet`, 'GET'), { kind: 'read', path: '/v1/wallet' })
   assert.deepEqual(customerApiRoute(`${prefix}/v1/purchases`, 'POST'), { kind: 'purchase', path: '/v1/purchases' })
+  assert.deepEqual(customerApiRoute(`${prefix}/v1/sms/status`, 'POST'), { kind: 'sms', path: '/v1/sms/status' })
+  assert.deepEqual(customerApiRoute(`${prefix}/v1/sms/cancel`, 'POST'), { kind: 'sms', path: '/v1/sms/cancel' })
   assert.deepEqual(customerApiRoute(`${prefix}/v1/airtime/quote`, 'POST'), { kind: 'airtime', path: '/v1/airtime/quote' })
   assert.deepEqual(customerApiRoute(`${prefix}/v1/airtime/quote`, 'GET'), { kind: 'read', path: '/v1/airtime/quote' })
   assert.deepEqual(customerApiRoute(`${prefix}/v1/giftcards/quote`, 'POST'), { kind: 'giftcards', path: '/v1/giftcards/quote' })
@@ -39,6 +41,10 @@ for (const prefix of prefixes) {
     new Request(`${base}/v1/wallet?section=products`, { method: 'GET' }),
     new Request(`${base}/v1/purchases`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ section: 'products' }) }),
+    ...['status', 'cancel'].map(action => new Request(`${base}/v1/sms/${action}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section: 'sms', order_id: '30000000-0000-4000-8000-000000000001' }),
+    })),
     new Request(`${base}/v1/airtime/quote`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ section: 'airtime', phone_number: '+14155550123', operator_id: 'operator-1',
         product_id: 'operator-1', package_id: 'bundle-1' }) }),

@@ -1501,16 +1501,35 @@ async function handleOrders(admin: SupabaseAdmin, userId: string) {
 async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request) {
   await assertPurchasingCustomer(admin, userId, req)
 
-  const key = getDaisyKey()
-  if (!key) throw new Error('SMS service is not configured')
   const serviceCode = String(body.service_id || body.project_id || '')
   if (!serviceCode) throw new Error('service_id is required')
   const idempotencyKey = String(body.idempotency_key || '')
   if (!idempotencyKey || idempotencyKey.length < 10) throw new Error('Valid idempotency_key is required')
+  const expectedPriceNgn = Math.round(Number(body.expected_price_ngn))
+  if (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0) {
+    throw new Error('Current displayed price is required. Please refresh and try again.')
+  }
+  const { data: existing, error: existingError } = await admin.from('sms_orders').select('*').eq('user_id', userId).eq('idempotency_key', idempotencyKey).maybeSingle()
+  if (existingError) throw new Error('Could not verify SMS purchase idempotency state')
+  // Recovery is bound to the owned original request, not today's catalogue,
+  // supplier stock, or the funds remaining after its debit. It never allocates
+  // another number or issues a refund; uncertain results retain their guard.
+  if (existing) {
+    const sameRequest = existing.user_id === userId && existing.idempotency_key === idempotencyKey &&
+      String(existing.service_id || '') === serviceCode && Number(existing.price_ngn) === expectedPriceNgn &&
+      existing.order_type === 'otp' && (body.quantity === undefined || Number(body.quantity) === 1)
+    if (!sameRequest) return json({ success: false,
+      error: 'This idempotency key was already used for a different SMS order request.', code: 'IDEMPOTENCY_REQUEST_CONFLICT' }, 409)
+    if (existing.status === 'processing' || existing.status === 'failed') return json({ success: false,
+      error: 'This SMS purchase attempt needs review. Please check your orders before trying again.',
+      code: 'SMS_OUTCOME_REVIEW_REQUIRED' }, 202)
+    return json({ success: true, data: publicSmsOrder(existing), idempotency_hit: true })
+  }
+  if (body.quantity !== undefined && Number(body.quantity) !== 1) throw new Error('SMS OTP quantity must be one')
+  const key = getDaisyKey()
+  if (!key) throw new Error('SMS service is not configured')
   const revenueContext = sanitizeRevenueRequestContext(body.revenue_context)
   const walletRequestForensics = await getWalletRequestForensics(req, 'smsbus:create-otp')
-
-  const { data: existing } = await admin.from('sms_orders').select('*').eq('user_id', userId).eq('idempotency_key', idempotencyKey).maybeSingle()
 
   // If a previous attempt debited the wallet but failed before creating the
   // SMS order row, do not replay that old debit into a fresh DaisySMS number.
@@ -1543,39 +1562,11 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
   if (!svc || !svc.is_enabled || svc.available_count <= 0) throw new Error('Service not available')
 
   const estimatedPriceNgn = svc.price_ngn
-  const expectedPriceNgn = Math.round(Number(body.expected_price_ngn))
-  if (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0) {
-    throw new Error('Current displayed price is required. Please refresh and try again.')
-  }
   if (expectedPriceNgn !== estimatedPriceNgn) {
     throw new Error(`Price changed from NGN ${expectedPriceNgn.toLocaleString()} to NGN ${estimatedPriceNgn.toLocaleString()}. Please refresh and try again.`)
   }
 
   await assertPurchasingCustomer(admin, userId, req, estimatedPriceNgn)
-
-  if (existing) {
-    const sameRequest =
-      String(existing.service_id || '') === serviceCode &&
-      Number(existing.price_ngn || 0) === estimatedPriceNgn &&
-      String(existing.order_type || '') === 'otp'
-
-    if (!sameRequest) {
-      return json({
-        success: false,
-        error: 'This idempotency key was already used for a different SMS order request.',
-        code: 'IDEMPOTENCY_REQUEST_CONFLICT',
-      }, 409)
-    }
-
-    if (existing.status === 'processing' || existing.status === 'failed') {
-      return json({
-        success: false,
-        error: 'This SMS purchase attempt needs review. Please check your orders before trying again.',
-        code: 'SMS_OUTCOME_REVIEW_REQUIRED',
-      }, 202)
-    }
-    return json({ success: true, data: publicSmsOrder(existing), idempotency_hit: true })
-  }
 
   await recordRevenueEvent(admin, {
     eventType: 'PAYMENT_STARTED',

@@ -18,6 +18,8 @@ Base URL: `https://<supabase-project>/functions/v1/customer-api`
 | GET | `/v1/orders?section=products` | Recent orders for that section |
 | GET | `/v1/orders/<uuid>?section=products` | One owned order; completed, financially captured product orders include delivered account details |
 | POST | `/v1/purchases` | Purchase through the existing section checkout engine |
+| POST | `/v1/sms/status` | Fetch the latest code/status for one owned SMS order through the existing provider reconciliation handler |
+| POST | `/v1/sms/cancel` | Request cancellation of one owned SMS order; refund only after provider confirmation |
 | POST | `/v1/airtime/check-phone` | Identify available international airtime operators and denominations for a phone number |
 | POST | `/v1/airtime/quote` | Obtain a fresh NGN airtime quote from the server |
 | POST | `/v1/airtime/status` | Check one owned airtime order; this may reconcile verified provider delivery without making a second payment |
@@ -43,6 +45,8 @@ Product example:
 ```
 
 SMS uses `section: "sms"`, `service_id`, `expected_price_ngn`, and `idempotency_key`. Its existing verified-wallet purchase engine is enabled for website purchases. Social Boost uses `section: "social_boost"`, `service_id`, `link`, `quantity`, `expected_price_ngn`, and `idempotency_key`, plus service-specific fields when required. The Social Boost catalogue lists required fields for each supported service, and its quote returns `expected_price_ngn` from the same server price calculation used by purchase. Fixed packages quote quantity 1; other supported services use per-1,000 pricing and service quantity limits. Social Boost purchases remain paused. All customer API catalogue and history routes remain behind the Coming Soon gate.
+
+The prepared SMS status and cancellation routes accept only `{ "section":"sms", "order_id":"<owned order UUID>" }` in a JSON POST body, with no query parameters. Use `/v1/sms/status` to poll for a code; the GET history endpoints are stored snapshots. `/v1/sms/cancel` delegates to the existing customer cancellation handler. A completed order cannot be cancelled, and an uncertain provider result does not authorize a refund or another purchase. If cancellation returns `purchase_outcome_unknown`, check status before trying another action. These routes are prepared locally and do not enable customer API access.
 
 Gift Cards use a `giftcards` section key and the existing customer gift-card checkout. Browse or search `/v1/catalogue?section=giftcards&start=0&limit=20`; use its `pagination.next_start` for the next page. Search text is limited to 100 characters and countries use two uppercase letters. The catalogue includes available gift cards and their denominations, with supplier costs and credentials removed. Catalogue prices remain unset until a fresh quote is requested. Send JSON such as `{ "section":"giftcards", "product_id":"<product ID>" }` to `/v1/giftcards/details`.
 

@@ -86,9 +86,13 @@ function normalizePurchasedCredentials(
 export default function CheckoutPage() {
   const { user } = useAuth()
   const location = useLocation()
-  const product = location.state?.productGroup?.id || new URLSearchParams(location.search).get('product') || ''
+  const checkoutParams = new URLSearchParams(location.search)
+  const product = location.state?.productGroup?.id || checkoutParams.get('product') || ''
+  const account = location.state?.accountId || checkoutParams.get('account') || ''
   // A change of account removes any previously displayed credentials immediately.
-  return <CheckoutAccount key={`${user?.id || 'signed-out'}:${product}`} />
+  // Pending purchase recovery stays keyed by user and product within CheckoutAccount,
+  // so a different account in the same group still inherits its unresolved hold.
+  return <CheckoutAccount key={`${user?.id || 'signed-out'}:${product}:${account}`} />
 }
 
 function CheckoutAccount() {
@@ -986,7 +990,7 @@ function CheckoutAccount() {
             {purchaseStatusUnknown && !purchasing && (
               <Alert>
                 <AlertDescription>
-                  This purchase is awaiting confirmation{pendingOrderId ? ` (order ${pendingOrderId})` : ''}. Check <Link to="/orders" className="font-semibold underline">order history</Link> or contact support before placing it again.
+                  A previous purchase for this product is awaiting confirmation{pendingOrderId ? ` (order ${pendingOrderId})` : ''}. Check <Link to="/orders" className="font-semibold underline">order history</Link> or contact support before placing it again.
                   <Button type="button" variant="outline" className="mt-3 w-full" disabled={checkingPurchaseStatus || !purchaseIdempotencyKeyRef.current} onClick={() => void checkPendingPurchase()}>
                     {checkingPurchaseStatus && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Check purchase status
                   </Button>

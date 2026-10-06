@@ -560,6 +560,37 @@ async function panelPayloadHash(params: Record<string, string | number>): Promis
   return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+// Match the original paid action using its persisted debit, without consulting
+// mutable catalogue prices, availability or the provider's current service ID.
+// Older debits did not record service_type; the exact action hash can identify
+// its supported normalization unambiguously. Missing evidence needs review.
+async function matchOriginalSmmAction(order: any, transaction: any, fields: Record<string, unknown>): Promise<boolean | 'unverifiable'> {
+  const hash = order.dispatch_payload_sha256;
+  const metadata = transaction?.metadata;
+  const externalId = Number(metadata?.service_external_id);
+  const quantity = Number(order.quantity);
+  if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash) || !transaction ||
+      transaction.user_id !== order.user_id || transaction.idempotency_key !== `smm:purchase:${order.idempotency_key}` ||
+      transaction.type !== 'purchase' || transaction.status !== 'completed' || (transaction.balance_type ?? 'wallet') !== 'wallet' ||
+      !Number.isFinite(Number(order.amount_ngn)) || Number(order.amount_ngn) <= 0 || Number(transaction.amount) !== -Number(order.amount_ngn) ||
+      typeof order.reference !== 'string' || !order.reference || transaction.reference !== order.reference ||
+      metadata?.dispatch_payload_sha256 !== hash || String(metadata?.service_id) !== String(order.service_id) ||
+      !Number.isSafeInteger(externalId) || externalId <= 0 || !Number.isSafeInteger(quantity) || quantity < 1 ||
+      Number(metadata?.quantity) !== quantity) return 'unverifiable';
+  const types = [...SMM_QUANTITY_TYPES, 'Custom Comments', 'Comment Replies', 'Mentions Custom List', 'Package', 'Custom Comments Package'];
+  for (const type of types) {
+    try {
+      const normalized = validateSmmOrderFields(type, fields);
+      const originalQuantity = quoteSmmOrder({ service_type: type, price_ngn: 1, min_quantity: 1,
+        max_quantity: Number.MAX_SAFE_INTEGER }, { ...normalized, quantity: fields.quantity }).quantity;
+      if (originalQuantity !== quantity) continue;
+      const params = buildPanelOrderParams({ service_type: type, external_id: externalId }, { ...normalized, actualQuantity: quantity });
+      if (await panelPayloadHash({ action: 'add', ...params }) === hash) return true;
+    } catch { /* A different supported normalization is not the original action. */ }
+  }
+  return false;
+}
+
 async function recordRevenueEvent(
   supabaseAdmin: any,
   input: {
@@ -648,26 +679,67 @@ serve(async (req) => {
 
     await assertPurchasingCustomer(supabaseAdmin, user.id, req);
 
+    const expectedPriceNgn = Math.round(Number(expected_price_ngn));
+    if (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0) {
+      throw new Error('Current displayed price is required. Please refresh and try again.');
+    }
+    const rawFields = { quantity, link, comments, usernames, username, hashtags, hashtag, keywords, answer_number, groups };
+
     // Check for duplicate order (idempotency)
-    const { data: existingOrder } = await supabaseAdmin
+    const { data: existingOrder, error: existingOrderError } = await supabaseAdmin
       .from('smm_orders')
-      .select('id, reference, status, service_id, quantity, amount_ngn, link, dispatch_payload_sha256')
+      .select('id, user_id, idempotency_key, reference, status, service_id, quantity, amount_ngn, link, dispatch_payload_sha256')
       .eq('user_id', user.id)
       .eq('idempotency_key', idempotency_key)
-      .single();
+      .maybeSingle();
+    if (existingOrderError) throw new Error('Could not verify SMM purchase idempotency state');
+
+    if (existingOrder && (existingOrder.user_id !== user.id || existingOrder.idempotency_key !== idempotency_key ||
+        String(existingOrder.service_id) !== String(service_id) || Number(existingOrder.amount_ngn) !== expectedPriceNgn ||
+        String(existingOrder.link || '') !== String(link || ''))) {
+      return new Response(JSON.stringify({ success: false,
+        error: 'This idempotency key was already used for a different SMM order request.', code: 'IDEMPOTENCY_REQUEST_CONFLICT' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 });
+    }
 
     // If a previous attempt debited the wallet but failed before creating the
     // SMM order row, a retry must not replay that old debit into a fresh panel
     // order. The prior failed attempt may already have been refunded.
     const { data: orphanedPurchaseTx, error: orphanedPurchaseError } = await supabaseAdmin
       .from('transactions')
-      .select('id, amount, status, balance_after, created_at')
+      .select('id, user_id, type, amount, status, balance_type, reference, idempotency_key, metadata, balance_after, created_at')
       .eq('user_id', user.id)
       .eq('idempotency_key', `smm:purchase:${idempotency_key}`)
       .maybeSingle();
 
     if (orphanedPurchaseError) {
       throw new Error('Could not verify SMM purchase idempotency state');
+    }
+
+    if (existingOrder) {
+      const match = await matchOriginalSmmAction(existingOrder, orphanedPurchaseTx, rawFields);
+      if (match === false) return new Response(JSON.stringify({ success: false,
+        error: 'This idempotency key was already used for a different SMM order request.', code: 'IDEMPOTENCY_REQUEST_CONFLICT' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 });
+      if (match === 'unverifiable') return new Response(JSON.stringify({ success: false,
+        code: 'SMM_DISPATCH_STATUS_UNCONFIRMED', error: 'This order needs review. Do not place the same request again.',
+        data: { order_id: existingOrder.id, reference: existingOrder.reference, status: existingOrder.status } }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 });
+      if (existingOrder.status === 'outcome_unknown') return new Response(JSON.stringify({ success: false,
+        code: 'SMM_SUPPLIER_OUTCOME_UNKNOWN', error: 'Order outcome is under review. Do not place it again; funds remain committed until resolved.',
+        data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'outcome_unknown' } }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 });
+      if (existingOrder.status === 'failed') return new Response(JSON.stringify({ success: false,
+        error: 'This order failed previously. Check its refund status before placing another order.',
+        data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'failed' } }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 });
+      if (existingOrder.status === 'pending') return new Response(JSON.stringify({ success: false,
+        code: 'SMM_DISPATCH_STATUS_UNCONFIRMED', error: 'This order is awaiting provider confirmation. Do not place it again; check order history or contact support.',
+        data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'pending' } }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 });
+      const { user_id: _owner, idempotency_key: _request, ...publicOrder } = existingOrder;
+      return new Response(JSON.stringify({ success: true, message: 'Order already exists', data: publicOrder, idempotency_hit: true }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 });
     }
 
     if (orphanedPurchaseTx && !existingOrder) {
@@ -706,16 +778,11 @@ serve(async (req) => {
       throw new Error('Service cost is unavailable. Please try again after services sync.');
     }
 
-    const rawFields = { quantity, link, comments, usernames, username, hashtags, hashtag, keywords, answer_number, groups };
     const normalizedFields = validateSmmOrderFields(service.service_type, rawFields);
     const quote = quoteSmmOrder(service, { ...normalizedFields, quantity });
     const actualQuantity = quote.quantity;
     const totalAmount = quote.amountNgn;
     const totalCost = Number(service.rate_usd) * (quote.package ? 1 : actualQuantity / 1000);
-    const expectedPriceNgn = Math.round(Number(expected_price_ngn));
-    if (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0) {
-      throw new Error('Current displayed price is required. Please refresh and try again.');
-    }
     if (expectedPriceNgn !== totalAmount) {
       throw new Error(`Price changed from ₦${expectedPriceNgn.toLocaleString()} to ₦${totalAmount.toLocaleString()}. Please refresh and try again.`);
     }
@@ -724,74 +791,6 @@ serve(async (req) => {
     const orderParams = buildPanelOrderParams(service, { ...normalizedFields, actualQuantity });
     // This is the exact public, credential-free paid action sent by createOrder.
     const payloadHash = await panelPayloadHash({ action: 'add', ...orderParams });
-
-    if (existingOrder) {
-      const sameRequest =
-        String(existingOrder.service_id || '') === String(service.id) &&
-        Number(existingOrder.quantity || 0) === actualQuantity &&
-        Number(existingOrder.amount_ngn || 0) === totalAmount &&
-        String(existingOrder.link || '') === String(link || '') &&
-        (existingOrder.dispatch_payload_sha256 == null || existingOrder.dispatch_payload_sha256 === payloadHash);
-
-      if (!sameRequest) {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'This idempotency key was already used for a different SMM order request.',
-            code: 'IDEMPOTENCY_REQUEST_CONFLICT',
-          }),
-          {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            status: 409,
-          }
-        );
-      }
-
-      console.log('Duplicate SMM order detected for idempotency key.');
-      if (existingOrder.status === 'outcome_unknown') {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            code: 'SMM_SUPPLIER_OUTCOME_UNKNOWN',
-            error: 'Order outcome is under review. Do not place it again; funds remain committed until resolved.',
-            data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'outcome_unknown' },
-          }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 },
-        );
-      }
-      if (existingOrder.status === 'failed') {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'This order failed previously. Check its refund status before placing another order.',
-            data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'failed' },
-          }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 409 },
-        );
-      }
-      if (existingOrder.status === 'pending') {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            code: 'SMM_DISPATCH_STATUS_UNCONFIRMED',
-            error: 'This order is awaiting provider confirmation. Do not place it again; check order history or contact support.',
-            data: { order_id: existingOrder.id, reference: existingOrder.reference, status: 'pending' },
-          }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 },
-        );
-      }
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: 'Order already exists',
-          data: existingOrder,
-        }),
-        {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 200,
-        }
-      );
-    }
 
     const { data: unresolvedOrders, error: unresolvedOrdersError } = await supabaseAdmin
       .from('smm_orders')

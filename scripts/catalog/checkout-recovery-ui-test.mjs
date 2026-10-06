@@ -45,7 +45,7 @@ const mocks = {
       : { data: { enabled: false, is_member: false, discount_active: false, discount_percent: 0 }, error: null } };
     export async function getProductGroupById() { return product }
     export async function getCategoryById() { return { id: 'synthetic-category', name: 'Synthetic' } }
-    export async function getIndividualAccountById() { return null }
+    export async function getIndividualAccountById(id) { return id ? { id, product_group_id: product.id, status: 'available' } : null }
     export function computeDiscountedTotal(price, quantity) { return { total: price * quantity, discountPct: 0, originalTotal: price * quantity } }
     export async function previewDiscountCode() { return { valid: false } }
     export async function processPurchaseSecure(...args) {
@@ -80,15 +80,20 @@ const mocks = {
 const entry = `
   import React from 'react';
   import { createRoot } from 'react-dom/client';
-  import { BrowserRouter } from 'react-router-dom';
+  import { BrowserRouter, useNavigate } from 'react-router-dom';
   import CheckoutPage from ${JSON.stringify(join(root, 'src/pages/CheckoutPage.tsx'))};
   const mode = new URLSearchParams(location.search).get('case');
   const storageKey = 'tallystore:pending-purchase:synthetic-customer:synthetic-product';
   window.__checkoutFixture = { paidCalls: [], statusCalls: [], storageKey };
+  function Fixture() {
+    const navigate = useNavigate();
+    window.__checkoutFixture.goToAccount = accountId => navigate('/checkout?product=synthetic-product&account=' + accountId + '&case=' + mode);
+    return <CheckoutPage />;
+  }
   if (!['deferred', 'success', 'circle-error', 'circle-hung', 'visual-single', 'visual-bulk'].includes(mode)) localStorage.setItem(storageKey, JSON.stringify({
     idempotencyKey: 'original-synthetic-key', orderId: 'synthetic-order', quantity: 1, expectedAmountNgn: 200,
   }));
-  createRoot(document.getElementById('app')!).render(<BrowserRouter><CheckoutPage /></BrowserRouter>);
+  createRoot(document.getElementById('app')!).render(<BrowserRouter><Fixture /></BrowserRouter>);
 `
 
 await build({ stdin: { contents: entry, resolveDir: root, sourcefile: 'checkout-recovery-test-entry.tsx', loader: 'tsx' },
@@ -142,8 +147,8 @@ try {
     return value ? JSON.parse(value) : null
   }, storageKey)
   const calls = () => page.evaluate(() => ({ paid: window.__checkoutFixture.paidCalls, status: window.__checkoutFixture.statusCalls }))
-  const load = async testCase => {
-    await page.goto(`${origin}/checkout?product=synthetic-product&case=${testCase}`, { waitUntil: 'domcontentloaded' })
+  const load = async (testCase, accountId) => {
+    await page.goto(`${origin}/checkout?product=synthetic-product&case=${testCase}${accountId ? `&account=${accountId}` : ''}`, { waitUntil: 'domcontentloaded' })
     await page.getByText('SYNTHETIC CHECKOUT PRODUCT').first().waitFor()
   }
 
@@ -191,7 +196,7 @@ try {
   assert.equal(await saved(), null, 'Released attempt retained pending key')
   assert.equal((await calls()).paid.length, 0)
 
-  await load('success')
+  await load('success', 'synthetic-account-a')
   await page.getByRole('button', { name: 'Buy Now' }).click()
   await page.getByText('synthetic-user').last().waitFor()
   await page.getByText('synthetic-password', { exact: true }).waitFor()
@@ -199,6 +204,27 @@ try {
   assert.equal(await page.getByText('MAIL PASS', { exact: true }).count(), 0, 'Missing mail password acquired a phantom label')
   assert.equal(await saved(), null, 'Successful attempt retained pending key')
   assert.equal((await calls()).paid.length, 1)
+
+  await page.evaluate(() => window.__checkoutFixture.goToAccount('synthetic-account-b'))
+  await page.getByRole('button', { name: 'Buy Now' }).waitFor()
+  assert.equal(await page.getByTestId('credentials-dialog').count(), 0,
+    'Switching accounts in the same product group retained prior credentials')
+  assert.equal(await page.getByRole('button', { name: 'Purchase Complete' }).count(), 0,
+    'Switching accounts in the same product group retained the prior completed state')
+  assert.equal((await calls()).paid.length, 1, 'Account switch dispatched another paid purchase')
+
+  await load('deferred', 'synthetic-account-a')
+  await page.getByRole('button', { name: 'Buy Now' }).click()
+  await page.waitForFunction(() => window.__checkoutFixture.paidCalls.length === 1)
+  const unresolvedKey = (await saved()).idempotencyKey
+  await page.evaluate(() => window.__checkoutFixture.goToAccount('synthetic-account-b'))
+  await page.getByRole('button', { name: 'Order Being Checked' }).waitFor()
+  await page.getByText(/A previous purchase for this product is awaiting confirmation/).waitFor()
+  assert.equal((await saved()).idempotencyKey, unresolvedKey,
+    'Switching accounts cleared the original unresolved purchase reference')
+  assert.equal((await calls()).paid.length, 1,
+    'Switching accounts dispatched a duplicate paid purchase while status was unresolved')
+  await page.evaluate(key => { localStorage.removeItem(key); sessionStorage.removeItem(key) }, storageKey)
 
   await load('circle-error')
   await page.getByText(/Tally Circle status is unavailable/).waitFor()
