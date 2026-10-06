@@ -4246,6 +4246,7 @@ export default function AdminPage() {
           name: profile?.full_name || '',
           totalSpent: stats.totalSpent,
           totalDeposited: stats.totalDeposited,
+          orders: stats.orders,
           totalUnits: stats.totalUnits,
           lastPurchaseAt: stats.lastPurchaseAt,
           spentAfterEmail,

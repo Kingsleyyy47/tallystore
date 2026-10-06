@@ -115,7 +115,7 @@ export default function WalletPage() {
     setRecordedBalanceNeedsReview(false)
     if (!user?.id || walletLoading) return () => { active = false }
 
-    void supabase.rpc('my_wallet_funding_needs_review').then(({ data, error }) => {
+    void Promise.resolve(supabase.rpc('my_wallet_funding_needs_review')).then(({ data, error }) => {
       if (error) throw error
       if (active) setRecordedBalanceNeedsReview(data === true)
     }).catch((error) => {

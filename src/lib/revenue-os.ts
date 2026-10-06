@@ -277,7 +277,7 @@ export type RevenueProductAttribute = {
 
 export type RevenueFeatureSnapshot = {
   snapshotKey: string
-  scopeType: 'store' | 'product' | 'category' | 'customer' | 'session'
+  scopeType: 'store' | 'product' | 'category' | 'customer' | 'session' | 'commerce_section'
   scopeId: string
   windowStart?: string | null
   windowEnd: string

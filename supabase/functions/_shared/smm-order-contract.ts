@@ -18,7 +18,7 @@ const contracts: Record<string, { mode: 'quantity' | 'comments' | 'usernames' | 
   SEO: { mode: 'quantity', fields: ['link', 'quantity', 'keywords'] },
   'Invites from Groups': { mode: 'quantity', fields: ['link', 'quantity', 'groups'] },
 };
-export const getSmmOrderContract = (type: string) => Object.hasOwn(contracts, type) ? contracts[type] : null;
+export const getSmmOrderContract = (type: string) => Object.prototype.hasOwnProperty.call(contracts, type) ? contracts[type] : null;
 export const SMM_QUANTITY_TYPES = Object.keys(contracts).filter(type => contracts[type].mode === 'quantity');
 export function normalizeSmmLines(value: unknown): string {
   if (typeof value !== 'string' || value.length > 20_000 || /\0/.test(value)) throw new Error('Please check the order details.');

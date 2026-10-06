@@ -48,12 +48,12 @@ export default function Dashboard() {
     setOrdersLoading(true)
     const controller = new AbortController()
     const timer = setTimeout(() => { controller.abort(); if (active) { setOrdersError(true); setOrdersLoading(false) } }, 12000)
-    void supabase.from('orders_safe_history' as any)
+    void Promise.resolve(supabase.from('orders_safe_history' as any)
       .select('id,amount,status,created_at,product_name:account_details->>product_name')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(4)
-      .abortSignal(controller.signal)
+      .abortSignal(controller.signal))
       .then(({ data, error }) => {
         if (!active) return
         if (error) { setOrdersError(true); setOrders([]) }

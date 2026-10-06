@@ -221,7 +221,7 @@ export default function ChatWidget() {
                 product_id:      productId,
                 template_family: data?.templateId || null,
                 confidence:      data?.conversationContext?.confidence || null,
-              }).then(() => {}).catch(() => {})
+              }).then(() => {}, () => {})
             }
           })
         })
@@ -272,7 +272,7 @@ export default function ChatWidget() {
         .from('chat_sessions' as any)
         .update({ buy_click: true })
         .eq('id', sessionDbIdRef.current)
-        .then(() => {}).catch(() => {})
+        .then(() => {}, () => {})
     }
     setIsOpen(false)
   }

@@ -1110,7 +1110,9 @@ function OrderHistoryAccount() {
               const itemCount = accounts.length || order.account_details?.quantity || 1
               const firstAccount = accounts[0] || {}
               const credentialPreview = firstAccount.username || firstAccount.email || ''
-              const previewName = credentialPreview || (isCredentialVisibleOrder(order) ? 'Credentials ready' : 'Available after completion')
+              const previewName = typeof credentialPreview === 'string' && credentialPreview
+                ? credentialPreview
+                : (isCredentialVisibleOrder(order) ? 'Credentials ready' : 'Available after completion')
               
               return (
                 <Card key={order.id} className="overflow-hidden rounded-2xl border-slate-200 bg-white/90 shadow-sm dark:border-white/10 dark:bg-white/[0.035]">

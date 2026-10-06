@@ -45,11 +45,11 @@ export default function ProfilePage() {
     setPrefsLoading(true)
     const controller = new AbortController()
     const timer = setTimeout(() => { controller.abort(); if (active) { setPrefsError(true); setPrefsLoading(false) } }, 12000)
-    void supabase.from('customer_communication_preferences' as any)
+    void Promise.resolve(supabase.from('customer_communication_preferences' as any)
       .select('email_lifecycle_opt_in,email_promotions_opt_in')
       .eq('user_id', user.id)
-      .maybeSingle()
       .abortSignal(controller.signal)
+      .maybeSingle())
       .then(({ data, error }) => {
         if (!active) return
         if (error) setPrefsError(true)

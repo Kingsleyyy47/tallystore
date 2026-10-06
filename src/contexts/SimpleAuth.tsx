@@ -176,7 +176,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let disposed = false
-    const pendingSessionTimers = new Set<ReturnType<typeof setTimeout>>()
+    const pendingSessionTimers = new Set<number>()
     const syncSession = async (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
       if (disposed) return
       const sessionUser = session?.user ?? null

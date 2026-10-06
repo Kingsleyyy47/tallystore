@@ -130,7 +130,7 @@ function HistoryForUser({ userId }: { userId: string | null }) {
         return <article key={order.id} className="min-w-0 rounded-xl border p-3">
           <div className="flex flex-wrap items-baseline justify-between gap-1">
             <h3 className="min-w-0 break-words font-medium">{order.product_name}</h3>
-            <span className="text-xs capitalize text-muted-foreground">{order.status.replaceAll('_',' ')}</span>
+            <span className="text-xs capitalize text-muted-foreground">{order.status.split('_').join(' ')}</span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">{dateLabel(order.created_at)}
             {order.quantity !== null ? ` · Quantity ordered: ${order.quantity}` : ''}

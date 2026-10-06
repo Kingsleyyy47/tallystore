@@ -24,13 +24,15 @@ export interface ProductGroup {
   id: string
   category_id: string
   name: string
-  platform: string
-  age_range: string | null
-  country: string | null
-  price_per_unit: number
-  available_stock: number
+  description: string | null
+  price: number
+  features: unknown
+  stock_count: number
+  availability_status: string | null
+  is_sellable: boolean | null
   is_active: boolean
   created_at: string
+  quantity_discount_tiers: unknown
 }
 
 // Step 1: Get all categories

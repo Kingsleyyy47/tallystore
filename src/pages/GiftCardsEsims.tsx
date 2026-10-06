@@ -256,7 +256,7 @@ function GiftCardsEsimsInner() {
       const { data, error } = await supabase.rpc('get_my_bitrefill_order_history' as any);
 
       if (error) throw error;
-      setOrders((data || []) as Order[]);
+      setOrders((data || []) as BitrefillOrder[]);
     } catch (error) {
       console.error('Error fetching order history:', error);
     } finally {
@@ -611,7 +611,7 @@ function GiftCardsEsimsInner() {
                     onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                     className="h-12"
                   />
-                  <Button onClick={handleSearch} disabled={loadingProducts} className="h-12 px-6">
+                  <Button onClick={() => handleSearch()} disabled={loadingProducts} className="h-12 px-6">
                     {loadingProducts ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
                   </Button>
                 </div>

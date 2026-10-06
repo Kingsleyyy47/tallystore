@@ -2255,7 +2255,13 @@ export async function getProductGroupById(productGroupId: string): Promise<Produ
       return null
     }
 
-    return data
+    const relatedCategory = Array.isArray(data.categories) ? data.categories[0] : data.categories
+    return {
+      ...data,
+      categories: relatedCategory && typeof relatedCategory.name === 'string'
+        ? { name: relatedCategory.name }
+        : undefined,
+    }
   } catch (error) {
     console.error('Error getting product group:', error)
     return null
@@ -2287,6 +2293,21 @@ export async function getCategoryById(categoryId: string): Promise<Category | nu
 // New profile columns must not become browser-visible through admin search by default.
 const ADMIN_USER_SEARCH_COLUMNS =
   'id,email,full_name,created_at,updated_at,wallet_balance,is_admin,is_staff,account_suspended,suspension_reason,suspended_at,wallet_review_required'
+
+export type AdminUserSearchRow = {
+  id: string
+  email: string | null
+  full_name: string | null
+  created_at: string
+  updated_at: string
+  wallet_balance: number
+  is_admin: boolean
+  is_staff: boolean
+  account_suspended: boolean
+  suspension_reason: string | null
+  suspended_at: string | null
+  wallet_review_required: boolean
+}
 
 export type CustomerBalanceSort = 'balance_desc' | 'balance_asc' | 'joined_newest' | 'joined_oldest'
 export type CustomerBalanceRow = Pick<Profile, 'id' | 'wallet_balance' | 'created_at' | 'is_admin' | 'is_staff' | 'account_suspended' | 'wallet_review_required'> & {
@@ -2323,7 +2344,7 @@ export async function getCustomerBalancePage(
 }
 
 // Get all users for admin dashboard
-export async function getAllUsers(): Promise<Profile[]> {
+export async function getAllUsers(): Promise<AdminUserSearchRow[]> {
   try {
     const { data, error } = await supabase
       .from('profiles')
