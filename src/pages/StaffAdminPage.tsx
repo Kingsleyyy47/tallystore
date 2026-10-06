@@ -28,6 +28,7 @@ import {
   getCategories,
   getDiscountCodes,
   parseCSV,
+  getAccountImportRawLines,
   detectAccountImportMode,
   SITE_FORMATS,
   getUserCount,
@@ -131,7 +132,7 @@ type BulkImportReview = {
 }
 
 function getBulkLines(text: string): string[] {
-  return text.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  return getAccountImportRawLines(text).map(line => line.trim())
 }
 
 function buildBulkImportReview(text: string, formatKey?: string): BulkImportReview {
@@ -147,7 +148,9 @@ function buildBulkImportReview(text: string, formatKey?: string): BulkImportRevi
     if (lines.length > MAX_STAFF_BULK_ROWS + 1) {
       return { sourceRows: dataLines.length, parsedRows: 0, validRows: 0, invalidRows: 0, duplicateRows: 0, preview: [] }
     }
-    const input = skipHeader && !requiresCsvHeader ? dataLines.join('\n') : lines.join('\n')
+    const input = skipHeader && !requiresCsvHeader
+      ? getAccountImportRawLines(text).slice(1).join('\n')
+      : text
     const parsed = parseCSV(input, formatKey) as Array<Record<string, unknown>>
     const validRows = parsed.filter(row => Boolean(row?.password && (row?.username || row?.email))).length
     return {
@@ -1022,7 +1025,9 @@ export default function StaffAdminPage() {
       const text = await csvFile.text()
       const lines = getBulkLines(text)
       if (lines.length !== bulkReview.nonEmptyRows) throw new Error('The file changed during review. Select it again before uploading.')
-      const parseInput = bulkSkipHeader && !bulkReview.requiresCsvHeader ? lines.slice(1).join('\n') : text
+      const parseInput = bulkSkipHeader && !bulkReview.requiresCsvHeader
+        ? getAccountImportRawLines(text).slice(1).join('\n')
+        : text
       const parsed = parseCSV(parseInput, bulkFormat === 'auto' ? undefined : bulkFormat)
 
       if (parsed.length === 0 || parsed.length !== selectedSummary.parsedRows) {

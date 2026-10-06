@@ -76,6 +76,7 @@ import {
   getAdminSalesStats,
   bulkCreateIndividualAccounts,
   parseCSV,
+  getAccountImportRawLines,
   detectAccountImportMode,
   SITE_FORMATS,
   createProductTemplate,
@@ -196,7 +197,7 @@ type AdminImportReview = {
 }
 
 function getAdminImportLines(text: string): string[] {
-  return text.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  return getAccountImportRawLines(text).map(line => line.trim())
 }
 
 function analyzeAdminImport(text: string, formatKey?: string): AdminImportReview {
@@ -216,7 +217,9 @@ function analyzeAdminImport(text: string, formatKey?: string): AdminImportReview
     if (lines.length > MAX_ADMIN_IMPORT_ROWS + 1) {
       return { sourceRows: dataLines.length, parsedRows: 0, validRows: 0, invalidRows: 0, duplicateRows: 0, preview: [] }
     }
-    const input = skipHeader && !requiresCsvHeader ? dataLines.join('\n') : lines.join('\n')
+    const input = skipHeader && !requiresCsvHeader
+      ? getAccountImportRawLines(text).slice(1).join('\n')
+      : text
     const parsed = parseCSV(input, formatKey) as Array<Record<string, unknown>>
     const validRows = parsed.filter(row => Boolean(row?.password && (row?.username || row?.email))).length
     return {
@@ -3677,7 +3680,9 @@ export default function AdminPage() {
       const text = await csvFile.text()
       const lines = getAdminImportLines(text)
       if (lines.length !== csvReview.nonEmptyRows) throw new Error('File changed during review')
-      const parseInput = csvSkipHeader && !csvReview.requiresCsvHeader ? lines.slice(1).join('\n') : text
+      const parseInput = csvSkipHeader && !csvReview.requiresCsvHeader
+        ? getAccountImportRawLines(text).slice(1).join('\n')
+        : text
       const csvData = parseCSV(parseInput, csvFormat === 'auto' ? undefined : csvFormat)
 
       if (csvData.length === 0 || csvData.length !== summary.parsedRows) {

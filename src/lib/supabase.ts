@@ -1549,11 +1549,12 @@ function normalizeParsedAccountRow(input: Record<string, any>) {
   return row
 }
 
-function parsePlainCredentialLine(line: string, sep: string) {
+function parsePlainCredentialLine(line: string, sep: string, originalLine: string) {
   const parts = line.split(sep).map((p) => p.trim())
   const row: Record<string, any> = {
     username: parts[0] || '',
     password: parts[1] || '',
+    additional_info: { original_line: originalLine },
   }
 
   for (const part of parts.slice(2)) {
@@ -1595,21 +1596,23 @@ export function detectAccountImportMode(firstLine: string, formatKey?: string): 
   return 'unknown'
 }
 
+// Preserve each credential line exactly as read from the file, excluding the
+// line ending and an optional file-level UTF-8 BOM. Preview may trim a copy.
+export function getAccountImportRawLines(text: string): string[] {
+  return text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(line => line.trim().length > 0)
+}
+
 export function parseCSV(csvText: string, formatKey?: string): any[] {
-  const lines = csvText
-    .replace(/^\uFEFF/, '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
+  const lines = getAccountImportRawLines(csvText)
 
   if (lines.length === 0) return []
 
   // \u2500\u2500 Explicit format override \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   if (formatKey && SITE_FORMATS[formatKey]) {
     const fmt = SITE_FORMATS[formatKey]
-    return lines.map(line => {
-      const parts = line.split(fmt.sep).map((p: string) => p.trim())
-      const obj: Record<string, any> = {}
+    return lines.map(originalLine => {
+      const parts = originalLine.trim().split(fmt.sep).map((p: string) => p.trim())
+      const obj: Record<string, any> = { additional_info: { original_line: originalLine } }
       fmt.fields.forEach((field, i) => { obj[field] = parts[i] || '' })
       for (let i = fmt.fields.length; i < parts.length; i += 1) {
         if (parts[i]) addAccountExtraInfo(obj, 'extra', parts[i])
@@ -1619,10 +1622,10 @@ export function parseCSV(csvText: string, formatKey?: string): any[] {
   }
 
   // \u2500\u2500 TXT / plain-credential format detection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-  const mode = detectAccountImportMode(lines[0])
+  const mode = detectAccountImportMode(lines[0].trim())
   if (mode === 'pipe' || mode === 'colon') {
     const sep = mode === 'pipe' ? '|' : ':'
-    return lines.map(line => parsePlainCredentialLine(line, sep)).filter(r => r.username || r.password)
+    return lines.map(originalLine => parsePlainCredentialLine(originalLine.trim(), sep, originalLine)).filter(r => r.username || r.password)
   }
 
   // \u2500\u2500 CSV format: requires at least header + one data row \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -1665,12 +1668,12 @@ export function parseCSV(csvText: string, formatKey?: string): any[] {
     return aliases[key] || key
   }
 
-  const headers = parseCsvLine(lines[0]).map(normalizeHeader)
+  const headers = parseCsvLine(lines[0].trim()).map(normalizeHeader)
   if (!headers.includes('password') || (!headers.includes('username') && !headers.includes('email'))) return []
   const rows = lines.slice(1)
 
   return rows.map(row => {
-    const values = parseCsvLine(row)
+    const values = parseCsvLine(row.trim())
     const obj: any = {}
 
     headers.forEach((header, index) => {
