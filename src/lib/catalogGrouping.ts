@@ -1,6 +1,7 @@
 import type { ProductGroup } from '@/lib/supabase'
 
 type Region = { label: string; order: number }
+const MIXED_REGION: Region = { label: '🌍 Mixed regions', order: 12 }
 
 const REGIONS: Array<{ pattern: RegExp; region: Region }> = [
   { pattern: /\b(?:US|USA|UNITED STATES)\b/i, region: { label: '🇺🇸 United States', order: 1 } },
@@ -14,11 +15,15 @@ const REGIONS: Array<{ pattern: RegExp; region: Region }> = [
   { pattern: /\b(?:THAILAND|TURKEY|KOREA|SINGAPORE|PHILLIPINES|PHILIPPINES|ASIAN|ASIA)\b/i, region: { label: '🌏 Asia', order: 9 } },
   { pattern: /\b(?:BELGIUM|ITALY|PORTUGAL|SPAIN|POLAND|UKRAINE|EUROPE|EU)\b/i, region: { label: '🇪🇺 Europe', order: 10 } },
   { pattern: /\b(?:QATAR|ISREAL|ISRAEL)\b/i, region: { label: '🌍 Middle East', order: 11 } },
-  { pattern: /\b(?:RANDOM COUNTRY|FOREIGN|FORIEGN|MIXED)\b/i, region: { label: '🌍 Mixed regions', order: 12 } },
+  { pattern: /\b(?:RANDOM COUNTRY|FOREIGN|FORIEGN|MIXED)\b/i, region: MIXED_REGION },
 ]
 
 export function getProductRegion(name: string): Region {
-  return REGIONS.find(({ pattern }) => pattern.test(name))?.region || { label: 'Other', order: 99 }
+  const matches = REGIONS.filter(({ pattern }) => pattern.test(name))
+  // A product covering multiple named regions belongs in one mixed section.
+  // Classify the product name only; setup instructions are not its origin.
+  if (matches.length > 1) return MIXED_REGION
+  return matches[0]?.region || { label: 'Other', order: 99 }
 }
 
 export function groupProductsByRegion(products: ProductGroup[]) {
