@@ -8,6 +8,12 @@ export function customerApiRoute(pathname, method) {
   if (method === 'POST' && ['/v1/airtime/check-phone', '/v1/airtime/quote', '/v1/airtime/status'].includes(path)) {
     return { kind: 'airtime', path }
   }
+  if (method === 'POST' && ['/v1/giftcards/details', '/v1/giftcards/quote', '/v1/giftcards/status'].includes(path)) {
+    return { kind: 'giftcards', path }
+  }
+  if (method === 'POST' && ['/v1/telegram/recipient', '/v1/telegram/quote', '/v1/telegram/status'].includes(path)) {
+    return { kind: 'telegram', path }
+  }
   if (method === 'GET') return { kind: 'read', path }
   return { kind: 'not_found', path }
 }

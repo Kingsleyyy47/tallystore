@@ -1,4 +1,4 @@
-import { validateCanonicalGiftCardRequest, type CanonicalGiftCardRequest } from './customer-giftcard-contract.ts'
+import { validateGiftCardPurchaseSelection, type GiftCardPurchaseSelection } from './customer-giftcard-contract.ts'
 
 // Bitrefill Personal API: Bearer token with the api.bitrefill.com host.
 const ORIGIN = 'https://api.bitrefill.com/v2'
@@ -86,10 +86,24 @@ export class GiftCardProvider {
     return this.call(`/products/${encodeURIComponent(id)}`)
   }
 
+  catalogue({ start = 0, limit = 20, query, country }: {
+    start?: number; limit?: number; query?: string; country?: string
+  } = {}) {
+    if (!Number.isSafeInteger(start) || start < 0 || start > 1_000_000 ||
+      !Number.isSafeInteger(limit) || limit < 1 || limit > 50 ||
+      (query !== undefined && (!query.trim() || query.length > 100 || /[\u0000-\u001f\u007f]/.test(query))) ||
+      (country !== undefined && !/^[A-Z]{2}$/.test(country))) throw new Error('Invalid catalogue')
+    const params = new URLSearchParams({ start: String(start), limit: String(limit), include_test_products: 'false' })
+    if (query !== undefined) params.set('q', query)
+    else params.set('type', 'gift_card')
+    if (country !== undefined && query === undefined) params.set('country', country)
+    return this.call(`${query === undefined ? '/products' : '/products/search'}?${params.toString()}`)
+  }
+
   balance() { return this.call('/accounts/balance') }
 
-  createUnpaidInvoice(rawRequest: CanonicalGiftCardRequest) {
-    const request = validateCanonicalGiftCardRequest(rawRequest)
+  createUnpaidInvoice(rawRequest: GiftCardPurchaseSelection) {
+    const request = validateGiftCardPurchaseSelection(rawRequest)
     if (!request) throw new Error('Invalid gift card request')
     const item: Record<string, unknown> = { product_id: request.product_id, quantity: request.quantity }
     if (request.package_id !== null) item.package_id = request.package_id

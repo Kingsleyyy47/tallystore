@@ -1,5 +1,9 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
+import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts'
+import { readTelegramApiBody, validTelegramApiInput, type TelegramApiAction } from '../_shared/telegram-api-contract.ts'
+import { telegramProviderJson } from '../_shared/telegram-provider-transport.ts'
+import { canonicalTelegramApiPurchase, telegramApiDebitProven } from '../_shared/telegram-api-replay.ts'
 
 type SupabaseAdmin = any
 
@@ -8,7 +12,8 @@ const ISTAR_API_KEY = Deno.env.get('ISTAR_API_KEY') || ''
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-tally-api-capability',
+  'Cache-Control': 'no-store',
 }
 
 function json(data: unknown, status = 200) {
@@ -54,21 +59,15 @@ function istarHeaders() {
 }
 
 async function istarGet(path: string) {
-  const res = await fetch(`${ISTAR_BASE}${path}`, { headers: istarHeaders() })
-  const data = await res.json()
-  if (!res.ok) throw new Error('Supplier request failed')
-  return data
+  return telegramProviderJson(`${ISTAR_BASE}${path}`, { headers: istarHeaders() }, { timeoutMs: 15_000 })
 }
 
 async function istarPost(path: string, body: unknown, idempotencyKey: string) {
-  const res = await fetch(`${ISTAR_BASE}${path}`, {
+  return telegramProviderJson(`${ISTAR_BASE}${path}`, {
     method: 'POST',
     headers: { ...istarHeaders(), 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify(body),
-  })
-  const data = await res.json()
-  if (!res.ok) throw new Error('Supplier request failed')
-  return data
+  }, { timeoutMs: 25_000 })
 }
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
@@ -356,7 +355,7 @@ async function handleQuoteStars(admin: SupabaseAdmin, body: Record<string, unkno
     throw new Error('Quantity must be between 50 and 1,000,000 stars')
   }
   const price = calculateStarPriceNgn(quantity, await getStarPricingConfig(admin))
-  if (price <= 0) throw new Error('Star pricing is temporarily unavailable')
+  if (!Number.isSafeInteger(price) || price <= 0) throw new Error('Star pricing is temporarily unavailable')
   return json({ success: true, data: { quantity, price_ngn: price } })
 }
 
@@ -393,7 +392,32 @@ async function handleSearchRecipientPremium(admin: SupabaseAdmin, userId: string
   return json({ success: true, data: publicTelegramRecipient(data) })
 }
 
-async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request) {
+async function readTelegramApiReplay(admin: SupabaseAdmin, userId: string, idempotencyKey: string, hash: string): Promise<Response | null> {
+  const { data: order, error } = await admin.from('telegram_orders').select('*')
+    .eq('user_id', userId).eq('idempotency_key', idempotencyKey).maybeSingle()
+  if (error) throw new Error('ORDER_LOOKUP_UNAVAILABLE')
+  if (!order) return null
+  if (order.customer_api_request_hash !== hash) return json({ success: false,
+    code: 'IDEMPOTENCY_REQUEST_CONFLICT', error: 'This request key is already bound to a different or historical order.' }, 409)
+  // Pending, failed or uncertain dispatch must never be resent. A completed
+  // status alone cannot prove that this owner's original charge was posted.
+  if ((order.status === 'completed' || order.status === 'processing') && order.istar_order_id && !order.refunded_at) {
+    const { data: tx, error: txError } = await admin.from('transactions')
+      .select('id,user_id,type,amount,status,currency,balance_type,reference,idempotency_key,metadata,balance_before,balance_after,transaction_hash')
+      .eq('user_id', userId).eq('idempotency_key', `telegram:purchase:${idempotencyKey}`).maybeSingle()
+    if (!txError && telegramApiDebitProven(order, tx, userId, hash)) {
+      return json({ success: true, data: publicTelegramOrder(order), idempotency_hit: true })
+    }
+  }
+  return json({ success: false, code: 'ORDER_OUTCOME_UNRESOLVED', order_id: order.id,
+    idempotency_hit: true, error: 'This existing order needs outcome review. It will not be submitted or charged again.' }, 202)
+}
+
+async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request, apiRequestHash?: string) {
+  if (apiRequestHash) {
+    const replay = await readTelegramApiReplay(admin, userId, String(body.idempotency_key), apiRequestHash)
+    if (replay) return replay
+  }
   await assertPurchasingCustomer(admin, userId, req)
   const walletRequestForensics = await getWalletRequestForensics(req, 'telegram-stars:create-stars-order')
   const idempotencyKey = normalizeIdempotencyKey(body.idempotency_key)
@@ -410,6 +434,7 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
   const config = await getStarPricingConfig(admin)
   const priceNgn = calculateStarPriceNgn(quantity, config)
   if (priceNgn <= 0) throw new Error('Star pricing is not configured. Please contact support.')
+  if (body.expected_amount_ngn !== undefined && body.expected_amount_ngn !== priceNgn) throw new Error('PRICE_CHANGED')
   await assertPurchasingCustomer(admin, userId, req, priceNgn)
 
   const { data: existingOrder } = await admin.from('telegram_orders')
@@ -419,6 +444,8 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
     .maybeSingle()
 
   if (existingOrder) {
+    if (apiRequestHash) return (await readTelegramApiReplay(admin, userId, idempotencyKey, apiRequestHash)) ||
+      json({ success: false, code: 'ORDER_OUTCOME_UNRESOLVED', error: 'Order outcome needs review.' }, 202)
     const sameRequest =
       String(existingOrder.order_type || '') === 'stars' &&
       String(existingOrder.username || '') === username &&
@@ -471,8 +498,13 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
     username, recipient_hash: recipientHash, recipient_name: recipientName,
     quantity, price_ngn: priceNgn, wallet_type: config.wallet_type, status: 'pending',
     idempotency_key: idempotencyKey,
+    ...(apiRequestHash ? { customer_api_request_hash: apiRequestHash } : {}),
   }).select().single()
   if (orderErr || !order) {
+    if (apiRequestHash && orderErr?.code === '23505') {
+      const replay = await readTelegramApiReplay(admin, userId, idempotencyKey, apiRequestHash)
+      if (replay) return replay
+    }
     throw new Error('Failed to create order. Your wallet was not charged.')
   }
 
@@ -484,6 +516,7 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
       source_order_table: 'telegram_orders',
       source_debit_idempotency_key: `telegram:purchase:${idempotencyKey}`,
       idempotency_key: idempotencyKey,
+      ...(apiRequestHash ? { customer_api_request_hash: apiRequestHash } : {}),
     })
   } catch (err: any) {
     await admin.from('telegram_orders').update({
@@ -530,7 +563,11 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
   }
 }
 
-async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request) {
+async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request, apiRequestHash?: string) {
+  if (apiRequestHash) {
+    const replay = await readTelegramApiReplay(admin, userId, String(body.idempotency_key), apiRequestHash)
+    if (replay) return replay
+  }
   await assertPurchasingCustomer(admin, userId, req)
   const walletRequestForensics = await getWalletRequestForensics(req, 'telegram-stars:create-premium-order')
   const idempotencyKey = normalizeIdempotencyKey(body.idempotency_key)
@@ -551,6 +588,7 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
   const livePrice = calcPremiumPriceNgn(product.months, premCfg)
   const chargeNgn = livePrice || product.price_ngn
   if (!chargeNgn || chargeNgn <= 0) throw new Error('This product has no price set. Contact support.')
+  if (body.expected_amount_ngn !== undefined && body.expected_amount_ngn !== Number(chargeNgn)) throw new Error('PRICE_CHANGED')
   await assertPurchasingCustomer(admin, userId, req, Number(chargeNgn))
   const walletType = String(walletSetting.data?.value || 'USDT').toUpperCase()
 
@@ -561,6 +599,8 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
     .maybeSingle()
 
   if (existingOrder) {
+    if (apiRequestHash) return (await readTelegramApiReplay(admin, userId, idempotencyKey, apiRequestHash)) ||
+      json({ success: false, code: 'ORDER_OUTCOME_UNRESOLVED', error: 'Order outcome needs review.' }, 202)
     const sameRequest =
       String(existingOrder.order_type || '') === 'premium' &&
       String(existingOrder.username || '') === username &&
@@ -613,8 +653,13 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
     username, recipient_hash: recipientHash, recipient_name: recipientName,
     months: product.months, price_ngn: chargeNgn, wallet_type: walletType, status: 'pending',
     idempotency_key: idempotencyKey,
+    ...(apiRequestHash ? { customer_api_request_hash: apiRequestHash } : {}),
   }).select().single()
   if (orderErr || !order) {
+    if (apiRequestHash && orderErr?.code === '23505') {
+      const replay = await readTelegramApiReplay(admin, userId, idempotencyKey, apiRequestHash)
+      if (replay) return replay
+    }
     throw new Error('Failed to create order. Your wallet was not charged.')
   }
 
@@ -627,6 +672,7 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
       source_order_table: 'telegram_orders',
       source_debit_idempotency_key: `telegram:purchase:${idempotencyKey}`,
       idempotency_key: idempotencyKey,
+      ...(apiRequestHash ? { customer_api_request_hash: apiRequestHash } : {}),
     })
   } catch (err: any) {
     await admin.from('telegram_orders').update({
@@ -689,10 +735,10 @@ async function handlePollOrder(admin: SupabaseAdmin, userId: string, body: Recor
   if (!orderId) throw new Error('order_id is required')
   const { data: order, error } = await admin.from('telegram_orders')
     .select('*').eq('id', orderId).eq('user_id', userId).single()
-  if (error || !order) throw new Error('Order not found')
+  if (error || !order) throw new Error('ORDER_NOT_FOUND')
   if (order.status === 'processing' && order.istar_order_id) {
     try {
-      const istarOrder = await istarGet(`/orders/${order.istar_order_id}`)
+      const istarOrder = await istarGet(`/orders/${encodeURIComponent(String(order.istar_order_id))}`)
       if (istarOrder.status === 'completed' && order.status !== 'completed') {
         const { data: updated, error: updateError } = await admin.from('telegram_orders')
           .update({ status: 'completed', completed_at: istarOrder.updated_at || new Date().toISOString(), updated_at: new Date().toISOString() })
@@ -710,8 +756,60 @@ async function handlePollOrder(admin: SupabaseAdmin, userId: string, body: Recor
       }
     } catch { /* return current status */ }
   }
-  const { data: fresh } = await admin.from('telegram_orders').select('*').eq('id', orderId).single()
+  const { data: fresh, error: freshError } = await admin.from('telegram_orders').select('*').eq('id', orderId).eq('user_id', userId).single()
+  if (freshError || !fresh) throw new Error('ORDER_UNAVAILABLE')
   return json({ success: true, data: publicTelegramOrder(fresh) })
+}
+
+// The API delegates to the same retail pricing and wallet purchase handlers.
+// Caller input never sets the wallet owner, supplier recipient hash or charge.
+async function activePremium(admin: SupabaseAdmin, productId: unknown) {
+  const { data: product, error } = await admin.from('telegram_products').select('id, months, price_ngn, label')
+    .eq('id', productId).eq('product_type', 'premium').eq('is_active', true).single()
+  if (error || !product || ![3, 6, 12].includes(product.months)) throw new Error('PRODUCT_UNAVAILABLE')
+  return product
+}
+
+async function handleTelegramApi(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request) {
+  const action = String(body.action).slice(4) as TelegramApiAction
+  if (!validTelegramApiInput(body, action, 'action')) throw new Error('INVALID_REQUEST')
+  const apiRequestHash = action === 'purchase' ? await purchaseGuardSha256Hex(canonicalTelegramApiPurchase(userId, body)) : undefined
+  if (apiRequestHash) {
+    const replay = await readTelegramApiReplay(admin, userId, String(body.idempotency_key), apiRequestHash)
+    if (replay) return replay
+  }
+  if (action === 'orders') return handleGetMyOrders(admin, userId)
+  if (action === 'status') return handlePollOrder(admin, userId, body)
+  if (action === 'catalogue') {
+    const [starsResponse, premiumResponse] = await Promise.all([handleGetStarPricing(admin), handleGetPremiumProducts(admin)])
+    const stars = await starsResponse.json(), premium = await premiumResponse.json()
+    const presets = Object.entries(stars.data.preset_prices).filter(([, price]) =>
+      Number.isSafeInteger(price) && Number(price) > 0).map(([quantity, price_ngn]) => ({ quantity: Number(quantity), price_ngn }))
+    const products = premium.data.filter((product: any) => [3, 6, 12].includes(product.months) &&
+      Number.isSafeInteger(Number(product.price_ngn)) && Number(product.price_ngn) > 0)
+      .map((product: any) => ({ ...product, price_ngn: Number(product.price_ngn) }))
+    return json({ success: true, data: { currency: 'NGN', purchases_enabled: telegramOrdersEnabled(),
+      stars: { min_quantity: 50, max_quantity: 1_000_000, presets }, premium: products } })
+  }
+  if (action === 'quote') {
+    if (body.product_type === 'stars') return handleQuoteStars(admin, body)
+    const product = await activePremium(admin, body.product_id)
+    const price = calcPremiumPriceNgn(product.months, await getPremiumPricingConfig(admin)) || Number(product.price_ngn)
+    if (!Number.isSafeInteger(price) || price <= 0) throw new Error('PRICE_UNAVAILABLE')
+    return json({ success: true, data: { product_id: product.id, months: product.months, price_ngn: price } })
+  }
+  const username = String(body.username).replace(/^@/, '')
+  const product = body.product_type === 'premium' ? await activePremium(admin, body.product_id) : null
+  const path = product ? `/premium/recipient/search?username=${encodeURIComponent(username)}&months=${product.months}`
+    : `/star/recipient/search?username=${encodeURIComponent(username)}&quantity=${body.quantity}`
+  const recipient = await istarGet(path)
+  if (typeof recipient?.recipient !== 'string' || !recipient.recipient || recipient.recipient.length > 2048 ||
+    /[\x00-\x1f\x7f]/.test(recipient.recipient)) throw new Error('RECIPIENT_UNAVAILABLE')
+  if (action === 'recipient') return json({ success: true, data: publicTelegramRecipient(recipient) })
+  const purchaseBody = { ...body, username, recipient_hash: recipient.recipient,
+    recipient_name: typeof recipient.name === 'string' ? recipient.name.slice(0, 200) : '' }
+  return product ? handleCreatePremiumOrder(admin, userId, purchaseBody, req, apiRequestHash)
+    : handleCreateStarsOrder(admin, userId, purchaseBody, req, apiRequestHash)
 }
 
 // ── Admin handlers ────────────────────────────────────────────────────────────
@@ -817,15 +915,31 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
     const admin = await getAdminClient()
-    const body: Record<string, unknown> = req.method === 'POST' ? await req.json().catch(() => ({})) : {}
+    const delegated = req.headers.has('x-tally-api-capability')
+    if (delegated && Deno.env.get('CUSTOMER_API_ENABLED') !== 'true') return json({ success: false, code: 'coming_soon' }, 503)
+    const delegatedRequest = delegated ? req.clone() : null
+    let body: Record<string, unknown>
+    try { body = delegated ? await readTelegramApiBody(req) : req.method === 'POST' ? await req.json().catch(() => ({})) : {} }
+    catch (error) { if (delegatedRequest?.body) void delegatedRequest.body.cancel().catch(() => {}); throw error }
     const action = String(body.action || '')
-    if ((action === 'create_stars_order' || action === 'create_premium_order') && !telegramOrdersEnabled()) {
+    if ((action === 'create_stars_order' || action === 'create_premium_order' || action === 'api_purchase') && !telegramOrdersEnabled()) {
       return json({
         success: false,
         error: 'Telegram purchases are temporarily paused for wallet security review.',
         code: 'TELEGRAM_ORDERS_PAUSED',
       }, 503)
     }
+    if (delegatedRequest) {
+      const service = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      if (!service || req.headers.get('authorization') !== `Bearer ${service}` || req.method !== 'POST') throw new Error('Unauthorized')
+      if (!validTelegramApiInput(body, action.slice(4) as TelegramApiAction, 'action')) throw new Error('INVALID_REQUEST')
+      const user = await authenticateCustomerRequest(delegatedRequest, admin, 'telegram', 'telegram-stars')
+      const { data: profile, error } = await admin.from('profiles').select('is_staff, is_admin, account_suspended').eq('id', user.id).single()
+      if (error || !profile || profile.account_suspended === true) throw new Error('Unauthorized')
+      if (profile.is_staff === true || profile.is_admin === true) throw new Error('CUSTOMER_ONLY')
+      return await handleTelegramApi(admin, user.id, body, req)
+    }
+    if (action.startsWith('api_')) throw new Error('Unauthorized')
     const user = await getUser(req)
     switch (action) {
       case 'get_star_pricing':           return await handleGetStarPricing(admin)
@@ -849,6 +963,12 @@ serve(async (req) => {
     }
   } catch (err: any) {
     console.error('Telegram request failed')
+    const safe = new Set(['INVALID_REQUEST', 'REQUEST_TOO_LARGE', 'REQUEST_TIMEOUT', 'CUSTOMER_ONLY',
+      'PRICE_CHANGED', 'PRODUCT_UNAVAILABLE', 'PRICE_UNAVAILABLE', 'RECIPIENT_UNAVAILABLE', 'ORDER_NOT_FOUND', 'ORDER_UNAVAILABLE', 'ORDER_LOOKUP_UNAVAILABLE'])
+    if (safe.has(err?.message)) return json({ success: false, code: err.message },
+      err.message === 'REQUEST_TOO_LARGE' ? 413 : err.message === 'REQUEST_TIMEOUT' ? 408 :
+      err.message === 'CUSTOMER_ONLY' ? 403 : err.message === 'PRICE_CHANGED' ? 409 :
+      err.message === 'ORDER_NOT_FOUND' ? 404 : ['ORDER_UNAVAILABLE','ORDER_LOOKUP_UNAVAILABLE'].includes(err.message) ? 503 : 400)
     return json({ success: false, error: err?.message === 'Unauthorized' ? 'Unauthorized' : 'Telegram request could not be completed.' }, err?.message === 'Unauthorized' ? 401 : 400)
   }
 })

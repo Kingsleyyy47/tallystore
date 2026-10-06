@@ -10,6 +10,7 @@ for (const prefix of prefixes) {
   assert.deepEqual(customerApiRoute(`${prefix}/v1/purchases`, 'POST'), { kind: 'purchase', path: '/v1/purchases' })
   assert.deepEqual(customerApiRoute(`${prefix}/v1/airtime/quote`, 'POST'), { kind: 'airtime', path: '/v1/airtime/quote' })
   assert.deepEqual(customerApiRoute(`${prefix}/v1/airtime/quote`, 'GET'), { kind: 'read', path: '/v1/airtime/quote' })
+  assert.deepEqual(customerApiRoute(`${prefix}/v1/giftcards/quote`, 'POST'), { kind: 'giftcards', path: '/v1/giftcards/quote' })
 }
 
 let handler
@@ -41,6 +42,9 @@ for (const prefix of prefixes) {
     new Request(`${base}/v1/airtime/quote`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ section: 'airtime', phone_number: '+14155550123', operator_id: 'operator-1',
         product_id: 'operator-1', package_id: 'bundle-1' }) }),
+    new Request(`${base}/v1/giftcards/quote`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section: 'giftcards', product_id: 'amazon-us', package_id: 'ten', unit_value: 10, quantity: 1,
+        quote_request_id: 'giftcard-quote-001' }) }),
   ]
   for (const request of requests) {
     const response = await handler(request)

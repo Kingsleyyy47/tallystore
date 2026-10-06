@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase'
 
-export type CustomerApiSection = 'products' | 'sms' | 'social_boost' | 'airtime'
+export type CustomerApiSection = 'products' | 'sms' | 'social_boost' | 'airtime' | 'giftcards' | 'telegram'
 export type CustomerApiKey = {
   id: string
   section: CustomerApiSection

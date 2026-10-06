@@ -58,4 +58,20 @@ await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-
 revoked = true
 await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-airtime', airtimeBody),
   airtimeBody, 'airtime', 'customer-airtime'), /Unauthorized/)
+revoked = false
+identity.section = 'giftcards'
+const giftBody = JSON.stringify({ action: 'purchase', product_id: 'amazon-us', package_id: 'ten',
+  unit_value: 10, quantity: 2, expected_amount_ngn: 22000, idempotency_key: 'giftcard-order-001' })
+const gift = await signCustomerCapability(identity, 'customer-giftcards', giftBody)
+assert.deepEqual(await authorize(gift, giftBody, 'giftcards', 'customer-giftcards'), { id: identity.user_id })
+await assert.rejects(authorize(gift, giftBody, 'giftcards', 'customer-giftcards'), /Unauthorized/)
+await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-giftcards', giftBody),
+  giftBody.replace('amazon-us', 'foreign-gift'), 'giftcards', 'customer-giftcards'), /Unauthorized/)
+await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-giftcards', giftBody),
+  giftBody, 'products', 'customer-giftcards'), /Unauthorized/)
+await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-giftcards', giftBody),
+  giftBody, 'giftcards', 'customer-airtime'), /Unauthorized/)
+revoked = true
+await assert.rejects(authorize(await signCustomerCapability(identity, 'customer-giftcards', giftBody),
+  giftBody, 'giftcards', 'customer-giftcards'), /Unauthorized/)
 console.log('customer API capability checks passed')

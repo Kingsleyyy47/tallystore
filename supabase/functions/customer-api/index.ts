@@ -3,10 +3,11 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { sha256Hex, signCustomerCapability } from '../_shared/customer-api-delegation.ts'
 import { customerApiRoute } from '../_shared/customer-api-route.mjs'
 import { getSmmOrderContract, quoteSmmOrder, validateSmmOrderFields } from '../_shared/smm-order-contract.ts'
+import { validTelegramApiInput, type TelegramApiAction } from '../_shared/telegram-api-contract.ts'
 
-type Section = 'products' | 'sms' | 'social_boost' | 'airtime'
-const sections = new Set<Section>(['products', 'sms', 'social_boost', 'airtime'])
-const defaultSections: Section[] = ['products', 'sms', 'social_boost', 'airtime']
+type Section = 'products' | 'sms' | 'social_boost' | 'airtime' | 'giftcards' | 'telegram'
+const sections = new Set<Section>(['products', 'sms', 'social_boost', 'airtime', 'giftcards', 'telegram'])
+const defaultSections: Section[] = ['products', 'sms', 'social_boost', 'airtime', 'giftcards', 'telegram']
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
@@ -253,7 +254,7 @@ async function manage(req: Request, path: string, admin: any) {
 }
 
 async function authorize(req: Request, admin: any, requested: Section) {
-  const rawKey = /^Bearer\s+(tlyc_(?:products|sms|social_boost|airtime)_[a-f0-9]{64})$/i.exec(req.headers.get('authorization') || '')?.[1]
+  const rawKey = /^Bearer\s+(tlyc_(?:products|sms|social_boost|airtime|giftcards|telegram)_[a-f0-9]{64})$/i.exec(req.headers.get('authorization') || '')?.[1]
   if (!rawKey) return { error: fail('invalid_key', 401) }
   const { data, error } = await admin.rpc('customer_api_authorize', {
     p_hash: await sha256Hex(rawKey), p_section: requested, p_limit: 60,
@@ -285,21 +286,67 @@ function validAirtimeInput(input: Record<string, unknown>, action: AirtimeAction
       typeof input.idempotency_key !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9:_-]{9,119}$/.test(input.idempotency_key))) return false
   return true
 }
+// Product checkout can deliver up to 500 local accounts. Bound the response
+// independently of Content-Length while allowing their full credentials.
+async function targetJson(response: Response, signal: AbortSignal): Promise<Record<string, unknown>> {
+  const maximum = 32 * 1024 * 1024
+  const declared = response.headers.get('content-length')
+  if (signal.aborted || response.redirected || !response.body ||
+    (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maximum))) throw new Error('Target unavailable')
+  const reader = response.body.getReader()
+  let rejectAbort: (reason: Error) => void = () => {}
+  const aborted = new Promise<never>((_, reject) => { rejectAbort = reject })
+  const abort = () => { void reader.cancel().catch(() => {}); rejectAbort(new Error('Target deadline')) }
+  signal.addEventListener('abort', abort, { once: true })
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    for (;;) {
+      const chunk = await Promise.race([reader.read(), aborted])
+      if (chunk.done) break
+      size += chunk.value.byteLength
+      if (size > maximum) throw new Error('Target response too large')
+      chunks.push(chunk.value)
+    }
+    if (signal.aborted) throw new Error('Target deadline')
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+    const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Target invalid response')
+    return value as Record<string, unknown>
+  } finally {
+    signal.removeEventListener('abort', abort)
+    void reader.cancel().catch(() => {})
+  }
+}
 async function callTarget(identity: { key_id: string; user_id: string; section: Section },
-  target: 'process-purchase' | 'smsbus' | 'smm-create-order' | 'customer-airtime',
+  target: 'process-purchase' | 'smsbus' | 'smm-create-order' | 'customer-airtime' | 'customer-giftcards' | 'telegram-stars',
   payload: Record<string, unknown>, timeoutMs: number) {
   const rawBody = JSON.stringify(payload)
   const capability = await signCustomerCapability(identity, target, rawBody)
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
   const url = `${Deno.env.get('SUPABASE_URL') || ''}/functions/v1/${target}`
-  const response = await fetch(url, {
-    method: 'POST', headers: {
-      Authorization: `Bearer ${serviceKey}`, apikey: serviceKey,
-      'Content-Type': 'application/json', 'x-tally-api-capability': capability,
-    }, body: rawBody, signal: AbortSignal.timeout(timeoutMs),
+  const controller = new AbortController()
+  const signal = controller.signal
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(new Error('Target deadline')) }, timeoutMs)
   })
-  const result = await response.json().catch(() => null)
-  return result ? json(result, response.status) : fail('purchase_outcome_unknown', 503)
+  try {
+    const request = (async () => {
+      const response = await fetch(url, {
+        method: 'POST', redirect: 'error', credentials: 'omit', cache: 'no-store', headers: {
+          Authorization: `Bearer ${serviceKey}`, apikey: serviceKey,
+          'Content-Type': 'application/json', 'x-tally-api-capability': capability,
+        }, body: rawBody, signal,
+      })
+      if (signal.aborted) { void response.body?.cancel().catch(() => {}); throw new Error('Target deadline') }
+      return json(await targetJson(response, signal), response.status)
+    })()
+    return await Promise.race([request, deadline])
+  } catch { return fail('purchase_outcome_unknown', 503) }
+  finally { controller.abort(); clearTimeout(timer) }
 }
 async function airtimeAction(req: Request, path: string, admin: any) {
   const action: AirtimeAction = path === '/v1/airtime/check-phone' ? 'check_phone' :
@@ -312,19 +359,58 @@ async function airtimeAction(req: Request, path: string, admin: any) {
   delete payload.section
   return callTarget(authorization.identity!, 'customer-airtime', { ...payload, action }, action === 'quote' ? 30_000 : 20_000)
 }
+async function giftcardAction(req: Request, path: string, admin: any) {
+  const action = path === '/v1/giftcards/details' ? 'details' :
+    path === '/v1/giftcards/quote' ? 'quote' : 'status'
+  const input = await body(req)
+  const permitted = action === 'status' ? ['section', 'order_id'] : action === 'details'
+    ? ['section', 'product_id'] : ['section', 'product_id', 'package_id', 'unit_value', 'quantity', 'quote_request_id']
+  if (input.section !== 'giftcards' || Object.keys(input).some(key => !permitted.includes(key))) return fail('invalid_request')
+  if (action === 'status' ? typeof input.order_id !== 'string' || !uuid.test(input.order_id)
+    : typeof input.product_id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,179}$/.test(input.product_id)) {
+    return fail('invalid_request')
+  }
+  if (action === 'quote' && (!Number.isSafeInteger(input.quantity) || (input.quantity as number) < 1 ||
+    (input.quantity as number) > 20 || typeof input.unit_value !== 'number' || !Number.isFinite(input.unit_value)
+    || input.unit_value <= 0
+    || typeof input.quote_request_id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9:_-]{9,119}$/.test(input.quote_request_id))) {
+    return fail('invalid_request')
+  }
+  const authorization = await authorize(req, admin, 'giftcards')
+  if (authorization.error) return authorization.error
+  const payload: Record<string, unknown> = { ...input, action }
+  delete payload.section
+  return callTarget(authorization.identity!, 'customer-giftcards', payload, action === 'quote' ? 120_000 : action === 'status' ? 30_000 : 20_000)
+}
+async function telegramAction(req: Request, path: string, admin: any) {
+  const action: TelegramApiAction = path === '/v1/telegram/recipient' ? 'recipient' :
+    path === '/v1/telegram/quote' ? 'quote' : 'status'
+  const input = await body(req)
+  if (!validTelegramApiInput(input, action)) return fail('invalid_request')
+  const authorization = await authorize(req, admin, 'telegram')
+  if (authorization.error) return authorization.error
+  const payload: Record<string, unknown> = { ...input, action: `api_${action}` }
+  delete payload.section
+  return callTarget(authorization.identity!, 'telegram-stars', payload, 25_000)
+}
 async function purchase(req: Request, admin: any) {
   const input = await body(req)
   const requested = section(input.section)
   if (!requested) return fail('invalid_section')
   if (requested === 'airtime' && !validAirtimeInput(input, 'purchase')) return fail('invalid_request')
+  if (requested === 'telegram' && !validTelegramApiInput(input, 'purchase')) return fail('invalid_request')
+  if (requested === 'giftcards' && (typeof input.quote_id !== 'string' || !uuid.test(input.quote_id))) return fail('invalid_request')
   const authorization = await authorize(req, admin, requested)
   if (authorization.error) return authorization.error
   const target = requested === 'products' ? 'process-purchase' :
-    requested === 'sms' ? 'smsbus' : requested === 'airtime' ? 'customer-airtime' : 'smm-create-order'
+    requested === 'sms' ? 'smsbus' : requested === 'airtime' ? 'customer-airtime' :
+    requested === 'giftcards' ? 'customer-giftcards' : requested === 'telegram' ? 'telegram-stars' : 'smm-create-order'
   const payload = { ...input }
   delete payload.section
   if (requested === 'sms') payload.action = 'create_otp'
   if (requested === 'airtime') payload.action = 'purchase'
+  if (requested === 'giftcards') payload.action = 'purchase'
+  if (requested === 'telegram') payload.action = 'api_purchase'
   // The target route owns pricing, verified-wallet checks, idempotency,
   // supplier dispatch, and its current pause flag.
   return callTarget(authorization.identity!, target, payload, 45_000)
@@ -344,6 +430,30 @@ async function read(req: Request, path: string, admin: any) {
   }
   if (path === '/v1/catalogue') {
     if (requested === 'airtime') return fail('use_airtime_check_phone', 400)
+    if (requested === 'telegram') return callTarget(authorization.identity!, 'telegram-stars', { action: 'api_catalogue' }, 25_000)
+    if (requested === 'giftcards') {
+      const allowed = new Set(['section','start','limit','q','country'])
+      for (const name of new Set(url.searchParams.keys())) {
+        if (!allowed.has(name) || url.searchParams.getAll(name).length !== 1) return fail('invalid_request')
+      }
+      const startRaw = url.searchParams.get('start') ?? '0'
+      const limitRaw = url.searchParams.get('limit') ?? '20'
+      const country = url.searchParams.get('country')
+      const query = url.searchParams.get('q')
+      if (!/^\d{1,7}$/.test(startRaw) || Number(startRaw) > 1_000_000 ||
+        !/^\d{1,2}$/.test(limitRaw) || Number(limitRaw) < 1 || Number(limitRaw) > 50 ||
+        (country !== null && !/^[A-Z]{2}$/.test(country)) ||
+        (query !== null && (!query.trim() || query.length > 100 || /[\u0000-\u001f\u007f]/.test(query)))) return fail('invalid_request')
+      const response = await callTarget(authorization.identity!, 'customer-giftcards', {
+        action:'catalogue',start:Number(startRaw),limit:Number(limitRaw),
+        ...(country === null ? {} : { country }),...(query === null ? {} : { query }),
+      }, 20_000)
+      const result = await response.clone().json().catch(() => null)
+      if (!response.ok || result?.success !== true) return response
+      return Array.isArray(result.products) && result.products.length <= Number(limitRaw) &&
+        result.pagination?.start === Number(startRaw) && result.pagination?.limit === Number(limitRaw)
+        ? json({ success:true,data:result.products,pagination:result.pagination }) : fail('unavailable',503)
+    }
     if (requested === 'products') {
       const circlePct = await circlePercent(admin, userId)
       const { data, error } = await admin.from('product_groups')
@@ -390,11 +500,27 @@ async function read(req: Request, path: string, admin: any) {
     return data ? json(data, response.status) : fail('unavailable', 503)
   }
   if (path === '/v1/quote') {
+    if (requested === 'telegram') {
+      const allowed = ['section', 'product_type', 'quantity', 'product_id']
+      for (const name of url.searchParams.keys()) if (!allowed.includes(name) || url.searchParams.getAll(name).length !== 1) return fail('invalid_request')
+      const input: Record<string, unknown> = Object.fromEntries(url.searchParams)
+      if (input.quantity !== undefined) input.quantity = typeof input.quantity === 'string' && /^\d+$/.test(input.quantity) ? Number(input.quantity) : NaN
+      if (!validTelegramApiInput(input, 'quote')) return fail('invalid_request')
+      delete input.section
+      return callTarget(authorization.identity!, 'telegram-stars', { ...input, action: 'api_quote' }, 25_000)
+    }
     if (requested === 'products') return await productQuote(admin, userId, url)
     if (requested === 'social_boost') return await socialQuote(admin, url)
     return fail('invalid_section')
   }
   if (path === '/v1/orders') {
+    if (requested === 'telegram') return callTarget(authorization.identity!, 'telegram-stars', { action: 'api_orders' }, 20_000)
+    if (requested === 'giftcards') {
+      const response = await callTarget(authorization.identity!, 'customer-giftcards', { action: 'orders' }, 20_000)
+      const result = await response.clone().json().catch(() => null)
+      if (!response.ok || result?.success !== true) return response
+      return Array.isArray(result.orders) ? json({ success: true, data: result.orders }) : fail('unavailable', 503)
+    }
     const table = requested === 'products' ? 'orders' : requested === 'sms' ? 'sms_orders' :
       requested === 'airtime' ? 'customer_airtime_orders' : 'smm_orders'
     const fields = requested === 'products' ? 'id, status, amount, created_at, product_group_id' :
@@ -409,6 +535,18 @@ async function read(req: Request, path: string, admin: any) {
   const orderMatch = /^\/v1\/orders\/([a-f0-9-]{36})$/.exec(path)
   if (orderMatch) {
     if (!uuid.test(orderMatch[1])) return fail('invalid_request')
+    if (requested === 'telegram') return callTarget(authorization.identity!, 'telegram-stars',
+      { action: 'api_status', order_id: orderMatch[1] }, 25_000)
+    if (requested === 'giftcards') {
+      const response = await callTarget(authorization.identity!, 'customer-giftcards',
+        { action: 'order', order_id: orderMatch[1] }, 20_000)
+      const result = await response.clone().json().catch(() => null)
+      if (!response.ok || result?.success !== true) return response
+      return result.order?.id === orderMatch[1]
+        ? json({ success: true, data: { ...result.order,
+          ...('redemptions' in result ? { redemptions: result.redemptions } : {}) } })
+        : fail('unavailable', 503)
+    }
     const table = requested === 'products' ? 'orders' : requested === 'sms' ? 'sms_orders' :
       requested === 'airtime' ? 'customer_airtime_orders' : 'smm_orders'
     const fields = requested === 'products'
@@ -454,6 +592,8 @@ serve(async (req) => {
     if (route.kind === 'manage') return await manage(req, route.path, admin)
     if (route.kind === 'purchase') return await purchase(req, admin)
     if (route.kind === 'airtime') return await airtimeAction(req, route.path, admin)
+    if (route.kind === 'giftcards') return await giftcardAction(req, route.path, admin)
+    if (route.kind === 'telegram') return await telegramAction(req, route.path, admin)
     if (route.kind === 'read') return await read(req, route.path, admin)
     return fail('not_found', 404)
   } catch (error) {

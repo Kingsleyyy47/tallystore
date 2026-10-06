@@ -11,6 +11,7 @@ const QUOTE_KEYS = ['product_id', 'product_name', 'package_id', 'unit_value', 'c
 const BOUND_INVOICE_KEYS = ['product_id', 'product_name', 'package_id', 'unit_value', 'currency',
   'quantity', 'provider_price', 'billing_currency'] as const
 const REQUEST_KEYS = ['product_id', 'package_id', 'unit_value', 'quantity', 'expected_amount_ngn'] as const
+const SELECTION_KEYS = ['product_id', 'package_id', 'unit_value', 'quantity'] as const
 
 export type GiftCardQuote = {
   product_id: string
@@ -21,9 +22,10 @@ export type GiftCardQuote = {
   quantity: number
   amount_ngn: number
   provider_price: number
-  billing_currency: 'USD' | 'NGN' | 'BTC'
+  billing_currency: 'USD' | 'EUR' | 'NGN' | 'BTC'
 }
 export type BoundGiftCardInvoiceQuote = Omit<GiftCardQuote, 'amount_ngn'>
+export type GiftCardPurchaseSelection = Omit<CanonicalGiftCardRequest, 'expected_amount_ngn'>
 export type CanonicalGiftCardRequest = {
   product_id: string
   package_id: string | null
@@ -165,7 +167,8 @@ export function validateGiftCardQuote(raw: unknown): GiftCardQuote | null {
     || !Number.isSafeInteger(quote.amount_ngn) || (quote.amount_ngn as number) < 10
     || (quote.amount_ngn as number) > 1_000_000_000 || (quote.amount_ngn as number) % 10 !== 0
     || !positive(quote.provider_price) || quote.provider_price > 1_000_000_000
-    || (quote.billing_currency !== 'USD' && quote.billing_currency !== 'NGN' && quote.billing_currency !== 'BTC')
+    || (quote.billing_currency !== 'USD' && quote.billing_currency !== 'EUR'
+      && quote.billing_currency !== 'NGN' && quote.billing_currency !== 'BTC')
     || (quote.billing_currency === 'BTC' && !Number.isSafeInteger(quote.provider_price))) return null
   return quote as GiftCardQuote
 }
@@ -179,7 +182,8 @@ export function validateBoundGiftCardInvoiceQuote(raw: unknown): BoundGiftCardIn
     || typeof quote.currency !== 'string' || !CURRENCY.test(quote.currency)
     || !Number.isSafeInteger(quote.quantity) || (quote.quantity as number) < 1 || (quote.quantity as number) > 20
     || !positive(quote.provider_price) || quote.provider_price > 1_000_000_000
-    || (quote.billing_currency !== 'USD' && quote.billing_currency !== 'NGN' && quote.billing_currency !== 'BTC')
+    || (quote.billing_currency !== 'USD' && quote.billing_currency !== 'EUR'
+      && quote.billing_currency !== 'NGN' && quote.billing_currency !== 'BTC')
     || (quote.billing_currency === 'BTC' && !Number.isSafeInteger(quote.provider_price))) return null
   return quote as BoundGiftCardInvoiceQuote
 }
@@ -188,6 +192,17 @@ export function canonicalGiftCardRequest(rawQuote: unknown): CanonicalGiftCardRe
   const quote = validateGiftCardQuote(rawQuote)
   return quote ? { product_id: quote.product_id, package_id: quote.package_id,
     unit_value: quote.unit_value, quantity: quote.quantity, expected_amount_ngn: quote.amount_ngn } : null
+}
+
+export function validateGiftCardPurchaseSelection(raw: unknown): GiftCardPurchaseSelection | null {
+  const selection = object(raw)
+  if (!selection || !sameKeys(selection, SELECTION_KEYS)
+    || typeof selection.product_id !== 'string' || !PRODUCT_ID.test(selection.product_id)
+    || (selection.package_id !== null && !packageId(selection.package_id))
+    || !denomination(selection.unit_value)
+    || !Number.isSafeInteger(selection.quantity) || (selection.quantity as number) < 1
+    || (selection.quantity as number) > 20) return null
+  return selection as GiftCardPurchaseSelection
 }
 export function validateCanonicalGiftCardRequest(raw: unknown): CanonicalGiftCardRequest | null {
   const request = object(raw)

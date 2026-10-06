@@ -48,7 +48,7 @@ for (const changed of [
   { quantity: 0 }, { quantity: 21 }, { quantity: 1.5 }, { amount_ngn: 100001 },
   { amount_ngn: 1_000_000_010 }, { provider_price: 4900.25 }, { provider_price: 0 },
   { provider_price: 1_000_000_001 },
-  { billing_currency: 'EUR' }, { currency: 'btc' }, { unit_value: -1 }, { package_id: 'bad\npackage' },
+  { billing_currency: 'AUD' }, { currency: 'btc' }, { unit_value: -1 }, { package_id: 'bad\npackage' },
   { package_id: '   ' },
   { recipient_phone: '+15551234567' },
 ]) assert.equal(validateGiftCardQuote({ ...quote, ...changed }), null,
@@ -56,6 +56,8 @@ for (const changed of [
 assert.equal(validateCanonicalGiftCardRequest({ ...request, provider_price: 4900 }), null,
   'Client request must contain exactly five keys and no supplier price')
 assert.equal(validateCanonicalGiftCardRequest({ ...request, quantity: 21 }), null)
+assert.deepEqual(validateGiftCardQuote({ ...quote,billing_currency:'EUR',provider_price:49.25 })?.billing_currency,'EUR',
+  'EUR balance invoices are valid; conversion still needs an owner-configured rate')
 
 const child = (id) => ({ id, status: 'created', product: { id: 'amazon-us', value: 25,
   currency: 'USD', package_id: 'amazon-us<&>25' } })
@@ -121,7 +123,9 @@ const mockedFetch = async (url, init) => {
   return new Response('{}')
 }
 const provider = new GiftCardProvider('synthetic-secret', mockedFetch)
-await provider.createUnpaidInvoice(request)
+const selectionRequest={product_id:request.product_id,package_id:request.package_id,
+  unit_value:request.unit_value,quantity:request.quantity}
+await provider.createUnpaidInvoice(selectionRequest)
 assert.equal(calls.length, 1)
 assert.equal(calls[0].url, 'https://api.bitrefill.com/v2/invoices')
 assert.equal(calls[0].init.redirect, 'error')
@@ -129,7 +133,7 @@ assert.equal(calls[0].init.method, 'POST')
 assert.deepEqual(JSON.parse(calls[0].init.body), { products: [{ product_id: 'amazon-us', quantity: 2,
   package_id: 'amazon-us<&>25' }], payment_method: 'balance', auto_pay: false })
 assert.equal(Object.hasOwn(JSON.parse(calls[0].init.body).products[0], 'phone_number'), false)
-await provider.createUnpaidInvoice({ ...request, package_id: null, unit_value: 15 })
+await provider.createUnpaidInvoice({ ...selectionRequest, package_id: null, unit_value: 15 })
 assert.deepEqual(JSON.parse(calls.at(-1).init.body), { products: [{ product_id: 'amazon-us', quantity: 2, value: 15 }],
   payment_method: 'balance', auto_pay: false })
 await provider.pay('invoice-123')
@@ -140,7 +144,9 @@ await provider.product('amazon-us'); await provider.balance(); await provider.in
 assert.deepEqual(calls.slice(-4).map(call => call.init.method), ['GET', 'GET', 'GET', 'GET'])
 assert.throws(() => provider.product('../outside'))
 assert.throws(() => provider.pay('bad/id'))
-assert.throws(() => provider.createUnpaidInvoice({ ...request, quantity: 21 }))
+assert.throws(() => provider.createUnpaidInvoice({ ...selectionRequest, quantity: 21 }))
+assert.throws(() => provider.createUnpaidInvoice(request),
+  'Provider invoice creation accepts only selection, never customer-asserted NGN price')
 
 for (const response of [
   new Response('{}', { status: 503 }),

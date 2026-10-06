@@ -3,8 +3,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 type Capability = {
   key_id: string
   user_id: string
-  section: 'products' | 'sms' | 'social_boost' | 'airtime'
-  target: 'process-purchase' | 'smsbus' | 'smm-create-order' | 'customer-airtime'
+  section: 'products' | 'sms' | 'social_boost' | 'airtime' | 'giftcards' | 'telegram'
+  target: 'process-purchase' | 'smsbus' | 'smm-create-order' | 'customer-airtime' | 'customer-giftcards' | 'telegram-stars'
   body_hash: string
   nonce: string
   expires_at: number

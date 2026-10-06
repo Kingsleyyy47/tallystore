@@ -47,7 +47,7 @@ vm.runInNewContext(code, {
     return new Response(JSON.stringify({ success: true, order: { id: orderId, status: 'processing' } }),
       { status: 200, headers: { 'Content-Type': 'application/json' } })
   },
-  Request, Response, URL, AbortSignal, TextEncoder, TextDecoder, Uint8Array, crypto: globalThis.crypto,
+  Request, Response, URL, AbortSignal, AbortController, TextEncoder, TextDecoder, Uint8Array, crypto: globalThis.crypto,
   setTimeout, clearTimeout, console: { error() {} },
 })
 function reset() { for (const list of Object.values(calls)) if (Array.isArray(list)) list.length = 0; calls.clients = 0 }
