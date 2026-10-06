@@ -554,11 +554,26 @@ async function read(req: Request, path: string, admin: any) {
           ...('redemptions' in result ? { redemptions: result.redemptions } : {}) } })
         : fail('unavailable', 503)
     }
-    const table = requested === 'products' ? 'orders' : requested === 'sms' ? 'sms_orders' :
+    if (requested === 'products') {
+      // API keys have no customer Auth JWT. Use the service-only ownership and
+      // payment-proof projection rather than reading raw credential rows.
+      const { data, error } = await admin.rpc('get_customer_api_product_order_detail', {
+        p_user_id: userId, p_order_id: orderMatch[1],
+      })
+      if (error) return fail('unavailable', 503)
+      if (data?.success === false && data.code === 'not_found') return fail('not_found', 404)
+      const order = data?.order
+      if (data?.success !== true || !order || typeof order !== 'object' ||
+          Array.isArray(order) || order.id !== orderMatch[1]) return fail('unavailable', 503)
+      return json({ success: true, data: {
+        id: order.id, status: order.status, amount: order.amount,
+        created_at: order.created_at, product_group_id: order.product_group_id,
+        account_details: order.account_details,
+      } })
+    }
+    const table = requested === 'sms' ? 'sms_orders' :
       requested === 'airtime' ? 'customer_airtime_orders' : 'smm_orders'
-    const fields = requested === 'products'
-      ? 'id, status, amount, created_at, product_group_id, account_details, financial_authorization_status'
-      : requested === 'sms'
+    const fields = requested === 'sms'
       ? 'id, status, price_ngn, created_at, service_id, phone_number, messages'
       : requested === 'airtime'
       ? 'id, status, recipient_phone, product_name, amount_ngn, currency, created_at'
@@ -567,14 +582,6 @@ async function read(req: Request, path: string, admin: any) {
       .eq('user_id', userId).eq('id', orderMatch[1]).maybeSingle()
     if (error) return fail('unavailable', 503)
     if (!data) return fail('not_found', 404)
-    if (requested === 'products') {
-      const { account_details, financial_authorization_status, ...summary } = data
-      return json({ success: true, data: {
-        ...summary,
-        ...(data.status === 'completed' && financial_authorization_status === 'captured'
-          ? { account_details } : {}),
-      } })
-    }
     return json({ success: true, data })
   }
   return fail('not_found', 404)
