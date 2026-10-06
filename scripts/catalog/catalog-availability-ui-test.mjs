@@ -8,11 +8,15 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 const require = createRequire(import.meta.url)
 const cache = new Map()
+let expandedCatalogSections = null
 function moduleAt(path) {
   if (cache.has(path)) return cache.get(path)
   const exports = {}
   const code = ts.transpileModule(readFileSync(path, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText
   vm.runInNewContext(code, { exports, require: specifier => {
+    if (specifier === 'react' && path === 'src/components/GroupedProductCatalog.tsx') {
+      return { ...React, useState: initial => [expandedCatalogSections ?? initial, () => {}] }
+    }
     if (specifier === '@/lib/supabase') return { supabase: {} }
     if (specifier === '@/components/CategoryLogo') return { default: ({ name }) => React.createElement('span', { 'data-icon-name': name }) }
     if (specifier === '@/components/ui/button') return { Button: ({ children, ...props }) => React.createElement('button', props, children) }
@@ -70,4 +74,64 @@ assert.ok(html.includes('data-icon-name="Facebook"'))
 assert.equal(html.includes('Inactive hidden'), false)
 assert.equal(html.includes('Invalid hidden'), false)
 assert.equal((html.match(/>Buy /g) || []).length, 2)
+
+const category = { id: 'facebook', name: 'Facebook', is_active: true }
+const named = (id, name, price = 100) => ({ ...base, id, name, price })
+const regionRows = [
+  named('us1', 'US account A'), named('us2', 'USA account B'),
+  named('uk1', 'UK account C'), named('uk2', 'United Kingdom account D'),
+]
+function renderCatalog(products, selectedCategory = category.id, searching = false) {
+  return renderToStaticMarkup(React.createElement(Catalog, {
+    categories: [category], products, selectedCategory, searching, onBuy() {}, onSelectCategory() {},
+  }))
+}
+function orderedNames(markup, names) {
+  let previous = -1
+  for (const name of names) {
+    const index = markup.indexOf(name)
+    assert.ok(index > previous, `${name} must remain in supplied row order`)
+    previous = index
+  }
+}
+
+const smallSelected = renderCatalog(regionRows)
+assert.equal((smallSelected.match(/<h3\b/g) || []).length, 2)
+orderedNames(smallSelected, ['US account A', 'USA account B', 'UK account C', 'United Kingdom account D'])
+assert.ok(smallSelected.includes('🇺🇸 United States'))
+assert.ok(smallSelected.includes('🇬🇧 United Kingdom'))
+
+const oneRegion = renderCatalog(regionRows.slice(0, 2))
+assert.equal((oneRegion.match(/<h3\b/g) || []).length, 0)
+
+const ambiguous = renderCatalog([named('plain', 'Aged account'), named('us-only', 'US account')])
+assert.ok(ambiguous.includes('Other products'))
+assert.equal(ambiguous.includes('🇬🇧 United Kingdom'), false)
+orderedNames(ambiguous, ['Aged account', 'US account'])
+
+const interleavedByPrice = renderCatalog([
+  named('us-low', 'US low price', 100), named('uk-mid', 'UK middle price', 200), named('us-high', 'USA high price', 300),
+])
+assert.equal((interleavedByPrice.match(/<h3\b/g) || []).length, 0)
+orderedNames(interleavedByPrice, ['US low price', 'UK middle price', 'USA high price'])
+assert.ok(interleavedByPrice.includes('🇺🇸 United States'))
+assert.ok(interleavedByPrice.includes('🇬🇧 United Kingdom'))
+
+const collapsedAll = renderCatalog(regionRows, 'all')
+assert.equal(collapsedAll.includes('United Kingdom account D'), false)
+assert.equal((collapsedAll.match(/<h3\b/g) || []).length, 0)
+assert.ok(collapsedAll.includes('Show all 4'))
+expandedCatalogSections = { [category.id]: true }
+const expandedAll = renderCatalog(regionRows, 'all')
+expandedCatalogSections = null
+assert.equal((expandedAll.match(/<h3\b/g) || []).length, 2)
+orderedNames(expandedAll, ['US account A', 'USA account B', 'UK account C', 'United Kingdom account D'])
+assert.ok(expandedAll.includes('Show fewer'))
+assert.ok(expandedAll.includes('TallyStore collection'))
+const searchedInterleavedAll = renderCatalog([
+  named('us-low-search', 'US low price'), named('uk-search', 'UK middle price'), named('us-high-search', 'USA high price'),
+], 'all', true)
+assert.equal((searchedInterleavedAll.match(/<h3\b/g) || []).length, 0)
+orderedNames(searchedInterleavedAll, ['US low price', 'UK middle price', 'USA high price'])
 console.log('Catalog UI: local stock and trusted fallback buy states, sold-out visibility, disabled paused/empty states, hidden invalid products and correct icon fallback passed.')
+console.log('Catalog UI: small selected and expanded All name groups, single-group restraint, interleaved price order, category placard and Show fewer passed.')

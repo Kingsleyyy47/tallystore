@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, ChevronUp, Package } from 'lucide-react'
 import CategoryLogo from '@/components/CategoryLogo'
 import { Button } from '@/components/ui/button'
-import { groupProductsByRegion } from '@/lib/catalogGrouping'
+import { getProductRegion } from '@/lib/catalogGrouping'
 import type { Category, ProductGroup } from '@/lib/supabase'
 import { useCurrency } from '@/contexts/CurrencyContext'
 import { isCustomerSellableProduct, isCustomerVisibleProduct } from '@/lib/productAvailability'
@@ -18,7 +18,7 @@ type Props = {
   onImpression?: (product: ProductGroup) => void
 }
 
-function ProductRow({ product, category, onBuy, onImpression }: { product: ProductGroup; category: Category; onBuy: Props['onBuy']; onImpression: Props['onImpression'] }) {
+function ProductRow({ product, category, onBuy, onImpression, regionBadge }: { product: ProductGroup; category: Category; onBuy: Props['onBuy']; onImpression: Props['onImpression']; regionBadge?: string }) {
   const { formatPrice } = useCurrency()
   const available = isCustomerSellableProduct(product)
   const paused = String(product.availability_status).toUpperCase() === 'PAUSED'
@@ -51,6 +51,7 @@ function ProductRow({ product, category, onBuy, onImpression }: { product: Produ
         <p className="text-sm font-semibold leading-snug text-slate-900 dark:text-white">{product.name.trim()}</p>
         {product.description && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{product.description}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          {regionBadge && <span className="rounded-full bg-slate-100 px-2 py-1 font-medium text-slate-600 dark:bg-white/10 dark:text-slate-300">{regionBadge}</span>}
           <span className={`rounded-full px-2.5 py-1 font-semibold ${available ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300'}`}>
             {available ? product.stock_count > 0 ? `${product.stock_count} in stock` : 'Available to order' : paused ? 'Paused' : 'Sold out'}
           </span>
@@ -109,7 +110,17 @@ export default function GroupedProductCatalog({ categories, products, selectedCa
       const isAll = selectedCategory === 'all'
       const isExpanded = expanded[category.id] === true
       const shown = isAll && !searching && !isExpanded ? categoryProducts.slice(0, 3) : categoryProducts
-      const regions = !isAll && categoryProducts.length > 5 ? groupProductsByRegion(shown) : []
+      const regionRuns: Array<{ label: string; products: ProductGroup[] }> = []
+      for (const product of shown) {
+        const label = getProductRegion(product.name).label
+        const lastRun = regionRuns[regionRuns.length - 1]
+        if (lastRun?.label === label) lastRun.products.push(product)
+        else regionRuns.push({ label, products: [product] })
+      }
+      const regionLabels = new Set(regionRuns.map((run) => run.label))
+      const canShowRegions = (!isAll || isExpanded || searching) && regionLabels.size > 1 && [...regionLabels].some((label) => label !== 'Other')
+      const showRegionHeadings = canShowRegions && regionRuns.length === regionLabels.size
+      const showRegionBadges = canShowRegions && !showRegionHeadings
       return <section key={category.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-white/10 dark:bg-card">
         <div className={`relative overflow-hidden border-b px-4 py-3.5 sm:px-5 ${headerTone.surface}`}>
           <div aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${headerTone.rail}`} />
@@ -133,10 +144,13 @@ export default function GroupedProductCatalog({ categories, products, selectedCa
             </div>
           </div>
         </div>
-        {regions.length > 1 ? regions.map(({ region, products: regionProducts }) => <div key={region.label}>
-          <h3 className="border-b border-slate-100 bg-slate-50 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">{region.label} <span className="font-normal">({regionProducts.length})</span></h3>
+        {showRegionHeadings ? regionRuns.map(({ label, products: regionProducts }) => <div key={label}>
+          <h3 className="border-b border-slate-100 bg-slate-50 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">{label === 'Other' ? 'Other products' : label} <span className="font-normal">({regionProducts.length})</span></h3>
           {regionProducts.map((product) => <ProductRow key={product.id} product={product} category={category} onBuy={onBuy} onImpression={onImpression} />)}
-        </div>) : shown.map((product) => <ProductRow key={product.id} product={product} category={category} onBuy={onBuy} onImpression={onImpression} />)}
+        </div>) : shown.map((product) => {
+          const label = getProductRegion(product.name).label
+          return <ProductRow key={product.id} product={product} category={category} onBuy={onBuy} onImpression={onImpression} regionBadge={showRegionBadges && label !== 'Other' ? label : undefined} />
+        })}
         {isAll && !searching && categoryProducts.length > 3 && <button type="button" className="flex w-full items-center justify-center gap-1 border-t border-slate-100 py-3 text-xs font-bold text-purple-700 hover:bg-purple-50 dark:border-white/10 dark:text-purple-300 dark:hover:bg-white/5" onClick={() => setExpanded((current) => ({ ...current, [category.id]: !isExpanded }))}>
           {isExpanded ? <>Show fewer <ChevronUp className="h-4 w-4" /></> : <>Show all {categoryProducts.length} <ChevronDown className="h-4 w-4" /></>}
         </button>}
