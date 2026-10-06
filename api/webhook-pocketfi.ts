@@ -8,8 +8,14 @@
 // https://tallystore.org/api/webhook-pocketfi without drifting from the
 // hardened Supabase implementation.
 
-const SUPABASE_PROJECT_URL = 'https://dssvvswvqnxanyzfhixf.supabase.co'
-const POCKETFI_EDGE_URL = `${SUPABASE_PROJECT_URL}/functions/v1/webhook-pocketfi`
+// Use the same project selection as the deployed site during migration.
+// Provider credentials and wallet settlement stay inside Supabase.
+function pocketfiEdgeUrl(): string | null {
+  const origin = process.env.VITE_SUPABASE_URL
+  if (!['https://dssvvswvqnxanyzfhixf.supabase.co',
+    'https://ktmlojvchkmzcdbjdyjx.supabase.co'].includes(origin || '')) return null
+  return `${origin}/functions/v1/webhook-pocketfi`
+}
 
 export const config = {
   api: {
@@ -40,9 +46,13 @@ async function readRawBody(req: any): Promise<string> {
 }
 
 export default async function handler(req: any, res: any) {
+  res.setHeader('Cache-Control', 'no-store')
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
+
+  const edgeUrl = pocketfiEdgeUrl()
+  if (!edgeUrl) return res.status(503).json({ error: 'Webhook project is not configured' })
 
   const body = await readRawBody(req)
   const requestUrl = new URL(req.url || '/api/webhook-pocketfi', 'https://tallystore.org')
@@ -83,10 +93,12 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const upstream = await fetch(POCKETFI_EDGE_URL, {
+    const upstream = await fetch(edgeUrl, {
       method: 'POST',
       headers,
       body,
+      redirect: 'error',
+      signal: AbortSignal.timeout(25000),
     })
     res.status(upstream.status)
     if (!upstream.ok) {
