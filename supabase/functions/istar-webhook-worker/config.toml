@@ -1,0 +1,2 @@
+# index.ts requires a dedicated 32+ character worker token and a closed-by-default gate.
+verify_jwt = false

@@ -15,6 +15,8 @@ repository are:
 
 ```text
 check-pending-payments
+istar-webhook
+istar-webhook-worker
 nowpayments-webhook
 partner-api
 record-site-visit
@@ -49,7 +51,7 @@ source/config changes prove otherwise.
 | --- | --- | --- |
 | `api/partner-api.ts` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Public partner API returns `503 PARTNER_API_PAUSED`; no partner checkout should reopen without route-specific evidence. |
 | `api/webhook-ercas.ts` | `FUNDING_OR_WEBHOOK`, `PAUSED_OR_MANUAL_REVIEW` | Legacy Ercas webhook is gone and returns `410`; active Ercas crediting must go through server verification. |
-| `api/webhook-istar.ts` | `FUNDING_OR_WEBHOOK` | Raw-body HMAC required before iStar failure refunds; customer-visible and persisted failures are sanitized. Duplicate/refund behavior still needs provider/deployed proof. |
+| `api/webhook-istar.ts` | `FUNDING_OR_WEBHOOK`, `PAUSED_OR_MANUAL_REVIEW` | Prepared raw-byte bridge forwards only the signature to the reviewed project selected by public `VITE_SUPABASE_URL`. Credentials and HMAC verification stay in Supabase. Requires separate ingress/worker deployment; not part of the current migration baseline. |
 | `api/webhook-pocketfi.ts` | `FUNDING_OR_WEBHOOK` | Raw-body bridge requires provider verification headers, must not inject server secrets, and returns fixed error bodies rather than reflecting upstream/database/network failures. |
 | `product_relationships` browser reads | `READ_ONLY_OR_CATALOG` | Storefront reads only recommendation edge columns; admin count reads only ID/time. Admin upserts use the scoped `save_admin_product_relationships` RPC from migration `30200`; migration `31500` removes direct browser access to behavioral metadata, source, and sample size. Deployed grants remain owner verification. |
 | `pending_payments` browser reads | `FUNDING_OR_WEBHOOK` | No storefront caller needs direct reads. Migration `32000` removes browser SELECT on server-created Ercas evidence, references, and historical error messages while retaining service-side verification and recovery. |
@@ -73,6 +75,8 @@ source/config changes prove otherwise.
 | `get-available-cryptos` | `READ_ONLY_OR_CATALOG` | Read-only crypto catalogue/rate support; crypto funding remains paused. |
 | `get-data-plans` | `READ_ONLY_OR_CATALOG` | Read-only data-plan catalogue; provider errors are sanitized before browser response. Purchasing is in `purchase-bills` and remains paused. |
 | `get-my-ip` | `ADMIN_OR_INTERNAL`, `TELEMETRY_OR_UTILITY` | Admin-only Edge utility for outbound IP inspection. The function verifies the current admin role before external lookups and returns fixed errors. The browser route alone is not the security boundary. |
+| `istar-webhook` | `FUNDING_OR_WEBHOOK`, `PAUSED_OR_MANUAL_REVIEW` | Prepared HMAC callback persists immutable signed bytes before ACK. Default-disabled `ISTAR_WEBHOOK_QUEUE_ENABLED`; no wallet mutation during ingress. Separate post-migration deployment only. |
+| `istar-webhook-worker` | `ADMIN_OR_INTERNAL`, `FUNDING_OR_WEBHOOK`, `PAUSED_OR_MANUAL_REVIEW` | Prepared dedicated-token worker leases inbox events, verifies supplier GET receipts and atomically settles orders/refunds through the canonical wallet writer. No supplier purchase calls. Separate schedule and deployment review required. |
 | `manage-staff` | `ADMIN_OR_INTERNAL` | Staff role/adjustment route; balance changes use wallet engine and protected role RPCs. The `staff_customer_search` action checks current `tab_users` permission and suspension before returning a minimal customer-only profile projection. |
 | `manual-restock` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Manual supplier restock remains disabled during incident review. |
 | `muabanvia-fulfill` | `VALUE_DELIVERY`, `PAUSED_OR_MANUAL_REVIEW` | Direct live account fulfillment remains disabled. The admin-only route now bounds quantity and redacts supplier errors if explicitly enabled; it is not a customer purchase authorization path and must not be reopened for customer checkout. |

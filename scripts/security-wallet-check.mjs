@@ -636,14 +636,14 @@ check('wallet refunds are capped by trusted original debits', () => {
 
 check("refund paths credit the original order owner's wallet", () => {
   const telegram = read('supabase/functions/telegram-stars/index.ts')
-  const istar = read('api/webhook-istar.ts')
+  const istar = read('supabase/migrations/20261006030000_istar_webhook_inbox.sql')
   assert(!/type:\s*['"]refund['"]/.test(telegram), 'customer polling and admin cancellation must not credit Telegram refunds')
   assert(telegram.includes("code: 'TELEGRAM_CANCELLATION_REVIEW_REQUIRED'"), 'Telegram admin cancellation must require supplier review')
   assert(telegram.includes("code: 'SUPPLIER_OUTCOME_REVIEW_REQUIRED'"), 'customer polling must hold supplier failure for review')
   assert(telegram.includes(".eq('status', 'pending').is('refunded_at', null)"), 'late Telegram tracking writes must not reopen terminal orders')
-  assert(istar.includes('p_user_id: order.user_id'), 'iStar refunds must credit the loaded order owner')
-  assert(istar.includes('p_idempotency_key: `telegram:refund:${order.id}`'), 'iStar refunds must use order-bound idempotency')
-  assert(istar.includes("source_order_id: order.id") && istar.includes("source_order_table: 'telegram_orders'"), 'iStar refunds must keep normalized source order metadata')
+  assert(istar.includes('p_user_id=>v_order.user_id'), 'iStar refunds must credit the loaded order owner')
+  assert(istar.includes("p_idempotency_key=>'telegram:refund:'||v_order.id::text"), 'iStar refunds must use order-bound idempotency')
+  assert(istar.includes("'source_order_id',v_order.id") && istar.includes("'source_order_table','telegram_orders'"), 'iStar refunds must keep normalized source order metadata')
 
   const sms = read('supabase/functions/smsbus/index.ts')
   assert(/async function refundWallet\(admin: SupabaseAdmin, order: \{[^}]*user_id: string[^}]*\}, reason: string/.test(sms), 'SMS refunds must accept an order carrying user_id')
@@ -713,9 +713,9 @@ check('refund paths carry original debit provenance', () => {
   assert(withdrawal.includes('sagecloud_reference: reference'), 'Withdrawal record must retain the provider reference')
   assert(!/type:\s*['"]refund['"]/.test(withdrawal), 'Withdrawal must not auto-refund an ambiguous transfer')
 
-  const istar = read('api/webhook-istar.ts')
-  assert(istar.includes('original_reference: order.reference'), 'iStar refunds must keep the original debit reference for deferred callbacks')
-  assert(istar.includes("source_order_table: 'telegram_orders'"), 'iStar refunds must keep source-order provenance for deferred callbacks')
+  const istar = read('supabase/migrations/20261006030000_istar_webhook_inbox.sql')
+  assert(istar.includes("'original_reference',v_order.reference"), 'iStar refunds must keep the original debit reference for deferred callbacks')
+  assert(istar.includes("'source_order_table','telegram_orders'"), 'iStar refunds must keep source-order provenance for deferred callbacks')
 
   const sms = read('supabase/functions/smsbus/index.ts')
   assert(sms.includes('original_reference: order.reference'), 'SMS refunds must keep the original debit reference for deferred callbacks')
@@ -1667,24 +1667,27 @@ check('scheduled pending-payment recovery cannot bypass Ercas verification', () 
   assert(!/\.from\(['"]transactions['"]\)[\s\S]{0,400}\.insert\s*\(/.test(src), 'pending-payment recovery must not insert wallet ledger rows directly')
 })
 
-check('iStar webhook verifies raw body and refunds through wallet engine', () => {
-  const src = read('api/webhook-istar.ts')
-
-  assert(src.includes('bodyParser: false'), 'iStar webhook must disable body parsing for HMAC verification')
-  assert(src.includes('readRawBody'), 'iStar webhook must read the raw request body')
-  assert(src.includes('crypto.createHmac'), 'iStar webhook must verify an HMAC signature')
-  assert(src.includes('timingSafeEqual'), 'iStar webhook signature comparison must be timing-safe')
-  assert(src.includes('ISTAR_WEBHOOK_SECRET'), 'iStar webhook must require the configured webhook secret')
-  assert(src.includes('const eventType = payload.event_type'), 'iStar event type must come from the signed body')
-  assert(!src.includes("req.headers['x-istar-event']"), 'unsigned iStar event header must not control order state')
-  assert(!src.includes('JSON.stringify(req.body)'), 'parsed body must not replace signed raw webhook bytes')
-  assert(src.includes(".rpc('apply_wallet_transaction'"), 'iStar failure refunds must use the wallet engine')
-  assert(src.includes("p_idempotency_key: `telegram:refund:${order.id}`"), 'iStar refunds must share Telegram refund idempotency keys')
-  assert(src.includes('source_debit_idempotency_key: originalDebitKey'), 'iStar refunds must identify the original wallet debit')
-  assert(src.includes(".in('status', ['pending', 'processing'])"), 'iStar status changes must be conditional on nonterminal orders')
-  assert(src.includes(".is('refunded_at', null)"), 'iStar status changes must not overwrite refunded orders')
-  assert(src.includes(".eq('idempotency_key', originalDebitKey)"), 'iStar must check the completed debit before refunding')
-  assert(!/\.from\(['"]transactions['"]\)\s*\.(insert|update|delete|upsert)\s*\(/.test(src), 'iStar webhook must not directly mutate wallet ledger rows')
+check('iStar signed events persist before ACK and settle atomically through wallet engine', () => {
+  const bridge = read('api/webhook-istar.ts')
+  const ingress = read('supabase/functions/istar-webhook/index.ts')
+  const worker = read('supabase/functions/istar-webhook-worker/index.ts')
+  const sql = read('supabase/migrations/20261006030000_istar_webhook_inbox.sql')
+  assert(bridge.includes('bodyParser: false') && bridge.includes('readRawBody'), 'iStar bridge must preserve raw signed bytes')
+  assert(!bridge.includes('ISTAR_WEBHOOK_SECRET') && !bridge.includes('SUPABASE_SERVICE_ROLE_KEY'), 'iStar credentials must stay in Supabase')
+  assert(!bridge.includes('JSON.stringify(req.body)'), 'parsed body must not replace signed raw webhook bytes')
+  assert(ingress.includes("crypto.subtle.verify('HMAC', key, signatureBytes,") && ingress.includes('verifySignature(bytes, signature, secret)'), 'Supabase ingress must verify raw-body HMAC')
+  assertOrder(ingress, 'if (!await verifySignature(bytes, signature, secret))', 'payload = JSON.parse(raw)', 'signature verification must precede payload parsing')
+  assertOrder(ingress, "admin.rpc('enqueue_istar_webhook_event'", 'return json({ received: true })', 'durable persistence must precede ACK')
+  assert(!ingress.includes('apply_wallet_transaction'), 'ingress must not refund during provider ACK')
+  for (const source of [ingress, worker]) assert(source.includes("Deno.env.get('ISTAR_WEBHOOK_QUEUE_ENABLED') !== 'true'"), 'iStar queue must default closed')
+  assert(worker.includes('tokenMatches') && worker.includes('ISTAR_WEBHOOK_WORKER_TOKEN'), 'worker must require dedicated authorization')
+  assert(worker.includes('provider.get(`/orders/${event.provider_order_id}`)') && !worker.includes('provider.post('), 'worker must read authoritative receipt without creating purchases')
+  assert(sql.includes('private.istar_webhook_inbox') && sql.includes('FOR UPDATE SKIP LOCKED'), 'queue must be private with exclusive work claims')
+  assert(sql.includes('public.apply_wallet_transaction('), 'iStar refunds must use canonical wallet writer')
+  assert(sql.includes("p_idempotency_key=>'telegram:refund:'||v_order.id::text"), 'refund identity must bind original order')
+  assert(sql.includes("'source_debit_transaction_id',v_debit.id") && sql.includes("v_debit.status IS DISTINCT FROM 'completed'"), 'refund requires completed owned debit proof')
+  assert(sql.includes("v_order.status='completed' OR v_order.refunded_at IS NOT NULL"), 'refund must reject terminal success or previously refunded order')
+  assert(!/UPDATE\s+public\.profiles|INSERT\s+INTO\s+public\.transactions/i.test(sql), 'settlement must not bypass wallet engine')
 })
 
 check('forged payment webhooks cannot punish or credit named customers before verification', () => {
@@ -1697,9 +1700,9 @@ check('forged payment webhooks cannot punish or credit named customers before ve
   assert(!pocketfi.includes('account_suspended'), 'PocketFi forged webhook payloads must not suspend a named customer')
   assert(!pocketfi.includes('is_suspended'), 'PocketFi forged webhook payloads must not set suspension flags')
 
-  const istar = read('api/webhook-istar.ts')
-  assertOrder(istar, 'if (!verifySignature(rawBody, sig, webhookSecret))', 'const { createClient } = await import', 'iStar must verify signature before creating DB client')
-  assertOrder(istar, 'if (!verifySignature(rawBody, sig, webhookSecret))', 'const payload = parsePayload(rawBody)', 'iStar must verify signature before parsing customer/order payload')
+  const istar = read('supabase/functions/istar-webhook/index.ts')
+  assertOrder(istar, 'if (!await verifySignature(bytes, signature, secret))', 'const admin = createClient', 'iStar must verify signature before creating DB client')
+  assertOrder(istar, 'if (!await verifySignature(bytes, signature, secret))', 'payload = JSON.parse(raw)', 'iStar must verify signature before parsing customer/order payload')
   assert(!istar.includes('account_suspended'), 'iStar forged webhook payloads must not suspend a named customer')
   assert(!istar.includes('is_suspended'), 'iStar forged webhook payloads must not set suspension flags')
 
@@ -1717,6 +1720,8 @@ check('JWT-disabled Edge Functions have explicit internal authorization boundari
     .sort()
   const expectedJwtDisabledConfigs = [
     'supabase/functions/check-pending-payments/config.toml',
+    'supabase/functions/istar-webhook/config.toml',
+    'supabase/functions/istar-webhook-worker/config.toml',
     'supabase/functions/nowpayments-webhook/config.toml',
     'supabase/functions/partner-api/config.toml',
     'supabase/functions/record-site-visit/config.toml',
