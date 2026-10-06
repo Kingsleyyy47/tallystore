@@ -9,10 +9,12 @@ const user = '10000000-0000-4000-8000-000000000001'
 const order = '20000000-0000-4000-8000-000000000001'
 const debit = '30000000-0000-4000-8000-000000000001'
 const provider = '4820'
-const body = JSON.stringify({ event_type: 'order.failed', order: { id: provider } })
-const receipt = { order_id: provider, status: 'failed', order_type: 'star',
-  payload: { username: 'testuser', recipient: 'recipient_123456', wallet_type: 'USDT', quantity: 50 },
-  amount: 0.5, refunded: true, refund_amount: 0.5, refund_transaction_id: 4821 }
+const signedOrder = status => ({ id: provider, status, order_type:'star', amount:0.5,
+  payload:{ username:'testuser', recipient:'recipient_123456', quantity:50 },
+  ...(status === 'failed' ? { refunded:true,refund_amount:0.5,refund_transaction_id:4821 } : {}) })
+const body = JSON.stringify({ event_type:'order.failed',order:signedOrder('failed') })
+const receipt = { order_id: provider, status: 'failed', username:'testuser',
+  wallet_type:'USDT', quantity:50, amount:0.5, refunded:true, refund_amount:0.5 }
 async function call(name, args) {
   const keys = Object.keys(args)
   return (await db.query(`SELECT public.${name}(${keys.map((_, n) => `$${n+1}`).join(',')}) AS value`,
@@ -85,9 +87,27 @@ try {
     p_receipt: JSON.stringify({ ...receipt, username: 'otheruser' }),
   })
   assert.equal(outcome.code, 'ISTAR_RECEIPT_MISMATCH', 'contradictory top-level and nested recipient evidence must fail')
+  for (const [payload, code] of [
+    [{ order_id:'different-order' },'ISTAR_RECEIPT_MISMATCH'],
+    [{ status:'completed' },'ISTAR_RECEIPT_MISMATCH'],
+    [{ order_type:'premium' },'ISTAR_RECEIPT_MISMATCH'],
+    [{ amount:'0.500000000000000001' },'ISTAR_RECEIPT_MISMATCH'],
+    [{ refunded:false },'ISTAR_REFUND_UNPROVEN'],
+    [{ refund_amount:'0.500000000000000001' },'ISTAR_REFUND_UNPROVEN'],
+  ]) {
+    outcome = await call('settle_istar_webhook_event', {
+      p_event_id: rows[0].id, p_lease_token: rows[0].lease_token,
+      p_receipt: JSON.stringify({ ...receipt, payload }),
+    })
+    assert.equal(outcome.code, code)
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM public.wallet_test_calls')).rows[0].n, 0)
+    assert.equal((await db.query('SELECT status FROM public.telegram_orders WHERE id=$1', [order])).rows[0].status, 'processing')
+  }
   outcome = await call('settle_istar_webhook_event', {
     p_event_id: rows[0].id, p_lease_token: rows[0].lease_token,
-    p_receipt: JSON.stringify(receipt),
+    p_receipt: JSON.stringify({ ...receipt, payload:{ id:'recipient-profile-id',
+      order_id:provider,status:'failed',order_type:'star',amount:'0.5000',
+      refunded:true,refund_amount:'0.50' } }),
   })
   assert.equal(outcome.success, true)
   assert.equal((await db.query('SELECT count(*)::int AS n FROM public.wallet_test_calls')).rows[0].n, 1)
@@ -95,7 +115,7 @@ try {
   assert.equal((await db.query('SELECT state FROM private.istar_webhook_inbox')).rows[0].state, 'processed')
   assert.equal((await claim()).length, 0, 'processed event must never replay')
 
-  const completedBody = JSON.stringify({ event_type: 'order.completed', order: { id: provider } })
+  const completedBody = JSON.stringify({ event_type: 'order.completed', order: signedOrder('completed') })
   const second = await call('enqueue_istar_webhook_event', {
     p_event_hash: createHash('sha256').update(completedBody).digest('hex'),
     p_event_type: 'order.completed', p_provider_order_id: provider,

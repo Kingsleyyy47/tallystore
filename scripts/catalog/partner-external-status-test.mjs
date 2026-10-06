@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import ts from 'typescript'
+import { canonicalIstarOrderId, validateIstarOrderReceipt } from '../../supabase/functions/_shared/istar-order-contract.ts'
 
 const source = readFileSync(new URL('../../supabase/functions/_shared/partner-external-status.ts', import.meta.url), 'utf8')
 const deliverySource = readFileSync(new URL('../../supabase/functions/_shared/partner-bitrefill-delivery.ts', import.meta.url), 'utf8')
@@ -12,8 +13,9 @@ vm.runInNewContext(deliveryCode, { exports: deliveryExports, setTimeout, clearTi
 const exports = {}
 vm.runInNewContext(code, { exports, setTimeout, clearTimeout, URL, encodeURIComponent,
   require: specifier => {
-    assert.equal(specifier, './partner-bitrefill-delivery.ts')
-    return deliveryExports
+    if (specifier === './partner-bitrefill-delivery.ts') return deliveryExports
+    assert.equal(specifier, './istar-order-contract.ts')
+    return { canonicalIstarOrderId, validateIstarOrderReceipt }
   }, Deno: { env: { get: () => 'server-secret' } } })
 const { handlePartnerExternalOrderStatus } = exports
 const orderId = '10000000-0000-4000-8000-000000000001'
@@ -21,12 +23,22 @@ const partnerId = '20000000-0000-4000-8000-000000000001'
 const keyId = '30000000-0000-4000-8000-000000000001'
 const auth = { partner: { id: partnerId }, key: { id: keyId, scopes: ['orders:read'] } }
 
-function fixture({ source = 'daisy', section = 'sms', itemType = 'sms', fulfillmentId = 'provider-123', journalState = 'accepted', response = 'STATUS_OK:123456', status = 'processing', quantity = 1, requestPayload = { value: 50, provider_currency: 'USD', package_id: null }, responsePayload = { api_key: 'private-secret', provider_status: 'pending' } } = {}) {
+function fixture({ source = 'daisy', section = 'sms', itemType = 'sms', fulfillmentId = 'provider-123', journalState = 'accepted', response = 'STATUS_OK:123456', status = 'processing', quantity = 1, requestPayload, responsePayload = { api_key: 'private-secret', provider_status: 'pending' }, boundReceipt } = {}) {
   let reads = 0
   let writes = 0
+  let boundReads = 0
+  const storedRequest = requestPayload ?? (source === 'istar'
+    ? { telegram_type:'stars',username:'example_user',recipient_hash:'ABCDEF123456',
+      item_id:'stars:100',quantity:100,wallet_type:'USDT' }
+    : { value:50, provider_currency:'USD', package_id:null })
+  const originalReceipt = boundReceipt === undefined
+    ? { order_id:'4820',status:'processing',order_type:'star',username:'example_user',
+      quantity:100,amount:'1',wallet_type:'USDT' } : boundReceipt
   let order = { id: orderId, partner_id: partnerId, partner_reference: 'reference-123', status,
-    item_type: itemType, item_id: 'amazon-us', quantity, fulfillment_source: source, fulfillment_id: fulfillmentId,
-    request_payload: requestPayload,
+    item_type: itemType, item_id: source === 'istar' ? 'stars:100' : 'amazon-us',
+    quantity: source === 'istar' ? 100 : quantity,
+    fulfillment_source: source, fulfillment_id: fulfillmentId,
+    request_payload: storedRequest,
     response_payload: responsePayload, error_message: null }
   const journal = journalState ? { order_id: orderId, partner_id: partnerId, key_id: keyId, section,
     state: journalState, fulfillment_source: source, fulfillment_id: fulfillmentId } : null
@@ -45,6 +57,23 @@ function fixture({ source = 'daisy', section = 'sms', itemType = 'sms', fulfillm
       return query
     },
     async rpc(name, args) {
+      if (name === 'get_api_partner_istar_receipt') {
+        boundReads++
+        assert.equal(args.p_key_id,keyId);assert.equal(args.p_order_id,orderId)
+        return { data: originalReceipt ? { success:true,order_id:orderId,
+          provider_receipt:originalReceipt,request_payload:storedRequest }
+          : { success:false,code:'ISTAR_RECEIPT_REVIEW_REQUIRED' }, error:null }
+      }
+      if (name === 'complete_api_partner_istar_order') {
+        assert.equal(args.p_key_id,keyId);assert.equal(args.p_order_id,orderId)
+        assert.equal(args.p_provider_receipt.order_id,fulfillmentId)
+        assert.equal(args.p_provider_receipt.amount,'1')
+        assert.equal(args.p_provider_receipt.quantity,100)
+        writes++
+        order={...order,status:'completed',response_payload:{...order.response_payload,provider_status:'completed'}}
+        return { data:{success:true,data:{id:order.id,status:order.status,
+          amount_ngn:100,response_payload:order.response_payload}},error:null }
+      }
       assert.equal(name, 'update_api_partner_external_status', 'no wallet/refund or purchase RPC is allowed')
       assert.equal(args.p_key_id, keyId)
       assert.equal(args.p_order_id, orderId)
@@ -65,7 +94,7 @@ function fixture({ source = 'daisy', section = 'sms', itemType = 'sms', fulfillm
     istarGet: async path => { reads++; assert.equal(path, `/orders/${fulfillmentId}`); return response },
     publicPartnerOrder: value => ({ ...value }),
   }
-  return { admin, deps, reads: () => reads, writes: () => writes }
+  return { admin, deps, reads: () => reads, writes: () => writes, boundReads: () => boundReads }
 }
 
 let f = fixture()
@@ -237,13 +266,46 @@ assert.equal(result.body.code, 'RECONCILIATION_REQUIRED')
 assert.equal(f.reads(), 1)
 assert.equal(f.writes(), 0)
 
-f = fixture({ source: 'istar', section: 'telegram_stars', itemType: 'telegram_stars', fulfillmentId: 'telegram-order-123', response: { order_id: 'telegram-order-123', status: 'completed', payload: { token: 'private-secret' } } })
+const completeIstar = { order_id:'4820',status:'completed',username:'example_user',quantity:100,
+  amount:1,wallet_type:'USDT',payload:{token:'private-secret'} }
+f = fixture({ source: 'istar', section: 'telegram_stars', itemType: 'telegram_stars', fulfillmentId: '4820', response: completeIstar })
 result = await handlePartnerExternalOrderStatus(f.admin, auth, { order_id: orderId }, f.deps)
 assert.equal(result.body.data.status, 'completed')
 assert.equal(result.body.data.response_payload.provider_status, 'completed')
 assert.ok(!JSON.stringify(result).includes('private-secret'))
+assert.equal(f.boundReads(),1)
+assert.equal(f.reads(),1)
+assert.equal(f.writes(),1)
 
-f = fixture({ source: 'istar', section: 'telegram_stars', itemType: 'telegram_stars', fulfillmentId: 'telegram-order-123', response: { order_id: 'wrong-order-123', status: 'completed' } })
+f = fixture({ source:'istar',section:'telegram_stars',itemType:'telegram_stars',
+  fulfillmentId:'4820',response:completeIstar,boundReceipt:null })
+result = await handlePartnerExternalOrderStatus(f.admin,auth,{order_id:orderId},f.deps)
+assert.equal(result.body.code,'RECONCILIATION_REQUIRED','legacy order without bound receipt must be held')
+assert.equal(f.boundReads(),1);assert.equal(f.reads(),0);assert.equal(f.writes(),0)
+
+for(const invalid of [
+  {order_id:'4820',status:'completed'},
+  {...completeIstar,amount:1.01},
+  {...completeIstar,wallet_type:'TON'},
+  {...completeIstar,quantity:101},
+  {...completeIstar,username:'other_user'},
+  {...completeIstar,recipient_hash:'other_hash'},
+  {...completeIstar,order_type:'premium'},
+  {...completeIstar,payload:{username:'other_user'}},
+  {...completeIstar,payload:{recipient:'other_hash'}},
+  {...completeIstar,payload:{quantity:999}},
+  {...completeIstar,payload:{amount:'99'}},
+  {...completeIstar,payload:{wallet_type:'TON'}},
+  {...completeIstar,payload:{order_type:'premium'}},
+]){
+  f=fixture({source:'istar',section:'telegram_stars',itemType:'telegram_stars',
+    fulfillmentId:'4820',response:invalid})
+  result=await handlePartnerExternalOrderStatus(f.admin,auth,{order_id:orderId},f.deps)
+  assert.equal(result.body.code,'RECONCILIATION_REQUIRED',`invalid iStar completion was accepted: ${JSON.stringify(invalid)}`)
+  assert.equal(f.writes(),0,'invalid iStar completion must not post order status')
+}
+
+f = fixture({ source: 'istar', section: 'telegram_stars', itemType: 'telegram_stars', fulfillmentId: '4820', response: { order_id: '4930', status: 'completed' } })
 result = await handlePartnerExternalOrderStatus(f.admin, auth, { order_id: orderId }, f.deps)
 assert.equal(result.body.code, 'RECONCILIATION_REQUIRED')
 assert.equal(f.writes(), 0)

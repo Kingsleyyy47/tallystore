@@ -1,6 +1,7 @@
 // Status polling for accepted, journaled partner external purchases only.
 // This module never makes a purchase, changes a balance, or issues a refund.
 import { readBoundBitrefillDelivery } from './partner-bitrefill-delivery.ts'
+import { canonicalIstarOrderId, validateIstarOrderReceipt } from './istar-order-contract.ts'
 declare const Deno: { env: { get: (key: string) => string | undefined } }
 type Admin = any
 type Auth = { partner: { id: string }; key: { id: string; scopes?: string[] } }
@@ -205,14 +206,52 @@ async function pollVendor(order: any, journal: any, deps: PartnerExternalStatusD
     return { completed: true, delta: { provider_status: result.delivery.provider_status, redemptions,
       ...(result.delivery.quantity === 1 ? { redemption: redemptions[0] } : {}) } }
   }
-  if (source === 'istar' && order.item_type === 'telegram_stars' && journal.section === 'telegram_stars') {
-    const providerOrder = await deps.istarGet(`/orders/${encodeURIComponent(id)}`)
-    if (!providerOrder || providerOrder.order_id !== id) return { completed: false, review: true }
-    const status = String(providerOrder.status || '').toLowerCase()
-    if (status === 'completed') return { completed: true, delta: { provider_status: 'completed' } }
-    return { completed: false, review: !['pending', 'processing'].includes(status) }
-  }
   return { completed: false, review: true }
+}
+
+async function pollBoundIstar(admin: Admin, auth: Auth, order: any, journal: any,
+  deps: PartnerExternalStatusDeps): Promise<Result> {
+  const request = order.request_payload
+  const kind = request?.telegram_type
+  const providerOrderId = canonicalIstarOrderId(journal.fulfillment_id)
+  if (order.item_type !== 'telegram_stars' || journal.section !== 'telegram_stars'
+    || (kind !== 'stars' && kind !== 'premium') || !providerOrderId
+    || request?.item_id !== order.item_id || Number(request?.quantity) !== Number(order.quantity)) {
+    return stored(order, deps, true)
+  }
+  const expected = {
+    kind, username: request.username, walletType: request.wallet_type,
+    recipientHash: request.recipient_hash, providerOrderId,
+    ...(kind === 'stars' ? { quantity: request.quantity } : { months: request.months }),
+  }
+  let bound: any
+  try { bound = await deadline(() => admin.rpc('get_api_partner_istar_receipt', {
+    p_key_id: auth.key.id, p_order_id: order.id,
+  })) } catch { return stored(order, deps, true) }
+  if (bound?.error || bound?.data?.success !== true || bound.data.order_id !== order.id
+    || !bound.data.provider_receipt || !bound.data.request_payload) return stored(order, deps, true)
+  const original = validateIstarOrderReceipt(bound.data.provider_receipt, expected)
+  if (!original || original.status === 'failed') return stored(order, deps, true)
+  let current: any
+  try { current = await deadline(() => deps.istarGet(`/orders/${encodeURIComponent(providerOrderId)}`)) }
+  catch { return stored(order, deps, true) }
+  const verified = validateIstarOrderReceipt(current, { ...expected, amount: original.amount })
+  if (!verified) return stored(order, deps, true)
+  if (verified.status === 'failed') return stored(order, deps, true)
+  if (verified.status !== 'completed') return stored(order, deps)
+  const privateReceipt = { order_id: verified.orderId, status: verified.status,
+    order_type: kind === 'stars' ? 'star' : 'premium', username: verified.username,
+    ...(kind === 'stars' ? { quantity: verified.quantity } : { months: verified.months }),
+    amount: verified.amount, wallet_type: verified.walletType }
+  let completed: any
+  try { completed = await deadline(() => admin.rpc('complete_api_partner_istar_order', {
+    p_key_id: auth.key.id, p_order_id: order.id, p_provider_receipt: privateReceipt,
+  })) } catch { return stored(order, deps, true) }
+  if (completed?.error || completed?.data?.success !== true || !completed.data.data
+    || completed.data.data.id !== order.id || completed.data.data.status !== 'completed') {
+    return stored(order, deps, true)
+  }
+  return { body: { success: true, data: publicSummary({ ...order, ...completed.data.data }, deps) } }
 }
 
 export async function handlePartnerExternalOrderStatus(admin: Admin, auth: Auth, body: Body, deps: PartnerExternalStatusDeps): Promise<Result> {
@@ -232,6 +271,9 @@ export async function handlePartnerExternalOrderStatus(admin: Admin, auth: Auth,
   if (journalError) return stored(order, deps, true)
   if (!journal || journal.state !== 'accepted') return stored(order, deps)
   if (journal.fulfillment_source !== order.fulfillment_source || journal.fulfillment_id !== order.fulfillment_id) return stored(order, deps, true)
+  if (journal.fulfillment_source === 'istar') {
+    return pollBoundIstar(admin, auth, order, journal, deps)
+  }
 
   let poll: Poll
   try { poll = await deadline(() => pollVendor(order, journal, deps)) } catch { return stored(order, deps, true) }

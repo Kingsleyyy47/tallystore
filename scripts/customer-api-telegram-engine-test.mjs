@@ -6,6 +6,7 @@ import {customerApiRoute} from '../supabase/functions/_shared/customer-api-route
 import {validTelegramApiInput,readTelegramApiBody} from '../supabase/functions/_shared/telegram-api-contract.ts'
 import {telegramProviderJson} from '../supabase/functions/_shared/telegram-provider-transport.ts'
 import {canonicalTelegramApiPurchase,telegramApiDebitProven} from '../supabase/functions/_shared/telegram-api-replay.ts'
+import {validateIstarOrderReceipt} from '../supabase/functions/_shared/istar-order-contract.ts'
 
 const user='10000000-0000-4000-8000-000000000001',other='10000000-0000-4000-8000-000000000002',
   keyId='20000000-0000-4000-8000-000000000001',productId='30000000-0000-4000-8000-000000000001',
@@ -17,6 +18,7 @@ const env={CUSTOMER_API_ENABLED:'true',TELEGRAM_ORDERS_ENABLED:'true',SUPABASE_U
 const orders=[],transactions=[],nonces=new Set(),queries=[],walletCalls=[],paid=[],free=[]
 let funds=100_000,spendingBlocked=false,staff=false,adminRole=false,revoked=false,
   failDebit=false,unknownSupplier=false,forceConsume=false,engine,api,sequence=0,supplierDown=false,truthCalls=0,raceInsert=false,lookupError=false
+let providerCreateOverride=null,providerPollOverride=null
 const settings={ngn_usd_rate:'1000',telegram_star_cost_usdt:'0.01',telegram_wallet_type:'USDT',
   telegram_star_markup_tiers:JSON.stringify([{min_qty:50,max_qty:null,markup_ngn:100}]),
   telegram_premium_markup_ngn_3m:'1000'}
@@ -92,17 +94,30 @@ const fakeProviderFetch=async(url,options={})=>{
     if(options.method==='POST'){
       assert.ok(url.endsWith('/orders/star')||url.endsWith('/orders/premium'));const input=JSON.parse(options.body)
       assert.equal(input.recipient_hash,'server-recipient-hash');assert.equal(input.username,'recipient_one')
+      assert.match(options.headers['Idempotency-Key'],/^[0-9a-f-]{36}$/i)
+      assert.ok(orders.some(order=>order.id===options.headers['Idempotency-Key']))
       paid.push({url,input});if(unknownSupplier)throw Error('unknown supplier outcome')
-      return Response.json({order_id:'supplier-order-'+paid.length,amount:input.quantity?input.quantity*0.01:10})
+      return Response.json({order_id:String(paid.length),status:'processing',username:input.username,
+        ...(input.quantity?{quantity:input.quantity}:{months:input.months}),
+        wallet_type:input.wallet_type,amount:input.quantity?input.quantity*0.01:10,
+        ...providerCreateOverride})
     }
     free.push(url)
     if(url.endsWith('/premium/packages'))return Response.json([{months:3,usd_value:10}])
     if(url.includes('/recipient/search?'))return Response.json({recipient:'server-recipient-hash',name:'Recipient',photo:null})
-    if(url.includes('/orders/'))return Response.json({status:'processing'})
+    if(url.includes('/orders/')){
+      const orderId=url.split('/').at(-1),input=paid[Number(orderId)-1]?.input
+      assert.ok(input)
+      return Response.json({order_id:orderId,status:'processing',username:input.username,
+        ...(input.quantity?{quantity:input.quantity}:{months:input.months}),
+        wallet_type:input.wallet_type,amount:input.quantity?input.quantity*0.01:10,
+        ...providerPollOverride})
+    }
     throw Error('Unexpected free supplier request')
   }
 load('supabase/functions/telegram-stars/index.ts',{authenticateCustomerRequest:capability.authenticateCustomerRequest,
   validTelegramApiInput,readTelegramApiBody,canonicalTelegramApiPurchase,telegramApiDebitProven,
+  validateIstarOrderReceipt,
   telegramProviderJson:(url,init,options)=>telegramProviderJson(url,init,{...options,fetcher:fakeProviderFetch}),serve:handler=>{engine=handler}})
 load('supabase/functions/customer-api/index.ts',{serve:handler=>{api=handler},customerApiRoute,
   sha256Hex:capability.sha256Hex,signCustomerCapability:capability.signCustomerCapability,validTelegramApiInput,
@@ -172,6 +187,47 @@ funds=0;result=await call('/v1/purchases',{...request,idempotency_key:'telegram-
 funds=100_000;failDebit=true;result=await call('/v1/purchases',{...request,idempotency_key:'telegram-debit-fails-001'});assert.ok(result.status>=400);assert.equal(paid.length,paidBefore);failDebit=false
 unknownSupplier=true;result=await call('/v1/purchases',{...request,idempotency_key:'telegram-unknown-001'});assert.equal(result.status,202);assert.equal(result.body.code,'SUPPLIER_OUTCOME_UNKNOWN');const unknownPaid=paid.length,unknownDebit=walletCalls.length
 result=await call('/v1/purchases',{...request,idempotency_key:'telegram-unknown-001'});assert.equal(result.status,202);assert.equal(paid.length,unknownPaid);assert.equal(walletCalls.length,unknownDebit);unknownSupplier=false
+providerCreateOverride={username:'foreign_recipient'}
+result=await call('/v1/purchases',{...request,idempotency_key:'telegram-wrong-receipt-001'})
+assert.equal(result.status,202);assert.equal(result.body.code,'SUPPLIER_OUTCOME_UNKNOWN')
+const wrongReceiptPaid=paid.length
+result=await call('/v1/purchases',{...request,idempotency_key:'telegram-wrong-receipt-001'})
+assert.equal(result.status,202);assert.equal(paid.length,wrongReceiptPaid)
+providerCreateOverride=null
+providerCreateOverride={payload:{username:'foreign_recipient',quantity:999,wallet_type:'TON'}}
+const payloadPaidBefore=paid.length,payloadDebitBefore=walletCalls.length
+result=await call('/v1/purchases',{...request,idempotency_key:'telegram-payload-conflict-001'})
+assert.equal(result.status,202);assert.equal(result.body.code,'SUPPLIER_OUTCOME_UNKNOWN')
+assert.equal(paid.length,payloadPaidBefore+1);assert.equal(walletCalls.length,payloadDebitBefore+1)
+result=await call('/v1/purchases',{...request,idempotency_key:'telegram-payload-conflict-001'})
+assert.equal(result.status,202);assert.equal(paid.length,payloadPaidBefore+1)
+assert.equal(walletCalls.length,payloadDebitBefore+1,'conflicting payload cannot authorize another debit')
+providerCreateOverride=null
+starOrder.status='processing'
+providerPollOverride={status:'completed',amount:999}
+result=await call(`/v1/orders/${owned}?section=telegram`)
+assert.equal(result.status,202);assert.equal(result.body.code,'SUPPLIER_OUTCOME_REVIEW_REQUIRED')
+assert.equal(starOrder.status,'processing')
+providerPollOverride={status:'completed',payload:{amount:999,recipient:'other_hash'}}
+result=await call(`/v1/orders/${owned}?section=telegram`)
+assert.equal(result.status,202);assert.equal(result.body.code,'SUPPLIER_OUTCOME_REVIEW_REQUIRED')
+assert.equal(starOrder.status,'processing','conflicting payload cannot complete a customer order')
+providerPollOverride={status:'completed'}
+result=await call(`/v1/orders/${owned}?section=telegram`)
+assert.equal(result.status,200);assert.equal(starOrder.status,'completed')
+providerPollOverride=null
+const beforeTonCost=settings.telegram_star_cost_usdt
+const beforeTonPremium=settings.telegram_premium_cost_usdt_3m
+settings.telegram_wallet_type='TON'
+result=await call('/v1/purchases',{...request,idempotency_key:'telegram-ton-001'})
+assert.equal(result.status,200);assert.equal(paid.at(-1).input.wallet_type,'TON')
+assert.equal(settings.telegram_star_cost_usdt,beforeTonCost,'TON supplier amount must not overwrite USDT cost')
+result=await call('/v1/purchases',{...request,product_type:'premium',quantity:undefined,
+  product_id:productId,expected_amount_ngn:11000,idempotency_key:'telegram-premium-ton-001'})
+assert.equal(result.status,200);assert.equal(paid.at(-1).input.wallet_type,'TON')
+assert.equal(settings.telegram_premium_cost_usdt_3m,beforeTonPremium,
+  'TON premium amount must not overwrite USDT premium cost')
+settings.telegram_wallet_type='USDT'
 const identity={key_id:keyId,user_id:user,section:'telegram'},raw=JSON.stringify({action:'api_catalogue'})
 async function direct(cap,body=raw,bearer=env.SUPABASE_SERVICE_ROLE_KEY){const r=await engine(new Request('https://local.invalid/functions/v1/telegram-stars',{method:'POST',headers:{Authorization:'Bearer '+bearer,'Content-Type':'application/json','x-tally-api-capability':cap},body}));return{status:r.status,body:await r.json()}}
 const cap=await capability.signCustomerCapability(identity,'telegram-stars',raw)

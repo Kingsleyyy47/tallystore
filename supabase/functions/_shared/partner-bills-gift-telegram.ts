@@ -3,12 +3,20 @@
 import { parseGiftCardSelection, selectGiftCardDenomination, unwrapGiftCardData, verifyBoundUnpaidGiftCardInvoice,
   type BoundGiftCardInvoiceQuote } from './customer-giftcard-contract.ts'
 import { giftCardInvoiceRetailTotal } from './partner-giftcard-price.ts'
+import { validateIstarOrderReceipt, type VerifiedIstarOrder } from './istar-order-contract.ts'
 export type PartnerExternalOutcome =
   | { kind: 'accepted'; source: 'sagecloud' | 'bitrefill' | 'istar'; id: string; status: 'processing' | 'completed'; payload: Record<string, unknown> }
   | { kind: 'rejected'; reason: 'NO_STOCK' | 'INSUFFICIENT_BALANCE' | 'PRICE_CHANGED' | 'INVALID_RECIPIENT' }
   | { kind: 'unknown' }
 
 export type PartnerExternalSection = 'bills_airtime' | 'giftcards' | 'telegram_stars'
+
+function privateIstarReceipt(verified: VerifiedIstarOrder, kind: 'stars' | 'premium') {
+  return { order_id: verified.orderId, status: verified.status,
+    order_type: kind === 'stars' ? 'star' : 'premium', username: verified.username,
+    ...(kind === 'stars' ? { quantity: verified.quantity } : { months: verified.months }),
+    amount: verified.amount, wallet_type: verified.walletType }
+}
 export type PartnerPurchasePlan = {
   section: PartnerExternalSection
   itemId: string
@@ -350,14 +358,28 @@ export async function preparePartnerTelegramPlan(admin: Admin, partner: Partner,
   let recipient: any
   try { recipient = await deps.istarGet(recipientPath) } catch { fail('INVALID_RECIPIENT') }
   if (recipient?.success !== true || recipient?.recipient !== recipientHash) fail('INVALID_RECIPIENT')
-  const requestPayload = { telegram_type: subtype, username, recipient_hash: recipientHash, item_id: itemId, quantity, wallet_type: providerBody.wallet_type }
+  const requestPayload = { telegram_type: subtype, username, recipient_hash: recipientHash,
+    item_id: itemId, quantity, ...(subtype === 'premium' ? { months: providerBody.months } : {}),
+    wallet_type: providerBody.wallet_type }
   return {
     section: 'telegram_stars', itemId, itemName, quantity, amountNgn: amount, requestPayload,
     dispatch: oneDispatch(async (orderId) => {
-      const result = await onceWithDeadline(() => deps.istarPost(path, providerBody, orderReference(orderId, 'PARTNER-TG-')))
-      const actualId = providerId(result?.order_id)
-      if (!actualId || !['pending', 'processing', 'completed'].includes(String(result?.status || '').toLowerCase())) return { kind: 'unknown' }
-      return { kind: 'accepted', source: 'istar', id: actualId, status: 'processing', payload: { provider_order_id: actualId, provider_status: String(result.status).toLowerCase(), telegram_type: subtype } }
+      orderReference(orderId, '') // Provider Idempotency-Key is the internal order UUID.
+      const result = await onceWithDeadline(() => deps.istarPost(path, providerBody, orderId))
+      const verified = validateIstarOrderReceipt(result, {
+        kind: subtype, username, recipientHash, walletType: providerBody.wallet_type as 'USDT' | 'TON',
+        ...(subtype === 'stars' ? { quantity } : { months: Number(providerBody.months) }),
+      })
+      if (!verified || verified.status === 'failed') return { kind: 'unknown' }
+      const bound = await onceWithDeadline(() => admin.rpc('bind_api_partner_istar_receipt', {
+        p_order_id: orderId, p_partner_id: partner.id,
+        p_provider_receipt: privateIstarReceipt(verified, subtype),
+      }))
+      if (bound?.error || bound?.data?.success !== true || bound.data.order_id !== orderId
+        || bound.data.idempotent_replay !== false) return { kind: 'unknown' }
+      return { kind: 'accepted', source: 'istar', id: verified.orderId, status: 'processing', payload: {
+        provider_order_id: verified.orderId, provider_status: verified.status, telegram_type: subtype,
+      } }
     }),
   }
 }

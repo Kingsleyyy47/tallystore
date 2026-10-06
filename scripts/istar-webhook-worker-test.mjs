@@ -73,6 +73,12 @@ assert.equal(calls.at(-1).name, 'defer_istar_webhook_event')
 assert.equal(calls.at(-1).args.p_manual_review, false)
 
 calls.length = 0
+settlement = { success: false, code: 'ISTAR_SIGNED_IDENTITY_UNPROVEN' }
+result = await handler(request(env.ISTAR_WEBHOOK_WORKER_TOKEN))
+assert.equal((await result.json()).review, 1)
+assert.equal(calls.at(-1).args.p_manual_review, true)
+
+calls.length = 0
 providerError = true
 result = await handler(request(env.ISTAR_WEBHOOK_WORKER_TOKEN))
 assert.equal((await result.json()).deferred, 1)

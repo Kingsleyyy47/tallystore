@@ -161,10 +161,26 @@ DECLARE
   v_order public.telegram_orders%ROWTYPE;
   v_debit public.transactions%ROWTYPE;
   v_debit_key text;
+  v_signed jsonb;
+  v_signed_order jsonb;
+  v_signed_payload jsonb;
   v_type text;
   v_cost numeric;
   v_refund jsonb;
   v_supplier_ids text[];
+  v_signed_usernames text[];
+  v_signed_recipients text[];
+  v_signed_wallet_types text[];
+  v_signed_quantities text[];
+  v_signed_months text[];
+  v_signed_amounts text[];
+  v_signed_refunded text[];
+  v_signed_refund_amounts text[];
+  v_signed_refund_ids text[];
+  v_get_refund_ids text[];
+  v_get_amounts text[];
+  v_get_refunded text[];
+  v_get_refund_amounts text[];
   v_usernames text[];
   v_recipients text[];
   v_wallet_types text[];
@@ -181,38 +197,111 @@ BEGIN
   SELECT * INTO v_order FROM public.telegram_orders
     WHERE istar_order_id=v_event.provider_order_id FOR UPDATE;
   IF NOT FOUND THEN RETURN jsonb_build_object('success',false,'code','ISTAR_ORDER_NOT_FOUND'); END IF;
-  IF jsonb_typeof(p_receipt)<>'object' THEN
+  IF jsonb_typeof(p_receipt) IS DISTINCT FROM 'object' THEN
     RETURN jsonb_build_object('success',false,'code','ISTAR_RECEIPT_INVALID');
   END IF;
+  v_signed := v_event.raw_body::jsonb;
+  v_signed_order := v_signed->'order';
+  v_signed_payload := v_signed_order->'payload';
+  v_type := CASE WHEN v_order.order_type='stars' THEN 'star' ELSE v_order.order_type END;
+  v_expected_status := CASE WHEN v_event.event_type='order.completed' THEN 'completed' ELSE 'failed' END;
+  IF jsonb_typeof(v_signed_order) IS DISTINCT FROM 'object'
+    OR v_signed->>'event_type' IS DISTINCT FROM v_event.event_type
+    OR v_signed_order->>'id' IS DISTINCT FROM v_event.provider_order_id
+    OR (v_signed_order ? 'order_id' AND v_signed_order->>'order_id' IS DISTINCT FROM v_event.provider_order_id)
+    OR (v_signed_payload ? 'order_id' AND v_signed_payload->>'order_id' IS DISTINCT FROM v_event.provider_order_id)
+    OR (v_signed ? 'order_id' AND v_signed->>'order_id' IS DISTINCT FROM v_event.provider_order_id)
+    OR (v_signed ? 'id' AND v_signed->>'id' IS DISTINCT FROM v_event.provider_order_id)
+    OR v_signed_order->>'status' IS DISTINCT FROM v_expected_status
+    OR (v_signed ? 'status' AND v_signed->>'status' IS DISTINCT FROM v_expected_status)
+    OR (v_signed_payload ? 'status' AND v_signed_payload->>'status' IS DISTINCT FROM v_expected_status)
+    OR v_signed_order->>'order_type' IS DISTINCT FROM v_type
+    OR (v_signed ? 'order_type' AND v_signed->>'order_type' IS DISTINCT FROM v_type)
+    OR (v_signed_payload ? 'order_type' AND v_signed_payload->>'order_type' IS DISTINCT FROM v_type)
+    OR jsonb_typeof(v_signed_payload) IS DISTINCT FROM 'object'
+    OR v_order.recipient_hash IS NULL OR v_order.recipient_hash=''
+  THEN RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_IDENTITY_UNPROVEN'); END IF;
+  v_signed_usernames := ARRAY_REMOVE(ARRAY[v_signed->>'username',v_signed_order->>'username',
+    v_signed_payload->>'username'],NULL);
+  v_signed_recipients := ARRAY_REMOVE(ARRAY[v_signed->>'recipient',v_signed->>'recipient_hash',
+    v_signed_order->>'recipient',v_signed_order->>'recipient_hash',
+    v_signed_payload->>'recipient',v_signed_payload->>'recipient_hash'],NULL);
+  v_signed_wallet_types := ARRAY_REMOVE(ARRAY[v_signed->>'wallet_type',v_signed_order->>'wallet_type',
+    v_signed_payload->>'wallet_type'],NULL);
+  v_signed_quantities := ARRAY_REMOVE(ARRAY[v_signed->>'quantity',v_signed_order->>'quantity',
+    v_signed_payload->>'quantity'],NULL);
+  v_signed_months := ARRAY_REMOVE(ARRAY[v_signed->>'months',v_signed_order->>'months',
+    v_signed_payload->>'months'],NULL);
+  v_signed_amounts := ARRAY_REMOVE(ARRAY[v_signed->>'amount',v_signed_order->>'amount',
+    v_signed_payload->>'amount'],NULL);
+  IF cardinality(v_signed_usernames)=0 OR cardinality(v_signed_recipients)=0
+    OR cardinality(v_signed_amounts)=0
+    OR EXISTS (SELECT 1 FROM unnest(v_signed_usernames) AS supplied
+      WHERE supplied IS DISTINCT FROM v_order.username)
+    OR EXISTS (SELECT 1 FROM unnest(v_signed_recipients) AS supplied
+      WHERE supplied IS DISTINCT FROM v_order.recipient_hash)
+    OR EXISTS (SELECT 1 FROM unnest(v_signed_wallet_types) AS supplied
+      WHERE supplied IS DISTINCT FROM v_order.wallet_type)
+    OR EXISTS (SELECT 1 FROM unnest(v_signed_amounts) AS supplied
+      WHERE supplied !~ '^[0-9]{1,32}(\.[0-9]{1,18})?$')
+    OR COALESCE(v_order.istar_amount,0)<=0
+  THEN RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_IDENTITY_UNPROVEN'); END IF;
+  IF EXISTS (SELECT 1 FROM unnest(v_signed_amounts) AS supplied
+      WHERE supplied::numeric IS DISTINCT FROM v_order.istar_amount)
+  THEN RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_IDENTITY_UNPROVEN'); END IF;
+  IF v_type='star' THEN
+    IF cardinality(v_signed_quantities)=0
+      OR EXISTS (SELECT 1 FROM unnest(v_signed_quantities) AS supplied
+        WHERE supplied !~ '^[0-9]{1,16}$')
+    THEN RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_IDENTITY_UNPROVEN'); END IF;
+    IF EXISTS (SELECT 1 FROM unnest(v_signed_quantities) AS supplied
+      WHERE supplied::numeric IS DISTINCT FROM v_order.quantity)
+    THEN RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_IDENTITY_UNPROVEN'); END IF;
+  ELSIF v_type='premium' THEN
+    IF cardinality(v_signed_months)=0
+      OR EXISTS (SELECT 1 FROM unnest(v_signed_months) AS supplied
+        WHERE supplied !~ '^[0-9]{1,16}$')
+    THEN RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_IDENTITY_UNPROVEN'); END IF;
+    IF EXISTS (SELECT 1 FROM unnest(v_signed_months) AS supplied
+      WHERE supplied::numeric IS DISTINCT FROM v_order.months)
+    THEN RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_IDENTITY_UNPROVEN'); END IF;
+  ELSE RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_IDENTITY_UNPROVEN'); END IF;
   IF p_receipt->>'status' IN ('pending','processing') THEN
     RETURN jsonb_build_object('success',false,'code','ISTAR_RECEIPT_NOT_FINAL');
   END IF;
-  v_supplier_ids := ARRAY_REMOVE(ARRAY[p_receipt->>'id',p_receipt->>'order_id'],NULL);
+  v_supplier_ids := ARRAY_REMOVE(ARRAY[p_receipt->>'id',p_receipt->>'order_id',
+    p_receipt->'payload'->>'order_id'],NULL);
+  v_get_amounts := ARRAY_REMOVE(ARRAY[p_receipt->>'amount',p_receipt->'payload'->>'amount'],NULL);
   v_usernames := ARRAY_REMOVE(ARRAY[p_receipt->>'username',p_receipt->'payload'->>'username'],NULL);
   v_recipients := ARRAY_REMOVE(ARRAY[p_receipt->>'recipient_hash',p_receipt->>'recipient',
     p_receipt->'payload'->>'recipient_hash',p_receipt->'payload'->>'recipient'],NULL);
   v_wallet_types := ARRAY_REMOVE(ARRAY[p_receipt->>'wallet_type',p_receipt->'payload'->>'wallet_type'],NULL);
   v_quantity_text := COALESCE(p_receipt->'payload'->>'quantity',p_receipt->>'quantity');
   v_months_text := COALESCE(p_receipt->'payload'->>'months',p_receipt->>'months');
-  v_type := CASE WHEN v_order.order_type='stars' THEN 'star' ELSE v_order.order_type END;
-  v_expected_status := CASE WHEN v_event.event_type='order.completed' THEN 'completed' ELSE 'failed' END;
   IF cardinality(v_supplier_ids)=0
+    OR (p_receipt ? 'payload' AND jsonb_typeof(p_receipt->'payload') IS DISTINCT FROM 'object')
     OR EXISTS (SELECT 1 FROM unnest(v_supplier_ids) AS supplier_id WHERE supplier_id<>v_event.provider_order_id)
+    OR (p_receipt->'payload' ? 'order_id' AND p_receipt->'payload'->>'order_id' IS DISTINCT FROM v_event.provider_order_id)
     OR p_receipt->>'status' IS DISTINCT FROM v_expected_status
-    OR (p_receipt->>'order_type' IS DISTINCT FROM v_type
+    OR (p_receipt->'payload' ? 'status' AND p_receipt->'payload'->>'status' IS DISTINCT FROM v_expected_status)
+    OR (p_receipt->>'order_type' IS NOT NULL AND p_receipt->>'order_type' IS DISTINCT FROM v_type
       AND p_receipt->>'order_type' IS DISTINCT FROM v_order.order_type)
+    OR (p_receipt->'payload' ? 'order_type' AND p_receipt->'payload'->>'order_type' IS DISTINCT FROM v_type
+      AND p_receipt->'payload'->>'order_type' IS DISTINCT FROM v_order.order_type)
     OR cardinality(v_usernames)=0
     OR EXISTS (SELECT 1 FROM unnest(v_usernames) AS supplied WHERE supplied IS DISTINCT FROM v_order.username)
     OR v_order.recipient_hash IS NULL OR v_order.recipient_hash=''
-    OR cardinality(v_recipients)=0
     OR EXISTS (SELECT 1 FROM unnest(v_recipients) AS supplied WHERE supplied IS DISTINCT FROM v_order.recipient_hash)
     OR cardinality(v_wallet_types)=0
     OR EXISTS (SELECT 1 FROM unnest(v_wallet_types) AS supplied WHERE supplied IS DISTINCT FROM v_order.wallet_type)
     OR v_order.wallet_type NOT IN ('USDT','TON')
     OR COALESCE(p_receipt->>'amount','') !~ '^[0-9]{1,32}(\.[0-9]{1,18})?$'
+    OR (p_receipt->'payload' ? 'amount' AND (p_receipt->'payload'->>'amount' IS NULL
+      OR p_receipt->'payload'->>'amount' !~ '^[0-9]{1,32}(\.[0-9]{1,18})?$'))
     OR COALESCE(v_order.istar_amount,0)<=0
   THEN RETURN jsonb_build_object('success',false,'code','ISTAR_RECEIPT_MISMATCH'); END IF;
-  IF (p_receipt->>'amount')::numeric<>v_order.istar_amount THEN
+  IF EXISTS (SELECT 1 FROM unnest(v_get_amounts) AS supplied
+    WHERE supplied::numeric IS DISTINCT FROM v_order.istar_amount) THEN
     RETURN jsonb_build_object('success',false,'code','ISTAR_RECEIPT_MISMATCH');
   END IF;
   IF v_type='star' THEN
@@ -231,11 +320,40 @@ BEGIN
     THEN RETURN jsonb_build_object('success',false,'code','ISTAR_RECEIPT_MISMATCH'); END IF;
   ELSE RETURN jsonb_build_object('success',false,'code','ISTAR_RECEIPT_MISMATCH'); END IF;
   IF v_event.event_type='order.failed' THEN
+    v_signed_refunded := ARRAY_REMOVE(ARRAY[v_signed->>'refunded',v_signed_order->>'refunded',
+      v_signed_payload->>'refunded'],NULL);
+    v_signed_refund_amounts := ARRAY_REMOVE(ARRAY[v_signed->>'refund_amount',
+      v_signed_order->>'refund_amount',v_signed_payload->>'refund_amount'],NULL);
+    v_signed_refund_ids := ARRAY_REMOVE(ARRAY[v_signed->>'refund_transaction_id',
+      v_signed_order->>'refund_transaction_id',v_signed_payload->>'refund_transaction_id'],NULL);
+    v_get_refund_ids := ARRAY_REMOVE(ARRAY[p_receipt->>'refund_transaction_id',
+      p_receipt->'payload'->>'refund_transaction_id'],NULL);
+    v_get_refunded := ARRAY_REMOVE(ARRAY[p_receipt->>'refunded',p_receipt->'payload'->>'refunded'],NULL);
+    v_get_refund_amounts := ARRAY_REMOVE(ARRAY[p_receipt->>'refund_amount',
+      p_receipt->'payload'->>'refund_amount'],NULL);
+    IF cardinality(v_signed_refunded)=0 OR cardinality(v_signed_refund_amounts)=0
+      OR cardinality(v_signed_refund_ids)=0
+      OR EXISTS (SELECT 1 FROM unnest(v_signed_refunded) AS supplied WHERE supplied IS DISTINCT FROM 'true')
+      OR EXISTS (SELECT 1 FROM unnest(v_signed_refund_amounts) AS supplied
+        WHERE supplied !~ '^[0-9]{1,32}(\.[0-9]{1,18})?$')
+      OR EXISTS (SELECT 1 FROM unnest(v_signed_refund_ids) AS supplied
+        WHERE supplied !~ '^[A-Za-z0-9][A-Za-z0-9:_-]{0,159}$'
+          OR supplied IS DISTINCT FROM v_signed_refund_ids[1])
+    THEN RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_REFUND_UNPROVEN'); END IF;
+    IF EXISTS (SELECT 1 FROM unnest(v_signed_refund_amounts) AS supplied
+      WHERE supplied::numeric IS DISTINCT FROM v_order.istar_amount)
+    THEN RETURN jsonb_build_object('success',false,'code','ISTAR_SIGNED_REFUND_UNPROVEN'); END IF;
     IF p_receipt->>'refunded' IS DISTINCT FROM 'true'
+      OR (p_receipt->'payload' ? 'refunded' AND p_receipt->'payload'->>'refunded' IS DISTINCT FROM 'true')
       OR COALESCE(p_receipt->>'refund_amount','') !~ '^[0-9]{1,32}(\.[0-9]{1,18})?$'
-      OR COALESCE(p_receipt->>'refund_transaction_id','') !~ '^[A-Za-z0-9][A-Za-z0-9:_-]{0,159}$'
+      OR (p_receipt->'payload' ? 'refund_amount' AND (p_receipt->'payload'->>'refund_amount' IS NULL
+        OR p_receipt->'payload'->>'refund_amount' !~ '^[0-9]{1,32}(\.[0-9]{1,18})?$'))
+      OR EXISTS (SELECT 1 FROM unnest(v_get_refunded) AS supplied WHERE supplied IS DISTINCT FROM 'true')
+      OR EXISTS (SELECT 1 FROM unnest(v_get_refund_ids) AS supplied
+        WHERE supplied IS DISTINCT FROM v_signed_refund_ids[1])
     THEN RETURN jsonb_build_object('success',false,'code','ISTAR_REFUND_UNPROVEN'); END IF;
-    IF (p_receipt->>'refund_amount')::numeric<>v_order.istar_amount THEN
+    IF EXISTS (SELECT 1 FROM unnest(v_get_refund_amounts) AS supplied
+      WHERE supplied::numeric IS DISTINCT FROM v_order.istar_amount) THEN
       RETURN jsonb_build_object('success',false,'code','ISTAR_REFUND_UNPROVEN');
     END IF;
   END IF;
@@ -285,7 +403,7 @@ BEGIN
         'source_debit_transaction_id',v_debit.id,
         'source_debit_idempotency_key',v_debit_key,
         'original_purchase_idempotency_key',v_debit_key,
-        'provider_refund_transaction_id',p_receipt->>'refund_transaction_id'
+        'provider_refund_transaction_id',v_signed_refund_ids[1]
       ),p_currency=>'NGN',p_balance_type=>'wallet',
       p_external_payment_id=>NULL,p_created_by=>NULL
     ) INTO v_refund;

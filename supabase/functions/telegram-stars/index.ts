@@ -4,6 +4,7 @@ import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.
 import { readTelegramApiBody, validTelegramApiInput, type TelegramApiAction } from '../_shared/telegram-api-contract.ts'
 import { telegramProviderJson } from '../_shared/telegram-provider-transport.ts'
 import { canonicalTelegramApiPurchase, telegramApiDebitProven } from '../_shared/telegram-api-replay.ts'
+import { validateIstarOrderReceipt } from '../_shared/istar-order-contract.ts'
 
 type SupabaseAdmin = any
 
@@ -530,18 +531,21 @@ async function handleCreateStarsOrder(admin: SupabaseAdmin, userId: string, body
   try {
     const istarOrder = await istarPost('/orders/star', {
       username, recipient_hash: recipientHash, quantity, wallet_type: config.wallet_type,
-    }, reference)
-    if (!istarOrder?.order_id) throw new Error('Supplier order confirmation missing')
+    }, order.id)
+    const verified = validateIstarOrderReceipt(istarOrder, {
+      kind: 'stars', username, recipientHash, quantity, walletType: config.wallet_type as 'USDT' | 'TON',
+    })
+    if (!verified) throw new Error('Supplier order confirmation unavailable')
     const { data: trackedOrder, error: orderTrackingError } = await admin.from('telegram_orders').update({
-      istar_order_id: istarOrder.order_id, istar_amount: istarOrder.amount,
+      istar_order_id: verified.orderId, istar_amount: verified.amount,
       status: 'processing', updated_at: new Date().toISOString(),
     }).eq('id', order.id).eq('status', 'pending').is('refunded_at', null)
       .select('id').maybeSingle()
     if (orderTrackingError || !trackedOrder) throw new Error('Supplier order tracking unavailable')
 
     // Auto-learn: update cost_per_star_usdt from this real order
-    if (istarOrder.amount && quantity > 0) {
-      const learnedCost = Number((istarOrder.amount / quantity).toFixed(6))
+    if (verified.walletType === 'USDT' && verified.status !== 'failed' && quantity > 0) {
+      const learnedCost = Number((Number(verified.amount) / quantity).toFixed(6))
       await admin.from('app_settings').upsert({
         key: 'telegram_star_cost_usdt', value: String(learnedCost), updated_at: new Date().toISOString(),
       }, { onConflict: 'key' })
@@ -686,10 +690,14 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
   try {
     const istarOrder = await istarPost('/orders/premium', {
       username, recipient_hash: recipientHash, months: product.months, wallet_type: walletType,
-    }, reference)
-    if (!istarOrder?.order_id) throw new Error('Supplier order confirmation missing')
+    }, order.id)
+    const verified = validateIstarOrderReceipt(istarOrder, {
+      kind: 'premium', username, recipientHash, months: product.months,
+      walletType: walletType as 'USDT' | 'TON',
+    })
+    if (!verified) throw new Error('Supplier order confirmation unavailable')
     const { data: trackedOrder, error: orderTrackingError } = await admin.from('telegram_orders').update({
-      istar_order_id: istarOrder.order_id, istar_amount: istarOrder.amount,
+      istar_order_id: verified.orderId, istar_amount: verified.amount,
       status: 'processing', updated_at: new Date().toISOString(),
     }).eq('id', order.id).eq('status', 'pending').is('refunded_at', null)
       .select('id').maybeSingle()
@@ -697,11 +705,11 @@ async function handleCreatePremiumOrder(admin: SupabaseAdmin, userId: string, bo
 
     // Auto-learn: save the TOTAL iStar USDT charge for this tier (not per-month)
     // Next customer's price = this_usdt_cost × live_ngn_rate + markup
-    if (istarOrder.amount && product.months > 0) {
+    if (verified.walletType === 'USDT' && verified.status !== 'failed' && product.months > 0) {
       const settingKey = `telegram_premium_cost_usdt_${product.months}m`
-      const newNgnPrice = Math.ceil((istarOrder.amount * premCfg.usdt_to_ngn + (premCfg.markups[String(product.months)] || 0)) / 10) * 10
+      const newNgnPrice = Math.ceil((Number(verified.amount) * premCfg.usdt_to_ngn + (premCfg.markups[String(product.months)] || 0)) / 10) * 10
       await Promise.all([
-        admin.from('app_settings').upsert({ key: settingKey, value: String(istarOrder.amount), updated_at: new Date().toISOString() }, { onConflict: 'key' }),
+        admin.from('app_settings').upsert({ key: settingKey, value: verified.amount, updated_at: new Date().toISOString() }, { onConflict: 'key' }),
         // Also update the stored product price so admin can see what's being charged
         admin.from('telegram_products').update({ price_ngn: newNgnPrice, updated_at: new Date().toISOString() }).eq('product_type', 'premium').eq('months', product.months),
       ])
@@ -737,17 +745,33 @@ async function handlePollOrder(admin: SupabaseAdmin, userId: string, body: Recor
     .select('*').eq('id', orderId).eq('user_id', userId).single()
   if (error || !order) throw new Error('ORDER_NOT_FOUND')
   if (order.status === 'processing' && order.istar_order_id) {
+    if (order.istar_amount == null || !['stars', 'premium'].includes(order.order_type)) return json({
+      success: false, code: 'SUPPLIER_OUTCOME_REVIEW_REQUIRED',
+      error: 'Supplier order amount needs review before completion.',
+    }, 202)
     try {
       const istarOrder = await istarGet(`/orders/${encodeURIComponent(String(order.istar_order_id))}`)
-      if (istarOrder.status === 'completed' && order.status !== 'completed') {
+      const verified = validateIstarOrderReceipt(istarOrder, {
+        providerOrderId: String(order.istar_order_id),
+        kind: order.order_type === 'stars' ? 'stars' : 'premium',
+        username: String(order.username), recipientHash: String(order.recipient_hash),
+        walletType: order.wallet_type as 'USDT' | 'TON',
+        ...(order.order_type === 'stars' ? { quantity: Number(order.quantity) } : { months: Number(order.months) }),
+        amount: String(order.istar_amount),
+      })
+      if (!verified) return json({
+        success: false, code: 'SUPPLIER_OUTCOME_REVIEW_REQUIRED',
+        error: 'Supplier order details need review before completion.',
+      }, 202)
+      if (verified.status === 'completed' && order.status !== 'completed') {
         const { data: updated, error: updateError } = await admin.from('telegram_orders')
-          .update({ status: 'completed', completed_at: istarOrder.updated_at || new Date().toISOString(), updated_at: new Date().toISOString() })
+          .update({ status: 'completed', completed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
           .eq('id', order.id).eq('status', 'processing').is('refunded_at', null)
           .select('id').maybeSingle()
         if (updateError) throw updateError
         if (updated) return json({ success: true, data: publicTelegramOrder({ ...order, status: 'completed' }) })
       }
-      if (istarOrder.status === 'failed' && order.status !== 'failed') {
+      if (verified.status === 'failed' && order.status !== 'failed') {
         return json({
           success: false,
           code: 'SUPPLIER_OUTCOME_REVIEW_REQUIRED',

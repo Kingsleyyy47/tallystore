@@ -5,6 +5,7 @@ import ts from 'typescript'
 import { parseGiftCardSelection, selectGiftCardDenomination, unwrapGiftCardData,
   verifyBoundUnpaidGiftCardInvoice } from '../../supabase/functions/_shared/customer-giftcard-contract.ts'
 import { giftCardInvoiceRetailTotal } from '../../supabase/functions/_shared/partner-giftcard-price.ts'
+import { validateIstarOrderReceipt } from '../../supabase/functions/_shared/istar-order-contract.ts'
 
 const source = readFileSync(new URL('../../supabase/functions/_shared/partner-bills-gift-telegram.ts', import.meta.url), 'utf8')
 const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
@@ -12,6 +13,7 @@ const exports = {}
 vm.runInNewContext(code, { exports, setTimeout, clearTimeout,
   require: specifier => {
     if (specifier === './partner-giftcard-price.ts') return { giftCardInvoiceRetailTotal }
+    if (specifier === './istar-order-contract.ts') return { validateIstarOrderReceipt }
     assert.equal(specifier, './customer-giftcard-contract.ts')
     return { parseGiftCardSelection, selectGiftCardDenomination, unwrapGiftCardData,
       verifyBoundUnpaidGiftCardInvoice }
@@ -19,7 +21,7 @@ vm.runInNewContext(code, { exports, setTimeout, clearTimeout,
 const { preparePartnerBillsPlan, preparePartnerGiftcardPlan, preparePartnerTelegramPlan } = exports
 const orderId = '10000000-0000-4000-8000-000000000001'
 const partner = { id: '30000000-0000-4000-8000-000000000001', allowed_sections: ['bills_airtime', 'giftcards', 'telegram_stars'], markup_percent: 10 }
-const calls = { airtime: 0, data: 0, giftcard: 0, giftcardBind: 0, giftcardPay: 0, telegram: 0, recipient: 0 }
+const calls = { airtime: 0, data: 0, giftcard: 0, giftcardBind: 0, giftcardPay: 0, telegram: 0, telegramBind: 0, recipient: 0 }
 let billResponse = { success: true, status: 'success', reference: 'sage-123' }
 let invoiceResponse = null
 let invoiceCreateMutation = null
@@ -29,7 +31,9 @@ let childMutation = null
 let invoiceSelection = null
 let paidResponse = { id: 'invoice-123', status: 'pending', orders: [{ id: 'gift-order-123' }] }
 let bindResponse = { success: true, idempotent_replay: false, pay_allowed: true, order_id: orderId }
-let telegramResponse = { order_id: 'telegram-order-123', status: 'pending' }
+let telegramResponse = { order_id: '4820', status: 'pending', username: 'example_user',
+  quantity: 100, wallet_type: 'USDT', amount: 1 }
+let telegramBindResponse = { success: true, order_id: orderId, idempotent_replay: false }
 let recipientResponse = { success: true, recipient: 'ABCDEF123456' }
 let giftProductResponse = { product_id: 'amazon-us', name: 'Amazon', type: 'gift_card', in_stock: true,
   currency: 'USD', recipient_type: 'none', packages: [{ package_id: 'ten', value: 10, price: 6.7 }],
@@ -37,6 +41,17 @@ let giftProductResponse = { product_id: 'amazon-us', name: 'Amazon', type: 'gift
 let giftPricingRule = { mode: 'percent', value: 5, source: 'global' }
 const admin = {
   async rpc(name, args) {
+    if (name === 'bind_api_partner_istar_receipt') {
+      calls.telegramBind++
+      assert.equal(args.p_order_id, orderId); assert.equal(args.p_partner_id, partner.id)
+      assert.deepEqual(Object.keys(args.p_provider_receipt).sort(),
+        ['amount','order_id','order_type',
+          args.p_provider_receipt.order_type === 'premium' ? 'months' : 'quantity',
+          'status','username','wallet_type'].sort())
+      assert.equal(args.p_provider_receipt.amount, telegramResponse.amount?.toString())
+      assert.equal(args.p_provider_receipt.order_id, telegramResponse.order_id)
+      return { data: telegramBindResponse, error: null }
+    }
     if (name === 'get_customer_bitrefill_pricing') {
       assert.equal(args.p_kind, 'gift_card'); assert.equal(args.p_product_id, 'amazon-us')
       assert.equal(args.p_unit_value, invoiceSelection.value ?? 10)
@@ -100,7 +115,10 @@ const deps = {
   getTelegramPremiumPricing: async () => ({ costs: { '3': 5 }, usdt_to_ngn: 1000 }),
   calculateTelegramPremiumPrice: () => 5000,
   istarGet: async () => { calls.recipient++; return recipientResponse },
-  istarPost: async () => { calls.telegram++; return telegramResponse },
+  istarPost: async (_path,_body,idempotencyKey) => {
+    assert.equal(idempotencyKey,orderId,'provider idempotency must be the internal UUID')
+    calls.telegram++; return telegramResponse
+  },
 }
 
 const airtime = await preparePartnerBillsPlan(admin, partner, {
@@ -276,14 +294,59 @@ const telegram = await preparePartnerTelegramPlan(admin, partner, {
 assert.equal(telegram.amountNgn, 1100)
 assert.equal(calls.telegram, 0)
 const acceptedTelegram = await telegram.dispatch(orderId)
-assert.equal(acceptedTelegram.id, 'telegram-order-123')
+assert.equal(acceptedTelegram.id, '4820')
 assert.equal(acceptedTelegram.status, 'processing')
 assert.equal(calls.telegram, 1)
+assert.equal(calls.telegramBind, 1)
+assert.ok(!JSON.stringify(acceptedTelegram.payload).includes('recipient_hash'))
+assert.ok(!JSON.stringify(acceptedTelegram.payload).includes('amount'))
+for (const bad of [
+  { order_id: 'id-only' },
+  { ...telegramResponse, order_id: 'unsafe/id' },
+  { ...telegramResponse, username: 'wrong_user' },
+  { ...telegramResponse, quantity: 101 },
+  { ...telegramResponse, wallet_type: 'TON' },
+  { ...telegramResponse, amount: 0 },
+  { ...telegramResponse, recipient_hash: 'wrong_hash' },
+  { ...telegramResponse, payload: { username: 'wrong_user', quantity: 999,
+    wallet_type: 'TON', amount: '99', recipient: 'wrong_hash' } },
+]) {
+  telegramResponse = bad
+  const plan = await preparePartnerTelegramPlan(admin, partner, {
+    item_id: 'stars:100', username: '@example_user', recipient_hash: 'ABCDEF123456', quantity: 100,
+  }, deps)
+  const beforeBind = calls.telegramBind
+  assert.equal((await plan.dispatch(orderId)).kind, 'unknown')
+  assert.equal(calls.telegramBind, beforeBind, 'invalid supplier receipt must not bind')
+  assert.equal((await plan.dispatch(orderId)).kind, 'unknown')
+}
+telegramResponse = { order_id: '4820', status: 'pending', username: 'example_user',
+  quantity: 100, wallet_type: 'USDT', amount: 1 }
+telegramBindResponse = { success: false, code: 'DISPATCH_NOT_ELIGIBLE' }
+const failedBindPlan = await preparePartnerTelegramPlan(admin, partner, {
+  item_id: 'stars:100', username: '@example_user', recipient_hash: 'ABCDEF123456', quantity: 100,
+}, deps)
+const paidBeforeFailedBind = calls.telegram
+assert.equal((await failedBindPlan.dispatch(orderId)).kind, 'unknown')
+assert.equal(calls.telegram, paidBeforeFailedBind + 1)
+assert.equal((await failedBindPlan.dispatch(orderId)).kind, 'unknown')
+assert.equal(calls.telegram, paidBeforeFailedBind + 1, 'binding failure cannot cause another paid send')
+telegramBindResponse = { success: true, order_id: orderId, idempotent_replay: false }
+telegramResponse = { order_id:'4830',status:'processing',username:'example_user',
+  months:3,wallet_type:'USDT',amount:10 }
+const validPremium = await preparePartnerTelegramPlan(admin, partner, {
+  item_id:'premium:20000000-0000-4000-8000-000000000001',
+  username:'@example_user',recipient_hash:'ABCDEF123456',
+}, deps)
+assert.equal(validPremium.requestPayload.months,3)
+assert.equal(validPremium.requestPayload.quantity,1)
+assert.equal((await validPremium.dispatch(orderId)).id,'4830')
 telegramResponse = { success: false, error: 'api key secret' }
 const ambiguousTelegram = await preparePartnerTelegramPlan(admin, partner, {
   item_id: 'premium:20000000-0000-4000-8000-000000000001', username: '@example_user', recipient_hash: 'ABCDEF123456',
 }, deps)
 assert.equal((await ambiguousTelegram.dispatch(orderId)).kind, 'unknown')
 assert.ok(!JSON.stringify(await ambiguousTelegram.dispatch(orderId)).includes('api key secret'))
+assert.equal(ambiguousTelegram.requestPayload.months,3,'premium supplier duration must be persisted')
 
 console.log('Partner bills/gift/Telegram plans: server pricing, recipient validation, unpaid Bitrefill invoice bound before one paid send, ambiguous outcomes and redaction passed.')

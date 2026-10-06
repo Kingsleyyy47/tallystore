@@ -25,11 +25,21 @@ body hash. The ingress body and persistence deadlines are 1.5 and two seconds.
 It does not perform supplier lookups or wallet changes while acknowledging.
 
 `istar-webhook-worker` requires a dedicated token and claims one event with a
-60-second lease. It reads the supplier order once, verifies the order ID,
-status, recipient, quantity or months, currency and reserved amount against
-the stored purchase, and rejects conflicting duplicate receipt fields.
-Documented `order.payload` fields are supported. Uncertain results are deferred
-with backoff; exhausted or inconsistent results remain for manual review.
+60-second lease. The SQL settlement uses two sources: the HMAC-verified signed
+callback stored in the private inbox, and a fresh authenticated supplier GET by
+the saved order ID. The signed callback must bind the order ID, terminal status,
+order type, supplier amount, recipient hash, username and quantity or months to
+the stored purchase. A failure also needs a signed refund transaction ID and
+full supplier refund evidence. The GET must independently confirm the saved
+order ID, terminal status, username, quantity or months, wallet currency and
+supplier amount; for failures it must report a full refund. Any optional GET
+recipient or refund ID must agree with the signed callback. The published GET
+Order schema does not guarantee recipient hash or refund transaction ID, so
+their absence from GET alone is not treated as proof against a signed event.
+Missing signed identity or refund evidence stays in manual review. Conflicting
+identity, status, order type, amount or refund claims in known `order` and
+`payload` wrappers are rejected before settlement. Uncertain provider results
+are deferred with backoff.
 
 The SQL settlement locks the event and order and requires a completed, owned,
 trusted wallet debit. A failed supplier order also requires proof that the full
@@ -64,17 +74,22 @@ genuine signed sandbox events and the worker schedule have been verified.
 
 Focused tests cover raw signature verification, persist-before-ACK ordering,
 bridge byte preservation, body and response limits, deadlines and late-response
-cancellation, worker authorization, no purchase resend, leases, receipt binding
+cancellation, worker authorization, no purchase resend, leases, two-source receipt binding
 and atomic settlement. The canonical wallet fixture uses real wallet routines:
 verified funding, a genuine Telegram debit, one refund, replay, refusal of forged
-or mismatched debit proof, and rollback on final order-update failure.
+or mismatched debit proof, and rollback on final order-update failure. Genuine
+provider-signed sandbox callback shapes and concurrent production-grade lease
+and settlement behavior still require separate validation before activation.
 
 PGlite tests do not prove simultaneous worker races on production PostgreSQL.
 Provider sandbox delivery and deployed authorization also remain launch checks.
 Local test success is not a claim that callbacks are active in production.
 
-The aggregate legacy wallet check is not green: its latest run reports 13
-unresolved assertions across other prepared routes and UI changes. The iStar
-queue assertions pass, but that does not resolve the whole suite. The repository
-route inventory check also reports an omitted `api/webhook/ercas.ts` entry before
-it can finish. These results must not be reported as a completed launch review.
+The current local aggregate wallet check passes all 94 assertions after its
+stale expectations were reconciled with reviewed owner controls, scoped API
+gates, verified crypto funding, supplier journals and safe history reads. The
+route inventory check also passes: six Vercel routes, 44 Edge functions and 17
+frontend surfaces are recorded, including the retired nested Ercas endpoint.
+The canonical wallet fixture additionally rejects 19 independently conflicting
+signed or GET receipts without changing wallet, ledger or order rows. These are
+source and local database results, not a completed production launch review.

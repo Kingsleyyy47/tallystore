@@ -128,7 +128,8 @@ serve(async (req: Request) => {
       }, serviceKey, databaseUrl)
       if (result?.success) { processed++; continue }
       if (result?.code === 'ISTAR_LEASE_STALE') continue
-      const manual = ['ISTAR_RECEIPT_MISMATCH','ISTAR_TERMINAL_CONFLICT',
+      const manual = ['ISTAR_RECEIPT_MISMATCH','ISTAR_SIGNED_IDENTITY_UNPROVEN',
+        'ISTAR_SIGNED_REFUND_UNPROVEN','ISTAR_TERMINAL_CONFLICT',
         'ISTAR_RECEIPT_INVALID'].includes(result?.code)
       await rpc('defer_istar_webhook_event', {
         p_event_id: event.id, p_lease_token: event.lease_token,

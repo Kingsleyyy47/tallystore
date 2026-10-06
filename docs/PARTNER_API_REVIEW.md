@@ -1,5 +1,31 @@
 # Partner API review state
 
+## Prepared supplier receipt binding — 6 October 2026
+
+The prepared iStar adapter sends the internal UUID once as the supplier
+idempotency key and validates the returned order ID, recipient, quantity or
+Premium duration, wallet currency and exact decimal supplier amount. Known
+wrapper claims must agree. Migration `20261006040000_partner_istar_receipt_binding.sql`
+stores the normalized original receipt privately against the reserved partner
+order, original key, request fingerprint and funding evidence before acceptance.
+The partner-facing response excludes this private supplier cost and receipt.
+
+Status completion requires a fresh supplier GET matching that original receipt
+and the immutable financial authorization. A dedicated service RPC rechecks the
+current original key, scopes, owner-reviewed partner and captured obligation
+before completing; it does not debit, capture or refund money again. A missing
+historical binding stays in review. A lost create response still cannot be
+recovered by a second paid request: the provider does not document an order
+lookup by idempotency key in the reviewed contract.
+
+Customer Telegram receipt validation uses the same strict contract. TON costs
+cannot update USDT pricing. Supplier and delegated customer responses now have
+full header/body deadlines, byte limits, redirect refusal and no automatic paid
+retry. Local actual-handler and financial-migration fixtures pass, including
+conflicting nested claims, revoked/foreign keys and unchanged financial rows.
+This work is not deployed and is separate from the pinned migration baseline.
+Provider sandbox receipts and concurrent PostgreSQL verification remain open.
+
 ## Prepared pricing corrections — 6 October 2026
 
 The local gift-card adapter now creates an unpaid balance invoice, reads its

@@ -1,5 +1,12 @@
 # Partner external order reconciliation
 
+The prepared 6 October iStar receipt-binding migration and status adapter require
+a private original receipt and an independently matching supplier GET before
+completion. They preserve funding rows and never resend a purchase. Historical
+orders without that receipt and unknown creates without a saved supplier ID
+remain in review. This preparation is local, outside the frozen migration plan;
+the previously deployed recovery paths described below remain unchanged.
+
 The owner-only `admin_reconciliation_cases` action lists at most 50 `sending` or
 `unknown` journal cases per page. `admin_reconciliation_probe` accepts one order
 UUID and makes a status request only when the same provider ID and source are

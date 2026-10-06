@@ -15,11 +15,15 @@ const orderId = '20000000-0000-4000-8000-000000000001'
 const unfundedOrderId = '20000000-0000-4000-8000-000000000002'
 const paymentId = '30000000-0000-4000-8000-000000000001'
 const supplierOrderId = '4820'
-const body = JSON.stringify({ event_type: 'order.failed', order: { id: supplierOrderId } })
+const signedOrder = id => ({ id, status:'failed', order_type:'star', amount:0.5,
+  payload:{ username:'synthetic_user', recipient:'synthetic_recipient', quantity:50 },
+  refunded:true, refund_amount:0.5, refund_transaction_id:4821 })
+const signedBody = order => JSON.stringify({ event_type:'order.failed',
+  occurred_at:'2026-10-06T00:00:00Z', order })
+const body = signedBody(signedOrder(supplierOrderId))
 const bodyHash = createHash('sha256').update(body).digest('hex')
-const receipt = { order_id: supplierOrderId, status: 'failed', order_type: 'star',
-  username: 'synthetic_user', recipient_hash: 'synthetic_recipient', wallet_type: 'USDT',
-  quantity: 50, amount: 0.5, refunded: true, refund_amount: 0.5, refund_transaction_id: 4821 }
+const receipt = { order_id: supplierOrderId, status: 'failed', username: 'synthetic_user',
+  wallet_type: 'USDT', quantity: 50, amount: 0.5, refunded: true, refund_amount: 0.5 }
 const rpc = async (name, args = []) => (await db.query(
   `SELECT public.${name}(${args.map((_, index) => `$${index + 1}`).join(',')}) AS result`, args,
 )).rows[0].result
@@ -37,6 +41,9 @@ const settle = (claim, proof = receipt) => rpc('settle_istar_webhook_event', [
 ])
 const enqueue = (hash = bodyHash) => rpc('enqueue_istar_webhook_event', [
   hash, 'order.failed', supplierOrderId, body, 'b'.repeat(64),
+])
+const enqueueSigned = raw => rpc('enqueue_istar_webhook_event', [
+  createHash('sha256').update(raw).digest('hex'), 'order.failed', supplierOrderId, raw, 'b'.repeat(64),
 ])
 
 try {
@@ -114,7 +121,7 @@ try {
     recipient_hash,wallet_type,quantity,istar_amount,price_ngn,status,idempotency_key,reference)
     VALUES($1,$2,'4830','stars','synthetic_user','synthetic_recipient','USDT',50,0.5,
       100,'processing','unfunded','TG-2')`, [unfundedOrderId,unfunded])
-  const unfundedBody = JSON.stringify({ event_type:'order.failed', order:{ id:'4830' } })
+  const unfundedBody = signedBody(signedOrder('4830'))
   await rpc('enqueue_istar_webhook_event', [createHash('sha256').update(unfundedBody).digest('hex'),
     'order.failed','4830',unfundedBody,'b'.repeat(64)])
   const [unfundedClaim] = await rpc('claim_istar_webhook_events', [1])
@@ -123,13 +130,85 @@ try {
   assert.equal(await balance(unfunded), 0)
   assert.equal(await countRefunds(), 0)
 
+  const idOnly = await enqueueSigned(signedBody({ id:supplierOrderId }))
+  const [idOnlyClaim] = await rpc('claim_istar_webhook_events', [1])
+  assert.equal((await settle(idOnlyClaim)).code, 'ISTAR_SIGNED_IDENTITY_UNPROVEN')
+  assert.equal(await countRefunds(), 0)
+  await rpc('defer_istar_webhook_event', [idOnly.event_id,idOnlyClaim.lease_token,
+    'ISTAR_SIGNED_IDENTITY_UNPROVEN',true])
+  const noRecipient = await enqueueSigned(signedBody({ ...signedOrder(supplierOrderId),
+    payload:{ username:'synthetic_user', quantity:50 } }))
+  const [noRecipientClaim] = await rpc('claim_istar_webhook_events', [1])
+  assert.equal((await settle(noRecipientClaim)).code, 'ISTAR_SIGNED_IDENTITY_UNPROVEN')
+  assert.equal(await countRefunds(), 0)
+  await rpc('defer_istar_webhook_event', [noRecipient.event_id,noRecipientClaim.lease_token,
+    'ISTAR_SIGNED_IDENTITY_UNPROVEN',true])
+  const noRefundId = await enqueueSigned(signedBody({ ...signedOrder(supplierOrderId),
+    refund_transaction_id:undefined }))
+  const [noRefundIdClaim] = await rpc('claim_istar_webhook_events', [1])
+  assert.equal((await settle(noRefundIdClaim)).code, 'ISTAR_SIGNED_REFUND_UNPROVEN')
+  assert.equal(await countRefunds(), 0)
+  await rpc('defer_istar_webhook_event', [noRefundId.event_id,noRefundIdClaim.lease_token,
+    'ISTAR_SIGNED_REFUND_UNPROVEN',true])
+
+  // Known optional root/order/payload claims cannot contradict signed identity.
+  // Each negative uses the genuine debit and proves no wallet/order change.
+  const noSettlementChange = async action => {
+    const before = {
+      wallet: await balance(), refunds: await countRefunds(),
+      order: (await db.query('SELECT to_jsonb(o) row FROM public.telegram_orders o WHERE id=$1', [orderId])).rows,
+      ledger: (await db.query('SELECT to_jsonb(t) row FROM public.transactions t ORDER BY id')).rows,
+    }
+    const result = await action()
+    assert.equal(await balance(), before.wallet)
+    assert.equal(await countRefunds(), before.refunds)
+    assert.deepEqual((await db.query('SELECT to_jsonb(o) row FROM public.telegram_orders o WHERE id=$1', [orderId])).rows, before.order)
+    assert.deepEqual((await db.query('SELECT to_jsonb(t) row FROM public.transactions t ORDER BY id')).rows, before.ledger)
+    return result
+  }
+  const signedConflicts = [
+    { root: { order_id:'wrong-order' } }, { root: { id:'wrong-order' } },
+    { root: { status:'completed' } }, { root: { order_type:'premium' } },
+    { order: { order_id:'wrong-order' } },
+    { payload: { order_id:'wrong-order' } }, { payload: { status:'completed' } },
+    { payload: { order_type:'premium' } },
+  ]
+  for (const conflict of signedConflicts) {
+    const original = signedOrder(supplierOrderId)
+    const raw = JSON.stringify({ event_type:'order.failed', ...conflict.root,
+      order:{ ...original, ...conflict.order, payload:{ ...original.payload, ...conflict.payload } } })
+    const event = await enqueueSigned(raw)
+    const [lease] = await rpc('claim_istar_webhook_events', [1])
+    const result = await noSettlementChange(() => settle(lease))
+    assert.equal(result.code, 'ISTAR_SIGNED_IDENTITY_UNPROVEN', JSON.stringify(conflict))
+    await rpc('defer_istar_webhook_event', [event.event_id,lease.lease_token,result.code,true])
+  }
+
   const first = await enqueue()
   assert.equal(first.success, true)
   const [claim] = await rpc('claim_istar_webhook_events', [1])
   assert.ok(claim)
   assert.equal((await settle(claim, {...receipt, refund_amount:0.4})).code, 'ISTAR_REFUND_UNPROVEN')
   assert.equal((await settle(claim, {...receipt, recipient_hash:'wrong'})).code, 'ISTAR_RECEIPT_MISMATCH')
+  assert.equal((await settle(claim, {...receipt, username:'wrong_user'})).code, 'ISTAR_RECEIPT_MISMATCH')
+  assert.equal((await settle(claim, {...receipt, refund_transaction_id:'wrong-refund'})).code, 'ISTAR_REFUND_UNPROVEN')
   assert.equal(await countRefunds(), 0)
+  for (const [payload, code] of [
+    [{ order_id:'wrong-order' },'ISTAR_RECEIPT_MISMATCH'],
+    [{ status:'completed' },'ISTAR_RECEIPT_MISMATCH'],
+    [{ order_type:'premium' },'ISTAR_RECEIPT_MISMATCH'],
+    [{ amount:'0.500000000000000001' },'ISTAR_RECEIPT_MISMATCH'],
+    [{ amount:'1e-1' },'ISTAR_RECEIPT_MISMATCH'],
+    [{ amount:null },'ISTAR_RECEIPT_MISMATCH'],
+    [{ refunded:false },'ISTAR_REFUND_UNPROVEN'],
+    [{ refunded:null },'ISTAR_REFUND_UNPROVEN'],
+    [{ refund_amount:'0.500000000000000001' },'ISTAR_REFUND_UNPROVEN'],
+    [{ refund_amount:'1e-1' },'ISTAR_REFUND_UNPROVEN'],
+    [{ refund_amount:null },'ISTAR_REFUND_UNPROVEN'],
+  ]) {
+    const result = await noSettlementChange(() => settle(claim, { ...receipt, payload }))
+    assert.equal(result.code, code, `GET optional claim accepted: ${JSON.stringify(payload)}`)
+  }
 
   // Changing the debit evidence must fail before any wallet refund is attempted.
   await db.query(`UPDATE public.transactions SET metadata=metadata||'{"trusted_principal_authorized":false}'::jsonb
@@ -159,7 +238,13 @@ try {
   assert.equal((await db.query('SELECT state FROM private.istar_webhook_inbox WHERE id=$1', [first.event_id])).rows[0].state, 'leased')
   await db.exec('DROP TRIGGER synthetic_final_failure ON public.telegram_orders')
 
-  assert.equal((await settle(claim)).success, true)
+  // Matching documented legacy payload succeeds. payload.id is a recipient
+  // identifier, not an order-ID alias; optional GET refund ID remains absent.
+  const legacyMatchingReceipt = { ...receipt, payload:{ id:'recipient-profile-id',
+    order_id:supplierOrderId,status:'failed',order_type:'star',username:'synthetic_user',
+    recipient:'synthetic_recipient',quantity:50,wallet_type:'USDT',amount:'0.5000',
+    refunded:true,refund_amount:'0.50' } }
+  assert.equal((await settle(claim, legacyMatchingReceipt)).success, true)
   assert.equal(await balance(), 1000)
   assert.equal(await countRefunds(), 1)
   const refund = await ledger(`telegram:refund:${orderId}`)
@@ -172,7 +257,7 @@ try {
   assert.equal(await countRefunds(), 1)
   assert.equal(await balance(), 1000)
 
-  console.log('iStar wallet fixture passed: actual verified credit/debit, refund, replay, forged evidence refusal, and atomic rollback.')
+  console.log('iStar wallet fixture passed: actual verified credit/debit, 19 signed/GET contradiction negatives without wallet/ledger/order changes, matching legacy payload refund, replay and atomic rollback.')
 } catch (error) {
   console.error(stage, error.message, error.detail || '')
   process.exitCode = 1
