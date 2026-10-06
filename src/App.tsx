@@ -18,8 +18,8 @@ import ChatWidget from '@/components/ChatWidget'
 import MobileBottomNav from '@/components/MobileBottomNav'
 import VisitorTracker from '@/components/VisitorTracker'
 
-// ⚠️ MAINTENANCE MODE - Set to false to restore normal site
-const MAINTENANCE_MODE = false;
+// Build-time customer notice; database controls enforce the write pause.
+const MAINTENANCE_MODE = import.meta.env.VITE_MAINTENANCE_MODE === 'true';
 // Local dev bypass: maintenance only shows in production
 const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 

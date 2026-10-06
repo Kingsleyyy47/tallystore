@@ -1,105 +1,32 @@
-import { useEffect, useState } from 'react';
 import { useSupportSettings } from '@/hooks/useSupportSettings';
 
-// Set the target time: 36 hours from when maintenance started
-// Change this timestamp to when you want maintenance to end
-const MAINTENANCE_END = new Date('2026-02-01T22:27:00+01:00').getTime(); // 36 hours from now
-
 export default function MaintenancePage() {
-  const [timeLeft, setTimeLeft] = useState({ hours: 0, minutes: 0, seconds: 0 });
   const support = useSupportSettings();
   const supportUrl = support.whatsappUrl || support.telegramUrl || '';
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = Date.now();
-      const diff = MAINTENANCE_END - now;
-
-      if (diff <= 0) {
-        setTimeLeft({ hours: 0, minutes: 0, seconds: 0 });
-        clearInterval(timer);
-        return;
-      }
-
-      const hours = Math.floor(diff / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-
-      setTimeLeft({ hours, minutes, seconds });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, []);
-
-  const pad = (n: number) => n.toString().padStart(2, '0');
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-purple-800 to-indigo-900 flex items-center justify-center p-4">
-      <div className="text-center">
-        {/* Logo */}
-        <div className="mb-8">
-          <img
-            src="/TALLYAPPLOGO.png"
-            alt="TallyStore"
-            className="w-32 h-32 mx-auto mb-4 rounded-2xl shadow-2xl"
-          />
-          <h1 className="text-4xl md:text-5xl font-bold text-white tracking-tight">
-            TallyStore
-          </h1>
-        </div>
-
-        {/* Maintenance Message */}
-        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8 mb-8 border border-white/20">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <div className="w-3 h-3 bg-yellow-400 rounded-full animate-pulse" />
-            <h2 className="text-2xl font-semibold text-white">Under Maintenance</h2>
-          </div>
-          <p className="text-purple-200 max-w-md mx-auto">
-            We're making some improvements to serve you better. We'll be back soon!
+    <main className="min-h-[100dvh] bg-slate-950 flex items-center justify-center px-5 py-10 text-white">
+      <section className="w-full max-w-lg rounded-3xl border border-purple-400/20 bg-slate-900 p-6 text-center shadow-2xl sm:p-10" aria-labelledby="maintenance-title">
+        <img src="/TALLYAPPLOGO.png" alt="TallyStore" className="mx-auto mb-6 h-20 w-20 rounded-2xl" />
+        <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-purple-300">TallyStore</p>
+        <h1 id="maintenance-title" className="text-3xl font-bold tracking-tight">Scheduled maintenance</h1>
+        <p className="mt-4 leading-relaxed text-slate-300">
+          Purchases and new payment requests are paused while we update the store.
+          We’ll reopen after our checks are complete.
+        </p>
+        <div className="mt-6 rounded-2xl border border-amber-300/20 bg-amber-400/5 p-4 text-left">
+          <h2 className="font-semibold text-amber-200">Already made a payment?</h2>
+          <p className="mt-2 text-sm leading-relaxed text-slate-300">
+            Keep your receipt and payment reference. Processing may be delayed during maintenance.
+            Contact support if you need help with a payment or an existing order.
           </p>
         </div>
-
-        {/* Countdown */}
-        <div className="flex justify-center gap-4">
-          <div className="bg-white/10 backdrop-blur-lg rounded-xl p-4 min-w-[80px] border border-white/20">
-            <div className="text-4xl font-bold text-white">{pad(timeLeft.hours)}</div>
-            <div className="text-purple-300 text-sm uppercase tracking-wide">Hours</div>
-          </div>
-          <div className="bg-white/10 backdrop-blur-lg rounded-xl p-4 min-w-[80px] border border-white/20">
-            <div className="text-4xl font-bold text-white">{pad(timeLeft.minutes)}</div>
-            <div className="text-purple-300 text-sm uppercase tracking-wide">Minutes</div>
-          </div>
-          <div className="bg-white/10 backdrop-blur-lg rounded-xl p-4 min-w-[80px] border border-white/20">
-            <div className="text-4xl font-bold text-white">{pad(timeLeft.seconds)}</div>
-            <div className="text-purple-300 text-sm uppercase tracking-wide">Seconds</div>
-          </div>
-        </div>
-
-        {/* Top-up Issues Notice */}
-        <div className="mt-8 bg-yellow-500/20 backdrop-blur-lg rounded-xl p-4 border border-yellow-400/30 max-w-md mx-auto">
-          <p className="text-yellow-100 text-sm">
-            <span className="font-semibold">⚠️ Top-up Issues?</span> Please report your issue along with your email and payment receipt to our{' '}
-            {supportUrl ? (
-              <a href={supportUrl} target="_blank" rel="noopener noreferrer" className="text-white font-semibold underline hover:text-yellow-200">
-                support team
-              </a>
-            ) : (
-              <span className="font-semibold">support team</span>
-            )}
-            . Thank you for your patience!
-          </p>
-        </div>
-
-        {/* Contact */}
         {supportUrl && (
-          <p className="mt-6 text-purple-300 text-sm">
-            Questions?{' '}
-            <a href={supportUrl} target="_blank" rel="noopener noreferrer" className="text-white underline hover:text-purple-200">
-              Message support
-            </a>
-          </p>
+          <a href={supportUrl} target="_blank" rel="noopener noreferrer" className="mt-6 inline-flex min-h-11 items-center justify-center rounded-xl bg-purple-500 px-6 py-3 font-semibold text-white hover:bg-purple-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-purple-300">
+            Contact support
+          </a>
         )}
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }
