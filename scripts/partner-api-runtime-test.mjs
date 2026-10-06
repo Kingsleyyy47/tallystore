@@ -34,7 +34,7 @@ const owner = 'c1396bda-86e2-4dfc-94bb-0d95469d1d36'
 const purchase = { action: 'create_order', item_type: 'sms', item_id: 'ds', quantity: 1,
   expected_amount_ngn: 100, idempotency_key: 'runtime-request-0001' }
 
-async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {},
+async function run({ body = { action: 'balance' }, method = 'POST', raw, bodyStream, extraHeaders = {}, fastBodyDeadline = false, env = {},
   key = 'tly_live_TEST_ONLY_KEY', admission = { ok: true, key_id: keyId, partner_id: partnerId },
   rpcFailure = '', claimed = true, actor = owner, adminAccount = false, signedIn = adminAccount,
   staffAccount = false, suspended = false, products = null, sections = ['sms', 'products'] } = {}) {
@@ -112,7 +112,9 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
     partnerGiftCardCatalogue,
     partnerMarkup: pricingExports.partnerMarkup,
     crypto: webcrypto, TextEncoder, TextDecoder, Uint8Array, Request, Response, URL,
-    setTimeout, clearTimeout, fetch: async () => { throw new Error('Unexpected provider network') },
+    setTimeout: fastBodyDeadline ? (callback, delay, ...args) =>
+      setTimeout(callback, delay === 5_000 ? 25 : delay, ...args) : setTimeout,
+    clearTimeout, fetch: async () => { throw new Error('Unexpected provider network') },
     console: { log() {}, error() {}, warn() {} },
   })
   vm.runInContext(compile(source), context)
@@ -122,8 +124,9 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
     smsCatalogue = async () => { throw new Error('PRIVATE_PROVIDER_CREDENTIAL'); };`, context)
   const request = new Request('https://fixture.invalid/functions/v1/partner-api', {
     method, headers: { 'Content-Type': 'application/json', ...(key ? { 'x-tally-api-key': key } : {}),
-      ...(signedIn ? { Authorization: 'Bearer FIXTURE_USER_JWT' } : {}) },
-    ...(['GET', 'HEAD'].includes(method) ? {} : { body: raw ?? JSON.stringify(body) }),
+      ...(signedIn ? { Authorization: 'Bearer FIXTURE_USER_JWT' } : {}), ...extraHeaders },
+    ...(['GET', 'HEAD'].includes(method) ? {} : { body: bodyStream ?? raw ?? JSON.stringify(body),
+      ...(bodyStream ? { duplex: 'half' } : {}) }),
   })
   const response = await handler(request)
   const data = await response.json()
@@ -254,5 +257,33 @@ for (const [raw, status] of [['[]', 400], ['null', 400], ['x'.repeat(32769), 413
   result = await run({ env: enabled, raw }); assert.equal(result.status, status)
   assert.equal(result.calls.rpc.length, 0)
 }
+result = await run({ env: enabled, extraHeaders: { 'Content-Length': '32769' } })
+assert.equal(result.status, 413)
+assert.equal(result.data.code, 'REQUEST_TOO_LARGE')
+assert.equal(result.calls.rpc.length, 0, 'declared oversize must fail before authentication')
+result = await run({ env: enabled, extraHeaders: { 'Content-Length': 'not-a-number' } })
+assert.equal(result.status, 400)
+assert.equal(result.calls.rpc.length, 0)
+let cancelled = 0
+const stalledBody = new ReadableStream({ start() {}, cancel() { cancelled++; return new Promise(() => {}) } })
+result = await run({ env: enabled, bodyStream: stalledBody, fastBodyDeadline: true })
+assert.equal(result.status, 408)
+assert.equal(result.data.code, 'REQUEST_TIMEOUT')
+assert.equal(result.calls.rpc.length, 0)
+assert.equal(cancelled, 1, 'timed-out stream cancellation must be initiated without awaiting a stalled cancel')
+let chunkedCancelled = 0
+const partialBody = new ReadableStream({
+  start(controller) { controller.enqueue(new TextEncoder().encode('{"action":')) },
+  cancel() { chunkedCancelled++ },
+})
+result = await run({ env: enabled, bodyStream: partialBody, fastBodyDeadline: true })
+assert.equal(result.status, 408, 'deadline covers the entire body, not each chunk separately')
+assert.equal(result.calls.rpc.length, 0)
+assert.equal(chunkedCancelled, 1)
+result = await run({ env: enabled, bodyStream: new ReadableStream({
+  start(controller) { controller.enqueue(new Uint8Array(0)) },
+}) })
+assert.equal(result.status, 400, 'zero-length chunks cannot keep extending a body read')
+assert.equal(result.calls.rpc.length, 0)
 result = await run({ env: enabled, method: 'DELETE' }); assert.equal(result.status, 405)
 console.log('Partner API entry point: rate/scopes, owner-only admin, catalog error redaction, independent purchase gates, exact claim before dispatch and override/body denial passed.')

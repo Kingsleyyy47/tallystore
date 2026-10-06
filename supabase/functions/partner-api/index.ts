@@ -2302,19 +2302,32 @@ async function readPartnerBody(req: Request, url: URL): Promise<Record<string, u
     return Object.fromEntries(url.searchParams.entries())
   }
   if (!/^application\/json(?:;|$)/i.test(req.headers.get('content-type') || '')) throw new Error('INVALID_REQUEST')
+  const declaredLength = req.headers.get('content-length')
+  if (declaredLength !== null) {
+    if (!/^\d+$/.test(declaredLength)) throw new Error('INVALID_REQUEST')
+    if (Number(declaredLength) > 32768) throw new Error('REQUEST_TOO_LARGE')
+  }
   const reader = req.body?.getReader()
   if (!reader) throw new Error('INVALID_REQUEST')
   const chunks: Uint8Array[] = []
   let bytes = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('REQUEST_TIMEOUT')), 5_000)
+  })
   try {
     while (true) {
-      const part = await reader.read()
+      const part = await Promise.race([reader.read(), deadline])
       if (part.done) break
+      if (part.value.byteLength === 0) throw new Error('INVALID_REQUEST')
       bytes += part.value.byteLength
-      if (bytes > 32768) { await reader.cancel(); throw new Error('REQUEST_TOO_LARGE') }
+      if (bytes > 32768) throw new Error('REQUEST_TOO_LARGE')
       chunks.push(part.value)
     }
-  } finally { reader.releaseLock() }
+  } finally {
+    if (timer) clearTimeout(timer)
+    void reader.cancel().catch(() => undefined)
+  }
   const raw = new Uint8Array(bytes)
   let offset = 0
   for (const chunk of chunks) { raw.set(chunk, offset); offset += chunk.byteLength }
@@ -2330,6 +2343,7 @@ function publicRequestError(error: unknown): { code: string; status: number } {
   if (['PARTNER_DISABLED', 'SCOPE_DENIED', 'SECTION_UNAVAILABLE', 'Admin access required', 'Owner access required'].includes(message)) return { code: message.replaceAll(' ', '_').toUpperCase(), status: 403 }
   if (message === 'RATE_LIMITED') return { code: message, status: 429 }
   if (message === 'REQUEST_TOO_LARGE') return { code: message, status: 413 }
+  if (message === 'REQUEST_TIMEOUT') return { code: message, status: 408 }
   const validation = new Set(['INVALID_REQUEST','UNKNOWN_ACTION','INVALID_QUANTITY','INVALID_RECIPIENT','INVALID_ITEM','INVALID_ORDER','PRICE_CHANGED','NO_STOCK'])
   if (validation.has(message)) return { code: message, status: message === 'PRICE_CHANGED' || message === 'NO_STOCK' ? 409 : 400 }
   if (['PRICE_UNAVAILABLE','CATALOG_UNAVAILABLE','PROVIDER_BALANCE_UNAVAILABLE','PARTNER_API_UNAVAILABLE'].includes(message)) return { code: message, status: 503 }

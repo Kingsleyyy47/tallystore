@@ -110,8 +110,8 @@ const trustPills = [
 ]
 
 const promiseCards = [
-  { title: "Secure payments", body: "Wallet and direct checkout stay connected to your account.", icon: CreditCard },
-  { title: "Real availability", body: "Categories are loaded from live product groups where stock exists.", icon: PackageCheck },
+  { title: "Secure payments", body: "Wallet payments and order history stay connected to your account.", icon: CreditCard },
+  { title: "Real availability", body: "Browse accounts in stock and products available through supplier fulfillment.", icon: PackageCheck },
   { title: "Customer first", body: "Mobile navigation, order history, and wallet access stay one tap away.", icon: Star },
 ]
 
@@ -149,21 +149,32 @@ const steps = [
 function buildCategoryCards(categories: Category[], productGroups: ProductGroup[]) {
   if (categories.length === 0) return FALLBACK_CATEGORIES
 
-  const stockByCategory = productGroups.reduce<Record<string, number>>((acc, group) => {
-    const stock = Number(group.stock_count || 0)
-    acc[group.category_id] = (acc[group.category_id] || 0) + (stock > 0 ? stock : 1)
+  const availabilityByCategory = productGroups.reduce<Record<string, { localStock: number; products: number; sortScore: number }>>((acc, group) => {
+    const stock = Number(group.stock_count)
+    const localStock = Number.isFinite(stock) && stock > 0 ? stock : 0
+    const current = acc[group.category_id] || { localStock: 0, products: 0, sortScore: 0 }
+    acc[group.category_id] = {
+      localStock: current.localStock + localStock,
+      products: current.products + 1,
+      sortScore: current.sortScore + (localStock || 1),
+    }
     return acc
   }, {})
 
   return [...categories]
-    .sort((a, b) => (stockByCategory[b.id] || 0) - (stockByCategory[a.id] || 0) || a.name.localeCompare(b.name))
+    .sort((a, b) => {
+      return (availabilityByCategory[b.id]?.sortScore || 0) - (availabilityByCategory[a.id]?.sortScore || 0) || a.name.localeCompare(b.name)
+    })
     .slice(0, 5)
     .map((category) => {
       const style = getCategoryStyle(category.name)
+      const availability = availabilityByCategory[category.id] || { localStock: 0, products: 0, sortScore: 0 }
       return {
         id: category.id,
         name: category.name,
-        description: category.description || `${formatCount(stockByCategory[category.id] || 0)} accounts available`,
+        description: category.description || (availability.localStock > 0
+          ? `${formatCount(availability.localStock)} accounts in stock`
+          : `${formatCount(availability.products)} products available to order`),
         icon: style.icon,
         image: style.image,
         href: `/category/${category.id}`,
@@ -173,10 +184,10 @@ function buildCategoryCards(categories: Category[], productGroups: ProductGroup[
     })
 }
 
-function countDisplayableStock(productGroups: ProductGroup[]) {
+function countLocalStock(productGroups: ProductGroup[]) {
   return productGroups.reduce((sum, product) => {
-    const stock = Number(product.stock_count || 0)
-    return sum + (stock > 0 ? stock : 1)
+    const stock = Number(product.stock_count)
+    return sum + (Number.isFinite(stock) && stock > 0 ? stock : 0)
   }, 0)
 }
 
@@ -187,7 +198,7 @@ const Index = () => {
   const [stats, setStats] = useState<HomepageStat[]>([
     { label: "Customers", value: "0", icon: PackageCheck },
     { label: "Orders Delivered", value: "0", icon: ShoppingBag },
-    { label: "Accounts Available", value: "0", icon: ShieldCheck },
+    { label: "Accounts In Stock", value: "0", icon: ShieldCheck },
     { label: "Product Categories", value: "0", icon: Headphones },
   ])
 
@@ -216,11 +227,11 @@ const Index = () => {
 
         setCategories(categoryData)
         setProductGroups(customerSellableProducts)
-        const availableAccounts = countDisplayableStock(customerSellableProducts)
+        const availableAccounts = countLocalStock(customerSellableProducts)
         setStats([
           { label: "Customers", value: formatCount(userCount), icon: PackageCheck },
           { label: "Orders Delivered", value: formatCount(orderCount), icon: ShoppingBag },
-          { label: "Accounts Available", value: formatCount(availableAccounts), icon: ShieldCheck },
+          { label: "Accounts In Stock", value: formatCount(availableAccounts), icon: ShieldCheck },
           { label: "Product Categories", value: formatCount(categoryData.length), icon: Headphones },
         ])
         trackRevenueEvent({
@@ -249,7 +260,7 @@ const Index = () => {
   }, [])
 
   const categoryCards = useMemo(() => buildCategoryCards(categories, productGroups), [categories, productGroups])
-  const totalStock = countDisplayableStock(productGroups)
+  const totalStock = countLocalStock(productGroups)
 
   const trackHomeCta = (destination: string, surface: string, metadata: Record<string, unknown> = {}) => {
     trackRevenueEvent({
@@ -385,7 +396,7 @@ const Index = () => {
               <span className="min-w-0 flex-1">
                 <h3 className="text-sm font-black text-slate-950 dark:text-white sm:mt-4">View All Categories</h3>
                 <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400 sm:mt-2 sm:min-h-10 sm:text-sm sm:leading-6">
-                  {totalStock > 0 ? `${formatCount(totalStock)} accounts across all categories` : "Explore all categories"}
+                  {totalStock > 0 ? `${formatCount(totalStock)} accounts in stock across all categories` : "Explore all categories"}
                 </p>
               </span>
               <ArrowRight className="h-4 w-4 shrink-0 text-slate-400 sm:hidden" />

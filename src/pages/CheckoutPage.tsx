@@ -32,6 +32,7 @@ import { blockStaffPurchase } from '@/lib/staffPurchaseGuard'
 import { getRevenueRequestContext, trackRevenueEvent } from '@/lib/revenue-os'
 import { canAutoFulfillProduct, isCustomerSellableProduct } from '@/lib/productAvailability'
 import { useCurrency } from '@/contexts/CurrencyContext'
+import { normalizeOrderCredential } from '@/lib/orderCredentials'
 
 const credentialFields: Array<{
   key: keyof PurchasedAccountCredentials
@@ -40,6 +41,7 @@ const credentialFields: Array<{
 }> = [
   { key: 'username', label: 'USERNAME / ID', labelClassName: 'text-white' },
   { key: 'password', label: 'PASSWORD', labelClassName: 'text-rose-400' },
+  { key: 'original_line', label: 'ORIGINAL STOCK LINE', labelClassName: 'text-slate-300' },
   { key: 'two_fa_code', label: '2FA KEY', labelClassName: 'text-purple-400' },
   { key: 'email', label: 'EMAIL', labelClassName: 'text-emerald-400 underline underline-offset-4' },
   { key: 'email_password', label: 'MAIL PASS', labelClassName: 'text-orange-400' },
@@ -71,16 +73,20 @@ function normalizePurchasedCredentials(
       ? accountDetails.accounts
       : []
 
-  return rawAccounts.map((item) => ({
-    username: credentialValue(item.username),
-    password: credentialValue(item.password),
-    email: credentialValue(item.email),
-    email_password: credentialValue(item.email_password),
-    two_fa_code: credentialValue(item.two_fa_code),
-    recovery_email: credentialValue(item.recovery_email),
-    recovery_email_password: credentialValue(item.recovery_email_password),
-    additional_info: credentialValue(item.additional_info),
-  })).filter((item) => credentialFields.some((field) => credentialValue(item[field.key]).trim()))
+  return rawAccounts.map((item) => {
+    const credential = normalizeOrderCredential(item)
+    return {
+      username: credentialValue(credential.username),
+      password: credentialValue(credential.password),
+      original_line: credentialValue(credential.original_line),
+      email: credentialValue(credential.email),
+      email_password: credentialValue(credential.email_password),
+      two_fa_code: credentialValue(credential.two_fa_code),
+      recovery_email: credentialValue(credential.recovery_email),
+      recovery_email_password: credentialValue(credential.recovery_email_password),
+      additional_info: credentialValue(credential.additional_info),
+    }
+  }).filter((item) => credentialFields.some((field) => credentialValue(item[field.key]).trim()))
 }
 
 export default function CheckoutPage() {

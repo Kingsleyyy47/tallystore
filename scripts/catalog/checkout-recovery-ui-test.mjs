@@ -50,6 +50,10 @@ const mocks = {
     export async function previewDiscountCode() { return { valid: false } }
     export async function processPurchaseSecure(...args) {
       window.__checkoutFixture.paidCalls.push({ key: args.at(-1), stored: localStorage.getItem(window.__checkoutFixture.storageKey) });
+      if (mode === 'visual-stock-line') return { success: true, order_id: 'synthetic-stock-order', account_details: { accounts: [{
+        username: 'stock-user', password: 'stock-pass',
+        additional_info: { original_line: '  stock-user |  stock-pass  | mail@example.invalid | mail-pass | 2fa-key | cookie=synthetic  ' },
+      }] } };
       if (mode === 'visual-single' || mode === 'visual-bulk') return { success: true, order_id: 'synthetic-visual-order', account_details: { accounts: Array.from({ length: mode === 'visual-bulk' ? 3 : 1 }, (_, i) => ({
         username: 'synthetic-long-login-' + (i + 1) + '-'.repeat(72) + '@example.invalid',
         password: '  synthetic-password-' + (i + 1) + '-'.repeat(54) + '  ',
@@ -90,7 +94,7 @@ const entry = `
     window.__checkoutFixture.goToAccount = accountId => navigate('/checkout?product=synthetic-product&account=' + accountId + '&case=' + mode);
     return <CheckoutPage />;
   }
-  if (!['deferred', 'success', 'circle-error', 'circle-hung', 'visual-single', 'visual-bulk'].includes(mode)) localStorage.setItem(storageKey, JSON.stringify({
+  if (!['deferred', 'success', 'circle-error', 'circle-hung', 'visual-single', 'visual-bulk', 'visual-stock-line'].includes(mode)) localStorage.setItem(storageKey, JSON.stringify({
     idempotencyKey: 'original-synthetic-key', orderId: 'synthetic-order', quantity: 1, expectedAmountNgn: 200,
   }));
   createRoot(document.getElementById('app')!).render(<BrowserRouter><Fixture /></BrowserRouter>);
@@ -365,6 +369,28 @@ try {
       `TXT must preserve account ${account}'s multiline extra text`)
   }
   await page.screenshot({ path: join(visualDir, 'checkout-credentials-bulk-last-390x700.png') })
+
+  await page.evaluate(key => { localStorage.removeItem(key); sessionStorage.removeItem(key) }, storageKey)
+  await page.setViewportSize({ width: 390, height: 560 })
+  await load('visual-stock-line')
+  await page.getByRole('button', { name: 'Buy Now' }).click()
+  await dialog.waitFor()
+  await waitForCenteredModal()
+  const originalStockLine = '  stock-user |  stock-pass  | mail@example.invalid | mail-pass | 2fa-key | cookie=synthetic  '
+  await dialog.getByRole('button', { name: 'Copy ORIGINAL STOCK LINE for account 1' }).click()
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), originalStockLine,
+    'Checkout must copy the exact nested stock line, not its JSON encoding or visual ellipsis')
+  const stockBounds = await dialog.boundingBox()
+  assert.ok(stockBounds && stockBounds.width <= 340 && stockBounds.y >= 0 && stockBounds.y + stockBounds.height <= 560,
+    'Original stock line must fit the compact modal without scrolling')
+  const stockDownloadPromise = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'Download all as TXT' }).click()
+  const stockDownload = await stockDownloadPromise
+  const stockText = await readFile(await stockDownload.path(), 'utf8')
+  assert.ok(stockText.includes(`ORIGINAL STOCK LINE: ${originalStockLine}`),
+    'Checkout TXT must retain the complete raw uploaded line')
+  assert.ok(stockText.includes('USERNAME / ID: stock-user') && stockText.includes('PASSWORD: stock-pass'),
+    'Raw stock lines must not overwrite already explicit username/password fields')
   assert.deepEqual(errors, [], 'Browser component raised an error')
   process.stdout.write('Checkout recovery browser tests passed (pre-dispatch persistence, reload/unknown/missing, completed/released, credentials before wallet refresh).\n')
 } finally {

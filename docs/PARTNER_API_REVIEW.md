@@ -1,5 +1,17 @@
 # Partner API review state
 
+## Prepared request-body deadline — 6 October 2026
+
+Partner JSON requests retain their 32,768-byte body limit and now have a
+five-second deadline for the entire streamed body. An oversized declared body
+is rejected before authentication; an oversized streamed body is also rejected.
+A stalled body returns HTTP 408 with `REQUEST_TIMEOUT`. Cancelling a stream
+cannot delay that response. Existing key, owner, scope, rate and payment checks
+remain in effect. Actual handler fixtures cover stalled and partial streams,
+hanging cancellation, invalid lengths and oversized bodies without making
+authentication, database or provider calls. This change is prepared locally;
+it is not deployed.
+
 ## Prepared supplier receipt binding — 6 October 2026
 
 The prepared iStar adapter sends the internal UUID once as the supplier

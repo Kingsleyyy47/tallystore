@@ -748,6 +748,7 @@ export type PublicAccount = Pick<IndividualAccount, 'id' | 'product_group_id' | 
 export interface PurchasedAccountCredentials {
   username?: string
   password?: string
+  original_line?: string
   email?: string
   email_password?: string
   two_fa_code?: string
