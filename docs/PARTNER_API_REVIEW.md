@@ -1,5 +1,43 @@
 # Partner API review state
 
+## Prepared pricing corrections — 6 October 2026
+
+The local gift-card adapter now creates an unpaid balance invoice, reads its
+merchant payment total and every child order, and prices that exact invoice.
+Card denominations and undocumented catalogue `price` fields are not selling
+prices. The adapter reads `get_customer_bitrefill_pricing` for the selected
+product and denomination, so the configured global, product or denomination
+amount/percentage rule applies. Exact rational arithmetic rounds each retail
+unit upward to ₦10 before quantity multiplication; partner markup then applies
+to the retail total.
+
+The prepared catalogue includes available gift cards that this checkout can
+deliver and lists their denominations with `price_basis: "live_quote"`.
+It excludes blocked products, sold-out products, phone refills, eSIMs and cards
+requiring unsupported recipient fields. It does not return guessed NGN prices
+or private supplier cost fields. A catalogue read never creates an invoice.
+
+The prepared partner action `quote` requires `orders:create` scope and a server
+enabled `giftcards` section. Send the same gift-card selection as `create_order`
+with `action: "quote"`; its response provides `expected_amount_ngn`, quantity
+and denomination. A quote creates an unpaid supplier invoice to verify cost,
+but invokes no reserve, dispatch, payment or settlement. Submit the returned
+expected amount with a unique idempotency key at purchase; checkout recomputes
+the quote and rejects a changed total before payment. Unpaid quote invoices
+can remain at the supplier, so no successful purchase is inferred from one.
+
+After a committed reserve and private invoice binding, dispatch rechecks the
+same unpaid invoice, merchant currency/total and exact child identities before
+its sole pay call. Incomplete, changed or ambiguous evidence cannot authorize
+a second payment. The transport rejects redirects, bounds streamed response
+bodies, aborts at its deadline and never retries a paid call. Missing or
+ambiguous billing metadata still requires review.
+
+Focused local catalogue, markup, adapter, HTTP transport, shared customer
+contract and partner entry-point tests passed. These corrections are not yet
+deployed. External section flags remain closed; the migration copy contains
+the previously reviewed deployed version until a later function update.
+
 `partner-api` defaults to paused. On October 5, 2026 the reviewed function and migrations were deployed to the existing source project. Its read and atomic local-product flags are enabled. Existing partner rows were made inactive by `20260919007000_pause_existing_api_partners.sql`; this work does not reactivate them.
 
 Migration `20261005015000_partner_owner_admin_actions.sql` adds an owner review marker. Only the verified owner can create a reviewed partner, issue a key for that partner, revoke a key, choose the initial prepaid or unlimited credit mode, or later change credit mode. Provisioning, key issuance, revocation, and their audit rows are transactional. Historical partners do not receive the review marker or new keys automatically. Owner balance adjustments and credit changes use the atomic RPCs from migration `11000`. All partner administration, including inspecting records, requires the verified owner. Partner metadata edits and activation remain disabled.
@@ -89,10 +127,16 @@ Deployment order was `20261005011000_partner_credit_review_gates.sql`, `20261005
 
 On 5 October 2026, a read-only audit compared the five non-placeholder keys in
 the reachable historical Git `.env` blob against all 40 current SOURCE Supabase
-Edge secrets. It covered Git refs under `--all`, including deletion history, and
-compared both raw values and values normalized for outer whitespace and wrapping
-quotes. No exact matches were found. Credentials were compared in memory and
-were not printed, saved or changed.
+Edge secret digests. Supabase Management `GET /secrets` returns SHA-256 digests,
+not plaintext credentials. The earlier direct-value comparison was invalid and
+has been replaced by `scripts/security-history-source-secret-digest-check.mjs`.
+The corrected run covered Git refs under `--all`, including deletion history,
+and compared SHA-256 of each raw historical value and its value normalized for
+outer whitespace and wrapping quotes against every current secret digest,
+including secrets with different names. It inspected one unique historical
+environment blob and five candidate values; no digest matches were found.
+Credentials and digests were compared in memory and were not printed, saved,
+sent to a provider or changed. Only names, counts and match booleans were output.
 
 The checked historical names were `MUABANVIA_API_KEY`, `POCKETFI_SECRET_KEY`,
 `VITE_ERCASPAY_API_KEY`, `VITE_ERCASPAY_SECRET_KEY` and `VITE_POCKETFI_API_TOKEN`.
@@ -100,3 +144,10 @@ The current browser-source and build leak scan also passed. This establishes
 these inspected values are absent from the current SOURCE secret set; it does
 not prove that previously exposed keys were revoked at every provider or that
 the whole application security review is complete.
+
+Provider authentication cannot be tested with a Management secret digest.
+Any earlier Bitrefill `401` or key-rotation assessment based on sending such a
+digest is withdrawn: it did not establish whether the current server key works.
+Actual provider checks must use `Deno.env` inside Supabase through an authorized
+runtime probe that exposes only redacted response metadata. This corrected
+history comparison makes no claim about current provider authentication.

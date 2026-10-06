@@ -8,6 +8,8 @@ const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,159}$/
 const CURRENCY = /^[A-Z]{3}$/
 const QUOTE_KEYS = ['product_id', 'product_name', 'package_id', 'unit_value', 'currency',
   'quantity', 'amount_ngn', 'provider_price', 'billing_currency'] as const
+const BOUND_INVOICE_KEYS = ['product_id', 'product_name', 'package_id', 'unit_value', 'currency',
+  'quantity', 'provider_price', 'billing_currency'] as const
 const REQUEST_KEYS = ['product_id', 'package_id', 'unit_value', 'quantity', 'expected_amount_ngn'] as const
 
 export type GiftCardQuote = {
@@ -21,6 +23,7 @@ export type GiftCardQuote = {
   provider_price: number
   billing_currency: 'USD' | 'NGN' | 'BTC'
 }
+export type BoundGiftCardInvoiceQuote = Omit<GiftCardQuote, 'amount_ngn'>
 export type CanonicalGiftCardRequest = {
   product_id: string
   package_id: string | null
@@ -28,10 +31,14 @@ export type CanonicalGiftCardRequest = {
   quantity: number
   expected_amount_ngn: number
 }
-export type GiftCardProduct = {
+export type GiftCardSelection = {
   product_id: string
   product_name: string
   currency: string
+  packages: { package_id: string; unit_value: number }[]
+  range: { min: number; max: number; step: number } | null
+}
+export type GiftCardProduct = Omit<GiftCardSelection, 'packages' | 'range'> & {
   packages: { package_id: string; unit_value: number; unit_price_candidate: number }[]
   range: { min: number; max: number; step: number; price_rate_candidate: number } | null
 }
@@ -64,7 +71,7 @@ function validName(value: unknown): value is string {
     && [...value].every(char => char.charCodeAt(0) >= 32 && char.charCodeAt(0) !== 127)
 }
 
-export function parseGiftCardProduct(raw: unknown, expectedId: string): GiftCardProduct | null {
+export function parseGiftCardSelection(raw: unknown, expectedId: string): GiftCardSelection | null {
   if (!PRODUCT_ID.test(expectedId)) return null
   const source = object(unwrapGiftCardData(raw))
   if (!source || source.type !== 'gift_card' || source.in_stock !== true
@@ -79,46 +86,71 @@ export function parseGiftCardProduct(raw: unknown, expectedId: string): GiftCard
     : packageMap ? Object.values(packageMap) : []
   if (entries.length > 100) return null
   const seen = new Set<string>()
-  const packages: GiftCardProduct['packages'] = []
+  const packages: GiftCardSelection['packages'] = []
   for (const entry of entries) {
     const candidate = object(entry)
     if (!candidate || (candidate.id !== undefined && candidate.package_id !== undefined && candidate.id !== candidate.package_id)
       || (candidate.value !== undefined && candidate.amount !== undefined && candidate.value !== candidate.amount)) return null
     const id = candidate.package_id ?? candidate.id
     const value = candidate.value ?? candidate.amount
-    if (!packageId(id) || !denomination(value) || !positive(candidate.price) || seen.has(id)) return null
+    if (!packageId(id) || !denomination(value) || seen.has(id)) return null
     seen.add(id)
-    packages.push({ package_id: id, unit_value: value, unit_price_candidate: candidate.price })
+    packages.push({ package_id: id, unit_value: value })
   }
-  let range: GiftCardProduct['range'] = null
+  let range: GiftCardSelection['range'] = null
   if (source.range !== undefined && source.range !== null) {
     const candidate = object(source.range)
     if (!candidate || !denomination(candidate.min) || !denomination(candidate.max)
-      || !denomination(candidate.step) || candidate.max < candidate.min
-      || !positive(candidate.price_rate)) return null
-    range = { min: candidate.min, max: candidate.max, step: candidate.step,
-      price_rate_candidate: candidate.price_rate }
+      || !denomination(candidate.step) || candidate.max < candidate.min) return null
+    range = { min: candidate.min, max: candidate.max, step: candidate.step }
   }
   if (!packages.length && !range) return null
   return { product_id: expectedId, product_name: source.name, currency: source.currency, packages, range }
 }
 
-export function selectGiftCardUnit(product: GiftCardProduct, rawPackageId: unknown, rawUnitValue: unknown): GiftCardUnit | null {
+// Face value and denomination selection do not establish a merchant price.
+// Invoice-priced callers can use this contract without undocumented price fields.
+export function parseGiftCardProduct(raw: unknown, expectedId: string): GiftCardProduct | null {
+  const selection = parseGiftCardSelection(raw, expectedId)
+  const source = object(unwrapGiftCardData(raw))
+  if (!selection || !source) return null
+  const entries = Array.isArray(source.packages) ? source.packages : Object.values(object(source.packages) || {})
+  const packages: GiftCardProduct['packages'] = []
+  for (let i = 0; i < selection.packages.length; i++) {
+    const candidate = object(entries[i])
+    if (!candidate || !positive(candidate.price)) return null
+    packages.push({ ...selection.packages[i], unit_price_candidate: candidate.price })
+  }
+  const candidate = object(source.range)
+  if (selection.range && (!candidate || !positive(candidate.price_rate))) return null
+  return { ...selection, packages, range: selection.range
+    ? { ...selection.range, price_rate_candidate: candidate!.price_rate as number } : null }
+}
+
+export function selectGiftCardDenomination(product: GiftCardSelection, rawPackageId: unknown,
+  rawUnitValue: unknown): { package_id: string | null; unit_value: number } | null {
   if (!PRODUCT_ID.test(product.product_id) || !CURRENCY.test(product.currency)) return null
   if (rawPackageId !== null && rawPackageId !== undefined && rawPackageId !== '') {
     if (!packageId(rawPackageId)) return null
     const chosen = product.packages.find(entry => entry.package_id === rawPackageId)
     if (!chosen || (rawUnitValue !== undefined && rawUnitValue !== null && rawUnitValue !== chosen.unit_value)) return null
-    return { package_id: chosen.package_id, unit_value: chosen.unit_value,
-      unit_price_candidate: chosen.unit_price_candidate }
+    return { package_id: chosen.package_id, unit_value: chosen.unit_value }
   }
   if (!denomination(rawUnitValue) || !product.range) return null
-  const { min, max, step, price_rate_candidate } = product.range
+  const { min, max, step } = product.range
   const steps = (rawUnitValue - min) / step
   if (rawUnitValue < min || rawUnitValue > max || Math.abs(steps - Math.round(steps)) > 1e-8) return null
-  const candidate = rawUnitValue * price_rate_candidate
+  return { package_id: null, unit_value: rawUnitValue }
+}
+
+export function selectGiftCardUnit(product: GiftCardProduct, rawPackageId: unknown, rawUnitValue: unknown): GiftCardUnit | null {
+  const selected = selectGiftCardDenomination(product, rawPackageId, rawUnitValue)
+  if (!selected) return null
+  const candidate = selected.package_id !== null
+    ? product.packages.find(entry => entry.package_id === selected.package_id)?.unit_price_candidate
+    : product.range && selected.unit_value * product.range.price_rate_candidate
   if (!positive(candidate)) return null
-  return { package_id: null, unit_value: rawUnitValue, unit_price_candidate: candidate }
+  return { ...selected, unit_price_candidate: candidate }
 }
 
 export function validateGiftCardQuote(raw: unknown): GiftCardQuote | null {
@@ -136,6 +168,20 @@ export function validateGiftCardQuote(raw: unknown): GiftCardQuote | null {
     || (quote.billing_currency !== 'USD' && quote.billing_currency !== 'NGN' && quote.billing_currency !== 'BTC')
     || (quote.billing_currency === 'BTC' && !Number.isSafeInteger(quote.provider_price))) return null
   return quote as GiftCardQuote
+}
+export function validateBoundGiftCardInvoiceQuote(raw: unknown): BoundGiftCardInvoiceQuote | null {
+  const quote = object(raw)
+  if (!quote || !sameKeys(quote, BOUND_INVOICE_KEYS)
+    || typeof quote.product_id !== 'string' || !PRODUCT_ID.test(quote.product_id)
+    || !validName(quote.product_name)
+    || (quote.package_id !== null && !packageId(quote.package_id))
+    || !denomination(quote.unit_value)
+    || typeof quote.currency !== 'string' || !CURRENCY.test(quote.currency)
+    || !Number.isSafeInteger(quote.quantity) || (quote.quantity as number) < 1 || (quote.quantity as number) > 20
+    || !positive(quote.provider_price) || quote.provider_price > 1_000_000_000
+    || (quote.billing_currency !== 'USD' && quote.billing_currency !== 'NGN' && quote.billing_currency !== 'BTC')
+    || (quote.billing_currency === 'BTC' && !Number.isSafeInteger(quote.provider_price))) return null
+  return quote as BoundGiftCardInvoiceQuote
 }
 
 export function canonicalGiftCardRequest(rawQuote: unknown): CanonicalGiftCardRequest | null {
@@ -155,7 +201,7 @@ export function validateCanonicalGiftCardRequest(raw: unknown): CanonicalGiftCar
   return request as CanonicalGiftCardRequest
 }
 
-function boundChild(raw: unknown, quote: GiftCardQuote, requireIdentity: boolean): string | null {
+function boundChild(raw: unknown, quote: BoundGiftCardInvoiceQuote, requireIdentity: boolean): string | null {
   const child = object(raw)
   const nested = child && object(child.product)
   const id = child?.id
@@ -184,6 +230,21 @@ function boundChild(raw: unknown, quote: GiftCardQuote, requireIdentity: boolean
 export function verifyUnpaidGiftCardInvoice(raw: unknown, invoiceId: string, rawQuote: unknown,
   rawChildDetails: unknown[]): boolean {
   const quote = validateGiftCardQuote(rawQuote)
+  if (!quote) return false
+  return verifyBoundUnpaidGiftCardInvoice(raw, invoiceId, {
+    product_id: quote.product_id, product_name: quote.product_name,
+    package_id: quote.package_id, unit_value: quote.unit_value,
+    currency: quote.currency, quantity: quote.quantity,
+    provider_price: quote.provider_price, billing_currency: quote.billing_currency,
+  }, rawChildDetails)
+}
+
+// The provider's already-created unpaid invoice is the price authority for a
+// partner quote. The caller must price and reserve from this exact total, then
+// re-read and verify the same invoice immediately before its single pay call.
+export function verifyBoundUnpaidGiftCardInvoice(raw: unknown, invoiceId: string, rawQuote: unknown,
+  rawChildDetails: unknown[]): boolean {
+  const quote = validateBoundGiftCardInvoiceQuote(rawQuote)
   const invoice = object(unwrapGiftCardData(raw))
   if (!quote || !PROVIDER_ID.test(invoiceId) || !invoice || invoice.id !== invoiceId || invoice.status !== 'unpaid') return false
   const payment = object(invoice.payment)

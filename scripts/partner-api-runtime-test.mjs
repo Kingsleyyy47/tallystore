@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { webcrypto } from 'node:crypto'
 import vm from 'node:vm'
 import ts from 'typescript'
+import { partnerGiftCardCatalogue } from '../supabase/functions/_shared/partner-giftcard-catalogue.ts'
 
 const compile = source => ts.transpileModule(source, { compilerOptions: {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None,
@@ -36,11 +37,11 @@ const purchase = { action: 'create_order', item_type: 'sms', item_id: 'ds', quan
 async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {},
   key = 'tly_live_TEST_ONLY_KEY', admission = { ok: true, key_id: keyId, partner_id: partnerId },
   rpcFailure = '', claimed = true, actor = owner, adminAccount = false, signedIn = adminAccount,
-  staffAccount = false, suspended = false, products = null } = {}) {
+  staffAccount = false, suspended = false, products = null, sections = ['sms', 'products'] } = {}) {
   let handler
   const calls = { rpc: [], tables: [], dispatch: 0, plans: 0, logs: [], reconciliation: [] }
   const partner = { id: partnerId, is_active: true, owner_reviewed_at: '2026-10-05',
-    allowed_sections: ['sms', 'products'], balance_ngn: 500, unlimited_credit: false, markup_percent: 10 }
+    allowed_sections: sections, balance_ngn: 500, unlimited_credit: false, markup_percent: 10 }
   const db = {
     from(table) {
       calls.tables.push(table)
@@ -103,6 +104,12 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
         payload: { phone_number: '+10000000000' },
       } },
     } },
+    preparePartnerGiftcardPlan: async () => { calls.plans++; return {
+      section: 'giftcards', itemId: 'amazon-us', itemName: 'Amazon', quantity: 2, amountNgn: 21956,
+      requestPayload: { package_id: 'ten', value: 10, provider_currency: 'USD',
+        invoice_id: 'PRIVATE_INVOICE_ID' }, dispatch: async () => { calls.dispatch++; throw Error('Quote cannot dispatch') },
+    } },
+    partnerGiftCardCatalogue,
     partnerMarkup: pricingExports.partnerMarkup,
     crypto: webcrypto, TextEncoder, TextDecoder, Uint8Array, Request, Response, URL,
     setTimeout, clearTimeout, fetch: async () => { throw new Error('Unexpected provider network') },
@@ -127,6 +134,21 @@ async function run({ body = { action: 'balance' }, method = 'POST', raw, env = {
 let result = await run()
 assert.equal(result.status, 503); assert.equal(result.calls.rpc.length, 0)
 const enabled = { PARTNER_API_READ_ENABLED: 'true' }
+const giftQuote = { action: 'quote', item_type: 'giftcards', item_id: 'amazon-us', package_id: 'ten', quantity: 2 }
+result = await run({ env: enabled, body: giftQuote, sections: ['giftcards'] })
+assert.equal(result.status, 403); assert.equal(result.calls.plans, 0)
+result = await run({ env: { ...enabled, PARTNER_EXTERNAL_SECTIONS_ENABLED: 'giftcards' },
+  body: giftQuote, sections: ['giftcards'] })
+assert.equal(result.status, 200); assert.equal(result.data.data.expected_amount_ngn, 21956)
+assert.equal(result.calls.plans, 1); assert.equal(result.calls.dispatch, 0)
+assert.deepEqual(result.calls.rpc.map(call => call.name), ['authorize_api_partner_request'])
+assert.equal(result.calls.rpc[0].args.p_scope, 'orders:create')
+for (const options of [{ key: '' }, { admission: { ok: false, code: 'SCOPE_DENIED' } }, { sections: ['sms'] }]) {
+  result = await run({ env: { ...enabled, PARTNER_EXTERNAL_SECTIONS_ENABLED: 'giftcards' },
+    body: giftQuote, sections: ['giftcards'], ...options })
+  assert.ok([401, 403].includes(result.status)); assert.equal(result.calls.plans, 0)
+  assert.equal(result.calls.dispatch, 0)
+}
 for (const key of ['', 'not-a-valid-key']) {
   result = await run({ env: enabled, key, admission: { ok: false, code: 'INVALID_KEY' } })
   assert.equal(result.status, 401); assert.equal(result.calls.dispatch, 0)

@@ -1,5 +1,8 @@
-// Read-only preparation for partner external purchases. The caller must reserve
-// partner funds and journal the order before invoking dispatch exactly once.
+// Preparation never pays a provider. Gift cards create an unpaid invoice to
+// establish its merchant total; dispatch requires a journaled partner reserve.
+import { parseGiftCardSelection, selectGiftCardDenomination, unwrapGiftCardData, verifyBoundUnpaidGiftCardInvoice,
+  type BoundGiftCardInvoiceQuote } from './customer-giftcard-contract.ts'
+import { giftCardInvoiceRetailTotal } from './partner-giftcard-price.ts'
 export type PartnerExternalOutcome =
   | { kind: 'accepted'; source: 'sagecloud' | 'bitrefill' | 'istar'; id: string; status: 'processing' | 'completed'; payload: Record<string, unknown> }
   | { kind: 'rejected'; reason: 'NO_STOCK' | 'INSUFFICIENT_BALANCE' | 'PRICE_CHANGED' | 'INVALID_RECIPIENT' }
@@ -33,6 +36,8 @@ export type PartnerExternalDeps = {
     getProductDetails: (id: string) => Promise<any>
     getBalance: () => Promise<any>
     createInvoice: (body: Record<string, unknown>) => Promise<any>
+    getInvoice: (invoiceId: string) => Promise<any>
+    getOrder: (orderId: string) => Promise<any>
     payInvoice?: (invoiceId: string) => Promise<any>
   }
   getBlockedBitrefillIds: (admin: Admin) => Promise<Set<string>>
@@ -185,80 +190,105 @@ export async function preparePartnerGiftcardPlan(admin: Admin, partner: Partner,
   const productId = text(body.item_id || body.product_id, 180)
   if (!productId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,179}$/.test(productId)) fail('INVALID_ITEM')
   const quantity = positiveInteger(body.quantity ?? 1, 1, 20)
-  const packageId = text(body.package_id, 180)
-  if (!packageId && body.value === undefined) fail('INVALID_ITEM')
+  if (body.package_id == null && body.value === undefined) fail('INVALID_ITEM')
   let blocked: Set<string>
   try { blocked = await deps.getBlockedBitrefillIds(admin) } catch { fail('CATALOG_UNAVAILABLE') }
   if (blocked.has(productId)) fail('NO_STOCK')
   const client = deps.getBitrefillClient()
   let product: any
   try { product = await client.getProductDetails(productId) } catch { fail('PRICE_UNAVAILABLE') }
-  if (!product || product.product_id !== productId || !text(product.name, 200)) fail('PRICE_UNAVAILABLE')
-  const currency = text(product.currency || 'USD', 8)?.toUpperCase()
-  if (currency !== 'USD' && currency !== 'NGN') fail('PRICE_UNAVAILABLE')
-  let unitValue: number
-  if (packageId) {
-    const pkg = Array.isArray(product.packages) ? product.packages.find((entry: any) => entry?.package_id === packageId) : null
-    if (!pkg) fail('NO_STOCK')
-    unitValue = validMoney(pkg.value)
-    if (body.value !== undefined && validMoney(body.value) !== unitValue) fail('PRICE_CHANGED')
-  } else {
-    unitValue = validMoney(body.value)
-    const min = number(product.range?.min)
-    const max = number(product.range?.max)
-    const step = number(product.range?.step)
-    if (!Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(step) || step <= 0
-      || unitValue < min || unitValue > max || Math.abs((unitValue - min) / step - Math.round((unitValue - min) / step)) > 1e-8) fail('INVALID_ITEM')
-  }
-  const recipientPhone = cleanRecipientPhone(body.recipient_phone || body.phone)
+  const giftCard = parseGiftCardSelection(product, productId)
+  if (!giftCard) fail('NO_STOCK')
+  const currency = giftCard.currency
+  const chosen = selectGiftCardDenomination(giftCard, body.package_id ?? null, body.value)
+  if (!chosen) fail('INVALID_ITEM')
+  const packageId = chosen.package_id
+  const unitValue = chosen.unit_value
+  if (body.recipient_phone != null || body.phone != null) fail('INVALID_RECIPIENT')
   const recipientEmail = cleanEmail(body.customer_email)
-  const recipientType = String(product.recipient_type || '').toLowerCase()
-  if (recipientType.includes('phone') && !recipientPhone) fail('INVALID_RECIPIENT')
-  if (recipientType.includes('email') && !recipientEmail) fail('INVALID_RECIPIENT')
-  const providerTotal = unitValue * quantity
-  const markupPct = Number(await deps.getBitrefillMarkupPct(admin))
-  if (!Number.isFinite(markupPct) || markupPct < 0 || markupPct > 100) fail('PRICE_UNAVAILABLE')
-  let converted: number
-  try { converted = await deps.convertToNgn(admin, providerTotal, currency) } catch { fail('PRICE_UNAVAILABLE') }
-  const charge = amountNgn(partner, Math.ceil(converted * (1 + markupPct / 100)), deps)
+  if (typeof client.payInvoice !== 'function' || typeof client.getInvoice !== 'function'
+    || typeof client.getOrder !== 'function') fail('PRICE_UNAVAILABLE')
+  // An unpaid provider invoice can reveal the actual merchant total. The
+  // denomination is a face value, never a supplier cost or balance estimate.
+  let created: any
+  try { created = await onceWithDeadline(() => client.createInvoice({
+    products: [{ product_id: productId, package_id: packageId || undefined,
+      value: packageId ? undefined : unitValue, quantity }],
+    payment_method: 'balance', auto_pay: false, email: recipientEmail,
+  })) } catch { fail('PRICE_UNAVAILABLE') }
+  const invoiceId = providerId(created?.id)
+  if (!invoiceId || created?.status !== 'unpaid') fail('PRICE_UNAVAILABLE')
+  let initialRaw: any
+  try { initialRaw = await onceWithDeadline(() => client.getInvoice(invoiceId)) }
+  catch { fail('PRICE_UNAVAILABLE') }
+  const initial = unwrapGiftCardData(initialRaw) as Record<string, any> | null
+  const providerPrice = initial?.payment?.price
+  const billingCurrency = initial?.payment?.currency
+  if ((billingCurrency !== 'USD' && billingCurrency !== 'NGN')
+    || typeof providerPrice !== 'number' || !Number.isFinite(providerPrice)
+    || providerPrice <= 0 || providerPrice > 1_000_000_000) fail('PRICE_UNAVAILABLE')
+  const boundQuote: BoundGiftCardInvoiceQuote = {
+    product_id: productId, product_name: giftCard.product_name, package_id: packageId,
+    unit_value: unitValue, currency, quantity, provider_price: providerPrice,
+    billing_currency: billingCurrency,
+  }
+  const exactUnpaid = async (raw: unknown): Promise<boolean> => {
+    const invoice = unwrapGiftCardData(raw) as Record<string, any> | null
+    if (!invoice || !Array.isArray(invoice.orders) || invoice.orders.length !== quantity) return false
+    const ids = invoice.orders.map((entry: any) => providerId(entry?.id))
+    if (ids.some((id: string | null) => id === null) || new Set(ids).size !== quantity) return false
+    const safeIds = ids as string[]
+    let children: unknown[]
+    try { children = await onceWithDeadline(() => Promise.all(safeIds.map(id => client.getOrder(id)))) }
+    catch { return false }
+    return verifyBoundUnpaidGiftCardInvoice(raw, invoiceId, boundQuote, children)
+  }
+  if (!await exactUnpaid(initialRaw)) fail('PRICE_UNAVAILABLE')
+  const originalChildIds = new Set((initial?.orders as Array<{ id: string }>).map(order => order.id))
+  const pricing = await admin.rpc('get_customer_bitrefill_pricing', {
+    p_kind: 'gift_card', p_product_id: productId, p_package_id: packageId,
+    p_unit_value: unitValue, p_currency: currency,
+  })
+  if (pricing?.error || !pricing?.data || pricing.data.success === false) fail('PRICE_UNAVAILABLE')
+  let rate: number
+  try { rate = await deps.convertToNgn(admin, 1, billingCurrency) } catch { fail('PRICE_UNAVAILABLE') }
+  const retail = giftCardInvoiceRetailTotal(providerPrice, rate, quantity, pricing.data)
+  const charge = amountNgn(partner, retail, deps)
   expectedPrice(body, charge)
   let balance: any
   try { balance = await client.getBalance() } catch { fail('PROVIDER_BALANCE_UNAVAILABLE') }
   const balanceAmount = number(balance?.balance)
   const balanceCurrency = text(balance?.currency, 8)?.toUpperCase()
   if (!Number.isFinite(balanceAmount) || balanceAmount < 0 || !balanceCurrency) fail('PROVIDER_BALANCE_UNAVAILABLE')
-  let balanceNgn: number
-  try { balanceNgn = await deps.convertToNgn(admin, balanceAmount, balanceCurrency) } catch { fail('PROVIDER_BALANCE_UNAVAILABLE') }
-  if (!Number.isFinite(balanceNgn) || balanceNgn < converted) fail('PROVIDER_BALANCE_UNAVAILABLE')
-  const requestPayload = { product_id: productId, package_id: packageId || null, value: unitValue, quantity, provider_currency: currency, recipient_phone: recipientPhone || null, customer_email: recipientEmail || null }
+  if (balanceCurrency !== billingCurrency || balanceAmount < providerPrice) fail('PROVIDER_BALANCE_UNAVAILABLE')
+  const requestPayload = { product_id: productId, package_id: packageId || null,
+    value: unitValue, quantity, provider_currency: currency, recipient_phone: null,
+    customer_email: recipientEmail || null }
   return {
-    section: 'giftcards', itemId: productId, itemName: product.name, quantity, amountNgn: charge, requestPayload,
+    section: 'giftcards', itemId: productId, itemName: giftCard.product_name, quantity, amountNgn: charge, requestPayload,
     dispatch: oneDispatch(async (orderId) => {
-      // The paid endpoint is unavailable until the caller wires the explicit
-      // two-step client. Creating an unpaid invoice alone cannot fulfill.
-      const payInvoice = client.payInvoice
-      if (typeof payInvoice !== 'function') return { kind: 'unknown' }
-      const invoice = await onceWithDeadline(() => client.createInvoice({
-        products: [{ product_id: productId, package_id: packageId || undefined, value: packageId ? undefined : unitValue, quantity, phone_number: recipientPhone }],
-        payment_method: 'balance', auto_pay: false, email: recipientEmail,
-      }))
-      const actualId = providerId(invoice?.id)
-      if (!actualId || String(invoice?.status || '').toLowerCase() !== 'unpaid') return { kind: 'unknown' }
       const bound = await onceWithDeadline(() => admin.rpc('bind_api_partner_bitrefill_invoice', {
-        p_order_id: orderId, p_partner_id: partner.id, p_invoice_id: actualId,
+        p_order_id: orderId, p_partner_id: partner.id, p_invoice_id: invoiceId,
         p_invoice_status: 'unpaid', p_item_id: productId, p_quantity: quantity,
         p_amount_ngn: charge,
       }))
       if (bound?.error || bound?.data?.success !== true || bound.data.pay_allowed !== true
         || bound.data.idempotent_replay === true || bound.data.order_id !== orderId) return { kind: 'unknown' }
+      // The same unpaid invoice, total and every child must still match after
+      // the private binding and immediately before the sole paid request.
+      const fresh = await onceWithDeadline(() => client.getInvoice(invoiceId))
+      const freshOrders = (unwrapGiftCardData(fresh) as { orders?: Array<{ id?: string }> } | null)?.orders
+      if (!Array.isArray(freshOrders) || freshOrders.length !== quantity
+        || freshOrders.some(order => !originalChildIds.has(order?.id || ''))
+        || !await exactUnpaid(fresh)) return { kind: 'unknown' }
       // This is the sole paid request. A lost response is unknown; the bound
       // invoice ID supports owner-only read reconciliation without a resend.
-      const paid = await onceWithDeadline(() => payInvoice(actualId))
-      if (providerId(paid?.id) !== actualId
+      const paid = await onceWithDeadline(() => client.payInvoice!(invoiceId))
+      if (providerId(paid?.id) !== invoiceId
         || !['pending', 'complete', 'payment_detected', 'payment_confirmed'].includes(String(paid?.status || '').toLowerCase())) return { kind: 'unknown' }
       const providerOrderId = quantity === 1 ? providerId(paid?.orders?.[0]?.id) : null
-      return { kind: 'accepted', source: 'bitrefill', id: actualId, status: 'processing', payload: {
-        invoice_id: actualId, provider_order_id: providerOrderId,
+      return { kind: 'accepted', source: 'bitrefill', id: invoiceId, status: 'processing', payload: {
+        invoice_id: invoiceId, provider_order_id: providerOrderId,
         provider_status: String(paid.status).toLowerCase(),
       } }
     }),

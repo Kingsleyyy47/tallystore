@@ -2,15 +2,11 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { sha256Hex, signCustomerCapability } from '../_shared/customer-api-delegation.ts'
 import { customerApiRoute } from '../_shared/customer-api-route.mjs'
+import { getSmmOrderContract, quoteSmmOrder, validateSmmOrderFields } from '../_shared/smm-order-contract.ts'
 
 type Section = 'products' | 'sms' | 'social_boost' | 'airtime'
 const sections = new Set<Section>(['products', 'sms', 'social_boost', 'airtime'])
 const defaultSections: Section[] = ['products', 'sms', 'social_boost', 'airtime']
-const smmQuantityTypes = new Set([
-  'Default','Mentions','Mentions with Hashtags','Mentions Hashtag',
-  'Mentions User Followers','Mentions Media Likers','Comment Likes',
-  'Invites from Groups','Subscriptions','Web Traffic',
-])
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
@@ -163,6 +159,34 @@ async function productQuote(admin: any, userId: string, url: URL) {
     tally_circle_discount_percent: circlePct, expected_amount_ngn: totalMinor / 100,
     currency: 'NGN',
   } })
+}
+async function socialQuote(admin: any, url: URL) {
+  const allowed = new Set(['section', 'service_id', 'quantity', 'link', 'comments', 'usernames',
+    'username', 'hashtags', 'hashtag', 'keywords', 'answer_number', 'groups'])
+  if ([...url.searchParams.keys()].some(key => !allowed.has(key) || url.searchParams.getAll(key).length !== 1)) {
+    return fail('invalid_request')
+  }
+  const serviceId = Number(url.searchParams.get('service_id'))
+  if (!Number.isSafeInteger(serviceId) || serviceId < 1) return fail('invalid_request')
+  const { data: service, error } = await admin.from('smm_services')
+    .select('id, service_type, price_ngn, rate_usd, min_quantity, max_quantity')
+    .eq('id', serviceId).eq('is_active', true).maybeSingle()
+  if (error) return fail('unavailable', 503)
+  if (!service || !getSmmOrderContract(service.service_type)) return fail('service_unavailable', 409)
+  if (service.rate_usd === null || service.rate_usd === undefined ||
+    !Number.isFinite(Number(service.rate_usd)) || Number(service.rate_usd) < 0) {
+    return fail('price_unavailable', 503)
+  }
+  const fields = Object.fromEntries([...url.searchParams.entries()].filter(([key]) =>
+    key !== 'section' && key !== 'service_id'))
+  try {
+    const normalized = validateSmmOrderFields(service.service_type, fields)
+    const quote = quoteSmmOrder(service, { ...normalized, quantity: fields.quantity })
+    return json({ success: true, data: { service_id: service.id, quantity: quote.quantity,
+      expected_price_ngn: quote.amountNgn, currency: 'NGN' } })
+  } catch {
+    return fail('invalid_request')
+  }
 }
 async function manage(req: Request, path: string, admin: any) {
   const user = await sessionUser(req, admin)
@@ -339,14 +363,19 @@ async function read(req: Request, path: string, admin: any) {
     }
     if (requested === 'social_boost') {
       const { data, error } = await admin.from('smm_services')
-        .select('id, name, category, platform, service_type, price_ngn, min_quantity, max_quantity')
+        .select('id, name, category, platform, service_type, price_ngn, rate_usd, min_quantity, max_quantity')
         .eq('is_active', true).order('platform').limit(500)
       if (error) return fail('unavailable', 503)
-      return json({ success: true, data: (data || []).map((item: any) => ({
-        ...item,
-        price_basis: item.service_type === 'Package' || !smmQuantityTypes.has(item.service_type)
-          ? 'fixed' : 'per_1000',
-      })) })
+      return json({ success: true, data: (data || []).filter((item: any) =>
+        getSmmOrderContract(item.service_type) && Number(item.price_ngn) > 0 &&
+        item.rate_usd !== null && item.rate_usd !== undefined &&
+        Number.isFinite(Number(item.rate_usd)) && Number(item.rate_usd) >= 0
+      ).map((item: any) => {
+        const { rate_usd: _providerCost, ...publicItem } = item
+        const contract = getSmmOrderContract(item.service_type)!
+        return { ...publicItem, price_basis: contract.mode === 'package' ? 'fixed' : 'per_1000',
+          required_fields: contract.fields }
+      }) })
     }
     // SMS pricing depends on a live Daisy quote; use its existing catalogue.
     const rawBody = JSON.stringify({ action: 'services' })
@@ -361,8 +390,9 @@ async function read(req: Request, path: string, admin: any) {
     return data ? json(data, response.status) : fail('unavailable', 503)
   }
   if (path === '/v1/quote') {
-    if (requested !== 'products') return fail('invalid_section')
-    return await productQuote(admin, userId, url)
+    if (requested === 'products') return await productQuote(admin, userId, url)
+    if (requested === 'social_boost') return await socialQuote(admin, url)
+    return fail('invalid_section')
   }
   if (path === '/v1/orders') {
     const table = requested === 'products' ? 'orders' : requested === 'sms' ? 'sms_orders' :

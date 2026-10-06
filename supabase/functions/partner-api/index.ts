@@ -4,6 +4,7 @@ import { partnerMarkup } from '../_shared/partner-pricing.ts'
 import { executePartnerExternalPurchase } from '../_shared/partner-external-runner.ts'
 import { preparePartnerSmsPlan, preparePartnerSocialPlan } from '../_shared/partner-sms-social.ts'
 import { preparePartnerBillsPlan, preparePartnerGiftcardPlan, preparePartnerTelegramPlan } from '../_shared/partner-bills-gift-telegram.ts'
+import { partnerGiftCardCatalogue } from '../_shared/partner-giftcard-catalogue.ts'
 import { handlePartnerExternalOrderStatus } from '../_shared/partner-external-status.ts'
 import { reviewPartnerBitrefillDelivery, confirmPartnerBitrefillDelivery } from '../_shared/partner-bitrefill-recovery.ts'
 import { dispatchPartnerWebhookEvent } from '../_shared/partner-webhook-dispatch.ts'
@@ -332,19 +333,46 @@ function getBitrefillClient() {
   const apiKey = Deno.env.get('BITREFILL_API_KEY') || ''
   if (!apiKey) throw new Error('Bitrefill provider is not configured')
   const request = async (endpoint: string, options: RequestInit = {}) => {
-    const response = await fetch(`${BITREFILL_API_URL}${endpoint}`, {
-      ...options,
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        ...(options.headers as Record<string, string>),
-      },
+    const controller = new AbortController()
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        if (reader) void reader.cancel().catch(() => undefined)
+        reject(new Error('CATALOG_UNAVAILABLE'))
+      }, 20_000)
     })
-    const text = await response.text()
-    const data = text ? JSON.parse(text) : {}
-    if (!response.ok) throw new Error(data?.message || data?.error || `Bitrefill API error ${response.status}`)
-    return data
+    try {
+      return await Promise.race([deadline, (async () => {
+        const response = await fetch(`${BITREFILL_API_URL}${endpoint}`, {
+          ...options, redirect: 'error', credentials: 'omit', cache: 'no-store',
+          signal: controller.signal,
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}` },
+        })
+        if (!response.ok || response.redirected || !response.body
+          || Number(response.headers.get('content-length')) > 1_000_000) throw new Error('CATALOG_UNAVAILABLE')
+        reader = response.body.getReader()
+        const decoder = new TextDecoder('utf-8', { fatal: true })
+        let bytes = 0, raw = ''
+        while (true) {
+          const item = await reader.read()
+          if (item.done) break
+          bytes += item.value.byteLength
+          if (bytes > 1_000_000) throw new Error('CATALOG_UNAVAILABLE')
+          raw += decoder.decode(item.value, { stream: true })
+        }
+        raw += decoder.decode()
+        const data = JSON.parse(raw)
+        if (!data || typeof data !== 'object') throw new Error('CATALOG_UNAVAILABLE')
+        return data
+      })()])
+    } finally {
+      if (timer) clearTimeout(timer)
+      controller.abort()
+      if (reader) void reader.cancel().catch(() => undefined)
+    }
   }
   return {
     listProducts: (limit = 80, cursor?: string) => request(`/products?${new URLSearchParams({ limit: String(limit), ...(cursor ? { cursor } : {}) }).toString()}`),
@@ -359,12 +387,16 @@ function getBitrefillClient() {
 }
 
 async function getBlockedBitrefillIds(admin: SupabaseAdmin) {
-  const { data } = await admin.from('app_settings').select('value').eq('key', 'bitrefill_blocked_products').maybeSingle()
+  const { data, error } = await admin.from('app_settings').select('value').eq('key', 'bitrefill_blocked_products').maybeSingle()
+  if (error) throw new Error('CATALOG_UNAVAILABLE')
   try {
     const parsed = JSON.parse(String(data?.value || '[]'))
-    return new Set(Array.isArray(parsed) ? parsed.map((item: any) => String(item.product_id || '')).filter(Boolean) : [])
+    if (!Array.isArray(parsed) || parsed.length > 10000
+      || parsed.some(item => !item || typeof item.product_id !== 'string'
+        || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,179}$/.test(item.product_id))) throw new Error('CATALOG_UNAVAILABLE')
+    return new Set(parsed.map(item => item.product_id))
   } catch {
-    return new Set<string>()
+    throw new Error('CATALOG_UNAVAILABLE')
   }
 }
 
@@ -837,63 +869,15 @@ async function billsCatalogue(admin: SupabaseAdmin, partner: any) {
   return items
 }
 
-function describeBitrefillPrice(product: BitrefillProduct, adminMarkupPct: number, partner: any, rate: number) {
-  const currency = String(product.currency || 'USD').toUpperCase()
-  const toNgn = (value: number) => {
-    if (currency === 'NGN') return value
-    if (currency === 'USD' && rate > 0) return value * rate
-    return 0
-  }
-  const applyMarkups = (value: number) => partnerMarkup(partner, Math.ceil(value * (1 + Math.max(0, adminMarkupPct) / 100)))
-  if (Array.isArray(product.packages) && product.packages.length) {
-    const prices = product.packages.map((pkg) => applyMarkups(toNgn(Number(pkg.value || 0)))).filter((value) => value > 0)
-    return {
-      price_ngn: prices.length ? Math.min(...prices) : null,
-      price_min_ngn: prices.length ? Math.min(...prices) : null,
-      price_max_ngn: prices.length ? Math.max(...prices) : null,
-      price_basis: 'package',
-      packages: product.packages.map((pkg) => ({
-        package_id: pkg.package_id,
-        value: pkg.value,
-        currency,
-        price_ngn: applyMarkups(toNgn(Number(pkg.value || 0))),
-      })),
-    }
-  }
-  if (product.range) {
-    return {
-      price_ngn: null,
-      price_min_ngn: applyMarkups(toNgn(Number(product.range.min || 0))),
-      price_max_ngn: applyMarkups(toNgn(Number(product.range.max || 0))),
-      price_basis: 'range',
-      range: { ...product.range, currency },
-    }
-  }
-  return { price_ngn: null, price_basis: 'provider_denominated' }
-}
-
 async function giftcardCatalogue(admin: SupabaseAdmin, partner: any, body: Record<string, unknown>) {
   if (!hasSection(partner, 'giftcards')) return []
-  const [blockedIds, rate, markupPct] = await Promise.all([getBlockedBitrefillIds(admin), getRequiredNgnUsdRate(admin), getBitrefillMarkupPct(admin)])
+  const blockedIds = await getBlockedBitrefillIds(admin)
   const query = cleanText(body.query || body.search, 80)
-  const limit = Math.min(100, Math.max(1, Math.round(Number(body.limit || 80))))
+  const limit = Number(body.limit ?? 80)
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('INVALID_REQUEST')
   const bitrefill = getBitrefillClient()
   const result = query ? await bitrefill.searchProducts(query, limit) : await bitrefill.listProducts(limit, cleanText(body.cursor, 200) || undefined)
-  return ((result?.data || []) as BitrefillProduct[])
-    .filter((product) => !blockedIds.has(product.product_id))
-    .map((product) => ({
-      type: 'giftcards',
-      section: 'giftcards',
-      id: product.product_id,
-      name: product.name,
-      description: [product.recipient_type, product.countries?.join(', ')].filter(Boolean).join(' • '),
-      category: 'Gift Cards & eSIMs',
-      currency: 'NGN',
-      availability: 'available',
-      stock: { status: 'provider_checked', available_quantity: null },
-      provider_currency: String(product.currency || 'USD').toUpperCase(),
-      ...describeBitrefillPrice(product, markupPct, partner, rate),
-    }))
+  return partnerGiftCardCatalogue(result, blockedIds)
 }
 
 async function telegramCatalogue(admin: SupabaseAdmin, partner: any) {
@@ -1893,6 +1877,29 @@ async function handleCreateCheckout(admin: SupabaseAdmin, auth: PartnerAuth, bod
   }
 }
 
+async function handleQuote(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>): Promise<ApiResult> {
+  if (!hasScope(auth, 'orders:create')) throw new Error('SCOPE_DENIED')
+  if (String(body.item_type || body.type || '') !== 'giftcards'
+    || !PARTNER_EXTERNAL_SECTIONS_ENABLED.has('giftcards')
+    || !hasSection(auth.partner, 'giftcards')) throw new Error('SECTION_UNAVAILABLE')
+  const plan = await preparePartnerGiftcardPlan(admin, auth.partner,
+    { ...body, expected_amount_ngn: undefined }, {
+      hasSection, partnerMarkup, sageCloudClient, getBitrefillClient,
+      getBlockedBitrefillIds, getBitrefillMarkupPct, convertToNgn,
+      getTelegramStarPricing, calculateTelegramStarsPrice, getTelegramPremiumPricing,
+      calculateTelegramPremiumPrice, istarGet, istarPost,
+    })
+  // Never invoke dispatch or a wallet/order RPC to quote. Only an unpaid
+  // invoice is created; a later purchase rechecks the exact expected amount.
+  return { body: { success: true, data: {
+    item_type: 'giftcards', item_id: plan.itemId, item_name: plan.itemName,
+    quantity: plan.quantity, amount_ngn: plan.amountNgn, expected_amount_ngn: plan.amountNgn,
+    currency: 'NGN', package_id: plan.requestPayload.package_id,
+    value: plan.requestPayload.value, denomination_currency: plan.requestPayload.provider_currency,
+    price_basis: 'verified_invoice', purchase_rechecks_price: true,
+  } } }
+}
+
 async function handleCreateOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: Record<string, unknown>): Promise<ApiResult> {
   if (!hasScope(auth, 'orders:create')) throw new Error('SCOPE_DENIED')
   const itemType = cleanText(body.item_type || body.type, 40)
@@ -2444,13 +2451,14 @@ serve(async (req) => {
 
     const actionScope = action === 'catalogue' || action === 'products' ? 'catalogue:read'
       : action === 'balance' ? 'wallet:read' : action === 'order_status' ? 'orders:read'
-        : action === 'create_order' || action === 'create_checkout' ? 'orders:create' : null
+        : action === 'create_order' || action === 'create_checkout' || action === 'quote' ? 'orders:create' : null
     if (!actionScope) throw new Error('UNKNOWN_ACTION')
     auth = await requirePartner(req, admin, actionScope)
 
     let result: ApiResult
     if (action === 'catalogue' || action === 'products') result = await handleCatalogue(admin, auth, body)
     else if (action === 'balance') result = await handleBalance(auth)
+    else if (action === 'quote') result = await handleQuote(admin, auth, body)
     else if (action === 'create_order') result = await handleCreateOrder(admin, auth, body)
     else if (action === 'create_checkout') result = await handleCreateCheckout(admin, auth, body)
     else if (action === 'order_status') result = await handlePartnerExternalOrderStatus(admin, auth, body, {

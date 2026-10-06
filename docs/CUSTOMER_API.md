@@ -12,6 +12,7 @@ Base URL: `https://<supabase-project>/functions/v1/customer-api`
 | --- | --- | --- |
 | GET | `/v1/catalogue?section=products` | Current catalogue for `products`, `sms`, or `social_boost`; airtime uses the phone lookup below |
 | GET | `/v1/quote?section=products&product_group_id=<uuid>&quantity=1` | Current product total after quantity, code, and Tally Circle discounts; optional `discount_code` query parameter |
+| GET | `/v1/quote?section=social_boost&service_id=<id>&link=<url>&quantity=<n>` | Current Social Boost total and required service fields; include the same service-specific inputs used at purchase |
 | GET | `/v1/wallet?section=products` | Verified spendable NGN balance |
 | GET | `/v1/orders?section=products` | Recent orders for that section |
 | GET | `/v1/orders/<uuid>?section=products` | One owned order; completed, financially captured product orders include delivered account details |
@@ -34,7 +35,7 @@ Product example:
 }
 ```
 
-SMS uses `section: "sms"`, `service_id`, `expected_price_ngn`, and `idempotency_key`. Its existing verified-wallet purchase engine is enabled for website purchases. Social Boost uses `section: "social_boost"`, `service_id`, `link`, `quantity`, `expected_price_ngn`, and `idempotency_key`, plus service-specific fields when required. Social Boost purchases remain paused. All customer API catalogue and history routes remain behind the Coming Soon gate.
+SMS uses `section: "sms"`, `service_id`, `expected_price_ngn`, and `idempotency_key`. Its existing verified-wallet purchase engine is enabled for website purchases. Social Boost uses `section: "social_boost"`, `service_id`, `link`, `quantity`, `expected_price_ngn`, and `idempotency_key`, plus service-specific fields when required. The Social Boost catalogue lists required fields for each supported service, and its quote returns `expected_price_ngn` from the same server price calculation used by purchase. Fixed packages quote quantity 1; other supported services use per-1,000 pricing and service quantity limits. Social Boost purchases remain paused. All customer API catalogue and history routes remain behind the Coming Soon gate.
 
 International Airtime uses an `airtime` section key. It has no generic `GET /v1/catalogue`; send the phone number in a JSON POST body, never in a query URL. `POST /v1/airtime/check-phone` accepts `{ "section": "airtime", "phone_number": "+14155550123" }`. Use its operator and product IDs with either a package ID or a denomination in `POST /v1/airtime/quote`:
 

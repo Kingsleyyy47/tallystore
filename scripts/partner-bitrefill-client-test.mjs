@@ -12,12 +12,12 @@ const calls = []
 let reply = { data: { id: 'INVOICE-TEST', status: 'unpaid' } }
 let status = 200
 const context = vm.createContext({
-  BITREFILL_API_URL: 'https://api.bitrefill.com/v2', URLSearchParams,
+  BITREFILL_API_URL: 'https://api.bitrefill.com/v2', URLSearchParams, AbortController, TextDecoder, setTimeout, clearTimeout,
   Deno: { env: { get: name => name === 'BITREFILL_API_KEY' ? 'synthetic-test-only' : undefined } },
   fetch: async (url, options) => {
     calls.push({ url, options })
     assert.equal(options.headers.Authorization, 'Bearer synthetic-test-only')
-    return { ok: status === 200, status, text: async () => JSON.stringify(reply) }
+    return new Response(JSON.stringify(reply), {status})
   },
 })
 vm.runInContext(ts.transpileModule(factory.getText(parsed), {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText, context)
