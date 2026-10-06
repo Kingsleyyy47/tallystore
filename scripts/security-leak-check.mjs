@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
@@ -10,8 +10,17 @@ const publicEnvNames = new Set([
   'VITE_SUPABASE_ANON_KEY',
   'VITE_LIVE_ACCOUNT_FULFILLMENT_ENABLED',
   'VITE_APP_BUILD_VERSION',
+  'VITE_MAINTENANCE_MODE',
 ])
-const personalEmailPattern = /[a-z0-9._%+-]+@(?!example\.(?:com|test|invalid)\b|email\.com\b|tallystore\.org\b)[a-z0-9.-]+\.[a-z]{2,}/i
+function containsPersonalEmail(content) {
+  for (const match of content.matchAll(/[a-z0-9._%+-]+@([a-z0-9.-]+\.[a-z]{2,})/gi)) {
+    const domain = match[1].toLowerCase()
+    if (['example.com', 'example.net', 'example.org', 'email.com', 'tallystore.org'].includes(domain)
+      || /\.(?:invalid|example|test|localhost)$/.test(domain)) continue
+    return true
+  }
+  return false
+}
 const browserSecretPatterns = [
   [/\b[0-9]{1,20}\|[A-Za-z0-9]{40}(?:[a-fA-F0-9]{8})?\b/, 'Sanctum-shaped bearer token'],
   [/\bECRS-(?:TEST|LIVE)-[A-Za-z0-9]{16,}\b/, 'Ercas key'],
@@ -22,6 +31,21 @@ const browserSecretPatterns = [
 
 const tracked = execFileSync('git', ['ls-files', '--cached', '-z'], { cwd: root })
   .toString('utf8').split('\0').filter(Boolean)
+const trackedSet = new Set(tracked)
+// Migration working files contain owner-authorized private evidence. Exclude
+// only untracked files in that area which Git actually ignores. A force-added
+// private file and every other new source file must still be checked.
+function publicationToolingFiles(paths) {
+  const candidates = paths.map(path => path.replaceAll('\\', '/'))
+    .filter(path => path.startsWith('scripts/migration.local/') && !trackedSet.has(path))
+  if (!candidates.length) return paths
+  const result = spawnSync('git', ['check-ignore', '-z', '--stdin'], {
+    cwd: root, input: candidates.join('\0') + '\0', encoding: 'utf8',
+  })
+  if (result.error || ![0, 1].includes(result.status)) throw new Error('Cannot verify private tooling publication boundary')
+  const ignored = new Set(result.stdout.split('\0').filter(Boolean))
+  return paths.filter(path => !ignored.has(path.replaceAll('\\', '/')))
+}
 const historicalEnvPaths = [...new Set(execFileSync('git', [
   'log', '--all', '--name-only', '--format=', '--', '.env', '.env.*',
 ], { cwd: root }).toString('utf8').split(/\r?\n/).filter(Boolean))]
@@ -84,7 +108,7 @@ const browserFiles = [...walk('src'), ...walk('public'), 'index.html']
   .filter((file) => /\.(?:ts|tsx|js|jsx|html|json|txt)$/.test(file))
 for (const file of browserFiles) {
   const content = readFileSync(join(root, file), 'utf8')
-  if (personalEmailPattern.test(content)) errors.push(`personal email address in browser source: ${file}`)
+  if (containsPersonalEmail(content)) errors.push(`personal email address in browser source: ${file}`)
   for (const [pattern, description] of browserSecretPatterns) {
     if (pattern.test(content)) errors.push(`${description} in browser source: ${file}`)
   }
@@ -97,7 +121,7 @@ const outputFiles = [...walk('dist'), ...walk('dev-dist')]
   .filter((file) => /\.(?:js|html|json|map)$/.test(file))
 for (const file of outputFiles) {
   const content = readFileSync(join(root, file), 'utf8')
-  if (personalEmailPattern.test(content)) errors.push(`personal email address in browser build: ${file}`)
+  if (containsPersonalEmail(content)) errors.push(`personal email address in browser build: ${file}`)
   for (const [pattern, description] of browserSecretPatterns) {
     if (pattern.test(content)) errors.push(`${description} in browser build: ${file}`)
   }
@@ -123,16 +147,17 @@ const serverChecks = [
 const serverFiles = [...walk('api'), ...walk('supabase/functions')]
   .filter((path) => /\.[cm]?[jt]sx?$/.test(path))
 for (const file of serverFiles) {
-  if (personalEmailPattern.test(readFileSync(join(root, file), 'utf8'))) {
+  if (containsPersonalEmail(readFileSync(join(root, file), 'utf8'))) {
     errors.push(`personal email address in server source: ${file}`)
   }
 }
 const migrationFiles = [...walk('supabase/migrations'), ...walk('migrations')]
   .filter((path) => /\.sql$/.test(path))
-const toolingFiles = walk('scripts').filter((path) => /\.[cm]?[jt]s$/.test(path))
+const allToolingFiles = walk('scripts').filter((path) => /\.[cm]?[jt]s$/.test(path))
+const toolingFiles = publicationToolingFiles(allToolingFiles)
 const documentationFiles = walk('docs').filter((path) => /\.(?:md|sql|json)$/.test(path))
 for (const file of [...migrationFiles, ...toolingFiles, ...documentationFiles]) {
-  if (personalEmailPattern.test(readFileSync(join(root, file), 'utf8'))) {
+  if (containsPersonalEmail(readFileSync(join(root, file), 'utf8'))) {
     errors.push(`personal email address in migration/tooling source: ${file}`)
   }
 }
@@ -253,6 +278,7 @@ console.log(JSON.stringify({
   serverSourceFiles: serverFiles.length,
   migrationFilesChecked: migrationFiles.length,
   toolingFilesChecked: toolingFiles.length,
+  privateIgnoredToolingFilesExcluded: allToolingFiles.length - toolingFiles.length,
   documentationFilesChecked: documentationFiles.length,
   serverPathsChecked: serverChecks.length + 1,
   errors: uniqueErrors,

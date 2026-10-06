@@ -25,6 +25,7 @@ const apiRoutes = [
 const criticalApiRoutes = [
   'api/partner-api.ts',
   'api/webhook-ercas.ts',
+  'api/webhook/ercas.ts',
   'api/webhook-istar.ts',
   'api/webhook-pocketfi.ts',
   'pages/api/webhook/ercas.ts',
@@ -122,6 +123,14 @@ for (const route of criticalApiRoutes) {
   assert(apiRoutes.includes(route), `critical API route missing from repository: ${route}`)
   assert(inventory.includes(`\`${route}\``), `inventory missing critical API route ${route}`)
 }
+
+const retiredErcasWebhook = read('api/webhook/ercas.ts')
+assert(/export default async function handler\([^)]*\)\s*\{\s*return res\.status\(410\)\.json\(/.test(retiredErcasWebhook),
+  'retired Ercas nested webhook must unconditionally return HTTP 410')
+assert(!/\bfetch\s*\(|createClient|SUPABASE_SERVICE_ROLE_KEY|\.from\s*\(|\.rpc\s*\(/.test(retiredErcasWebhook),
+  'retired Ercas nested webhook must not reach payments, Supabase or value delivery')
+assert(rowFor('api/webhook/ercas.ts').includes('FUNDING_OR_WEBHOOK') && rowFor('api/webhook/ercas.ts').includes('PAUSED_OR_MANUAL_REVIEW'),
+  'retired Ercas nested webhook must be classified as a disabled funding callback')
 
 for (const fn of functions) {
   assert(inventory.includes(`\`${fn}\``), `inventory missing Supabase function ${fn}`)

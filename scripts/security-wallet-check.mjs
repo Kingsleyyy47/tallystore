@@ -115,34 +115,42 @@ check('public partner API bridge is paused', () => {
   assert(!src.includes('fetch('), 'public bridge must not proxy requests while paused')
 })
 
-check('Supabase partner API is hard-paused, not env-toggle reopened', () => {
+check('partner API reads and purchases have separate fail-closed gates', () => {
   const src = read('supabase/functions/partner-api/index.ts')
-  assert(src.includes('const PARTNER_API_PAUSED = true'), 'partner-api pause must be hard-coded true')
-  assert(!src.includes("Deno.env.get('PARTNER_API_PAUSED')"), 'partner-api must not depend on PARTNER_API_PAUSED env')
+  assert(src.includes("const PARTNER_API_PAUSED = Deno.env.get('PARTNER_API_READ_ENABLED') !== 'true'"), 'partner reads must default closed')
+  assert(src.includes('const PARTNER_PURCHASES_PAUSED = true'), 'partner purchases need an independent default-closed gate')
+  assert(src.includes("const PARTNER_LOCAL_PRODUCTS_ENABLED = Deno.env.get('PARTNER_LOCAL_PRODUCTS_ENABLED') === 'true'"), 'local product orders need a separate explicit gate')
+  assert(src.includes("!PARTNER_EXTERNAL_SECTIONS_ENABLED.has(String(body.item_type || body.type || ''))"), 'external purchases must require a scoped enabled section')
+  assert(src.includes("if (PARTNER_API_PAUSED && !action.startsWith('admin_'))"), 'read pause must precede partner authentication and dispatch')
+  assertOrder(src, 'if (PARTNER_PURCHASES_PAUSED && (', "auth = await requirePartner(req, admin, actionScope)", 'purchase pause must precede partner dispatch')
   assert(src.includes("code: 'PARTNER_API_PAUSED'"), 'partner-api must return pause code')
+  assert(src.includes("code: 'PARTNER_PURCHASES_PAUSED'"), 'partner purchases must return a distinct pause code')
 })
 
-check('partner admin mutations are read-only during incident pause', () => {
+check('partner administration is owner-only and preserves the paused edit path', () => {
   const src = read('supabase/functions/partner-api/index.ts')
-  assert(src.includes('const PARTNER_ADMIN_MUTATIONS_PAUSED = true'), 'partner admin mutation pause must be hard-coded true')
-  assert(src.includes('PARTNER_ADMIN_MUTATION_ACTIONS'), 'partner admin mutation action allowlist must exist')
+  assert(src.includes('const OWNER_REVIEWED_ADMIN_ACTIONS = new Set(['), 'owner-reviewed admin action allowlist must exist')
   for (const action of [
     'admin_create_partner',
-    'admin_update_partner',
     'admin_generate_key',
     'admin_revoke_key',
     'admin_adjust_balance',
+    'admin_set_unlimited_credit',
   ]) {
-    assert(src.includes(`'${action}'`), `partner admin mutation pause must cover ${action}`)
+    assert(src.includes(`'${action}'`), `owner review allowlist must cover ${action}`)
   }
-  assert(src.includes("code: 'PARTNER_API_ADMIN_PAUSED'"), 'partner admin mutations must return pause code')
+  assert(src.includes('const adminUser = await requireAdmin(req, admin)'), 'partner admin actions must authenticate the actor')
+  assert(src.includes('if (adminUser.id !== OWNER_USER_ID)'), 'every partner admin action must require the verified owner')
+  assertOrder(src, 'if (adminUser.id !== OWNER_USER_ID)', "if (action === 'admin_create_partner')", 'owner guard must precede partner creation')
+  assert(src.includes("action === 'admin_update_partner' ? 'PARTNER_API_ADMIN_PAUSED'"), 'partner metadata edits and activation must remain paused')
+  assert(src.includes("'PARTNER_API_ADMIN_PAUSED'"), 'unsupported partner metadata edits must return pause code')
 
   const adminPage = read('src/pages/AdminPage.tsx')
-  assert(adminPage.includes('const PARTNER_API_INCIDENT_PAUSED = true'), 'admin UI must hard-code partner incident pause')
-  assert(adminPage.includes('Catalogue, checkout, order creation, key generation, partner edits, and partner balance changes are locked'), 'admin UI must show partner pause scope')
-  assert(adminPage.includes('disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === `key-${partner.id}`}'), 'admin UI must disable key generation while paused')
-  assert(adminPage.includes('disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === `revoke-${key.id}`}'), 'admin UI must disable key revocation while paused')
-  assert(adminPage.includes('disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === partner.id}'), 'admin UI must disable partner save/update while paused')
+  assert(adminPage.includes('const PARTNER_API_INCIDENT_PAUSED = true'), 'admin UI must retain the legacy metadata/activation pause')
+  assert(adminPage.includes('Existing partner activation and external paid orders remain locked.'), 'admin UI must explain the remaining partner pause scope')
+  assert(adminPage.includes('disabled={!isPartnerOwner || !partner.owner_reviewed_at || apiPartnerSaving === `key-${partner.id}`}'), 'key generation must require an owner-reviewed partner')
+  assert(adminPage.includes('disabled={!isPartnerOwner || apiPartnerSaving === `revoke-${key.id}`}'), 'key revocation must require the owner')
+  assert(adminPage.includes('disabled={PARTNER_API_INCIDENT_PAUSED || apiPartnerSaving === partner.id}'), 'partner metadata edits must remain disabled')
 })
 
 check('existing API partners are data-paused during incident review', () => {
@@ -254,15 +262,23 @@ check('crypto transfer RPC is disabled and hidden from UI', () => {
   assert(doesNotContain('src/components/CryptoBalanceCard.tsx', 'Transfer to TallyStore Balance'), 'old crypto transfer modal must not be visible')
 })
 
-check('NOWPayments crypto webhooks are hard-held for review, not env auto-credited', () => {
+check('NOWPayments wallet credits require signed, registered and provider-verified evidence', () => {
   const src = read('supabase/functions/nowpayments-webhook/index.ts')
-  assert(src.includes('return false;'), 'crypto auto-credit switch must be hard disabled')
-  assert(!src.includes("Deno.env.get('CRYPTO_AUTO_CREDIT_ENABLED')"), 'crypto auto-credit must not be reopenable by env')
-  assert(src.includes('completed_pending_review'), 'verified crypto payments must be held for manual review')
-  assert(src.includes('crypto_auto_credit_disabled_manual_review_required'), 'manual review hold reason must be explicit')
-  assert(src.includes('NOWPAYMENTS_IPN_SECRET'), 'NOWPayments webhook must require IPN signature secret')
-  assert(src.includes('verifyIPNSignature'), 'NOWPayments webhook must verify IPN signatures')
-  assert(src.includes('fetchNowPaymentsStatus'), 'NOWPayments webhook must verify finished payments server-to-server')
+  const quote = read('supabase/functions/create-crypto-sell-order/index.ts')
+  const settlement = read('supabase/migrations/20261005022000_nowpayments_verified_wallet_credit.sql')
+  const fixture = read('scripts/catalog/nowpayments-wallet-pglite-test.mjs')
+  assert(quote.includes("Deno.env.get('CRYPTO_TOPUP_ENABLED') || '').trim().toLowerCase() !== 'true'"), 'crypto quote creation must default closed')
+  assert(quote.includes("rpc('register_nowpayments_wallet_quote'"), 'server must register the immutable quote before payment')
+  assert(src.includes('NOWPAYMENTS_IPN_SECRET') && src.includes('verifySignature(notification,'), 'NOWPayments webhook must require IPN HMAC')
+  assertOrder(src, 'if (!await verifySignature(notification,', "const admin = createClient", 'invalid IPN must not reach service-role database access')
+  assert(src.includes("rpc('get_registered_nowpayments_wallet_quote'"), 'unregistered receipts must not create wallet credit')
+  assert(src.includes('https://api.nowpayments.io/v1/payment/'), 'provider GET must corroborate the signed callback')
+  assertOrder(src, "const response = await fetch(`https://api.nowpayments.io/v1/payment/", "rpc(status === 'finished' ? 'settle_nowpayments_wallet_quote'", 'settlement must follow provider GET')
+  assert(settlement.includes('CREATE OR REPLACE FUNCTION public.settle_nowpayments_wallet_quote'), 'settlement must use the canonical SQL boundary')
+  assert(fixture.includes("rpc('settle_nowpayments_wallet_quote',invalid)") &&
+    fixture.includes("rpc('settle_nowpayments_wallet_quote',args)).idempotency_hit,true") &&
+    fixture.includes("has_table_privilege('authenticated','private.nowpayments_wallet_proofs','SELECT')"),
+  'focused fixture must cover deficient proof, idempotency and browser denial')
 })
 
 check('wallet engine is service-role only and detects idempotency conflicts', () => {
@@ -507,15 +523,17 @@ check('approved admin credits require a server-side approving actor and explicit
 
   const manageStaff = read('supabase/functions/manage-staff/index.ts')
   assert(manageStaff.includes('p_created_by: params.createdBy || null'), 'manage-staff wrapper must pass createdBy into wallet engine')
-  assert(manageStaff.includes('const autoApprove = isAdmin') && manageStaff.includes('if (!autoApprove)'),
-    'all staff mutations, including balance adjustments, must require admin review')
-  assert(manageStaff.includes('{ user_id, permission_key, is_enabled: enableNow, auto_approve: false }'),
-    'staff permissions must never enable automatic mutation approval')
+  assert(manageStaff.includes('let autoApprove = isAdmin') && manageStaff.includes("permission.auto_approve === true && permissionKey !== 'action_adjust_balance'") && manageStaff.includes('if (!autoApprove)'),
+    'enabled non-balance staff actions may auto-approve, but balance adjustments must enter admin review')
+  assert(manageStaff.includes("{ user_id, permission_key, is_enabled: enableNow, auto_approve: enableNow && permission_key !== 'action_adjust_balance' }"),
+    'staff auto-approval must exclude balance adjustment even when its permission is enabled')
   const emailFunction = read('supabase/functions/email/index.ts')
   const smsFunction = read('supabase/functions/smsbus/index.ts')
-  assert(emailFunction.includes('if (requireAutoApprove) {') &&
-    (smsFunction.match(/if \(requireAutoApprove\) \{/g) || []).length >= 2,
-    'staff must not bypass review through direct email or SMS routes')
+  assert(emailFunction.includes('if (requireAutoApprove && permission.auto_approve !== true) {') &&
+    (smsFunction.match(/if \(requireAutoApprove && permission\.auto_approve !== true\) \{/g) || []).length >= 2 &&
+    emailFunction.includes('requireAdminOrStaffPermission(req, "tab_email", true)') &&
+    smsFunction.includes("requireStaffPermission(admin, userId, 'tab_sms_orders', true)"),
+    'direct email and SMS mutations must require the enabled auto-approve permission')
   assert(manageStaff.includes("const transactionType = amount > 0 ? 'admin_credit' : 'admin_debit'"), 'approved staff balance increases must post as admin_credit')
   assert(manageStaff.includes('Admin approval is required before staff balance credits can become spendable'), 'staff credits must fail without admin approval evidence')
   assert(manageStaff.includes('createdBy: approvingAdminId || pendingAction.staff_id || undefined'), 'staff adjustment credits must carry approving admin actor when positive')
@@ -696,8 +714,12 @@ check('refund paths carry original debit provenance', () => {
   assert(productPurchaseMigration.includes("'source_order_id', p_order_id"), 'Product capture metadata must link the debit to the original order')
 
   const smm = read('supabase/functions/smm-create-order/index.ts')
-  assert(smm.includes('source_debit_transaction_id: debitResult?.transaction?.id || null'), 'SMM immediate refunds must link to the original debit transaction id')
-  assert(smm.includes('source_debit_idempotency_key: `smm:purchase:${idempotency_key}`'), 'SMM immediate refunds must link to the original purchase idempotency key')
+  const smmReconciliation = read('supabase/functions/smm-check-all-orders/index.ts')
+  assert(!smm.includes("type: 'refund'"), 'SMM checkout must not refund an uncertain supplier send')
+  assert(smm.includes("code: 'SMM_SUPPLIER_OUTCOME_UNKNOWN'"), 'ambiguous SMM sends must stay under review')
+  assert(smmReconciliation.includes("source_order_table: 'smm_orders'"), 'deferred SMM refunds must identify the protected source order')
+  assert(smmReconciliation.includes('original_reference: order.reference'), 'deferred SMM refunds must link the original debit reference')
+  assertOrder(smmReconciliation, 'const newStatus = mapPanelStatus(', 'await applyRefundTransaction(supabaseAdmin, {', 'SMM refunds must follow provider status evidence')
 
   const bills = read('supabase/functions/purchase-bills/index.ts')
   assert(bills.includes('idempotencyKey: `bills:purchase:${idempotency_key}`'), 'Bills debit must retain its original idempotency identity for later verified resolution')
@@ -1298,11 +1320,11 @@ check('customer transaction display treats typed debits as negative', () => {
   }
 
   assert(walletPage.includes("from '@/lib/walletTransactions'"), 'wallet page must use the shared wallet transaction helper')
-  assert(dashboard.includes("from '@/lib/walletTransactions'"), 'dashboard must use the shared wallet transaction helper')
+  assert(!dashboard.includes(".from('transactions')") && dashboard.includes(".from('orders_safe_history'"), 'dashboard recent activity must use the safe order projection, not display unclassified wallet ledger rows')
   assert(walletPage.includes('isDepositTransactionType(transaction.type)'), 'wallet page total deposits must use deposit/topup transaction types only')
   assert(walletPage.includes('classifyWalletTransaction(transaction)'), 'wallet page must classify rows through the shared helper')
   assert(walletPage.includes("['restoration', 'Refunds']"), 'wallet page must expose a refund/restoration tab instead of mixing refunds into funding')
-  assert(dashboard.includes('getWalletTransactionTitle(transaction)'), 'dashboard must label recent activity through the shared helper')
+  assert(!dashboard.includes('getWalletTransactionTitle(transaction)'), 'dashboard must not render a stale unclassified transaction feed')
   assert(!dashboard.includes("title: isRefund ? 'Refund restoration'"), 'dashboard must not keep a separate positive-credit title branch')
   assert(!dashboard.includes("transaction.type === 'topup' || Number(transaction.amount) > 0"), 'dashboard must not classify credits by positive amount alone')
   assert(!walletPage.includes("Number(transaction.amount) < 0) return 'purchase'"), 'wallet page must not classify purchases by raw negative amount alone')
@@ -1510,7 +1532,7 @@ check('referral attribution and withdrawal authority are server-controlled', () 
   assert(!withdrawReferral.includes('withdraw_referral_balance_to_wallet'), 'referral withdrawals must not call the legacy referral-to-wallet RPC while paused')
   assert(!/\.from\(['"]profiles['"]\)[^;]{0,500}\.update\s*\([^;]*(wallet_balance|referral_balance)/.test(withdrawReferral), 'referral withdrawals must not update profile balances directly')
   assert(!referralsPage.includes('withdrawReferralBalance'), 'referrals page must not call the paused referral-to-wallet client helper')
-  assert(referralsPage.includes('Wallet Move Paused'), 'referrals page must show referral wallet movement as paused')
+  assert(referralsPage.includes('Referral balance movement is paused'), 'referrals page must show referral wallet movement as paused')
   assert(referralsPage.includes('wallet security review'), 'referrals page must explain referral movement is paused for wallet security review')
   assert(referralWithdrawalPage.includes('wallet security review'), 'referral withdrawal page must explain referral movement is paused for wallet security review')
   assert(!referralWithdrawalPage.includes('move your referral balance directly to your Naira wallet'), 'referral withdrawal page must not invite referral balance movement into wallet')
@@ -1707,9 +1729,9 @@ check('forged payment webhooks cannot punish or credit named customers before ve
   assert(!istar.includes('is_suspended'), 'iStar forged webhook payloads must not set suspension flags')
 
   const nowpayments = read('supabase/functions/nowpayments-webhook/index.ts')
-  assertOrder(nowpayments, 'if (!signature) {', 'const isValid = await verifyIPNSignature(payload, signature, ipnSecret)', 'NOWPayments must require signature before validation')
-  assertOrder(nowpayments, 'if (!isValid) {', 'const supabaseAdmin = createClient', 'NOWPayments must reject invalid signatures before creating admin DB client')
-  assertOrder(nowpayments, 'const isValid = await verifyIPNSignature(payload, signature, ipnSecret)', 'const supabaseAdmin = createClient', 'NOWPayments must verify IPN before database mutation access')
+  assert(nowpayments.includes("req.headers.get('x-nowpayments-sig') || ''"), 'missing NOWPayments signature must be passed as an invalid empty value')
+  assert(nowpayments.includes("if (!/^[a-f0-9]{128}$/i.test(signature)) return false"), 'malformed or absent NOWPayments signature must fail HMAC validation')
+  assertOrder(nowpayments, 'if (!await verifySignature(notification,', 'const admin = createClient', 'NOWPayments must reject invalid signatures before creating admin DB client')
   assert(!nowpayments.includes('account_suspended'), 'NOWPayments forged webhook payloads must not suspend a named customer')
   assert(!nowpayments.includes('is_suspended'), 'NOWPayments forged webhook payloads must not set suspension flags')
 })
@@ -1750,16 +1772,17 @@ check('JWT-disabled Edge Functions have explicit internal authorization boundari
   const nowpayments = read('supabase/functions/nowpayments-webhook/index.ts')
   assert(contains('supabase/functions/nowpayments-webhook/config.toml', 'verify_jwt = false'), 'nowpayments-webhook config must be explicit')
   assert(nowpayments.includes('NOWPAYMENTS_IPN_SECRET'), 'NOWPayments webhook must require its IPN secret')
-  assert(nowpayments.includes('verifyIPNSignature'), 'NOWPayments webhook must verify IPN signatures')
+  assert(nowpayments.includes('verifySignature(notification,') && nowpayments.includes("req.headers.get('x-nowpayments-sig') || ''"), 'NOWPayments webhook must verify IPN HMAC before privileged reads')
 
   const partnerApi = read('supabase/functions/partner-api/index.ts')
   assert(contains('supabase/functions/partner-api/config.toml', 'verify_jwt = false'), 'partner-api config must be explicit')
-  assert(partnerApi.includes('const PARTNER_API_PAUSED = true'), 'partner-api must remain hard-paused while JWT verification is disabled')
+  assert(partnerApi.includes("const PARTNER_API_PAUSED = Deno.env.get('PARTNER_API_READ_ENABLED') !== 'true'"), 'partner read gate must default closed while JWT verification is disabled')
+  assert(partnerApi.includes('const PARTNER_PURCHASES_PAUSED = true'), 'partner value dispatch must have an independent purchase gate')
   assert(partnerApi.includes('PARTNER_API_PAUSED && !action.startsWith(\'admin_\')'), 'partner-api must hard-pause non-admin actions')
   assert(partnerApi.includes('async function requireAdmin'), 'partner-api admin actions must perform explicit admin authorization')
   assert(partnerApi.includes('await requireAdmin(req, admin)'), 'partner-api must enforce admin authorization before admin actions')
   assert(partnerApi.includes('async function requirePartner'), 'partner-api must authenticate partner keys even while paused')
-  assert(partnerApi.includes('auth = await requirePartner(req, admin)'), 'partner-api must enforce partner authentication before partner actions')
+  assert(partnerApi.includes('auth = await requirePartner(req, admin, actionScope)'), 'partner-api must enforce scoped partner authentication before partner actions')
 
   const smsbus = read('supabase/functions/smsbus/index.ts')
   assert(contains('supabase/functions/smsbus/config.toml', 'verify_jwt = false'), 'smsbus config must be explicit')
@@ -1865,14 +1888,14 @@ check('paused paid surfaces fail closed by default', () => {
   const smm = read('supabase/functions/smm-create-order/index.ts')
   assert(smm.includes("code: 'SMM_ORDERS_PAUSED'"), 'SMM order pause must return a stable paused code')
   assert(smm.includes('status: 503'), 'SMM order pause must return a real service-paused status')
-  assertOrder(smm, "code: 'SMM_ORDERS_PAUSED'", "req.headers.get('Authorization')", 'SMM route must pause before auth work')
+  assertOrder(smm, "code: 'SMM_ORDERS_PAUSED'", 'authenticateCustomerRequest(req, supabaseAdmin', 'SMM route must pause before auth work')
   assertOrder(smm, "code: 'SMM_ORDERS_PAUSED'", 'debitResult = await applyWalletTransaction', 'SMM route must pause before wallet debit')
   assertOrder(smm, "code: 'SMM_ORDERS_PAUSED'", 'smmClient.createOrder(orderParams)', 'SMM route must pause before panel dispatch')
 
   const sms = read('supabase/functions/smsbus/index.ts')
   assert(sms.includes("code: 'SMS_OTP_PAUSED'"), 'SMS OTP pause must return a stable paused code')
   assert(sms.includes('}, 503)'), 'SMS OTP pause must return a real service-paused status')
-  assertOrder(sms, "code: 'SMS_OTP_PAUSED'", 'const { user, admin } = await requireAuth(req)', 'SMS create_otp must pause before auth/profile work')
+  assertOrder(sms, "code: 'SMS_OTP_PAUSED'", 'const { user, admin } = await requireAuth(authRequest, action)', 'SMS create_otp must pause before auth/profile work')
   assertOrder(sms, "code: 'SMS_OTP_PAUSED'", "case 'create_otp'", 'SMS create_otp must pause before routing into the debit/provider handler')
   assert(sms.includes('debit = await debitWallet'), 'SMS create_otp handler must still use wallet debit when deliberately reopened')
   assert(sms.includes('number = await daisyGetNumber'), 'SMS create_otp handler must still isolate Daisy number allocation in the purchase handler')
@@ -1924,7 +1947,15 @@ check('fulfillment routes authorize money before supplier dispatch or value rele
   const productAccounts = product.indexOf('const { data: purchasedAccounts')
   const productSecrets = product.indexOf('const accountDetails = {')
   const productCompletion = product.indexOf("'complete_product_purchase'")
-  assert(product.includes('const liveAccountFulfillmentEnabled = false'), 'live account supplier fallback must remain hard-paused')
+  assert(product.includes("const liveAccountFulfillmentEnabled = Deno.env.get('LIVE_ACCOUNT_FULFILLMENT_ENABLED') === 'true'"), 'supplier fallback must default closed without the server flag')
+  assert(product.includes('productGroup.supplier_fallback_ready === true') && product.includes('!productGroup.supplier_fallback_blocked'), 'supplier fallback must require current readiness and an unblocked circuit')
+  const supplierPurchase = read('supabase/functions/_shared/supplier-purchase.mjs')
+  assert(product.includes('fulfillSupplierShortfall(supabaseAdmin') && supplierPurchase.includes("'mark_supplier_purchase_sending'"), 'supplier purchase must use its one-send journal claim')
+  const supplierReadiness = read('scripts/catalog/supplier-paid-send-readiness-pglite-test.mjs')
+  assert(supplierReadiness.includes("[first.attempt_id])).code, 'SUPPLIER_NOT_READY'") &&
+    supplierReadiness.includes("[first.attempt_id])).send_allowed, true") &&
+    supplierReadiness.includes("[order.order_id, first.attempt_id])).idempotent_replay, true"),
+  'focused supplier fixture must deny an unready send and prove recovered attachment is idempotent')
   assert(product.includes('PURCHASE_LEDGER_ORPHANED'), 'product purchases must block orphaned purchase-ledger retries')
   assert(productAuthorization > -1 && productAccounts > -1 && productAuthorization < productAccounts, 'product inventory must be reserved by the atomic authorization boundary')
   assert(productAccounts > -1 && productSecrets > -1 && productAccounts < productSecrets, 'product credentials must be assembled only after inventory is held')
@@ -1990,7 +2021,7 @@ check('customer order history reveals credentials only for completed orders', ()
   const data = read('src/lib/supabase.ts')
   assert(data.includes('function sanitizeOrderHistoryCredentialVisibility'), 'getUserOrders must sanitize credential visibility')
   assert(data.includes("String(order?.status || '').toLowerCase() === 'completed'"), 'order history sanitizer must preserve credentials only for completed orders')
-  assert(data.includes('(data || []).map(sanitizeOrderHistoryCredentialVisibility)'), 'getUserOrders must apply credential sanitizer')
+  assert(data.includes('if (error || !Array.isArray(data)) throw new Error') && data.includes('data.map(sanitizeOrderHistoryCredentialVisibility)'), 'getUserOrders must reject malformed results and sanitize every returned row')
   assert(data.includes('account_details: {'), 'sanitizer must replace non-completed account_details with a safe projection')
 
   const page = read('src/pages/OrderHistoryPage.tsx')
@@ -2089,8 +2120,11 @@ check('mapped purchase routes validate hostile quantity and price input', () => 
   assert(product.includes('expectedAmountMinor !== totalPriceMinor'), 'product checkout must compare expected kobo to server price without a tolerance')
 
   const smm = read('supabase/functions/smm-create-order/index.ts')
-  assert(smm.includes('!Number.isInteger(actualQuantity) || actualQuantity < 1'), 'SMM checkout must reject non-integer or negative quantities')
-  assert(smm.includes('actualQuantity > service.max_quantity'), 'SMM checkout must enforce provider max quantity')
+  const smmContract = read('supabase/functions/_shared/smm-order-contract.ts')
+  assert(smm.includes('const quote = quoteSmmOrder(service,') && smm.includes('const actualQuantity = quote.quantity'), 'SMM checkout must use the shared server quantity/price quote')
+  assert(smmContract.includes('!Number.isSafeInteger(quantity) || quantity < 1'), 'SMM quote must reject malformed or negative quantities')
+  assert(smmContract.includes('if (quantity > max) throw new Error'), 'SMM quote must enforce provider max quantity')
+  assert(read('scripts/smm-pricing-contract-test.mjs').includes('count-based') || read('scripts/smm-pricing-contract-test.mjs').includes('quoteSmmOrder'), 'focused SMM fixture must cover shared quote validation')
   assert(smm.includes('!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0'), 'SMM checkout must require a positive displayed price')
   assert(smm.includes('expectedPriceNgn !== totalAmount'), 'SMM checkout must compare expected price to server price')
 
@@ -3317,6 +3351,7 @@ check('route inventory classifies every API and Edge Function surface', () => {
   for (const surface of [
     'api/partner-api.ts',
     'api/webhook-ercas.ts',
+    'api/webhook/ercas.ts',
     'api/webhook-istar.ts',
     'api/webhook-pocketfi.ts',
     'pages/api/webhook/ercas.ts',
