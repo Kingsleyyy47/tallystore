@@ -122,7 +122,14 @@ function getOrderAccounts(order: any) {
 
 function readCredentialValue(account: any, keys: string[]) {
   const key = keys.find((candidate) => account?.[candidate] !== undefined && account?.[candidate] !== null && String(account[candidate]).trim() !== '')
-  return key ? String(account[key]) : ''
+  if (!key) return ''
+  const value = account[key]
+  if (key === 'additional_info' && value && typeof value === 'object' && !Array.isArray(value)) {
+    const notes = { ...value }
+    delete notes.original_line
+    return Object.keys(notes).length ? JSON.stringify(notes) : ''
+  }
+  return String(value)
 }
 
 function credentialLabel(order: any, account: any, field: typeof credentialFields[number]) {

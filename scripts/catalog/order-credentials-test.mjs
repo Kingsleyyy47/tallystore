@@ -42,6 +42,18 @@ const unrecognized = normalizeOrderCredential({ username: 'person | pass | mail 
 assert.equal(unrecognized.username, 'person | pass | mail | mail-pass | 2fa | extra')
 assert.equal(unrecognized.password, 'stored-pass')
 assert.equal(unrecognized.original_line, unrecognized.username)
+const supplierExtraLine = 'person|pass|mail|mail-pass|2fa|cookies=exact|extra'
+const supplierExtra = normalizeOrderCredential({ username: 'person', password: 'pass', email: null,
+  additional_info: { original_line: supplierExtraLine } })
+assert.equal(supplierExtra.original_line, supplierExtraLine)
+assert.equal(supplierExtra.email, null, 'extra supplier fields must not be assigned a guessed label')
+const supplierFiveColumnLine = '  person | secret | mail@example.test | mail-pass | otp-seed  '
+const supplierExact = normalizeOrderCredential({ username: '  person ', password: ' secret ', email: ' mail@example.test ',
+  email_password: ' mail-pass ', two_fa_code: ' otp-seed  ',
+  additional_info: { original_line: supplierFiveColumnLine } })
+assert.equal(supplierExact.password, ' secret ', 'display must preserve opaque supplier password bytes')
+assert.equal(supplierExact.email_password, ' mail-pass ')
+assert.equal(supplierExact.two_fa_code, ' otp-seed  ')
 assert.equal(normalizeOrderCredentials(null).length, 0)
 
 const page = fs.readFileSync('src/pages/OrderHistoryPage.tsx', 'utf8')

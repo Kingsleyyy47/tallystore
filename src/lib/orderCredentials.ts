@@ -30,6 +30,13 @@ export function normalizeOrderCredential(account: unknown): Account {
   // the trimmed columns below are only a convenient parsed view.
   const withOriginalLine = { ...source, original_line: line }
 
+  // Supplier deliveries already have explicit fields. Their spaces can be
+  // part of a password or another opaque secret, so never reparse the raw line
+  // over those stored values. Historical rows with only a stock line still use
+  // the legacy parser below.
+  if (typeof source.username === 'string' && source.username !== line &&
+      typeof source.password === 'string') return withOriginalLine
+
   const parts = line.split('|').map((part) => part.trim())
   if (parts.length === 6 && parts[5] === '') parts.pop()
   // Only the documented five-column legacy format is positional. An

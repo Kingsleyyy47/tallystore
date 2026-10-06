@@ -97,7 +97,9 @@ try {
     [auth.order_id, auth.reservation_id, 'muabanvia', 'supplier-42', 'supplier-order-one:muabanvia:1'])
   assert.equal(second.success, true)
   assert.equal((await call('mark_supplier_purchase_sending', [second.attempt_id])).send_allowed, true)
-  const credentials = [{ username: 'supplier-user', password: 'supplier-secret' }]
+  const originalLine = 'supplier-user|supplier-secret|mail@example.test|mail-pass|seed|cookie=session%3Dabc|extra'
+  const credentials = [{ username: 'supplier-user', password: 'supplier-secret',
+    additional_info: { original_line: originalLine } }]
   assert.equal((await call('record_supplier_purchase_outcome',
     [second.attempt_id, 'succeeded', 'provider-123', JSON.stringify(credentials), null])).success, true)
   const attached = await call('attach_supplier_purchase_accounts', [auth.order_id, second.attempt_id])
@@ -107,6 +109,8 @@ try {
   assert.equal((await db.query('SELECT count(*)::int AS n FROM public.individual_accounts')).rows[0].n, 2)
   assert.equal((await call('cancel_exhausted_supplier_purchase', [auth.order_id, auth.reservation_id])).success, false)
   assert.equal((await db.query('SELECT credentials FROM public.supplier_purchase_attempts WHERE id=$1', [second.attempt_id])).rows[0].credentials[0].password, 'supplier-secret')
+  const delivered = (await db.query('SELECT additional_info FROM public.individual_accounts WHERE id=$1', [attached.account_ids[1]])).rows[0]
+  assert.equal(delivered.additional_info.original_line, originalLine, 'journal attachment must preserve the entire delivered supplier line')
 
   assert.equal((await call('authorize_supplier_product_purchase',
     [userId,productId,1,100,'blocked-by-paid-success',supplierMetadata,1])).code,

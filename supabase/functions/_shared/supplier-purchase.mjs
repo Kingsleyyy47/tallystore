@@ -6,6 +6,95 @@ const definitions = [
   ['shopviaclone', 'shopviaclone_product_id', 'SHOPVIACLONE_API_KEY', 'SHOPVIACLONE_BASE_URL', 'https://shopviaclone22.com/api/buy_product', ['id']],
 ]
 
+const SUPPLIER_RESPONSE_MAX_BYTES = 1_000_000
+const SUPPLIER_DEADLINE_MS = 20_000
+
+// Bound the entire paid request, including its body. A Content-Length header is
+// only a hint, so count the bytes actually received before decoding or parsing.
+export async function readSupplierResponse(fetchImpl, url, options, deadlineMs = SUPPLIER_DEADLINE_MS) {
+  const controller = new AbortController()
+  let activeReader = null
+  let timer
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort()
+      if (activeReader) void activeReader.cancel().catch(() => {})
+      reject(new Error('Supplier response deadline exceeded'))
+    }, deadlineMs)
+  })
+  const request = (async () => {
+    const response = await fetchImpl(url, {
+      ...options,
+      redirect: 'error',
+      credentials: 'omit',
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (response.redirected) throw new Error('Supplier redirected response')
+    if (!response.body) throw new Error('Supplier response body missing')
+    const reader = response.body.getReader()
+    activeReader = reader
+    const chunks = []
+    let length = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        length += value.byteLength
+        if (length > SUPPLIER_RESPONSE_MAX_BYTES) throw new Error('Supplier response too large')
+        chunks.push(value)
+      }
+    } finally {
+      if (activeReader === reader) activeReader = null
+      void reader.cancel().catch(() => {})
+    }
+    const bytes = new Uint8Array(length)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return { status: response.status, body: JSON.parse(text) }
+  })()
+  try {
+    return await Promise.race([request, deadline])
+  } finally {
+    controller.abort()
+    if (activeReader) void activeReader.cancel().catch(() => {})
+    clearTimeout(timer)
+  }
+}
+
+function normalizeSupplierCredential(item) {
+  if (typeof item === 'string') {
+    const parts = item.split('|')
+    if (parts.length < 2) return null
+    // Only the five-column format has documented optional positions. Any
+    // additional fields (for example cookies) remain in the exact raw line.
+    const documented = parts.length === 5 || (parts.length === 6 && parts[5] === '')
+    return {
+      username: parts[0],
+      password: parts[1],
+      email: documented ? parts[2] || null : null,
+      email_password: documented ? parts[3] || null : null,
+      two_fa_code: documented ? parts[4] || null : null,
+      additional_info: { original_line: item },
+    }
+  }
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+  // Keep supplier-defined fields that we do not interpret as part of the
+  // delivered credential, including cookies and recovery details.
+  return {
+    username: item.username || item.user || item.login,
+    password: item.password || item.pass,
+    email: item.email || null,
+    email_password: item.email_password || item.emailPass || null,
+    two_fa_code: item.two_fa_code || item.twofa || item['2fa'] || null,
+    additional_info: { original_supplier_record: item },
+  }
+}
+
 export function configuredSuppliers(product, getEnv) {
   return definitions.flatMap(([name, field, keyEnv, urlEnv, defaultUrl, idFields]) => {
     const productId = product[field]
@@ -24,17 +113,9 @@ export function normalizeSupplierOutcome(response, status, quantity) {
   if (!response || typeof response !== 'object' || Array.isArray(response) || status >= 500 || status === 408 || status === 429) return { outcome: 'unknown' }
   if (status >= 200 && status < 300 && response.status === 'success') {
     if (!Array.isArray(response.data) || response.data.length !== quantity || !response.trans_id || !['string', 'number'].includes(typeof response.trans_id) || String(response.trans_id).length > 200 || !String(response.trans_id).trim()) return { outcome: 'unknown' }
-    const credentials = response.data.map(item => {
-      if (typeof item === 'string') {
-        const [username, password, email, email_password, two_fa_code] = item.split('|').map(part => part.trim())
-        return { username, password, email: email || null, email_password: email_password || null, two_fa_code: two_fa_code || null }
-      }
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return null
-      return { username: item.username || item.user || item.login, password: item.password || item.pass,
-        email: item.email || null, email_password: item.email_password || item.emailPass || null,
-        two_fa_code: item.two_fa_code || item.twofa || item['2fa'] || null }
-    })
-    const valid = credentials.every(item => item && typeof item.username === 'string' && item.username.trim() && typeof item.password === 'string' && item.password.trim() && Object.values(item).every(value => value === null || (typeof value === 'string' && value.length <= 4096)))
+    const credentials = response.data.map(normalizeSupplierCredential)
+    const valid = credentials.every(item => item && typeof item.username === 'string' && item.username.trim() && item.username.length <= 4096 && typeof item.password === 'string' && item.password.trim() && item.password.length <= 4096 &&
+      ['email', 'email_password', 'two_fa_code'].every(key => item[key] === null || (typeof item[key] === 'string' && item[key].length <= 4096)))
     if (!valid || new Set(credentials.map(item => `${item.username}\u0000${item.password}`)).size !== quantity) return { outcome: 'unknown' }
     return { outcome: 'succeeded', providerReference: String(response.trans_id).trim(), credentials }
   }
@@ -88,10 +169,9 @@ export async function fulfillSupplierShortfall(admin, { orderId, reservationId, 
       let raw = null
       let httpStatus
       try {
-        const response = await fetchImpl(supplier.url, { method: 'POST', body: form, signal: AbortSignal.timeout(20_000), redirect: 'error' })
+        const response = await readSupplierResponse(fetchImpl, supplier.url, { method: 'POST', body: form, redirect: 'error' })
         httpStatus = response.status
-        const text = await response.text()
-        if (text.length <= 1_000_000) raw = JSON.parse(text)
+        raw = response.body
         result = normalizeSupplierOutcome(raw, httpStatus, quantity)
       } catch { /* Preserve unknown; never issue a second paid request. */ }
       await rpc(admin, 'record_supplier_purchase_outcome', {
