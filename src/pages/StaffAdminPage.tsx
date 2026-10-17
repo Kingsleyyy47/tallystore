@@ -1184,7 +1184,7 @@ export default function StaffAdminPage() {
   function openEditPg(pg: ProductGroup) {
     setEditingPg(pg)
     setEditName(pg.name)
-    setEditCategoryId(pg.category_id)
+    setEditCategoryId(pg.category_id || '')
     setEditDescription(pg.description || '')
     setEditPrice(String(pg.price))
     setEditMua(pg.muabanvia_product_id || '')
