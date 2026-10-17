@@ -10,9 +10,9 @@ export const PERMISSIONS = [
   // ── Stats
   { key: 'view_stats',              label: 'View Analytics',         description: 'See top-level sales, user count, and revenue cards', group: 'Overview' },
   // ── Tabs
-  { key: 'tab_templates',           label: 'Templates tab',          description: 'View and edit product templates', group: 'Tabs' },
-  { key: 'tab_products',            label: 'Products tab',           description: 'View and manage individual accounts / stock', group: 'Tabs' },
-  { key: 'tab_add_product',         label: 'Add Product tab',        description: 'Add single accounts to a product group', group: 'Tabs' },
+  { key: 'tab_templates',           label: 'Templates tab',          description: 'View product templates', group: 'Tabs' },
+  { key: 'tab_products',            label: 'Products tab',           description: 'Create and edit catalog products under categories; view stock', group: 'Tabs' },
+  { key: 'tab_add_product',         label: 'Add Account tab',        description: 'Add one account to an existing product group', group: 'Tabs' },
   { key: 'tab_bulk_upload',         label: 'Bulk Upload tab',        description: 'Upload accounts via CSV', group: 'Tabs' },
   { key: 'tab_discount_codes',      label: 'Discount Codes tab',     description: 'View, create, and toggle discount codes', group: 'Tabs' },
   { key: 'tab_sms_products',        label: 'SMS Products tab',       description: 'Enable SMS products, set favorites, and manage customer SMS pricing', group: 'Tabs' },
@@ -20,7 +20,7 @@ export const PERMISSIONS = [
   { key: 'tab_transactions',        label: 'Transaction History tab', description: 'View completed customer wallet deposits only', group: 'Tabs' },
   { key: 'tab_sales',               label: 'Sales History tab',       description: 'View completed customer product, SMS, crypto, bills, gift card, and social sales history', group: 'Tabs' },
   { key: 'tab_revenue_os',          label: 'Revenue OS tab',          description: 'View CRO health, data-quality findings, opportunities, and change bounded Revenue OS controls', group: 'Tabs' },
-  { key: 'tab_categories',          label: 'Categories tab',         description: 'View, create, and edit product categories', group: 'Tabs' },
+  { key: 'tab_categories',          label: 'Categories tab',         description: 'View and create product categories', group: 'Tabs' },
   { key: 'tab_users',               label: 'Users tab',              description: 'Search and view user accounts', group: 'Tabs' },
   { key: 'tab_email',               label: 'Email Broadcast tab',    description: 'Send emails to opted-in customers', group: 'Tabs' },
   // ── Settings sections

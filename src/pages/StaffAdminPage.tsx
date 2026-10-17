@@ -25,7 +25,7 @@ import {
   getAppSetting,
   getManagedProductGroups,
   getAllProductGroups,
-  getCategories,
+  getCategoriesStrict,
   getDiscountCodes,
   parseCSV,
   detectAccountImportMode,
@@ -374,8 +374,16 @@ export default function StaffAdminPage() {
   const [adjustReason, setAdjustReason] = useState('')
   const [adjusting, setAdjusting] = useState(false)
 
-  // Product editing
+  // Product groups are catalog entries; Add Account below adds stock to one.
+  const [newPgName, setNewPgName] = useState('')
+  const [newPgCategoryId, setNewPgCategoryId] = useState('')
+  const [newPgDescription, setNewPgDescription] = useState('')
+  const [newPgPrice, setNewPgPrice] = useState('')
+  const [creatingPg, setCreatingPg] = useState(false)
   const [editingPg, setEditingPg] = useState<ProductGroup | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editCategoryId, setEditCategoryId] = useState('')
+  const [editDescription, setEditDescription] = useState('')
   const [editPrice, setEditPrice] = useState('')
   const [editMua, setEditMua] = useState('')
   const [editShopclone, setEditShopclone] = useState('')
@@ -525,7 +533,7 @@ export default function StaffAdminPage() {
     try {
       const catalog = Promise.all([
         can(perms, 'tab_products') ? getManagedProductGroups() : getAllProductGroups(),
-        getCategories(),
+        getCategoriesStrict(),
       ])
       const timeout = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => reject(new Error('Product stock request timed out')), 12000)
@@ -1087,7 +1095,7 @@ export default function StaffAdminPage() {
       if (!res.success) throw new Error(res.error || 'Failed to submit action')
       if (res.applied) {
         toast({ title: 'Category created' })
-        const cats = await getCategories()
+        const cats = await getCategoriesStrict()
         setCategories(cats)
       } else {
         toast({ title: 'Submitted for approval' })
@@ -1135,9 +1143,49 @@ export default function StaffAdminPage() {
     finally { setCreatingCode(false) }
   }
 
+  // ── Product groups ────────────────────────────────────────────────────────
+  async function handleCreatePg() {
+    const name = newPgName.trim()
+    const categoryId = newPgCategoryId.trim()
+    const price = Number(newPgPrice.trim())
+    if (!name || !categoryId || !categories.some(category => category.id === categoryId) ||
+        !Number.isFinite(price) || price <= 0) {
+      toast({ variant: 'destructive', title: 'Check product details', description: 'Enter a name, select a category, and set a price greater than zero.' })
+      return
+    }
+    setCreatingPg(true)
+    try {
+      const res = await submitPendingAction('tab_products', 'create_product_group', `Create product ${name}`, {
+        category_id: categoryId,
+        name,
+        description: newPgDescription.trim(),
+        price,
+      })
+      if (!res.success) throw new Error(res.error || 'Failed to submit action')
+      if (res.applied) {
+        toast({ title: 'Product created' })
+        await loadProducts()
+      } else {
+        toast({ title: 'Submitted for approval', description: 'The product will appear after admin approval.' })
+        void loadMyPending()
+      }
+      setNewPgName('')
+      setNewPgCategoryId('')
+      setNewPgDescription('')
+      setNewPgPrice('')
+    } catch (error) {
+      toast({ variant: 'destructive', title: 'Failed to create product', description: error instanceof Error ? error.message : undefined })
+    } finally {
+      setCreatingPg(false)
+    }
+  }
+
   // ── Open product for editing ──────────────────────────────────────────────
   function openEditPg(pg: ProductGroup) {
     setEditingPg(pg)
+    setEditName(pg.name)
+    setEditCategoryId(pg.category_id)
+    setEditDescription(pg.description || '')
     setEditPrice(String(pg.price))
     setEditMua(pg.muabanvia_product_id || '')
     setEditShopclone(pg.shopclone_product_id || '')
@@ -1147,10 +1195,21 @@ export default function StaffAdminPage() {
 
   async function handleSavePg() {
     if (!editingPg) return
+    const name = editName.trim()
+    const categoryId = editCategoryId.trim()
+    const price = Number(editPrice.trim())
+    if (!name || !categoryId || !categories.some(category => category.id === categoryId) ||
+        !Number.isFinite(price) || price <= 0) {
+      toast({ variant: 'destructive', title: 'Check product details', description: 'Enter a name, select a category, and set a price greater than zero.' })
+      return
+    }
     setSavingPg(true)
     try {
       const updates = {
-        price: parseFloat(editPrice) || editingPg.price,
+        name,
+        category_id: categoryId,
+        description: editDescription.trim(),
+        price,
         muabanvia_product_id: editMua || null,
         shopclone_product_id: editShopclone || null,
         shopviaclone_product_id: editShopviaclone || null,
@@ -1163,8 +1222,7 @@ export default function StaffAdminPage() {
       if (!res.success) throw new Error(res.error || 'Failed to submit action')
       if (res.applied) {
         toast({ title: 'Product updated' })
-        const pg = await getManagedProductGroups()
-        setProductGroups(pg)
+        await loadProducts()
         setEditingPg(null)
       } else {
         toast({ title: 'Submitted for approval' })
@@ -1618,6 +1676,39 @@ export default function StaffAdminPage() {
           {/* ── Products ──────────────────────────────────────── */}
           {can(perms, 'tab_products') && (
             <TabsContent value="products" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Create Product</CardTitle>
+                  <p className="text-sm text-muted-foreground">Create a catalog product under a category. To add login stock to an existing product, use Add Account or Bulk Upload.</p>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Product name</label>
+                      <Input value={newPgName} onChange={e => setNewPgName(e.target.value)} placeholder="Product name" maxLength={200} />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Category</label>
+                      <Select value={newPgCategoryId} onValueChange={setNewPgCategoryId}>
+                        <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
+                        <SelectContent>{categories.map(category => <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Price (₦)</label>
+                      <Input type="number" min="0.01" step="0.01" value={newPgPrice} onChange={e => setNewPgPrice(e.target.value)} placeholder="Price" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Description</label>
+                    <Textarea value={newPgDescription} onChange={e => setNewPgDescription(e.target.value)} placeholder="What customers should know about this product" maxLength={2000} rows={3} />
+                  </div>
+                  <Button type="button" onClick={handleCreatePg} disabled={creatingPg || !newPgName.trim() || !newPgCategoryId || !Number.isFinite(Number(newPgPrice)) || Number(newPgPrice) <= 0}>
+                    {creatingPg ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                    Create Product
+                  </Button>
+                </CardContent>
+              </Card>
               {/* Edit panel */}
               {editingPg && (
                 <Card className="border-primary">
@@ -1626,8 +1717,23 @@ export default function StaffAdminPage() {
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <div>
+                      <label className="text-xs font-medium text-muted-foreground mb-1 block">Product name</label>
+                      <Input value={editName} onChange={e => setEditName(e.target.value)} placeholder="Product name" maxLength={200} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground mb-1 block">Category</label>
+                      <Select value={editCategoryId} onValueChange={setEditCategoryId}>
+                        <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
+                        <SelectContent>{categories.map(category => <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground mb-1 block">Description</label>
+                      <Textarea value={editDescription} onChange={e => setEditDescription(e.target.value)} placeholder="Product description" maxLength={2000} rows={3} />
+                    </div>
+                    <div>
                       <label className="text-xs font-medium text-muted-foreground mb-1 block">Price (₦)</label>
-                      <Input type="number" value={editPrice} onChange={e => setEditPrice(e.target.value)} placeholder="Price" />
+                      <Input type="number" min="0.01" step="0.01" value={editPrice} onChange={e => setEditPrice(e.target.value)} placeholder="Price" />
                     </div>
                     <div>
                       <label className="text-xs font-medium text-muted-foreground mb-1 block">MUA / BanVia Product ID</label>

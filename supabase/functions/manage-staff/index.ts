@@ -1177,7 +1177,7 @@ async function applySmsPendingAction(admin: any, pendingAction: any) {
 const STAFF_ACTIONS_BY_PERMISSION: Record<string, string[]> = {
   tab_add_product: ['add_single_account'],
   tab_bulk_upload: ['bulk_upload_accounts'],
-  tab_products: ['update_product_group'],
+  tab_products: ['create_product_group', 'update_product_group'],
   tab_discount_codes: ['create_discount_code', 'toggle_discount_code'],
   tab_sms_products: ['sms_update_product', 'sms_bulk_products', 'sms_apply_markup', 'sms_set_rounding'],
   tab_sms_orders: ['sms_cancel_order', 'sms_auto_cancel_stale'],
@@ -1209,6 +1209,56 @@ const STAFF_SETTING_KEYS_BY_PERMISSION: Record<string, string[]> = {
   ],
 }
 
+function staffCatalogFields(raw: unknown, creating: boolean): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid product details')
+  const input = raw as Record<string, unknown>
+  const keys = creating ? ['category_id', 'name', 'description', 'price'] : [
+    'category_id', 'name', 'description', 'price', 'muabanvia_product_id',
+    'shopclone_product_id', 'shopviaclone_product_id', 'auto_fulfill_enabled',
+  ]
+  if (Object.keys(input).some(key => !keys.includes(key))) throw new Error('Unpermitted product field')
+  const result: Record<string, unknown> = {}
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(input, key)
+  if (creating || has('category_id')) {
+    if (typeof input.category_id !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.category_id)) throw new Error('Select a valid category')
+    result.category_id = input.category_id
+  }
+  if (creating || has('name')) {
+    if (typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 300) throw new Error('Product name must contain 1–300 characters')
+    result.name = input.name.trim()
+  }
+  if (has('description')) {
+    if (input.description !== null && (typeof input.description !== 'string' || input.description.length > 20000)) throw new Error('Product description is too long or invalid')
+    result.description = typeof input.description === 'string' ? input.description.trim() : null
+  }
+  if (creating || has('price')) {
+    const value = input.price
+    if ((typeof value !== 'string' && typeof value !== 'number') || (typeof value === 'string' && !/^\d+(?:\.\d{1,2})?$/.test(value.trim()))) throw new Error('Product price must be a positive amount with at most two decimals')
+    const price = Number(value)
+    if (!Number.isFinite(price) || price <= 0 || price > 99999999.99 || Math.abs(price * 100 - Math.round(price * 100)) > 0.00001) throw new Error('Product price is outside the supported range')
+    result.price = price
+  }
+  for (const key of ['muabanvia_product_id', 'shopclone_product_id', 'shopviaclone_product_id']) {
+    if (has(key)) {
+      const value = input[key]
+      if (value !== null && (typeof value !== 'string' || value.length > 300)) throw new Error('Invalid supplier product id')
+      result[key] = typeof value === 'string' && value.trim() ? value.trim() : null
+    }
+  }
+  if (has('auto_fulfill_enabled')) {
+    if (typeof input.auto_fulfill_enabled !== 'boolean') throw new Error('Invalid automatic fulfilment setting')
+    result.auto_fulfill_enabled = input.auto_fulfill_enabled
+  }
+  if (!Object.keys(result).length) throw new Error('No permitted product updates provided')
+  return result
+}
+
+async function requireStaffCatalogCategory(admin: any, fields: Record<string, unknown>) {
+  if (!Object.prototype.hasOwnProperty.call(fields, 'category_id')) return
+  const { data, error } = await admin.from('categories').select('id, is_active').eq('id', fields.category_id).maybeSingle()
+  if (error || !data || data.is_active !== true) throw new Error('Selected category is unavailable')
+}
+
 function requireAllowedStaffAction(pendingAction: any) {
   const permissionKey = String(pendingAction.permission_key || '').trim()
   const action = String(pendingAction.action_type || '').trim()
@@ -1218,6 +1268,9 @@ function requireAllowedStaffAction(pendingAction: any) {
   if (!permissionKey || !action || !allowedActions.includes(action)) {
     throw new Error('Action is not allowed for this staff permission')
   }
+
+  if (action === 'create_product_group') staffCatalogFields(d, true)
+  if (action === 'update_product_group') staffCatalogFields(d.updates, false)
 
   if (action === 'adjust_balance' && Number(d.amount) > 0) {
     throw new Error('Wallet credits require a verified Ercas or PocketFi payment')
@@ -1487,28 +1540,26 @@ async function applyStaffAction(admin: any, pendingAction: any) {
     return {}
   }
 
+  if (action === 'create_product_group') {
+    const fields = staffCatalogFields(d, true)
+    await requireStaffCatalogCategory(admin, fields)
+    // The approved audit id also prevents replay from creating another product.
+    if (!pendingAction.id) throw new Error('Approved product action id required')
+    const { data, error } = await admin.from('product_groups')
+      .insert({ ...fields, id: pendingAction.id, auto_fulfill_enabled: false })
+      .select('id').single()
+    if (error || !data) throw new Error(error?.message || 'Could not create product')
+    // Inventory triggers derive availability from real account rows; no invented stock.
+    return { product_group_id: data.id }
+  }
+
   if (action === 'update_product_group') {
     const id = String(d.id || '').trim()
-    const updates = d.updates || {}
     if (!id) throw new Error('Product id required')
-    const allowed: Record<string, unknown> = {}
-    if (Object.prototype.hasOwnProperty.call(updates, 'price')) {
-      const price = Number(updates.price)
-      if (!Number.isFinite(price) || price <= 0) throw new Error('Product price must be greater than zero')
-      allowed.price = price
-    }
-    for (const key of ['muabanvia_product_id', 'shopclone_product_id', 'shopviaclone_product_id']) {
-      if (Object.prototype.hasOwnProperty.call(updates, key)) {
-        const value = updates[key]
-        allowed[key] = typeof value === 'string' && value.trim() ? value.trim() : null
-      }
-    }
-    if (Object.prototype.hasOwnProperty.call(updates, 'auto_fulfill_enabled')) {
-      allowed.auto_fulfill_enabled = updates.auto_fulfill_enabled === true
-    }
-    if (!Object.keys(allowed).length) throw new Error('No permitted product updates provided')
-    const { error } = await admin.from('product_groups').update(allowed).eq('id', id)
-    if (error) throw new Error(error.message)
+    const allowed = staffCatalogFields(d.updates, false)
+    await requireStaffCatalogCategory(admin, allowed)
+    const { data, error } = await admin.from('product_groups').update(allowed).eq('id', id).select('id').maybeSingle()
+    if (error || !data) throw new Error(error?.message || 'Product not found')
     return {}
   }
 

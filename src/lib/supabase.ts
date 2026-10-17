@@ -466,6 +466,14 @@ export async function getCategories(): Promise<Category[]> {
   return _categoriesInflight
 }
 
+// Staff catalog editing needs a fresh category list and a visible read error.
+export async function getCategoriesStrict(signal?: AbortSignal): Promise<Category[]> {
+  const { data, error } = await supabase.from('categories').select('*')
+    .eq('is_active', true).order('name').abortSignal(signal ?? new AbortController().signal)
+  if (error || !Array.isArray(data)) throw new Error('Categories are temporarily unavailable.')
+  return data
+}
+
 export async function getAllProductGroups(): Promise<ProductGroup[]> {
   if (_pgCache && Date.now() - _pgCache.ts < CACHE_TTL) {
     return _pgCache.data
