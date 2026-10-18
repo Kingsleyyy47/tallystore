@@ -322,6 +322,14 @@ function safeSmsError(error: unknown, fallback = 'SMS request failed') {
   return message || fallback
 }
 
+function smsReviewMessage(code: string, serverError?: string) {
+  const detail = serverError ? safeSmsError(new Error(serverError), '') : ''
+  const explanation = code === 'SMS_REFUND_REVIEW_REQUIRED'
+    ? 'The refund has not been confirmed. Please check this order or contact support before buying again.'
+    : 'Cancellation or allocation could not be confirmed. No refund has been confirmed. Please check this order or contact support before buying again.'
+  return `${explanation}${detail && detail !== 'SMS numbers are temporarily unavailable. Please try again later.' ? ` ${detail}` : ''} (${code})`
+}
+
 async function invokeSms<T>(action: string, payload: Record<string, unknown> = {}) {
   const { data, error } = await supabase.functions.invoke<SmsApiResponse<T>>('smsbus', {
     body: { action, ...payload },
@@ -333,12 +341,16 @@ async function invokeSms<T>(action: string, payload: Record<string, unknown> = {
       const bodyText = await context.clone().text().catch(() => '')
       if (bodyText) {
         let message = bodyText
+        let parsed: { code?: string; error?: string; message?: string } | null = null
         try {
-          const parsed = JSON.parse(bodyText)
-          message = parsed?.error || parsed?.message || bodyText
+          parsed = JSON.parse(bodyText)
         } catch {
-          message = bodyText
+          // Keep the transport message when the function returned non-JSON.
         }
+        if (parsed?.code === 'SMS_OUTCOME_REVIEW_REQUIRED' || parsed?.code === 'SMS_REFUND_REVIEW_REQUIRED') {
+          throw new Error(smsReviewMessage(parsed.code, parsed.error))
+        }
+        message = parsed?.error || parsed?.message || bodyText
         throw new Error(message)
       }
     }
@@ -346,8 +358,8 @@ async function invokeSms<T>(action: string, payload: Record<string, unknown> = {
   }
 
   if (!data?.success) {
-    if (data?.code === 'SMS_OUTCOME_REVIEW_REQUIRED') {
-      throw new Error('Order outcome needs review. No refund has been confirmed yet.')
+    if (data?.code === 'SMS_OUTCOME_REVIEW_REQUIRED' || data?.code === 'SMS_REFUND_REVIEW_REQUIRED') {
+      throw new Error(smsReviewMessage(data.code, data.error))
     }
     throw new Error(data?.error || 'SMS request failed')
   }
@@ -400,7 +412,8 @@ function useOtpCountdown(order: SmsOrder, onExpire: (order: SmsOrder) => void) {
   }, [order])
 
   useEffect(() => {
-    if (order.order_type !== 'otp' || isTerminalStatus(order.status)) return
+    if (order.order_type !== 'otp' || isTerminalStatus(order.status) ||
+        (order.status === 'processing' && !order.phone_number)) return
     // Code has arrived — stop the timer and never auto-cancel
     if (messagesLen > 0) {
       setSecsLeft(null)
@@ -423,7 +436,7 @@ function useOtpCountdown(order: SmsOrder, onExpire: (order: SmsOrder) => void) {
     tick()
     const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
-  }, [order.id, order.status, order.order_type, order.created_at, messagesLen])
+  }, [order.id, order.status, order.order_type, order.created_at, order.phone_number, messagesLen])
 
   return secsLeft
 }
@@ -448,6 +461,7 @@ function SmsOrderCard({
   const lastMessage = order.messages?.[order.messages.length - 1]
   const support = useSupportSettings()
   const secsLeft = useOtpCountdown(order, onCancel)
+  const allocationNeedsReview = order.order_type === 'otp' && order.status === 'processing' && !order.phone_number
 
   const timerMins = secsLeft !== null ? String(Math.floor(secsLeft / 60)).padStart(2, '0') : null
   const timerSecs = secsLeft !== null ? String(secsLeft % 60).padStart(2, '0') : null
@@ -492,6 +506,12 @@ function SmsOrderCard({
           </div>
         </div>
 
+        {allocationNeedsReview && (
+          <div role="alert" className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+            Number allocation needs review. Do not buy again for this request. Check this order or contact support with its reference.
+          </div>
+        )}
+
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <div className="rounded-2xl bg-slate-100 p-4 dark:bg-muted">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-muted-foreground">
@@ -518,7 +538,7 @@ function SmsOrderCard({
         </div>
 
         {/* OTP countdown timer */}
-        {order.order_type === 'otp' && !isTerminalStatus(order.status) && secsLeft !== null && !(order.messages && order.messages.length > 0) && (
+        {order.order_type === 'otp' && !isTerminalStatus(order.status) && !allocationNeedsReview && secsLeft !== null && !(order.messages && order.messages.length > 0) && (
           <div className="mt-4">
             <div className={cn(
               'flex items-center justify-between rounded-2xl px-4 py-3 text-sm font-semibold transition-colors',
@@ -530,11 +550,11 @@ function SmsOrderCard({
                 <Clock className={cn('h-4 w-4', timerUrgent && 'animate-pulse')} />
                 <span>
                   {secsLeft === 0
-                    ? 'Cancelling automatically…'
-                    : `Auto-cancels in ${timerMins}:${timerSecs}`}
+                    ? busy ? 'Requesting cancellation…' : 'Cancellation attempt due; check status'
+                    : `Cancellation attempt in ${timerMins}:${timerSecs}`}
                 </span>
               </div>
-              <span className="text-xs font-normal opacity-75">No code = full refund</span>
+              <span className="text-xs font-normal opacity-75">Cancellation is checked after 3 minutes; refund follows provider confirmation</span>
             </div>
             {/* Progress bar */}
             <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-muted">
@@ -550,7 +570,7 @@ function SmsOrderCard({
         )}
 
         <div className="mt-4 flex flex-wrap gap-2">
-          {order.order_type === 'otp' && !isTerminalStatus(order.status) && (
+          {order.order_type === 'otp' && !isTerminalStatus(order.status) && !allocationNeedsReview && (
             <>
               <Button type="button" className="rounded-2xl" disabled={busy} onClick={() => onCheck(order)}>
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -1162,13 +1182,23 @@ function SmsNumbersSurface() {
       },
     })
 
-    const result = await invokeSms<SmsOrder>('create_otp', {
-      country_id: selectedService.country_id,
-      service_id: selectedService.service_id,
-      expected_price_ngn: selectedService.price_ngn,
-      idempotency_key: idempotencyKey,
-      revenue_context: getRevenueRequestContext(),
-    })
+    let result: SmsApiResponse<SmsOrder>
+    try {
+      result = await invokeSms<SmsOrder>('create_otp', {
+        country_id: selectedService.country_id,
+        service_id: selectedService.service_id,
+        expected_price_ngn: selectedService.price_ngn,
+        idempotency_key: idempotencyKey,
+        revenue_context: getRevenueRequestContext(),
+      })
+    } catch (error) {
+      if (error instanceof Error && /SMS_(?:OUTCOME|REFUND)_REVIEW_REQUIRED/.test(error.message)) {
+        setPurchaseOpen(false)
+        setActiveTab('orders')
+        await refreshOrders()
+      }
+      throw error
+    }
 
     setPurchaseOpen(false)
     toast.success('OTP number purchased')
@@ -1223,11 +1253,13 @@ function SmsNumbersSurface() {
     // Always fetch the live order before cancelling — the closure may be stale
     const { data: live } = await supabase
       .from('sms_orders')
-      .select('id, status, messages')
+      .select('id, status, messages, refunded_at')
       .eq('id', order.id)
       .single()
     if (live && (isTerminalStatus(live.status) || (live.messages && live.messages.length > 0))) {
-      toast.error('Cannot cancel — a code has already been received for this order.')
+      toast.error(live.status === 'cancelled' && !live.refunded_at
+        ? 'Cancellation was recorded, but the refund needs review. Contact support with this order reference.'
+        : 'This order is already final or has received a code. Check its current status.')
       await refreshOrders()
       return
     }

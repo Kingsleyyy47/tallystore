@@ -293,7 +293,7 @@ export default function StaffAdminPage() {
   type StaffSmsOrder = {
     id: string; reference: string; service_name: string; status: string
     price_ngn: number; created_at: string; cancelled_at?: string; refunded_at?: string
-    has_code: boolean; order_type: string; provider_request_id?: string
+    has_code: boolean; order_type: string; phone_number?: string | null
     profiles?: { email?: string; full_name?: string }
   }
   const [smsOrders, setSmsOrders] = useState<StaffSmsOrder[]>([])
@@ -327,13 +327,17 @@ export default function StaffAdminPage() {
       }
 
       const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_cancel_sms_order', order_id: orderId } })
-      if (error) throw error
-      if (data?.code === 'SMS_OUTCOME_REVIEW_REQUIRED' || data?.review_required) {
-        toast({ title: 'SMS outcome review required', description: 'No refund has been confirmed for this order.' })
+      const context = (error as { context?: Response } | null)?.context
+      const response = error && context ? await context.clone().json().catch(() => null) : data
+      if (response?.code === 'SMS_OUTCOME_REVIEW_REQUIRED' || response?.code === 'SMS_REFUND_REVIEW_REQUIRED' || response?.review_required) {
+        const code = typeof response.code === 'string' ? response.code : 'SMS_OUTCOME_REVIEW_REQUIRED'
+        const detail = typeof response.error === 'string' ? response.error : 'No refund has been confirmed for this order.'
+        toast({ title: 'SMS outcome review required', description: `${detail} (${code})` })
         await loadSmsOrders()
         return
       }
-      if (!data?.success) throw new Error(data?.error || 'Failed to cancel order')
+      if (error) throw new Error(typeof response?.error === 'string' ? response.error : error.message)
+      if (!response?.success) throw new Error(response?.error || 'Failed to cancel order')
       toast({ title: data?.data?.refunded_at ? 'Order cancelled and refunded' : 'Order outcome needs review' })
       await loadSmsOrders()
     } catch (err: any) {
@@ -354,9 +358,21 @@ export default function StaffAdminPage() {
       }
 
       const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_auto_cancel_stale' } })
-      if (error) throw error
-      if (!data?.success) throw new Error(data?.error || 'Failed to auto-cancel')
-      toast({ title: `Auto-cancelled ${data.cancelled_count ?? 0} stale order(s)` })
+      const context = (error as { context?: Response } | null)?.context
+      const response = error && context ? await context.clone().json().catch(() => null) : data
+      if (error) throw new Error(typeof response?.error === 'string' ? response.error : error.message)
+      if (!response?.success) throw new Error(response?.error || 'Failed to auto-cancel')
+      const counts = [response.cancelled_count, response.review_count, response.failed_count]
+      if (counts.every((count: unknown) => Number.isSafeInteger(count) && Number(count) >= 0)) {
+        const [cancelled, review, failed] = counts as number[]
+        toast({
+          title: `${cancelled} cancelled; ${review} need review; ${failed} failed`,
+          description: review + failed > 0 ? 'Check the affected orders before retrying or refunding.' : undefined,
+          variant: review + failed > 0 ? 'destructive' : undefined,
+        })
+      } else {
+        toast({ title: 'SMS batch finished; review order statuses', description: 'The service did not return complete outcome counts.' })
+      }
       await loadSmsOrders()
     } catch (err: any) {
       toast({ title: 'Auto-cancel failed', description: err.message, variant: 'destructive' })
@@ -2478,7 +2494,7 @@ export default function StaffAdminPage() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <CardTitle>SMS Orders</CardTitle>
-                    <p className="mt-1 text-sm text-muted-foreground">All customer SMS purchases. Auto-cancel clears pending orders older than 5 minutes with no code received.</p>
+                    <p className="mt-1 text-sm text-muted-foreground">All customer SMS purchases. Cancellation is checked after 3 minutes; refund follows provider confirmation. Staff can also review stale orders.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" onClick={loadSmsOrders} disabled={smsOrdersLoading}>
@@ -2538,6 +2554,7 @@ export default function StaffAdminPage() {
                         <tbody className="divide-y">
                           {filtered.map(order => {
                             const pending = isPending(order)
+                            const allocationNeedsReview = order.status === 'processing' && !order.phone_number
                             const minsPending = Math.floor((now - new Date(order.created_at).getTime()) / 60000)
                             const isStale = pending && minsPending >= 5
                             const hasCode = order.has_code
@@ -2569,10 +2586,12 @@ export default function StaffAdminPage() {
                                     ? <span className="text-xs text-emerald-600">✓ Refunded</span>
                                     : order.status === 'cancelled'
                                       ? <span className="text-xs text-amber-600">Refund review</span>
+                                      : allocationNeedsReview
+                                        ? <span className="text-xs text-amber-600">Allocation review</span>
                                       : <span className="text-xs text-muted-foreground">—</span>}
                                 </td>
                                 <td className="py-2">
-                                  {pending && (
+                                  {pending && !allocationNeedsReview && (
                                     <Button size="sm" variant="destructive" className="h-7 px-2 text-xs"
                                       disabled={smsOrdersCancellingId === order.id}
                                       onClick={() => staffCancelSmsOrder(order.id)}>
@@ -2581,6 +2600,7 @@ export default function StaffAdminPage() {
                                         : 'Cancel order'}
                                     </Button>
                                   )}
+                                  {allocationNeedsReview && <span className="text-xs text-amber-600">Provider outcome review</span>}
                                 </td>
                               </tr>
                             )

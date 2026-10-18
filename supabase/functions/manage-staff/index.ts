@@ -808,14 +808,37 @@ async function daisyCancelNumber(activationId: string) {
   if (!apiKey || !activationId) throw new Error('SMS cancellation requires provider credentials and activation ID')
   const url = new URL(Deno.env.get('DAISYSMS_BASE_URL') || DEFAULT_DAISY_BASE)
   url.searchParams.set('api_key', apiKey)
-  url.searchParams.set('action', 'setStatus')
   url.searchParams.set('id', activationId)
-  url.searchParams.set('status', '8')
-  const res = await fetch(url.toString())
-  if (!res.ok) throw new Error(`DaisySMS cancel failed with HTTP ${res.status}`)
-  if ((await res.text()).trim() !== 'ACCESS_CANCEL') {
-    throw new Error('DaisySMS did not confirm cancellation; manual outcome review required')
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(new Error('SMS cancellation timed out; outcome needs review')) }, 12000)
+  })
+  async function request(action: string, status?: string) {
+    url.searchParams.set('action', action)
+    if (status) url.searchParams.set('status', status)
+    const res = await Promise.race([fetch(url.toString(), { signal: controller.signal, redirect: 'error', credentials: 'omit', cache: 'no-store' }), deadline])
+    if (!res.ok || res.redirected || !res.body) throw new Error('SMS provider request failed; outcome needs review')
+    const reader = res.body.getReader()
+    let body = '', size = 0
+    try {
+      while (true) {
+        const next = await Promise.race([reader.read(), deadline])
+        if (next.done) break
+        size += next.value.byteLength
+        if (size > 16384) throw new Error('SMS provider response is too large')
+        body += new TextDecoder().decode(next.value)
+      }
+    } finally { void reader.cancel().catch(() => undefined) }
+    return body.trim()
   }
+  try {
+    const status = await request('getStatus')
+    if (status === 'STATUS_CANCEL') return 'STATUS_CANCEL'
+    if (status !== 'STATUS_WAIT_CODE' && status !== 'STATUS_WAITING') throw new Error('SMS provider outcome needs review; cancellation is not confirmed')
+    if (await request('setStatus', '8') !== 'ACCESS_CANCEL') throw new Error('DaisySMS did not confirm cancellation; manual outcome review required')
+    return 'ACCESS_CANCEL'
+  } finally { if (timer) clearTimeout(timer); controller.abort() }
 }
 
 async function updateProductGroupStock(admin: any, productGroupId: string) {
@@ -986,45 +1009,25 @@ async function applyAccountPendingAction(admin: any, pendingAction: any) {
   throw new Error('Unsupported account action type')
 }
 
-async function refundSmsOrderWallet(admin: any, order: any, reason: string, metadata: Record<string, unknown> = {}) {
+async function refundSmsOrderWallet(admin: any, order: any, reason: string, metadata: Record<string, unknown> = {}, providerResponse?: string) {
   const amount = Number(order?.price_ngn || 0)
-  if (!order?.id || !order?.user_id || amount <= 0) return { refunded: true, amount: 0 }
+  if (!order?.id || !order?.user_id || !Number.isFinite(amount) || amount <= 0) throw new Error('SMS charge needs review before refund')
 
-  const refundRef = `REFUND-${order.reference || order.id}`
-  const { data: currentOrder } = await admin
-    .from('sms_orders')
-    .select('refunded_at, refund_reference')
-    .eq('id', order.id)
-    .maybeSingle()
-  if (currentOrder?.refunded_at) {
-    await recordSmsRefundRevenueEvents(admin, order, amount, currentOrder.refund_reference || refundRef, reason, true)
-    return { refunded: true, amount, reference: currentOrder.refund_reference, alreadyRefunded: true }
-  }
-
-  await applyWalletTransaction(admin, {
-    userId: order.user_id,
-    type: 'refund',
-    amount,
-    reference: refundRef,
-    description: reason,
-    idempotencyKey: `staff:sms-refund:${order.id}`,
-    metadata: {
-      ...metadata,
-      source: 'manage-staff',
-      source_order_id: order.id,
-      source_order_table: 'sms_orders',
-      order_id: order.id,
-      original_reference: order.reference || null,
-    },
+  if (!order.provider_request_id || !['ACCESS_CANCEL', 'STATUS_CANCEL'].includes(providerResponse || '')) throw new Error('Provider cancellation proof required before SMS refund')
+  const evidence = { provider: 'daisysms', activation_id: String(order.provider_request_id), response: providerResponse, provider_response: providerResponse, observed_at: new Date().toISOString(), ...metadata }
+  const { error: evidenceError } = await admin.from('sms_orders').update({
+    last_provider_response: { ...(order.last_provider_response || {}), sms_cancellation: evidence },
+  }).eq('id', order.id).eq('provider_request_id', order.provider_request_id)
+  if (evidenceError) throw new Error('Could not save provider cancellation proof; refund needs review')
+  const { data: result, error } = await admin.rpc('cancel_sms_order_and_refund', {
+    p_order_id: order.id, p_reason: metadata.pending_action_type === 'sms_auto_cancel_stale' ? 'staff_auto_cancel_stale' : 'staff_cancelled', p_evidence: evidence,
+    p_actor_user_id: metadata.approved_by || null, p_owner_undelivered_override: false,
   })
-
-  await admin
-    .from('sms_orders')
-    .update({ refunded_at: new Date().toISOString(), refund_amount_ngn: amount, refund_reference: refundRef })
-    .eq('id', order.id)
-    .is('refunded_at', null)
-  await recordSmsRefundRevenueEvents(admin, order, amount, refundRef, reason)
-  return { refunded: true, amount, reference: refundRef }
+  if (error || !result?.success) throw new Error('SMS refund needs review; the original charge was not credited twice')
+  const { data: currentOrder, error: readError } = await admin.from('sms_orders').select('refunded_at,refund_reference').eq('id', order.id).single()
+  if (readError || !currentOrder?.refunded_at) throw new Error('SMS refund result needs review')
+  await recordSmsRefundRevenueEvents(admin, order, amount, currentOrder.refund_reference, reason, result.idempotent_replay === true)
+  return { refunded: true, amount, reference: currentOrder.refund_reference, alreadyRefunded: result.idempotent_replay === true }
 }
 
 async function applySmsPendingAction(admin: any, pendingAction: any) {
@@ -1112,28 +1115,22 @@ async function applySmsPendingAction(admin: any, pendingAction: any) {
     if (error || !order) throw new Error(error?.message || 'SMS order not found')
 
     if (order.refunded_at) return
-    if (SMS_TERMINAL_STATUSES.includes(String(order.status || '').toLowerCase())) {
+    if (String(order.status || '').toLowerCase() === 'completed') {
       throw new Error('Terminal SMS order requires manual refund review')
     }
     if (Array.isArray(order.messages) && order.messages.length > 0) {
       throw new Error('SMS code already received; cancellation requires review')
     }
-    await daisyCancelNumber(String(order.provider_request_id || ''))
-    const { data: cancelled, error: updateError } = await admin
-        .from('sms_orders')
-        .update({ status: 'cancelled', cancelled_at: now })
-        .eq('id', order.id)
-        .in('status', ['pending', 'active', 'waiting'])
-        .is('refunded_at', null)
-        .select('id')
-        .maybeSingle()
-    if (updateError || !cancelled) throw new Error(updateError?.message || 'SMS order changed during cancellation; review required')
+    const savedProof = order.last_provider_response?.sms_cancellation
+    const confirmedResponse = savedProof?.activation_id === String(order.provider_request_id) &&
+      ['ACCESS_CANCEL', 'STATUS_CANCEL'].includes(savedProof?.response) ? savedProof.response : await daisyCancelNumber(String(order.provider_request_id || ''))
 
     await refundSmsOrderWallet(
       admin,
       order,
       `Staff refund for cancelled SMS order: ${order.reference || order.id}`,
       approvalMetadata,
+      confirmedResponse,
     )
     return
   }
@@ -1148,27 +1145,24 @@ async function applySmsPendingAction(admin: any, pendingAction: any) {
     if (error) throw new Error(error.message)
 
     let cancelled = 0
-    for (const order of staleOrders || []) {
+    let reviewCount = 0
+    let failedCount = 0
+    for (const order of (staleOrders || []).slice(0, 50)) {
       if (order.messages && Array.isArray(order.messages) && order.messages.length > 0) continue
+      if (!order.provider_request_id) { reviewCount++; continue }
       try {
-        await daisyCancelNumber(String(order.provider_request_id || ''))
-        const { data: cancelledOrder, error: cancelError } = await admin.from('sms_orders')
-          .update({ status: 'cancelled', cancelled_at: now }).eq('id', order.id)
-          .in('status', ['pending', 'active', 'waiting']).is('refunded_at', null)
-          .select('id').maybeSingle()
-        if (cancelError || !cancelledOrder) continue
+        const confirmedResponse = await daisyCancelNumber(String(order.provider_request_id))
         await refundSmsOrderWallet(
           admin,
           order,
           `Staff refund for stale SMS order: ${order.reference || order.id}`,
           approvalMetadata,
+          confirmedResponse,
         )
         cancelled += 1
-      } catch {
-        // Skip individual failures so one stale order does not block the batch.
-      }
+      } catch { failedCount++ }
     }
-    return { cancelled_count: cancelled }
+    return { cancelled_count: cancelled, review_count: reviewCount, failed_count: failedCount, remaining_count: Math.max(0, (staleOrders || []).length - 50) }
   }
 
   throw new Error('Unsupported SMS action type')

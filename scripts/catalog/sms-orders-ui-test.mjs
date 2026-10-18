@@ -31,7 +31,8 @@ const mocks = {
     const fixture = () => window.__smsFixture;
     function ownedOrder(actor) { return { id: 'owned-' + actor, reference: 'test-' + actor,
       order_type: 'otp', service_name: actor + ' owned SMS', phone_number: null,
-      price_ngn: 200, status: 'completed', messages: [], created_at: '2026-10-01T12:00:00Z' } }
+      price_ngn: 200, status: mode === 'processing_review' ? 'processing' : mode === 'cancelled_refund_review' ? 'cancelled' : 'completed',
+      refunded_at: null, messages: [], created_at: '2026-10-01T12:00:00Z' } }
     export const supabase = { functions: { invoke: async (_name, options) => {
       const action = options.body.action;
       const actor = fixture().userId;
@@ -142,6 +143,21 @@ try {
   await page.getByRole('alert').filter({ hasText: 'SMS order history could not be verified' }).waitFor()
   assert.equal(await order('synthetic-customer').count(), 1, 'Refresh failure hid existing orders')
   process.stdout.write('SMS fixture: refresh failure retained existing orders\n')
+
+  await page.setViewportSize({ width: 390, height: 700 })
+  await load('processing_review')
+  await order('synthetic-customer').waitFor()
+  await page.getByRole('alert').filter({ hasText: 'Number allocation needs review. Do not buy again' }).waitFor()
+  assert.equal(await page.getByRole('button', { name: 'Cancel order' }).count(), 0, 'Unassigned order offered an unusable cancellation')
+  assert.equal(await page.getByText('No code = full refund').count(), 0, 'Unconfirmed refund was promised')
+  assert.equal((await calls()).some(call => call.action === 'cancel_otp'), false, 'Rendered review order triggered a supplier cancellation')
+  process.stdout.write('SMS fixture: unassigned processing order is clearly held for review on mobile\n')
+
+  await load('cancelled_refund_review')
+  await order('synthetic-customer').waitFor()
+  await page.getByText('Refund under review').waitFor()
+  assert.equal(await page.getByRole('button', { name: 'Cancel order' }).count(), 0, 'Terminal unrefunded order offered another cancellation')
+  process.stdout.write('SMS fixture: cancelled order without posted refund shows review\n')
 
   await load('switch_user')
   await page.waitForFunction(() => typeof window.__smsFixture.resolveOld === 'function')

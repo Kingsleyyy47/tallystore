@@ -17,26 +17,35 @@ function load(source, start, end, names, context) {
   return vm.runInNewContext(`${code}\n({ ${names.join(', ')} })`, context)
 }
 
-const staffCancel = load(staff, 'async function daisyCancelNumber(', 'async function updateProductGroupStock(', ['daisyCancelNumber'], {
-  Deno: { env: { get: (name) => name === 'DAISYSMS_API_KEY' ? 'test-key' : '' } },
-  DEFAULT_DAISY_BASE: 'https://provider.test/api',
-  URL,
-  fetch: async () => new Response('ACCESS_READY'),
-}).daisyCancelNumber
-await assert.rejects(staffCancel('123'), /did not confirm cancellation/)
-
-const confirmedStaffCancel = load(staff, 'async function daisyCancelNumber(', 'async function updateProductGroupStock(', ['daisyCancelNumber'], {
-  Deno: { env: { get: (name) => name === 'DAISYSMS_API_KEY' ? 'test-key' : '' } },
-  DEFAULT_DAISY_BASE: 'https://provider.test/api',
-  URL,
-  fetch: async () => new Response('ACCESS_CANCEL'),
-}).daisyCancelNumber
-await confirmedStaffCancel('123')
+function staffCancelFixture(responses, key = 'test-key') {
+  const actions = []
+  const cancel = load(staff, 'async function daisyCancelNumber(', 'async function updateProductGroupStock(', ['daisyCancelNumber'], {
+    Deno: { env: { get: (name) => name === 'DAISYSMS_API_KEY' ? key : '' } },
+    DEFAULT_DAISY_BASE: 'https://provider.test/api',
+    URL, AbortController, setTimeout, clearTimeout, TextDecoder,
+    fetch: async (requestUrl) => {
+      const url = new URL(requestUrl)
+      actions.push([url.searchParams.get('action'), url.searchParams.get('status')])
+      assert.ok(responses.length > 0, 'unexpected supplier request')
+      return new Response(responses.shift())
+    },
+  }).daisyCancelNumber
+  return { cancel, actions }
+}
+const unconfirmedStaff = staffCancelFixture(['STATUS_WAIT_CODE', 'ACCESS_READY'])
+await assert.rejects(unconfirmedStaff.cancel('123'), /did not confirm cancellation/)
+assert.deepEqual(unconfirmedStaff.actions, [['getStatus', null], ['setStatus', '8']])
+const confirmedStaff = staffCancelFixture(['STATUS_WAIT_CODE', 'ACCESS_CANCEL'])
+assert.equal(await confirmedStaff.cancel('123'), 'ACCESS_CANCEL')
+assert.deepEqual(confirmedStaff.actions, [['getStatus', null], ['setStatus', '8']])
+const alreadyCancelledStaff = staffCancelFixture(['STATUS_CANCEL'])
+assert.equal(await alreadyCancelledStaff.cancel('123'), 'STATUS_CANCEL')
+assert.deepEqual(alreadyCancelledStaff.actions, [['getStatus', null]], 'confirmed provider cancellation needs no second request')
 
 const noKeyStaffCancel = load(staff, 'async function daisyCancelNumber(', 'async function updateProductGroupStock(', ['daisyCancelNumber'], {
   Deno: { env: { get: () => '' } },
   DEFAULT_DAISY_BASE: 'https://provider.test/api',
-  URL,
+  URL, AbortController, setTimeout, clearTimeout, TextDecoder,
   fetch: () => { throw new Error('provider call forbidden') },
 }).daisyCancelNumber
 await assert.rejects(noKeyStaffCancel('123'), /requires provider credentials/)
@@ -77,50 +86,76 @@ assert.equal(listResult.data.length, 1)
 assert.equal(listResult.data[0].has_code, true)
 assert.ok(!Object.hasOwn(listResult.data[0], 'messages'), 'SMS staff listing exposed OTP messages')
 assert.ok(!Object.hasOwn(listResult.data[0], 'provider_payload'), 'SMS staff listing exposed provider payload')
-let refundCalls = 0
 let revenueCalls = 0
-
-function makeAdmin(cancelled) {
-  return {
+let refundRevenueCalls = 0
+function makeAdmin({ proofError = false, rpcError = false } = {}) {
+  const events = []
+  const current = { ...order, messages: [], last_provider_response: {} }
+  const admin = {
     from(table) {
       assert.equal(table, 'sms_orders')
       return {
         update(values) {
-          assert.equal(values.status, 'cancelled')
+          assert.deepEqual(Object.keys(values), ['last_provider_response'], 'proof write cannot change order status or wallet')
           return {
             eq() { return this },
-            in() { return this },
-            is() { return this },
-            select() { return this },
-            async maybeSingle() { return { data: cancelled ? { ...order, status: 'cancelled' } : null, error: null } },
+            then(resolve, reject) {
+              events.push('proof')
+              if (!proofError) current.last_provider_response = values.last_provider_response
+              return Promise.resolve({ error: proofError ? { message: 'write failed' } : null }).then(resolve, reject)
+            },
           }
         },
         select() {
           return {
             eq() { return this },
-            async single() { return { data: { ...order, status: 'cancelled' }, error: null } },
+            async single() { return { data: { ...current }, error: null } },
           }
         },
       }
     },
+    async rpc(name, args) {
+      assert.equal(name, 'cancel_sms_order_and_refund')
+      assert.equal(args.p_order_id, order.id)
+      assert.equal(args.p_evidence.response, 'ACCESS_CANCEL')
+      assert.equal(args.p_evidence.activation_id, order.provider_request_id)
+      assert.equal(args.p_owner_undelivered_override, false)
+      assert.equal(current.last_provider_response.sms_cancellation.response, 'ACCESS_CANCEL', 'durable proof must precede atomic refund')
+      events.push('atomic_rpc')
+      if (rpcError) return { data: null, error: { message: 'RPC failed' } }
+      Object.assign(current, { status: 'cancelled', refunded_at: '2026-10-18T00:00:00Z', refund_amount_ngn: 500, refund_reference: 'SMS-REFUND-1' })
+      return { data: { success: true, idempotent_replay: false }, error: null }
+    },
   }
+  return { admin, current, events }
 }
 
 const cancelAndRefund = load(sms, 'async function cancelSmsOrderAndRefund(', '// ── Action handlers', ['cancelSmsOrderAndRefund'], {
   recordRevenueEvent: async () => { revenueCalls++ },
-  refundWallet: async () => { refundCalls++ },
+  recordSmsRefundRevenueEvents: async () => { refundRevenueCalls++ },
+  DaisySmsError: class DaisySmsError extends Error { constructor(code, message) { super(message); this.code = code } },
 }).cancelSmsOrderAndRefund
+const invalidCode = makeAdmin()
 await assert.rejects(
-  cancelAndRefund(makeAdmin(true), { ...order, messages: [{ code: '123456' }] }, 'provider_cancelled', 'refund'),
+  cancelAndRefund(invalidCode.admin, { ...order, messages: [{ code: '123456' }] }, 'ACCESS_CANCEL', 'provider_cancelled', 'refund'),
   /code already received/,
 )
-assert.equal(refundCalls, 0)
-await assert.rejects(cancelAndRefund(makeAdmin(false), order, 'provider_cancelled', 'refund'), /changed during cancellation/)
-assert.equal(refundCalls, 0)
+assert.deepEqual(invalidCode.events, [])
+const proofFailed = makeAdmin({ proofError: true })
+await assert.rejects(cancelAndRefund(proofFailed.admin, order, 'ACCESS_CANCEL', 'provider_cancelled', 'refund'), /confirmation needs review/i)
+assert.deepEqual(proofFailed.events, ['proof'], 'proof failure must not reach financial RPC')
+const rpcFailed = makeAdmin({ rpcError: true })
+await assert.rejects(cancelAndRefund(rpcFailed.admin, order, 'ACCESS_CANCEL', 'provider_cancelled', 'refund'), /refund needs review/i)
+assert.deepEqual(rpcFailed.events, ['proof', 'atomic_rpc'])
+assert.equal(rpcFailed.current.status, 'active', 'RPC failure cannot fake cancelled status')
 assert.equal(revenueCalls, 0)
-await cancelAndRefund(makeAdmin(true), order, 'provider_cancelled', 'refund')
-assert.equal(refundCalls, 1)
+const successful = makeAdmin()
+const refunded = await cancelAndRefund(successful.admin, order, 'ACCESS_CANCEL', 'provider_cancelled', 'refund')
+assert.deepEqual(successful.events, ['proof', 'atomic_rpc'])
+assert.equal(refunded.status, 'cancelled')
+assert.ok(refunded.refunded_at)
 assert.equal(revenueCalls, 1)
+assert.equal(refundRevenueCalls, 1)
 
 let adminRefundCalls = 0
 function adminHandler(providerConfirmed) {
@@ -128,8 +163,11 @@ function adminHandler(providerConfirmed) {
     requireStaffPermission: async () => {},
     TERMINAL_STATUSES: ['completed', 'cancelled', 'expired', 'failed'],
     getDaisyKey: () => 'test-key',
+    savedSmsCancellation: () => null,
+    daisyGetStatus: async () => ({ status: 'waiting' }),
     daisyCancelNumber: async () => ({ cancelled: providerConfirmed, response: providerConfirmed ? 'ACCESS_CANCEL' : 'ACCESS_READY' }),
-    cancelSmsOrderAndRefund: async () => { adminRefundCalls++; return { ...order, status: 'cancelled' } },
+    cancelSmsOrderAndRefund: async () => { adminRefundCalls++; return { ...order, status: 'cancelled', refunded_at: '2026-10-18T00:00:00Z' } },
+    DaisySmsError: class DaisySmsError extends Error { constructor(code, message) { super(message); this.code = code } },
     adminSmsOrderSummary,
     json: (body, status = 200) => ({ body, status }),
   }).handleAdminCancelSmsOrder
@@ -145,9 +183,11 @@ assert.equal(adminRefundCalls, 1)
 
 assert.ok(!sms.includes("reason: 'sync_no_activation'"), 'NO_ACTIVATION must not trigger a sync refund')
 assert.ok(!sms.includes("reason: 'check_status_no_activation'"), 'NO_ACTIVATION must not trigger a customer refund')
+assert.ok(sms.includes("admin.rpc('cancel_sms_order_and_refund'"), 'customer refund must use atomic finance RPC')
+assert.ok(staff.includes("admin.rpc('cancel_sms_order_and_refund'"), 'staff refund must use atomic finance RPC')
 assert.ok(sms.includes(".is('refunded_at', null).select('id').maybeSingle()"), 'SMS webhook must conditionally reject late completion')
 assert.ok(sms.includes('const safeToRefund =') || sms.includes('let safeToRefund ='), 'unknown allocation must have an explicit refund decision')
-assert.ok(sms.includes("if (!safeToRefund) {\n      return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED'"), 'unknown allocation must return review rather than a definite failure')
+assert.match(sms, /if \(!safeToRefund\)\s*\{\s*return json\(\{ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED'/, 'unknown allocation must return review rather than a definite failure')
 assert.ok(sms.includes('...adminSmsOrderSummary(o)'), 'staff order list must use the redacted summary')
 assert.ok(sms.includes('data: adminSmsOrderSummary(cancelled)'), 'staff cancellation result must use the redacted summary')
 for (const [name, source] of [['customer', customerUi], ['admin', adminUi], ['staff', staffUi]]) {
