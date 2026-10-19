@@ -236,7 +236,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const ERCASPAY_BASE_URL = 'https://api.ercaspay.com/api/v1';
+const ERCASPAY_BASE_URL = 'https://api.phoenix-wallet.ercaspay.com/api/v1';
 
 function cleanProviderIdentity(value: unknown) {
   return typeof value === 'string' || typeof value === 'number'
@@ -507,9 +507,10 @@ serve(async (req) => {
     let verifyResult: any;
     try {
       const verifyResponse = await fetch(
-        `${ERCASPAY_BASE_URL}/payment/transaction/verify/${transaction_reference}`,
+        `${ERCASPAY_BASE_URL}/payment/transaction/verify/${encodeURIComponent(transaction_reference)}`,
         {
           method: 'GET',
+          redirect: 'error',
           signal: verifyController.signal,
           headers: {
             'Accept': 'application/json',

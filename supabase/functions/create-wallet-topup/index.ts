@@ -196,7 +196,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const ERCASPAY_BASE_URL = 'https://api.ercaspay.com/api/v1'
+const ERCASPAY_BASE_URL = 'https://api.phoenix-wallet.ercaspay.com/api/v1'
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -373,6 +373,8 @@ serve(async (req) => {
 
     const response = await fetch(`${ERCASPAY_BASE_URL}/payment/initiate`, {
       method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(15000),
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
