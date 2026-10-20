@@ -10,7 +10,7 @@ import { CurrencyProvider } from '@/contexts/CurrencyContext'
 import { ProtectedRoute, PublicRoute } from '@/components/SimpleProtectedRoute'
 import InstallPromptBanner from '@/components/InstallPromptBanner'
 import AnnouncementBanner from '@/components/AnnouncementBanner'
-import MaintenancePage from '@/components/MaintenancePage'
+import CustomerMaintenanceGate from '@/components/CustomerMaintenanceGate'
 import GlobalPaymentChecker from '@/components/GlobalPaymentChecker'
 import LoginWelcomeDialog from '@/components/LoginWelcomeDialog'
 import SupplierWarningDialog from '@/components/SupplierWarningDialog'
@@ -18,10 +18,9 @@ import ChatWidget from '@/components/ChatWidget'
 import MobileBottomNav from '@/components/MobileBottomNav'
 import VisitorTracker from '@/components/VisitorTracker'
 
-// Build-time customer notice; database controls enforce the write pause.
-const MAINTENANCE_MODE = import.meta.env.VITE_MAINTENANCE_MODE === 'true';
-// Local dev bypass: maintenance only shows in production
-const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+// Emergency customer notice. Reopening requires a separately verified release.
+// This UI gate does not replace backend payment/callback and migration controls.
+const CUSTOMER_MAINTENANCE = true;
 
 // Pages
 import Index from "./pages/Index";
@@ -66,12 +65,7 @@ function HomeEntry() {
   return user ? <Navigate to="/dashboard" replace /> : <Index />
 }
 
-const App = () => {
-  // Show maintenance page when enabled (except on local dev)
-  if (MAINTENANCE_MODE && !isLocalDev) {
-    return <MaintenancePage />;
-  }
-
+const StoreApp = () => {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider
@@ -314,4 +308,8 @@ const App = () => {
   );
 };
 
-export default App;
+export default function App() {
+  return CUSTOMER_MAINTENANCE
+    ? <CustomerMaintenanceGate><StoreApp /></CustomerMaintenanceGate>
+    : <StoreApp />;
+}
