@@ -2,6 +2,20 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { VitePWA } from 'vite-plugin-pwa';
+import publicBackend from './deployment/public-backend.json';
+
+// Public browser configuration only. Customer maintenance stays enabled while
+// the destination is verified. Server-side payment callback routing continues
+// to use its existing environment until the financial handover is complete.
+if (publicBackend.projectRef !== 'ktmlojvchkmzcdbjdyjx' ||
+    publicBackend.url !== 'https://ktmlojvchkmzcdbjdyjx.supabase.co' ||
+    publicBackend.mode !== 'maintenance-target-verification') {
+  throw new Error('Unexpected maintenance backend selection');
+}
+const publicKeyClaims = JSON.parse(Buffer.from(publicBackend.anonKey.split('.')[1], 'base64url').toString('utf8'));
+if (publicKeyClaims.role !== 'anon' || publicKeyClaims.ref !== publicBackend.projectRef) {
+  throw new Error('Browser configuration requires the destination public anonymous key');
+}
 
 // Redeploying the same commit with changed environment values is still a new
 // build. Give it a separate asset cache so a busy tab keeps its original chunks.
@@ -13,6 +27,8 @@ const appBuildVersion = `${buildSource.slice(0, 96)}-${buildInstance.slice(0, 64
 export default defineConfig(() => ({
   define: {
     __APP_BUILD_VERSION__: JSON.stringify(appBuildVersion),
+    'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(publicBackend.url),
+    'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(publicBackend.anonKey),
   },
   server: {
     host: "::",
