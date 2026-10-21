@@ -1,226 +1,139 @@
-// api/webhook-istar.ts
-// Vercel serverless function for handling iStar webhooks.
-//
-// iStar fires `order.completed` when stars/premium are delivered and
-// `order.failed` when the order exhausts retries. We match by istar_order_id
-// stored on the telegram_orders row created at purchase time.
-//
-// Signature verification: if a webhook secret is configured in the iStar
-// dashboard, iStar sends X-iStar-Signature = HMAC-SHA256(raw body, secret).
-// Set ISTAR_WEBHOOK_SECRET in Vercel environment variables to enable verification.
-
+// Migration ingress only. Signed raw receipts commit in the Source inbox.
+// No orders, wallet, refunds, provider requests, or Target credentials.
 import crypto from 'crypto'
+const SOURCE_ORIGIN = 'https://dssvvswvqnxanyzfhixf.supabase.co'
+const MAX_BODY_BYTES = 65536
+export const config = {api: {bodyParser: false}}
 
-export const config = {
-  api: {
-    bodyParser: false,
-  },
+export function canonical(value: unknown, depth = 0): unknown {
+  if (depth > 12) throw new Error('INVALID_PAYLOAD')
+  if (Array.isArray(value)) return value.map(item => canonical(item, depth + 1))
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).sort(([a],[b]) => a < b ? -1 : a > b ? 1 : 0)
+    if (entries.some(([key]) => ['__proto__','constructor','prototype'].includes(key))) throw new Error('INVALID_PAYLOAD')
+    return Object.fromEntries(entries.map(([key,item]) => [key,canonical(item,depth + 1)]))
+  }
+  return value
 }
 
-async function readRawBody(req: any): Promise<string> {
-  if (typeof req.body === 'string') return req.body
-  if (Buffer.isBuffer(req.body)) return req.body.toString('utf8')
-
+async function readRawBody(req: any): Promise<Buffer> {
+  const declared = req.headers?.['content-length']
+  if (declared !== undefined && (typeof declared !== 'string' || !/^\d+$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) throw new Error('TOO_LARGE')
+  if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {
+    const raw = Buffer.isBuffer(req.body) ? Buffer.from(req.body) : Buffer.from(req.body, 'utf8')
+    if (raw.length > MAX_BODY_BYTES) {raw.fill(0); throw new Error('TOO_LARGE')}
+    return raw
+  }
+  if (req.body !== undefined && req.body !== null) throw new Error('INVALID_BODY')
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let cancelled = false
   const chunks: Buffer[] = []
+  let bytes = 0
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {cancelled = true; req.pause?.(); reject(new Error('BODY_TIMEOUT'))}, 5000)
+  })
   try {
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-    }
-  } catch {
-    // Some serverless adapters still provide a parsed body instead of a stream.
-  }
-
-  if (chunks.length > 0) return Buffer.concat(chunks).toString('utf8')
-  return ''
+    return await Promise.race([(async () => {
+      for await (const chunk of req) {
+        if (cancelled) throw new Error('BODY_TIMEOUT')
+        const raw = Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk)
+        bytes += raw.length
+        if (bytes > MAX_BODY_BYTES) {raw.fill(0); req.pause?.(); throw new Error('TOO_LARGE')}
+        chunks.push(raw)
+      }
+      if (cancelled) throw new Error('BODY_TIMEOUT')
+      return Buffer.concat(chunks, bytes)
+    })(), timeout])
+  } finally {cancelled = true; clearTimeout(timer); for (const b of chunks) b.fill(0)}
 }
 
-function parsePayload(rawBody: string): Record<string, any> | null {
-  try {
-    const payload = JSON.parse(rawBody)
-    return payload && typeof payload === 'object' && !Array.isArray(payload)
-      ? payload
-      : null
-  } catch {
-    return null
+async function boundedReceipt(upstream: Response): Promise<boolean> {
+  if (upstream.status !== 200 || !upstream.body) {await upstream.body?.cancel(); return false}
+  const chunks: Uint8Array[] = []
+  let n = 0
+  for await (const b of upstream.body as any) {
+    n += b.length
+    if (n > 4096) throw new Error('INVALID_RECEIPT')
+    chunks.push(b)
   }
+  const payload = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(Buffer.concat(chunks)))
+  return !!payload && !Array.isArray(payload) && payload.durable === true && typeof payload.conflict === 'boolean'
 }
 
-function verifySignature(rawBody: string, signature: string | undefined, secret: string): boolean {
-  if (!signature) return false
-  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
-  } catch {
-    return false
+// Parsed JSON cannot prove preservation of a rounded numeric token. Compare
+// each original numeric token to its exact safe integer value; any decimal
+// value outside that narrow contract is retained for review using raw hashes.
+export function hasUnsafeNumericToken(text: string): boolean {
+  const tokens = /"(?:\\.|[^"\\])*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/g
+  for (const match of text.matchAll(tokens)) {
+    const token = match[0]
+    if (token[0] === '"') continue
+    const numeric = Number(token)
+    if (!Number.isSafeInteger(numeric) || token.length > 128) return true
+    const parts = /^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/.exec(token)!
+    const fraction = parts[3] || '', exponent = Number(parts[4] || 0) - fraction.length
+    if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000) return true
+    let coefficient = BigInt(parts[2] + fraction)
+    if (parts[1]) coefficient = -coefficient
+    if (exponent >= 0) coefficient *= 10n ** BigInt(exponent)
+    else {const divisor = 10n ** BigInt(-exponent); if (coefficient % divisor !== 0n) return true; coefficient /= divisor}
+    if (coefficient !== BigInt(numeric)) return true
   }
+  return false
 }
 
 export default async function handler(req: any, res: any) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
-
-  const webhookSecret = process.env.ISTAR_WEBHOOK_SECRET || ''
-  if (!webhookSecret) {
-    console.error('Missing ISTAR_WEBHOOK_SECRET')
-    return res.status(503).json({ error: 'Webhook is not configured' })
+  res.setHeader('Cache-Control', 'no-store')
+  if (req.method !== 'POST') return res.status(405).json({error: 'Method not allowed'})
+  try {if (new URL(req.url || '/api/webhook-istar', 'https://tallystore.org').search) return res.status(400).json({error: 'Invalid webhook request'})}
+  catch {return res.status(400).json({error: 'Invalid webhook request'})}
+  const secret = process.env.ISTAR_WEBHOOK_SECRET || ''
+  if (!secret) return res.status(503).json({error: 'Webhook is not configured'})
+  const signature = req.headers?.['x-istar-signature']
+  if (typeof signature !== 'string' || !/^[a-f0-9]{64}$/.test(signature)) return res.status(401).json({error: 'Invalid webhook signature'})
+  let raw: Buffer
+  try {raw = await readRawBody(req)} catch (e) {
+    const reason = e instanceof Error ? e.message : ''
+    return res.status(reason === 'TOO_LARGE' ? 413 : reason === 'BODY_TIMEOUT' ? 408 : 400).json({error: 'Invalid webhook body'})
   }
-
-  const rawBody = await readRawBody(req)
-
-  const sig = req.headers['x-istar-signature']
-  if (!verifySignature(rawBody, sig, webhookSecret)) {
-    console.warn('iStar webhook signature mismatch')
-    return res.status(401).json({ error: 'Invalid webhook signature' })
-  }
-
-  const payload = parsePayload(rawBody)
-  if (!payload || !['order.completed', 'order.failed'].includes(payload.event_type)) {
-    return res.status(400).json({ error: 'Invalid signed webhook event' })
-  }
-
-  const { createClient } = await import('@supabase/supabase-js')
-  const supabaseUrl = process.env.SUPABASE_URL
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!supabaseUrl || !serviceRoleKey) {
-    console.error('Missing Supabase env vars for iStar webhook')
-    return res.status(500).json({ error: 'Server configuration error' })
-  }
-  const supabase = createClient(supabaseUrl, serviceRoleKey)
-
-  const eventType = payload.event_type
-  const istarOrderId = payload?.order?.id || ''
-
-  console.log('🔔 iStar webhook received:', { eventType, istarOrderId })
-
-  // Always log the raw payload first
-  const { data: logRow } = await supabase.from('istar_webhook_logs').insert({
-    event_type: eventType,
-    istar_order_id: istarOrderId,
-    payload,
-  }).select('id').single()
-
   try {
-    if (!istarOrderId) {
-      await supabase.from('istar_webhook_logs').update({ error_message: 'Missing order id in payload' }).eq('id', logRow?.id)
-      return res.status(200).json({ message: 'No order id — ignored' })
-    }
-
-    // Find our order by istar_order_id
-    const { data: order, error: orderErr } = await supabase
-      .from('telegram_orders')
-      .select('*')
-      .eq('istar_order_id', istarOrderId)
-      .maybeSingle()
-
-    if (orderErr || !order) {
-      console.warn('iStar webhook order reference requires review')
-      await supabase.from('istar_webhook_logs').update({ error_message: 'Order reference not matched' }).eq('id', logRow?.id)
-      return res.status(200).json({ message: 'Order reference not matched' })
-    }
-
-    // ── order.completed ──────────────────────────────────────────────────────
-    if (eventType === 'order.completed') {
-      if (order.status === 'completed') {
-        console.log('✅ Already completed:', istarOrderId)
-        return res.status(200).json({ message: 'Already processed' })
+    const expected = crypto.createHmac('sha256', secret).update(raw).digest()
+    if (!crypto.timingSafeEqual(expected, Buffer.from(signature, 'hex'))) return res.status(401).json({error: 'Invalid webhook signature'})
+    let payload: Record<string, any>, text: string, identity: string, canonicalHash: string
+    try {
+      text = new TextDecoder('utf-8', {fatal: true}).decode(raw)
+      payload = JSON.parse(text)
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !['order.completed','order.failed'].includes(payload.event_type)) throw new Error('INVALID_EVENT')
+      const rawHash = crypto.createHash('sha256').update(raw).digest('hex')
+      const rawId = payload.order && typeof payload.order === 'object' && !Array.isArray(payload.order) ? payload.order.id : null
+      const orderId = typeof rawId === 'string' ? rawId.trim() : typeof rawId === 'number' && Number.isSafeInteger(rawId) ? String(rawId) : ''
+      let review = !orderId || orderId.length > 160 || /[\u0000-\u001f\u007f]/.test(orderId) || hasUnsafeNumericToken(text)
+      if (!review) {
+        try {canonicalHash = crypto.createHash('sha256').update(JSON.stringify(canonical(payload))).digest('hex')}
+        catch {review = true}
       }
-      if (order.status === 'failed' || order.refunded_at) {
-        return res.status(200).json({ message: 'Terminal order needs manual review' })
-      }
-      const { data: completedOrder, error: completionError } = await supabase.from('telegram_orders').update({
-        status: 'completed',
-        completed_at: payload?.completed_at || payload?.occurred_at || new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }).eq('id', order.id)
-        .in('status', ['pending', 'processing'])
-        .is('refunded_at', null)
-        .select('id').maybeSingle()
-      if (completionError) throw new Error('Could not record completed order')
-      if (!completedOrder) return res.status(200).json({ message: 'Order changed; manual review required' })
-      console.log('✅ Telegram order completed:', order.reference)
-      return res.status(200).json({ success: true })
-    }
-
-    // ── order.failed ─────────────────────────────────────────────────────────
-    if (eventType === 'order.failed') {
-      if (order.status === 'completed' || order.refunded_at) {
-        return res.status(200).json({ message: 'Already in terminal state' })
-      }
-      if (order.status === 'failed' && order.error_message !== 'Supplier confirmed order failure') {
-        return res.status(200).json({ message: 'Failed order needs manual review' })
-      }
-      if (order.status !== 'failed') {
-        const { data: failedOrder, error: statusError } = await supabase.from('telegram_orders').update({
-          status: 'failed',
-          error_message: 'Supplier confirmed order failure',
-          updated_at: new Date().toISOString(),
-        }).eq('id', order.id)
-          .in('status', ['pending', 'processing'])
-          .is('refunded_at', null)
-          .select('id').maybeSingle()
-        if (statusError) throw new Error(`Order status update failed: ${statusError.message}`)
-        if (!failedOrder) return res.status(200).json({ message: 'Order changed; manual review required' })
-      }
-
-      // A pending order can fail before its wallet debit. Refund only a
-      // matching completed debit, using the same key as telegram-stars.
-      if (Number(order.price_ngn) > 0) {
-        const originalDebitKey = order.idempotency_key
-          ? `telegram:purchase:${order.idempotency_key}`
-          : `telegram:purchase:${order.reference}`
-        const { data: debit, error: debitError } = await supabase.from('transactions')
-          .select('id, amount, status, type')
-          .eq('user_id', order.user_id)
-          .eq('idempotency_key', originalDebitKey)
-          .maybeSingle()
-        if (debitError) throw new Error(`Debit lookup failed: ${debitError.message}`)
-        if (!debit || debit.type !== 'purchase' || debit.status !== 'completed' ||
-            Math.round(Math.abs(Number(debit.amount)) * 100) !== Math.round(Number(order.price_ngn) * 100)) {
-          await supabase.from('istar_webhook_logs').update({ error_message: 'No matching completed wallet debit; refund held for review' }).eq('id', logRow?.id)
-          return res.status(200).json({ message: 'Refund held for review' })
-        }
-        const refundRef = `REFUND-${order.reference}`
-        const { data: refundResult, error: refundError } = await supabase.rpc('apply_wallet_transaction', {
-          p_user_id: order.user_id,
-          p_type: 'refund',
-          p_amount: Number(order.price_ngn),
-          p_reference: refundRef,
-          p_description: `Refund: Telegram ${order.order_type} order failed`,
-          p_idempotency_key: `telegram:refund:${order.id}`,
-          p_metadata: {
-            source: 'webhook-istar',
-            source_order_id: order.id,
-            source_order_table: 'telegram_orders',
-            order_id: order.id,
-            original_reference: order.reference,
-            source_debit_idempotency_key: originalDebitKey,
-            original_purchase_idempotency_key: originalDebitKey,
-          },
-          p_currency: 'NGN',
-          p_balance_type: 'wallet',
-          p_external_payment_id: null,
-          p_created_by: null,
+      // The inbox's existing review: contract prevents normal settlement claims.
+      // Different unsafe numeric/identity bodies cannot collapse through JS rounding.
+      if (review) {identity = 'review:istar:' + rawHash; canonicalHash = rawHash}
+      else identity = orderId + ':' + payload.event_type
+    } catch {return res.status(400).json({error: 'Invalid signed webhook event'})}
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+    if (process.env.SUPABASE_URL !== SOURCE_ORIGIN || key.length < 30) return res.status(503).json({error: 'Webhook capture is not configured'})
+    // Embed the already-validated original JSON object text. JSON numbers retain
+    // their exact raw value for the database raw-body/payload binding check.
+    const rpcBody = '{"p_provider":"istar","p_identity":' + JSON.stringify(identity) + ',"p_raw":' + JSON.stringify('\\x' + raw.toString('hex')) + ',"p_payload":' + text + ',"p_canonical_hash":' + JSON.stringify(canonicalHash) + ',"p_proof":' + JSON.stringify({contract: 'hmac-sha256-raw', signature}) + ',"p_ingress_project":"dssvvswvqnxanyzfhixf"}'
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const accepted = await Promise.race([(async () => {
+        const response = await fetch(SOURCE_ORIGIN + '/rest/v1/rpc/migration_enqueue_verified', {
+          method: 'POST', redirect: 'error', credentials: 'omit', cache: 'no-store', signal: controller.signal,
+          headers: {'Content-Type': 'application/json', Accept: 'application/json', Authorization: 'Bearer ' + key, apikey: key}, body: rpcBody,
         })
-        if (refundError || !refundResult?.success) {
-          throw new Error(`Refund failed: ${refundError?.message || refundResult?.error || 'unknown error'}`)
-        }
-        const { error: orderError } = await supabase.from('telegram_orders').update({
-          refunded_at: new Date().toISOString(),
-          refund_amount_ngn: order.price_ngn,
-          refund_reference: refundRef,
-        }).eq('id', order.id)
-        if (orderError) throw new Error(`Refund recorded but order update failed: ${orderError.message}`)
-        console.log('💸 Refunded', order.price_ngn, 'NGN to user', order.user_id)
-      }
-      return res.status(200).json({ success: true })
-    }
-
-    // Unknown event — log and return 200
-    await supabase.from('istar_webhook_logs').update({ error_message: 'Unsupported event type' }).eq('id', logRow?.id)
-    return res.status(200).json({ message: 'Unsupported event type' })
-
-  } catch {
-    console.error('iStar webhook processing failed')
-    await supabase.from('istar_webhook_logs').update({ error_message: 'Webhook processing failed' }).eq('id', logRow?.id)
-    return res.status(500).json({ error: 'Webhook processing failed' })
-  }
+        return await boundedReceipt(response)
+      })(), new Promise<never>((_, reject) => {timer = setTimeout(() => {controller.abort(); reject(new Error('CAPTURE_TIMEOUT'))}, 4000)})])
+      return accepted ? res.status(202).json({accepted: true}) : res.status(503).json({error: 'Webhook capture unavailable'})
+    } catch {return res.status(502).json({error: 'Webhook capture unavailable'})}
+    finally {clearTimeout(timer); controller.abort()}
+  } finally {raw.fill(0)}
 }
