@@ -1,115 +1,46 @@
-// api/webhook-pocketfi.ts
-// Tallystore-domain bridge for PocketFi webhooks.
-//
-// The real wallet-crediting logic lives in the Supabase Edge Function:
-//   webhook-pocketfi
-//
-// Keep this Vercel route as a thin proxy so PocketFi can use
-// https://tallystore.org/api/webhook-pocketfi without drifting from the
-// hardened Supabase implementation.
-
-// Use the same project selection as the deployed site during migration.
-// Provider credentials and wallet settlement stay inside Supabase.
-function pocketfiEdgeUrl(): string | null {
-  const origin = process.env.VITE_SUPABASE_URL
-  if (!['https://dssvvswvqnxanyzfhixf.supabase.co',
-    'https://ktmlojvchkmzcdbjdyjx.supabase.co'].includes(origin || '')) return null
-  return `${origin}/functions/v1/webhook-pocketfi`
-}
-
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-}
-
-function copyHeader(req: any, name: string) {
-  const value = req.headers?.[name] || req.headers?.[name.toLowerCase()]
-  return Array.isArray(value) ? value[0] : value
-}
-
-async function readRawBody(req: any): Promise<string> {
-  if (typeof req.body === 'string') return req.body
-  if (Buffer.isBuffer(req.body)) return req.body.toString('utf8')
-
-  const chunks: Buffer[] = []
+// Preserve provider-signed bytes. Provider keys and wallet settlement stay in Supabase.
+const TARGET = 'https://ktmlojvchkmzcdbjdyjx.supabase.co/functions/v1/webhook-pocketfi'
+const VERIFICATION_HEADERS = ['authorization', 'pocketfi-signature', 'http_pocketfi_signature',
+  'x-pocketfi-signature', 'x-webhook-signature', 'x-pocketfi-webhook-secret', 'x-webhook-secret']
+class BodyLimit extends Error {}
+async function boundedBytes(body: ReadableStream<Uint8Array> | null, limit: number, signal: AbortSignal) {
+  if (!body || signal.aborted) throw new Error('BODY_UNAVAILABLE')
+  const reader = body.getReader(), chunks: Uint8Array[] = []
+  let size = 0
+  const abort = () => {void reader.cancel().catch(() => {})}
+  signal.addEventListener('abort', abort, {once: true})
   try {
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-    }
-  } catch {
-    // Some serverless adapters still provide req.body instead of a stream.
-  }
-
-  if (chunks.length > 0) return Buffer.concat(chunks).toString('utf8')
-  return req.body ? JSON.stringify(req.body) : ''
+    for (;;) {const part = await reader.read(); if (part.done) break; size += part.value.byteLength
+      if (size > limit) throw new BodyLimit(); chunks.push(part.value)}
+    if (signal.aborted) throw new Error('BODY_TIMEOUT')
+    const bytes = new Uint8Array(size); let offset = 0
+    for (const chunk of chunks) {bytes.set(chunk, offset); offset += chunk.byteLength}
+    return bytes
+  } finally {signal.removeEventListener('abort', abort); void reader.cancel().catch(() => {}); try {reader.releaseLock()} catch {}}
 }
-
-export default async function handler(req: any, res: any) {
-  res.setHeader('Cache-Control', 'no-store')
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' })
-  }
-
-  const edgeUrl = pocketfiEdgeUrl()
-  if (!edgeUrl) return res.status(503).json({ error: 'Webhook project is not configured' })
-
-  const body = await readRawBody(req)
-  const requestUrl = new URL(req.url || '/api/webhook-pocketfi', 'https://tallystore.org')
-  if (requestUrl.searchParams.has('token')) {
-    return res.status(400).json({ error: 'Webhook secrets must be sent in headers' })
-  }
-
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    'Content-Type': copyHeader(req, 'content-type') || 'application/json',
-  }
-
-  for (const name of [
-    'authorization',
-    'pocketfi-signature',
-    'http_pocketfi_signature',
-    'x-pocketfi-signature',
-    'x-webhook-signature',
-    'x-pocketfi-webhook-secret',
-    'x-webhook-secret',
-  ]) {
-    const value = copyHeader(req, name)
-    if (value) headers[name] = String(value)
-  }
-
-  const hasVerificationHeader = Boolean(
-    headers.authorization ||
-      headers['pocketfi-signature'] ||
-      headers['http_pocketfi_signature'] ||
-      headers['x-pocketfi-signature'] ||
-      headers['x-webhook-signature'] ||
-      headers['x-pocketfi-webhook-secret'] ||
-      headers['x-webhook-secret'],
-  )
-
-  if (!hasVerificationHeader) {
-    return res.status(401).json({ error: 'Missing PocketFi webhook verification header' })
-  }
-
-  try {
-    const upstream = await fetch(edgeUrl, {
-      method: 'POST',
-      headers,
-      body,
-      redirect: 'error',
-      signal: AbortSignal.timeout(25000),
-    })
-    res.status(upstream.status)
-    if (!upstream.ok) {
-      return res.json({ error: 'PocketFi webhook verification or processing failed' })
-    }
-
-    const text = await upstream.text()
-    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
-    return res.send(text)
-  } catch {
-    console.error('PocketFi webhook bridge failed')
-    return res.status(502).json({ error: 'PocketFi webhook bridge unavailable' })
+export function createPocketfiProxy(transport: typeof fetch = fetch, timeoutMs = 20000) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 20000) throw new Error('INVALID_TIMEOUT')
+  return async function proxy(request: Request): Promise<Response> {
+    const json = (value: unknown, status: number) => Response.json(value, {status, headers: {'Cache-Control': 'no-store'}})
+    if (request.method !== 'POST') return json({error: 'Method not allowed'}, 405)
+    if (new URL(request.url).searchParams.has('token')) return json({error: 'Webhook secrets must be sent in headers'}, 400)
+    const headers = new Headers({'Accept': 'application/json', 'Content-Type': request.headers.get('content-type') || 'application/json'})
+    for (const name of VERIFICATION_HEADERS) {const value = request.headers.get(name); if (value) headers.set(name, value)}
+    if (!VERIFICATION_HEADERS.some(name => headers.has(name))) return json({error: 'Missing PocketFi verification header'}, 401)
+    const length = request.headers.get('content-length')
+    if (length !== null && (!/^\d+$/.test(length) || Number(length) > 65536)) return json({error: 'Webhook body is too large'}, 413)
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs)
+    let raw: Uint8Array | undefined
+    try {
+      raw = await boundedBytes(request.body, 65536, controller.signal)
+      if (!raw.byteLength) return json({error: 'Webhook body is required'}, 400)
+      const upstream = await transport(TARGET, {method: 'POST', headers, body: raw, redirect: 'error', signal: controller.signal})
+      if (!upstream.ok) {void upstream.body?.cancel().catch(() => {}); return json({error: 'PocketFi webhook verification or processing failed'}, upstream.status)}
+      const response = await boundedBytes(upstream.body, 32768, controller.signal)
+      return new Response(response, {status: upstream.status, headers: {'Content-Type': upstream.headers.get('content-type') || 'application/json', 'Cache-Control': 'no-store'}})
+    } catch (error) {return json({error: 'PocketFi webhook bridge unavailable'}, error instanceof BodyLimit && !raw ? 413 : 502)}
+    finally {clearTimeout(timer); controller.abort(); raw?.fill(0)}
   }
 }
+// Web Standard entry keeps the original stream even for application/json.
+export default {fetch: createPocketfiProxy()}
