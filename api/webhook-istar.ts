@@ -3,7 +3,7 @@
 import crypto from 'crypto'
 const SOURCE_ORIGIN = 'https://dssvvswvqnxanyzfhixf.supabase.co'
 const MAX_BODY_BYTES = 65536
-export const config = {api: {bodyParser: false}}
+// Web Standard fetch entry bypasses the legacy parsed req.body helper.
 
 export function canonical(value: unknown, depth = 0): unknown {
   if (depth > 12) throw new Error('INVALID_PAYLOAD')
@@ -82,7 +82,7 @@ export function hasUnsafeNumericToken(text: string): boolean {
   return false
 }
 
-export default async function handler(req: any, res: any) {
+export async function handler(req: any, res: any) {
   res.setHeader('Cache-Control', 'no-store')
   if (req.method !== 'POST') return res.status(405).json({error: 'Method not allowed'})
   try {if (new URL(req.url || '/api/webhook-istar', 'https://tallystore.org').search) return res.status(400).json({error: 'Invalid webhook request'})}
@@ -136,4 +136,36 @@ export default async function handler(req: any, res: any) {
     } catch {return res.status(502).json({error: 'Webhook capture unavailable'})}
     finally {clearTimeout(timer); controller.abort()}
   } finally {raw.fill(0)}
+}
+
+// Vercel's Web Standard entry receives the original byte stream for JSON as
+// well as text bodies. Never reconstruct signed bytes from a parsed object.
+export default {
+  async fetch(request: Request): Promise<Response> {
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    const req = {
+      method: request.method,
+      url: request.url,
+      headers: Object.fromEntries(request.headers),
+      pause() {if (reader) void reader.cancel().catch(() => {})},
+      async *[Symbol.asyncIterator]() {
+        if (!request.body) return
+        reader = request.body.getReader()
+        try {
+          for (;;) {const part = await reader.read(); if (part.done) break; yield part.value}
+        } finally {
+          void reader.cancel().catch(() => {})
+          try {reader.releaseLock()} catch { /* cancellation settles pending reads */ }
+        }
+      },
+    }
+    let status = 200
+    const headers = new Headers()
+    const res = {
+      setHeader(name: string, value: string) {headers.set(name, value)},
+      status(code: number) {status = code; return this},
+      json(body: unknown) {return Response.json(body, {status, headers})},
+    }
+    return await handler(req, res)
+  },
 }
