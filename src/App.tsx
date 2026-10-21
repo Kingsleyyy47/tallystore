@@ -20,7 +20,7 @@ import VisitorTracker from '@/components/VisitorTracker'
 
 // Emergency customer notice. Reopening requires a separately verified release.
 // This UI gate does not replace backend payment/callback and migration controls.
-const CUSTOMER_MAINTENANCE = true;
+const CUSTOMER_MAINTENANCE = false;
 
 // Pages
 import Index from "./pages/Index";
