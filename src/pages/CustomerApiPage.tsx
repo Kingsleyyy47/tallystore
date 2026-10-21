@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/SimpleAuth'
 import { customerApiRequest, type CustomerApiKey, type CustomerApiOverview, type CustomerApiSection } from '@/lib/customerApi'
 
 const labels: Record<CustomerApiSection, string> = {
-  products: 'Products', sms: 'SMS', social_boost: 'Social Boost', airtime: 'International Airtime',
+  products: 'Products', sms: 'SMS', social_boost: 'Social Boost', airtime: 'International Airtime', giftcards: 'Gift Cards', telegram: 'Telegram',
 }
 
 export default function CustomerApiPage() {
@@ -88,8 +88,13 @@ function CustomerApiAccount({ userId }: { userId: string | null }) {
     <NavbarAuth />
     <main className="mx-auto min-h-[70vh] max-w-4xl px-4 py-10 text-foreground">
       <Link to="/profile" className="text-sm text-primary hover:underline">← Back to profile</Link>
-      <h1 className="mt-5 text-3xl font-bold">Developer API keys</h1>
+      <h1 className="mt-5 text-3xl font-bold">API Access</h1>
       <p className="mt-2 text-muted-foreground">Create separate keys for the services available to your account. Purchases use your verified TallyStore wallet and the current service price.</p>
+      <section className="mt-6 rounded-xl border bg-muted/30 p-4">
+        <h2 className="font-semibold">API base URL</h2>
+        <code className="mt-2 block break-all text-sm">{import.meta.env.VITE_SUPABASE_URL}/functions/v1/customer-api</code>
+        <Button type="button" variant="outline" className="mt-3" onClick={() => void navigator.clipboard.writeText(import.meta.env.VITE_SUPABASE_URL + '/functions/v1/customer-api')}>Copy base URL</Button>
+      </section>
       {error && <p role="alert" className="mt-5 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
       {newKey && <section className="mt-6 rounded-xl border border-primary bg-primary/5 p-5">
         <h2 className="font-semibold">Copy your new key now</h2>
@@ -135,9 +140,12 @@ function CustomerApiAccount({ userId }: { userId: string | null }) {
       </section>
       <section className="mt-8 text-sm text-muted-foreground">
         <h2 className="font-semibold text-foreground">API endpoints</h2>
-        <p className="mt-2">Send your key as <code>Authorization: Bearer YOUR_KEY</code>. Products, SMS, and Social Boost have <code>/v1/catalogue?section=products</code>; replace the section with the matching key’s service. Every section has <code>/v1/wallet?section=products</code> and <code>/v1/orders?section=products</code> with the same section substitution.</p>
+        <p className="mt-2">Send your key as <code>Authorization: Bearer YOUR_KEY</code>. Products, SMS, Social Boost, Gift Cards, and Telegram have <code>/v1/catalogue?section=products</code>; replace the section with the matching key’s service. Every section has <code>/v1/wallet?section=products</code> and <code>/v1/orders?section=products</code> with the same section substitution.</p>
         <p className="mt-2">For a product total, call <code>/v1/quote?section=products&amp;product_group_id=UUID&amp;quantity=1</code>. It includes your Tally Circle discount when eligible. Create an order with <code>POST /v1/purchases</code>, the quote’s <code>expected_amount_ngn</code>, and a unique idempotency key. Retrieve delivered credentials with <code>GET /v1/orders/ORDER_UUID?section=products</code>.</p>
+        <p className="mt-2">SMS uses an <code>sms</code> key. Send your owned order’s <code>order_id</code> and <code>section: "sms"</code> to <code>POST /v1/sms/status</code> for the latest code or <code>POST /v1/sms/cancel</code> to request cancellation. Refunds require provider confirmation. These actions do not buy another number.</p>
         <p className="mt-2">International Airtime uses an <code>airtime</code> key and JSON POST requests to <code>/v1/airtime/check-phone</code> and <code>/v1/airtime/quote</code>. Pass the server quote’s total to <code>POST /v1/purchases</code>; use <code>/v1/airtime/status</code> to check an owned order. The phone number belongs in the request body.</p>
+        <p className="mt-2">Gift Cards use a <code>giftcards</code> key. Get denominations from <code>/v1/giftcards/details</code>, then POST the product, package, value, quantity, and a unique <code>quote_request_id</code> to <code>/v1/giftcards/quote</code>. Purchase before expiry using its <code>quote_id</code> and quoted <code>amount_ngn</code> as <code>expected_amount_ngn</code>. Retry uncertain requests with the same IDs and selection. Check an owned order with <code>/v1/giftcards/status</code>.</p>
+        <p className="mt-2">Telegram uses a <code>telegram</code> key. Get Stars quantities and available Premium plans from <code>/v1/catalogue?section=telegram</code>. Send <code>product_type</code> and either <code>quantity</code> for Stars or <code>product_id</code> for Premium to <code>POST /v1/telegram/quote</code>. Purchase with the quote’s <code>price_ngn</code> as <code>expected_amount_ngn</code>, a Telegram username, and a unique idempotency key. Use <code>/v1/telegram/status</code> with your order ID to check delivery.</p>
       </section>
     </main>
     <Footer />

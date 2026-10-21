@@ -36,6 +36,8 @@ const PaymentCallbackPage = lazy(() => import('@/pages/PaymentCallbackPage'))
 const PaymentSuccessPage = lazy(() => import('@/pages/PaymentSuccessPage'))
 const WalletPage = lazy(() => import('@/pages/WalletPage'))
 const Dashboard = lazy(() => import('@/pages/Dashboard'))
+const CustomerApiPage = lazy(() => import('@/pages/CustomerApiPage'))
+const ReferralsPage = lazy(() => import('@/pages/ReferralsPage'))
 const UpcomingFeaturePage = lazy(() => import('@/pages/UpcomingFeaturePage'))
 const CryptoExchange = lazy(() => import('@/pages/CryptoExchange'))
 const CryptoHistory = lazy(() => import('@/pages/CryptoHistory'))
@@ -124,7 +126,7 @@ const StoreApp = () => {
               {/* Auth callback for OAuth - not needed for email/password auth */}
 
               {/* Protected Routes - require authentication */}
-              <Route path="/developer-api" element={<ProtectedRoute requireRole="user"><UpcomingFeaturePage feature="api" /></ProtectedRoute>} />
+              <Route path="/developer-api" element={<ProtectedRoute requireRole="user"><CustomerApiPage /></ProtectedRoute>} />
               <Route
                 path="/dashboard"
                 element={
@@ -169,7 +171,7 @@ const StoreApp = () => {
                 path="/referrals"
                 element={
                   <ProtectedRoute requireRole="user">
-                    <UpcomingFeaturePage feature="circle" />
+                    <ReferralsPage />
                   </ProtectedRoute>
                 }
               />

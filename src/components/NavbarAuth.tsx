@@ -28,7 +28,7 @@ const navigation = [
   { label: 'Social Boost', to: '/social-boost', icon: Rocket },
   { label: 'Telegram', to: '/telegram-stars', icon: Star },
   { label: 'Travel & Visa', to: '/travel-visa', icon: Plane },
-  { label: 'Tally Circle', to: null, icon: UsersRound },
+  { label: 'Tally Circle', to: '/referrals', icon: UsersRound },
   { label: 'Help Centre', to: '/support', icon: LifeBuoy },
 ] as const
 
@@ -183,7 +183,7 @@ export default function Navbar() {
                       <DropdownMenuItem asChild className={accountItemClass}><Link to="/register"><Sparkles className="h-4 w-4" />Create account</Link></DropdownMenuItem>
                     </>
                   )}
-                  <DropdownMenuItem disabled className={accountItemClass}><Rocket className="h-4 w-4" />API Access<span className="ml-auto text-[10px]">Coming soon</span></DropdownMenuItem>
+                  <DropdownMenuItem asChild className={accountItemClass}><Link to="/developer-api"><Rocket className="h-4 w-4" />API Access</Link></DropdownMenuItem>
                   {verifiedRole && (isAdmin || isStaff) && (
                     <>
                       <DropdownMenuSeparator />

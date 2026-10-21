@@ -160,7 +160,7 @@ export default function ReferralsPage() {
                   <Gift className="mb-3 h-5 w-5 text-primary" />
                   <p className="text-sm text-muted-foreground">Tally Circle status</p>
                   <p className="text-xl font-bold">{status.is_member ? 'Unlocked' : 'In progress'}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{status.discount_percent}% off products</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{status.is_member ? `${status.discount_percent}% off products` : 'Unlock 3% off products'}</p>
                 </CardContent></Card>
               </div>
             )}
@@ -174,7 +174,7 @@ export default function ReferralsPage() {
                   <p className="text-sm text-muted-foreground">
                     {status.is_member
                       ? `You have qualified for the ${status.discount_percent}% product discount.`
-                      : `${status.required_referrals - qualified} more qualified ${status.required_referrals - qualified === 1 ? 'referral' : 'referrals'} to unlock ${status.discount_percent}% off products.`}
+                      : `${status.required_referrals - qualified} more qualified ${status.required_referrals - qualified === 1 ? 'referral' : 'referrals'} to unlock 3% off products.`}
                   </p>
                   <p className="text-sm text-muted-foreground">
                     Each person counts once their cumulative provider-verified deposits reach ₦{status.minimum_verified_topup_ngn.toLocaleString()}.
