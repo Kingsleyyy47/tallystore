@@ -332,12 +332,13 @@ class DaisySmsError extends Error {
   }
 }
 
-async function daisyGet(apiKey: string, params: Record<string, string>): Promise<string> {
-  const { text } = await daisyRequest(apiKey, params)
+async function daisyGet(apiKey: string, params: Record<string, string>, timeoutMs = 12_000): Promise<string> {
+  const { text } = await daisyRequest(apiKey, params, timeoutMs)
   return text
 }
 
-async function daisyRequest(apiKey: string, params: Record<string, string>): Promise<{ text: string; headers: Headers }> {
+async function daisyRequest(apiKey: string, params: Record<string, string>, timeoutMs = 12_000): Promise<{ text: string; headers: Headers }> {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 12_000) throw new DaisySmsError('INVALID_RESPONSE', 'SMS service deadline is invalid')
   const url = new URL(Deno.env.get('DAISYSMS_BASE_URL') || DEFAULT_DAISY_BASE)
   url.searchParams.set('api_key', apiKey)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
@@ -348,12 +349,16 @@ async function daisyRequest(apiKey: string, params: Record<string, string>): Pro
     timer = setTimeout(() => {
       controller.abort()
       reject(new DaisySmsError('TIMEOUT', 'SMS service request timed out'))
-    }, 12_000)
+    }, timeoutMs)
   })
   try {
     const res = await Promise.race([fetch(url.toString(), {
       signal: controller.signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
     }), timeout])
+    if (res.status === 429) {
+      void res.body?.cancel().catch(() => undefined)
+      throw new DaisySmsError('RATE_LIMIT_EXCEEDED', 'SMS requests are temporarily limited')
+    }
     if (res.redirected || !res.body) throw new DaisySmsError('INVALID_RESPONSE', 'SMS service response was invalid')
     const declaredLength = res.headers.get('content-length')
     if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > 262_144) {
@@ -609,6 +614,7 @@ async function daisyGetNumber(apiKey: string, serviceCode: string, maxPriceUsd?:
   const params: Record<string, string> = { action: 'getNumber', service: serviceCode }
   if (maxPriceUsd !== undefined) params.max_price = maxPriceUsd.toFixed(4)
   const { text, headers } = await daisyRequest(apiKey, params)
+  if (text === 'RATE_LIMIT_EXCEEDED') throw new DaisySmsError('RATE_LIMIT_EXCEEDED', 'SMS allocation outcome needs review after rate limiting')
   if (text === 'NO_NUMBERS') throw new DaisySmsError('NO_NUMBERS', 'No numbers available for this service right now.')
   if (text === 'MAX_PRICE_EXCEEDED') throw new DaisySmsError('MAX_PRICE_EXCEEDED', 'Service price has changed. Please try again.')
   if (text === 'NO_MONEY') throw new DaisySmsError('NO_MONEY', 'SMS purchases are temporarily unavailable.')
@@ -629,8 +635,9 @@ async function daisyGetNumber(apiKey: string, serviceCode: string, maxPriceUsd?:
 
 type DaisyStatus = { status: 'ok'; code: string } | { status: 'waiting' } | { status: 'cancelled' }
 
-async function daisyGetStatus(apiKey: string, activationId: string): Promise<DaisyStatus> {
-  const text = await daisyGet(apiKey, { action: 'getStatus', id: activationId })
+async function daisyGetStatus(apiKey: string, activationId: string, timeoutMs = 12_000): Promise<DaisyStatus> {
+  const text = await daisyGet(apiKey, { action: 'getStatus', id: activationId }, timeoutMs)
+  if (text === 'RATE_LIMIT_EXCEEDED') throw new DaisySmsError('RATE_LIMIT_EXCEEDED', 'SMS status checks are temporarily limited')
   if (text === 'STATUS_WAIT_CODE' || text === 'STATUS_WAITING') return { status: 'waiting' }
   if (text === 'STATUS_CANCEL') return { status: 'cancelled' }
   if (text === 'NO_ACTIVATION') throw new DaisySmsError('NO_ACTIVATION', 'Activation not found.')
@@ -715,6 +722,7 @@ function friendlyError(error: unknown): string {
       TOO_MANY_ACTIVE_RENTALS: 'Too many active SMS orders. Cancel one first.',
       BAD_KEY: 'SMS service is temporarily unavailable.',
       NO_ACTIVATION: 'This SMS order was not found.',
+      RATE_LIMIT_EXCEEDED: 'Please wait a moment before checking this SMS order again.',
     }
     return map[error.code] || 'SMS service is temporarily unavailable.'
   }
@@ -1272,7 +1280,7 @@ function smsOtpOrdersEnabled() {
   return String(Deno.env.get('SMS_OTP_ENABLED') || '').trim().toLowerCase() === 'true'
 }
 
-async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, order: any) {
+async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, order: any, readTimeoutMs = 12_000) {
   if (!order || order.order_type !== 'otp') return order
   const saved = savedSmsCancellation(order)
   if (saved && !order.refunded_at && order.status !== 'completed') {
@@ -1284,7 +1292,7 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
 
   let result: DaisyStatus
   try {
-    result = await daisyGetStatus(apiKey, activationId)
+    result = await daisyGetStatus(apiKey, activationId, readTimeoutMs)
   } catch (e: any) {
     if (e?.code === 'NO_ACTIVATION') return order
     throw e
@@ -1540,6 +1548,48 @@ async function handleAdminSetSmsRounding(admin: SupabaseAdmin, userId: string, b
   return json({ success: true, round_to_nearest_10: body.round_to_nearest_10 })
 }
 
+// Automatic history refreshes admit one supplier read at a time. Rotate the
+// starting row every poll period so an old/slow row cannot starve the rest.
+// Confirmed local refund recovery does not consume the supplier-read budget.
+async function reconcileSmsOrdersBounded(admin: SupabaseAdmin, apiKey: string, orders: any[], cancelOnly = false) {
+  const unique = [...new Map(orders.filter(Boolean).map(order => [order.id, order])).values()]
+  const updated = new Map(unique.map(order => [order.id, order]))
+  for (const order of unique) {
+    if (order.refunded_at || order.status === 'completed' || !savedSmsCancellation(order)) continue
+    try {
+      updated.set(order.id, await reconcileOtpOrderStatus(admin, apiKey, order))
+    } catch { /* Keep confirmed recovery visible for a later safe retry. */ }
+  }
+  const eligible = unique.filter(order => order.order_type === 'otp' && order.provider_request_id
+    && !TERMINAL_STATUSES.includes(updated.get(order.id)?.status)
+    && !savedSmsCancellation(updated.get(order.id)))
+  const started = Date.now(), budgetMs = 8_000
+  const startIndex = eligible.length ? Math.floor(started / 30_000) % eligible.length : 0
+  let checked = 0, throttled = false
+  for (let index = 0; index < Math.min(10, eligible.length); index++) {
+    const remaining = budgetMs - (Date.now() - started)
+    if (remaining <= 0) break
+    const order = eligible[(startIndex + index) % eligible.length]
+    const readTimeoutMs = Math.min(3_000, remaining)
+    checked++
+    try {
+      if (cancelOnly) {
+        const status = await daisyGetStatus(apiKey, order.provider_request_id, readTimeoutMs)
+        if (status.status === 'cancelled') updated.set(order.id, await cancelSmsOrderAndRefund(admin, order, 'STATUS_CANCEL', 'sync_cancelled', `Refund for cancelled SMS order: ${order.reference}`))
+      } else {
+        updated.set(order.id, await reconcileOtpOrderStatus(admin, apiKey, order, readTimeoutMs))
+      }
+    } catch (error) {
+      if (error instanceof DaisySmsError && error.code === 'RATE_LIMIT_EXCEEDED') { throttled = true; break }
+      // Do not expose supplier response bodies or treat an error as delivery,
+      // cancellation or permission to return money.
+    }
+    const pauseMs = Math.min(250, budgetMs - (Date.now() - started))
+    if (pauseMs > 0 && index + 1 < Math.min(10, eligible.length)) await new Promise(resolve => setTimeout(resolve, pauseMs))
+  }
+  return { orders: orders.map(order => updated.get(order.id) || order), checked, throttled }
+}
+
 async function handleOrders(admin: SupabaseAdmin, userId: string) {
   const key = getDaisyKey()
   const { data, error } = await admin.from('sms_orders').select('*').eq('user_id', userId)
@@ -1549,14 +1599,9 @@ async function handleOrders(admin: SupabaseAdmin, userId: string) {
   const orders = data || []
   if (!key) return json({ success: true, data: orders.map(publicSmsOrder) })
 
-  const reconciled = await Promise.all(
-    orders.map((order: any) => reconcileOtpOrderStatus(admin, key, order).catch((err) => {
-      console.warn('Failed to reconcile SMS order:', err instanceof Error ? err.message : 'Unknown error')
-      return order
-    })),
-  )
-
-  return json({ success: true, data: reconciled.map(publicSmsOrder) })
+  const reconciled = await reconcileSmsOrdersBounded(admin, key, orders)
+  return json({ success: true, data: reconciled.orders.map(publicSmsOrder),
+    status_refresh: { checked: reconciled.checked, throttled: reconciled.throttled } })
 }
 
 async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>, req: Request) {
@@ -2169,21 +2214,10 @@ async function handleSyncCancelled(admin: SupabaseAdmin, userId: string) {
     return json({ success: true, synced: 0, cancelled: [] })
   }
 
-  const cancelledRefs: string[] = []
-
-  await Promise.all(activeOrders.map(async (order: any) => {
-    try {
-      const daisyStatus = await daisyGetStatus(key, order.provider_request_id)
-      if (daisyStatus.status === 'cancelled') {
-        await cancelSmsOrderAndRefund(admin, order, 'STATUS_CANCEL', 'sync_cancelled', `Refund for cancelled SMS order: ${order.reference}`)
-        cancelledRefs.push(order.reference)
-      }
-    } catch {
-      // An unknown provider outcome, including NO_ACTIVATION, needs review.
-    }
-  }))
-
-  return json({ success: true, synced: activeOrders.length, cancelled: cancelledRefs })
+  const refreshed = await reconcileSmsOrdersBounded(admin, key, activeOrders, true)
+  const cancelledRefs = refreshed.orders.filter((order: any) => order.status === 'cancelled' && order.refunded_at)
+    .map((order: any) => order.reference)
+  return json({ success: true, synced: refreshed.checked, cancelled: cancelledRefs, throttled: refreshed.throttled })
 }
 
 // Server-side expiry recovery must continue when a customer closes the page.

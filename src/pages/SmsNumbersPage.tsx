@@ -904,8 +904,8 @@ function SmsNumbersSurface() {
     catalogLoadActiveRef.current = true
     setLoading(true)
     setCatalogError(null)
-    // Fire sync silently so externally cancelled orders are reflected locally.
-    invokeSms('sync_cancelled').catch(() => {})
+    // History loading already reconciles supplier cancellations and confirmed
+    // refunds. Do not start a second concurrent supplier status batch here.
     try {
       const healthResult = await invokeSmsRead<never>('health', {}, 10000)
       if (!mountedRef.current) return
