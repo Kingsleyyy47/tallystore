@@ -10,6 +10,7 @@ import { Loader2, Clock, CheckCircle2, XCircle, Settings, Upload, Plus, Tag, Use
 import { Switch } from '@/components/ui/switch'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
+import PocketfiPaymentChecker from '@/components/admin/PocketfiPaymentChecker'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { useToast } from '@/hooks/use-toast'
 import { readEmailFunctionError } from '@/lib/emailFunctionError'
@@ -1358,7 +1359,7 @@ export default function StaffAdminPage() {
     can(perms, 'view_stats') || can(perms, 'tab_templates') || can(perms, 'tab_products') ||
     can(perms, 'tab_add_product') || can(perms, 'tab_bulk_upload') || can(perms, 'tab_discount_codes') ||
     can(perms, 'tab_sms_products') || can(perms, 'tab_sms_orders') || can(perms, 'tab_transactions') || can(perms, 'tab_sales') ||
-    can(perms, 'tab_revenue_os') || can(perms, 'tab_categories') || can(perms, 'tab_users') || can(perms, 'tab_email') ||
+    can(perms, 'tab_revenue_os') || can(perms, 'tab_categories') || can(perms, 'tab_users') || can(perms, 'tab_email') || can(perms, 'view_pocketfi_payments') ||
     hasSettingsPermission(perms)
 
   if (!hasAnyTab) {
@@ -1384,6 +1385,7 @@ export default function StaffAdminPage() {
     can(perms, 'tab_bulk_upload')      && { key: 'bulk',      label: 'Bulk Upload' },
     can(perms, 'tab_sms_products')     && { key: 'sms-products', label: 'SMS Products' },
     can(perms, 'tab_sms_orders')       && { key: 'sms-orders',   label: 'SMS Orders' },
+    can(perms, 'view_pocketfi_payments') && { key: 'pocketfi-payments', label: 'PocketFi Payments' },
     can(perms, 'tab_transactions')     && { key: 'transactions', label: 'Deposits' },
     can(perms, 'tab_sales')            && { key: 'sales',        label: 'Sales' },
     can(perms, 'tab_revenue_os')       && { key: 'revenue-os',   label: 'Revenue OS' },
@@ -1495,6 +1497,12 @@ export default function StaffAdminPage() {
                 <Card><CardContent className="pt-6 text-center"><p className="text-3xl font-bold">{salesStats.totalSales.toLocaleString()}</p><p className="text-muted-foreground text-sm mt-1">Total Orders</p></CardContent></Card>
                 <Card><CardContent className="pt-6 text-center"><p className="text-3xl font-bold">₦{(salesStats.totalRevenue / 1000).toFixed(0)}k</p><p className="text-muted-foreground text-sm mt-1">Revenue</p></CardContent></Card>
               </div>
+            </TabsContent>
+          )}
+
+          {can(perms, 'view_pocketfi_payments') && (
+            <TabsContent value="pocketfi-payments" className="space-y-4">
+              <PocketfiPaymentChecker />
             </TabsContent>
           )}
 

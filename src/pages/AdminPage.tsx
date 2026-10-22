@@ -54,6 +54,7 @@ import { isBalanceNeutralLedgerEvidence } from '@/lib/walletTransactions'
 import Navbar from '@/components/NavbarAuth'
 import Footer from '@/components/Footer'
 import AdminAlerts from '@/components/AdminAlerts'
+import PocketfiPaymentChecker from '@/components/admin/PocketfiPaymentChecker'
 import PartnerReconciliationPanel from '@/components/PartnerReconciliationPanel'
 import BitrefillPricingAdmin from '@/components/BitrefillPricingAdmin'
 import { 
@@ -169,6 +170,7 @@ const ADMIN_TABS = [
   { value: 'fraud', label: 'Wallet Review' },
   { value: 'sales', label: 'Sales' },
   { value: 'histories', label: 'Transactions' },
+  { value: 'pocketfi-payments', label: 'PocketFi Payments' },
   { value: 'email', label: 'Email' },
   { value: 'api-partners', label: 'API Partners' },
   { value: 'staff', label: 'Staff Roles' },
@@ -7613,6 +7615,10 @@ export default function AdminPage() {
                 ))}
               </TabsList>
             </div>
+
+            <TabsContent value="pocketfi-payments" className="space-y-6">
+              <PocketfiPaymentChecker admin active={adminTab === 'pocketfi-payments'} />
+            </TabsContent>
 
             {/* Product Templates Management */}
             <TabsContent value="templates" className="space-y-6">

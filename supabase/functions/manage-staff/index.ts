@@ -1188,7 +1188,7 @@ const STAFF_ACTIONS_BY_PERMISSION: Record<string, string[]> = {
 
 const STAFF_PERMISSION_KEYS = new Set([
   ...Object.keys(STAFF_ACTIONS_BY_PERMISSION),
-  'view_stats', 'tab_transactions', 'tab_sales', 'tab_users',
+  'view_stats', 'tab_transactions', 'tab_sales', 'tab_users', 'view_pocketfi_payments',
 ])
 
 const STAFF_SETTING_KEYS_BY_PERMISSION: Record<string, string[]> = {

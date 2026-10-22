@@ -17,6 +17,7 @@ export const PERMISSIONS = [
   { key: 'tab_discount_codes',      label: 'Discount Codes tab',     description: 'View, create, and toggle discount codes', group: 'Tabs' },
   { key: 'tab_sms_products',        label: 'SMS Products tab',       description: 'Enable SMS products, set favorites, and manage customer SMS pricing', group: 'Tabs' },
   { key: 'tab_sms_orders',          label: 'SMS Orders tab',         description: 'View all customer SMS order history, cancel pending orders, and issue refunds', group: 'Tabs' },
+  { key: 'view_pocketfi_payments', label: 'PocketFi Payment Check', description: 'Check PocketFi webhook and wallet-credit records and flag payments for admin review; cannot move money', group: 'Tabs' },
   { key: 'tab_transactions',        label: 'Transaction History tab', description: 'View completed customer wallet deposits only', group: 'Tabs' },
   { key: 'tab_sales',               label: 'Sales History tab',       description: 'View completed customer product, SMS, crypto, bills, gift card, and social sales history', group: 'Tabs' },
   { key: 'tab_revenue_os',          label: 'Revenue OS tab',          description: 'View CRO health, data-quality findings, opportunities, and change bounded Revenue OS controls', group: 'Tabs' },

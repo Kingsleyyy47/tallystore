@@ -318,7 +318,7 @@ async function verifyPocketFiWebhook(req: Request, rawBody: string) {
     ''
   ).trim()
 
-  if (sharedSecret && constantTimeEquals(sharedSecret, secret)) return true
+  if (sharedSecret && constantTimeEquals(sharedSecret, secret)) return 'shared_secret' as const
 
   // PocketFi sends HMAC-SHA512 in the 'HTTP_POCKETFI_SIGNATURE' header.
   // In HTTP this arrives as 'pocketfi-signature' (lowercase, no HTTP_ prefix).
@@ -333,7 +333,7 @@ async function verifyPocketFiWebhook(req: Request, rawBody: string) {
   if (!signature) return false
 
   const expectedSignature = await hmacSha512Hex(secret, rawBody)
-  return constantTimeEquals(signature, expectedSignature)
+  return constantTimeEquals(signature, expectedSignature) ? 'hmac_sha512' as const : false
 }
 
 async function recordRevenueEvent(
@@ -451,6 +451,8 @@ serve(async (req) => {
       .from('pocketfi_webhook_logs')
       .insert({
         raw_payload: payload,
+        webhook_verified_at: new Date().toISOString(),
+        webhook_verification_method: verified,
         matched_account_number: accountNumber || null,
         verified_amount_ngn: Number.isFinite(amount) && amount > 0 ? amount : null,
         verified_reference: reference || null,
