@@ -2034,6 +2034,49 @@ async function handleAdminSmsOrders(admin: SupabaseAdmin, userId: string) {
   return json({ success: true, data })
 }
 
+// Read-only supplier observation. This never cancels, marks done, persists a
+// message or changes money. Missing activations do not prove non-delivery.
+async function handleAdminCheckSmsOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
+  await requireAdminUser(admin, userId)
+  const orderId = typeof body.order_id === 'string' ? body.order_id : ''
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId)) throw new Error('order_id is required')
+  const { data: order, error } = await admin.from('sms_orders')
+    .select('id,order_type,provider,status,provider_request_id,messages,refunded_at')
+    .eq('id', orderId).single()
+  if (error || !order) throw new Error('SMS order not found')
+  const local = {
+    order_id: order.id,
+    local_status: order.status,
+    has_recorded_message: Array.isArray(order.messages) && order.messages.length > 0,
+    refund_recorded: !!order.refunded_at,
+    checked_at: new Date().toISOString(),
+    read_only: true,
+  }
+  if (order.order_type !== 'otp' || order.provider !== 'smsbus') return json({
+    success: true, data: { ...local, provider_state: 'unavailable', reason_code: 'SMS_ORDER_TYPE_UNSUPPORTED' },
+  })
+  if (!order.provider_request_id) return json({
+    success: true, data: { ...local, provider_state: 'not_recorded', reason_code: 'SMS_ALLOCATION_NOT_RECORDED',
+      note: 'No activation ID was saved for this order. The supplier outcome still needs review.' },
+  })
+  const key = getDaisyKey()
+  if (!key) return json({ success: true, data: { ...local, provider_state: 'unavailable', reason_code: 'SMS_PROVIDER_UNAVAILABLE' } })
+  try {
+    // The activation comes exclusively from the saved order, never the request.
+    const status = await daisyGetStatus(key, order.provider_request_id)
+    return json({ success: true, data: { ...local,
+      provider_state: status.status === 'ok' ? 'code_received' : status.status,
+      reason_code: status.status === 'cancelled' ? 'SMS_PROVIDER_CANCELLED' : status.status === 'ok' ? 'SMS_PROVIDER_CODE_RECEIVED' : 'SMS_PROVIDER_WAITING',
+    } })
+  } catch (error) {
+    if (error instanceof DaisySmsError && error.code === 'NO_ACTIVATION') return json({
+      success: true, data: { ...local, provider_state: 'not_found', reason_code: 'SMS_PROVIDER_ACTIVATION_NOT_FOUND',
+        note: 'The supplier no longer finds this activation. This does not prove that it was cancelled, refunded or undelivered.' },
+    })
+    return json({ success: true, data: { ...local, provider_state: 'unavailable', reason_code: 'SMS_PROVIDER_STATUS_UNAVAILABLE' } })
+  }
+}
+
 // ── Admin: cancel any SMS order and refund the customer ───────────────────────
 async function handleAdminCancelSmsOrder(admin: SupabaseAdmin, userId: string, body: Record<string, unknown>) {
   await requireStaffPermission(admin, userId, 'tab_sms_orders', true)
@@ -2295,6 +2338,7 @@ serve(async (req) => {
       case 'cancel_otp':   return await handleCancelOtp(admin, user.id, body)
       case 'sync_cancelled':          return await handleSyncCancelled(admin, user.id)
       case 'admin_sms_orders':        return await handleAdminSmsOrders(admin, user.id)
+      case 'admin_check_sms_order':   return await handleAdminCheckSmsOrder(admin, user.id, body)
       case 'admin_cancel_sms_order':  return await handleAdminCancelSmsOrder(admin, user.id, body)
       case 'admin_auto_cancel_stale': return await handleAdminAutoCancelStale(admin, user.id)
       case 'rent_number':
