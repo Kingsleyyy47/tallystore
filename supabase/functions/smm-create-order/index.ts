@@ -832,6 +832,36 @@ serve(async (req) => {
       }
     }
 
+    // Read-only supplier funding check before committing any customer debit.
+    // Existing/review-held intents above never reach this preflight. A positive
+    // panel balance alone is insufficient: it must cover this exact quote.
+    try {
+      const supplierBalance = await createSmmPanelClient().getBalance();
+      const rawBalance = supplierBalance?.balance;
+      const balanceText = typeof rawBalance === 'string' || typeof rawBalance === 'number' ? String(rawBalance) : '';
+      if (supplierBalance?.currency !== 'USD' || balanceText.length > 80 || !/^\d+(?:\.\d+)?$/.test(balanceText) ||
+          !Number.isFinite(Number(balanceText)) || !Number.isFinite(totalCost) || totalCost < 0) {
+        throw new Error('SMM_SUPPLIER_UNAVAILABLE');
+      }
+      // Supplier rates have six decimal places; a per-1000 quote therefore
+      // needs nine. Compare decimal integers so 0.1 * 3 does not falsely reject
+      // a balance of 0.3. Extra balance precision is truncated conservatively.
+      const [balanceWhole, balanceFraction = ''] = balanceText.split('.');
+      const balanceNanos = BigInt(balanceWhole) * 1_000_000_000n + BigInt(balanceFraction.padEnd(9, '0').slice(0, 9));
+      const rateMicros = BigInt(Number(service.rate_usd).toFixed(6).replace('.', ''));
+      const quotedCostNanos = rateMicros * BigInt(quote.package ? 1000 : actualQuantity);
+      if (balanceNanos < quotedCostNanos) {
+        throw new Error('SMM_SUPPLIER_UNAVAILABLE');
+      }
+    } catch {
+      return new Response(JSON.stringify({
+        success: false,
+        code: 'SMM_SUPPLIER_UNAVAILABLE',
+        error: 'Social Boost is temporarily unavailable. Please try again later.',
+        retry_safe: true,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 503 });
+    }
+
     const { data: securityProfile, error: securityProfileError } = await supabaseAdmin
       .from('profiles')
       .select('financial_security_version')

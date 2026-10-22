@@ -15,6 +15,11 @@ globalThis.__smmRaceTest = {
   createClient: () => fixture.client(++fixture.clients),
   authenticateCustomerRequest: async () => ({ id: fixture.user }),
   smmPanelRequest: async (_url, _key, params) => {
+    if (params.action === 'balance') {
+      fixture.balanceReads++
+      if (fixture.balanceError) throw new Error('synthetic provider material must not leak')
+      return fixture.supplierBalance
+    }
     assert.equal(params.action, 'add')
     fixture.paidAdds++
     fixture.sentParams = params
@@ -30,12 +35,13 @@ await import(`data:text/javascript;base64,${Buffer.from(injection).toString('bas
 assert.equal(typeof handler, 'function')
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
-function makeFixture({ expectedOrphanReaders = 2, delayedFirstInsert = false, lostInsertAck = false, lateInsertCommit = false, lostClaimAck = false, panelReply = null, serviceType = 'Default', serviceMin = 1000 } = {}) {
+function makeFixture({ expectedOrphanReaders = 2, delayedFirstInsert = false, lostInsertAck = false, lateInsertCommit = false, lostClaimAck = false, panelReply = null, serviceType = 'Default', serviceMin = 1000, serviceRate = 0.5,
+  supplierBalance = { balance: '100', currency: 'USD' }, balanceError = false } = {}) {
   const user = randomUUID(), serviceId = randomUUID(), key = 'race-'+randomUUID()
   let orphanArrivals = 0, releaseOrphans
   const orphanBarrier = new Promise(resolve => { releaseOrphans = resolve })
   const state = {
-    user, serviceId, key, panelReply, clients: 0, order: null, debit: null, claims: new Set(), paidAdds: 0,
+    user, serviceId, key, panelReply, supplierBalance, balanceError, balanceReads: 0, clients: 0, order: null, debit: null, claims: new Set(), paidAdds: 0,
     debitAttempts: 0, refunds: 0, inserts: 0, insertErrors: 0, claimAttempts: 0,
     async request(link = 'https://example.invalid/post', extra = {}) {
       return handler(new Request('https://example.invalid/functions/v1/smm-create-order', {
@@ -100,7 +106,7 @@ function makeFixture({ expectedOrphanReaders = 2, delayedFirstInsert = false, lo
       if (this.table === 'profiles') return { data: filter('id') === user
         ? { is_staff:false,is_admin:false,account_suspended:false,financial_security_version:1 } : null, error: null }
       if (this.table === 'smm_services') return { data: { id:serviceId, external_id:22,service_type:serviceType,
-        is_active:true,name:'Synthetic',platform:'instagram',price_ngn:500,rate_usd:0.5,
+        is_active:true,name:'Synthetic',platform:'instagram',price_ngn:500,rate_usd:serviceRate,
         min_quantity:serviceMin,max_quantity:10000 },error:null }
       if (this.table === 'transactions') {
         if (filter('idempotency_key') === `smm:purchase:${key}`) {
@@ -201,9 +207,38 @@ try {
     assert.equal(fixture.paidAdds,1)
     assert.equal(fixture.claims.size,1)
     assert.equal(fixture.refunds,0)
+    const readsBeforeReplay = fixture.balanceReads
     assert.equal((await fixture.request()).status,202)
+    assert.equal(fixture.balanceReads, readsBeforeReplay, 'held intent replay must not contact supplier')
     assert.equal(fixture.paidAdds,1)
   }
+
+  for (const supplierBalance of [
+    { balance: '0', currency: 'USD' }, { balance: '0.1381087', currency: 'USD' },
+    { balance: '0.499999999', currency: 'USD' }, { balance: '-1', currency: 'USD' },
+    { balance: 'NaN', currency: 'USD' }, { balance: '1private', currency: 'USD' },
+    { balance: '100', currency: 'EUR' }, { balance: '100' }, {},
+  ]) {
+    fixture = makeFixture({ expectedOrphanReaders: 1, supplierBalance })
+    const denied = await fixture.request(), body = await denied.json()
+    assert.equal(denied.status, 503); assert.equal(body.code, 'SMM_SUPPLIER_UNAVAILABLE')
+    assert.equal(body.retry_safe, true); assert.equal(fixture.balanceReads, 1)
+    assert.equal(fixture.debitAttempts, 0); assert.equal(fixture.order, null)
+    assert.equal(fixture.claimAttempts, 0); assert.equal(fixture.paidAdds, 0); assert.equal(fixture.refunds, 0)
+    assert.ok(!JSON.stringify(body).includes('0.1381087')); assert.ok(!JSON.stringify(body).includes('private'))
+  }
+  fixture = makeFixture({ expectedOrphanReaders: 1, balanceError: true })
+  const unavailable = await fixture.request()
+  assert.equal(unavailable.status, 503); assert.equal((await unavailable.json()).code, 'SMM_SUPPLIER_UNAVAILABLE')
+  assert.equal(fixture.debitAttempts, 0); assert.equal(fixture.inserts, 0); assert.equal(fixture.claimAttempts, 0); assert.equal(fixture.paidAdds, 0)
+
+  fixture = makeFixture({ expectedOrphanReaders: 1, supplierBalance: { balance: '0.5', currency: 'USD' } })
+  assert.equal((await fixture.request()).status, 200, 'exact supplier funding must be accepted')
+  assert.equal(fixture.balanceReads, 1); assert.equal(fixture.paidAdds, 1)
+  fixture = makeFixture({ expectedOrphanReaders: 1, serviceRate: 0.1, supplierBalance: { balance: '0.3', currency: 'USD' } })
+  assert.equal((await fixture.request(undefined, { quantity: 3000, expected_price_ngn: 1500 })).status, 200,
+    'exact decimal supplier funding must not fail on floating point 0.1 * 3')
+  assert.equal(fixture.paidAdds, 1)
 
   for (const [serviceType, input, expectedQuantity, expectedPrice] of [
     ['Custom Comments', { comments: 'first\r\n\nsecond', quantity: 1 }, 2, 1],
@@ -241,5 +276,6 @@ try {
   console.log(JSON.stringify({actualHandler:true,distinctReferenceConflict:true,reversedInsertWinner:true,
     oneDebitPerIntent:true,onePaidAddMaximum:true,lostInsertAckNoRefund:true,lateInsertCommitNoRefund:true,
     lostClaimAckNoSend:true,malformedSupplierOrderIdsHeld:true,derivedQuantityPricing:true,packagesFixed:true,
-    seoPollQuantity:true,underpricingAndUnsupportedDeniedBeforeDebit:true,paidProviderCalls:0,productionWrites:0}))
+    seoPollQuantity:true,underpricingAndUnsupportedDeniedBeforeDebit:true,supplierPreflightNoCharge:true,
+    supplierExactDecimalFunding:true,heldReplaySkipsSupplierPreflight:true,paidProviderCalls:0,productionWrites:0}))
 } finally {Math.random=originalRandom;Date.now=originalNow}

@@ -28,7 +28,9 @@ function publicMessage(value: unknown): string | null {
   // Translate only known public codes. Never display arbitrary provider/database text.
   switch (body.code) {
     case 'SMM_ORDERS_PAUSED':
-      return 'Social Boost ordering is temporarily paused. Please contact support.';
+      return 'Social Boost ordering is temporarily paused. Your wallet was not charged for this attempt. Please try again later.';
+    case 'SMM_SUPPLIER_UNAVAILABLE':
+      return 'Social Boost is temporarily unavailable. Your wallet was not charged for this attempt. Please try again later.';
     case 'SMM_SUPPLIER_OUTCOME_UNKNOWN':
     case 'SMM_DISPATCH_STATUS_UNCONFIRMED':
     case 'SMM_DEBIT_PROOF_UNCONFIRMED':

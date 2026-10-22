@@ -734,6 +734,8 @@ function friendlyError(error: unknown): string {
     'Current displayed price is required. Please refresh and try again.',
     'Service price changed before purchase. Please refresh and try again.',
     'SMS order not found', 'Order is missing activation ID',
+    'This number cannot be cancelled yet. Please try again after 2 minutes.',
+    'This number is already ready or has received a code, so it cannot be cancelled.',
     'order_id is required', 'Unknown SMS action',
   ])
   if (customerErrors.has(message)) return message
@@ -2304,6 +2306,9 @@ serve(async (req) => {
         throw new Error('Unknown SMS action')
     }
   } catch (err) {
+    if (err instanceof Error && err.message === 'SMS_MIGRATION_REVIEW_REQUIRED') return json({
+      success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED', error: 'This earlier SMS order needs support review before cancellation can continue. No refund has been confirmed. Check this order or contact support before buying again.',
+    }, 202)
     if (err instanceof DaisySmsError && err.code === 'REFUND_REVIEW_REQUIRED') return json({
       success: false, code: 'SMS_REFUND_REVIEW_REQUIRED', error: 'Provider cancellation was recorded but the wallet refund needs review. Do not buy again; contact support with your order reference.',
     }, 202)

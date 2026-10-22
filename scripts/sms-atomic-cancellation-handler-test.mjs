@@ -78,7 +78,7 @@ function customerScenario(initial, controls = {}) {
       if (controls.noActivation) throw new DaisySmsError('NO_ACTIVATION', 'synthetic')
       return controls.status || { status: 'waiting' }
     },
-    daisyCancelNumber: async () => { calls.cancel++; return { cancelled: true, response: 'ACCESS_CANCEL' } },
+    daisyCancelNumber: async () => { calls.cancel++; return controls.cancellation || { cancelled: true, response: 'ACCESS_CANCEL' } },
     refundWallet: () => { calls.oldWallet++; throw new Error('Legacy refund path invoked') },
     publicSmsOrder: own,
     recordRevenueEvent: async () => {},
@@ -266,6 +266,62 @@ function customerScenario(initial, controls = {}) {
   assert.equal(opaque.phoneNumber, '15551234567')
   assert.equal(opaque.priceUsd, 0.44)
   await assert.rejects(daisyGetNumber('synthetic-key', 'svc'), error => error.code === 'BAD_SERVICE')
+  checks++
+}
+
+// Known cancellation denials remain actionable without exposing arbitrary
+// supplier text. Exercise the actual cancellation handler and error mapper.
+{
+  const { friendlyError } = actual(sms, '', '', ['friendlyError'], { DaisySmsError, Error })
+  for (const [response, message] of [
+    ['EARLY_CANCEL_DENIED', 'This number cannot be cancelled yet. Please try again after 2 minutes.'],
+    ['ACCESS_READY', 'This number is already ready or has received a code, so it cannot be cancelled.'],
+  ]) {
+    const c = customerScenario(order(), { cancellation: { cancelled: false, response } })
+    let denied
+    try { await c.handleCancelOtp(c.admin, 'customer-fixture', { order_id: 'order-1' }) }
+    catch (error) { denied = error }
+    assert.ok(denied)
+    // The handler executes in its own VM realm; re-wrap only its actual message.
+    assert.equal(friendlyError(new Error(denied.message)), message)
+    assert.equal(c.calls.cancel, 1)
+    assert.equal(c.calls.oldWallet, 0)
+    assert.deepEqual(c.state.events, [])
+    assert.equal(c.state.order.refunded_at, null)
+  }
+  assert.equal(friendlyError(new Error('Untrusted supplier secret=synthetic-provider-material')), 'SMS request is temporarily unavailable.')
+  checks++
+}
+
+// Run the actual entry point: a legacy mutation fence must be a clear review
+// result, never an automatic cancellation/refund or a generic outage message.
+{
+  let handler
+  let calls = 0
+  const globals = {
+    serve: callback => { handler = callback },
+    // Candidate bundles keep the independently verified migration wrapper;
+    // this unit fixture exercises its enclosed handler without cloud access.
+    __tallyDestinationGate: callback => callback,
+    URL, Request, Response, Error, DaisySmsError,
+    requireAuth: async () => ({ user: { id: 'customer-fixture' }, admin: {} }),
+    handleCancelOtp: async () => { calls++; throw new Error('SMS_MIGRATION_REVIEW_REQUIRED') },
+    json: (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }),
+    console: { error() {} },
+  }
+  const code = transformSync(actualSmsFunctions(sms, []), { loader: 'ts', format: 'cjs' }).code
+  vm.runInNewContext(code, globals)
+  const response = await handler(new Request('https://sms-fixture.invalid/', {
+    method: 'POST', body: JSON.stringify({ action: 'cancel_otp', order_id: 'order-1' }),
+  }))
+  assert.equal(calls, 1)
+  assert.equal(response.status, 202)
+  const body = await response.json()
+  assert.equal(body.success, false)
+  assert.equal(body.code, 'SMS_OUTCOME_REVIEW_REQUIRED')
+  assert.match(body.error, /support review/)
+  assert.match(body.error, /No refund has been confirmed/)
+  assert.doesNotMatch(JSON.stringify(body), /SMS_MIGRATION_REVIEW_REQUIRED|https?:\/\/|secret=/)
   checks++
 }
 

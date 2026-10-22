@@ -1,5 +1,23 @@
 // Public immutable build assets only. No HTML, API, wallet or credential data
 // is cached by this handler. It supports a tab waiting to apply an update.
+// An old open tab can still contain the retired Supabase URL after a worker
+// update. Block its sign-in/token request without reading or forwarding the
+// credentials. Only an existing login screen may be replaced with the current
+// page; checkout and other workspaces must never be forced to reload here.
+const tallyRetiredAuthHost = 'dssvvswvqnxanyzfhixf.supabase.co'
+const tallyAuthRecoveryMarker = 'store_updated'
+async function recoverRetiredLogin(event) {
+  if (!event.clientId) return
+  const client = await self.clients.get(event.clientId)
+  if (!client || client.type !== 'window') return
+  const current = new URL(client.url)
+  if (current.origin !== self.location.origin || !/^\/login\/?$/.test(current.pathname) ||
+      current.searchParams.has(tallyAuthRecoveryMarker)) return
+  // One navigation marker prevents a reload loop even if a browser fails to
+  // activate the new page. Existing non-secret login routing is retained.
+  current.searchParams.set(tallyAuthRecoveryMarker, '1')
+  await client.navigate(current.href)
+}
 const tallyBuildReports = 'tallystore-client-builds-v1'
 const tallyReportUrl = clientId => new URL(`/__tally_build_report__/${encodeURIComponent(clientId)}`, self.location.origin).href
 let tallyCleanupQueue = Promise.resolve()
@@ -46,6 +64,15 @@ self.addEventListener('message', event => {
 self.addEventListener('activate', event => event.waitUntil(queueTallyCacheCleanup()))
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url)
+  if (event.request.method === 'POST' && url.protocol === 'https:' &&
+      url.hostname === tallyRetiredAuthHost && url.pathname === '/auth/v1/token') {
+    event.respondWith(new Response(JSON.stringify({
+      code: 'store_updated',
+      msg: 'The store has updated. Please sign in again.',
+    }), { status: 409, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } }))
+    event.waitUntil(recoverRetiredLogin(event).catch(() => undefined))
+    return
+  }
   if (event.request.method !== 'GET' || url.origin !== self.location.origin ||
       !/^\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{6,}\.(?:js|css)$/.test(url.pathname)) return
   event.respondWith((async () => {

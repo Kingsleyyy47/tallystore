@@ -13,6 +13,31 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
 const SMM_API_URL = 'https://thelordofthepanels.com/api/v2';
 
+// Catalogue and balance reads never retry or follow redirects. The deadline
+// includes reading the body, rather than ending when response headers arrive.
+export async function readSmmJson(url: string, init: RequestInit = {}, deadlineMs = 20_000, maxBytes = 8_388_608): Promise<any> {
+  const response = await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(deadlineMs) });
+  if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error('SMM_READ_UNAVAILABLE'); }
+  if (Number(response.headers.get('content-length')) > maxBytes) {
+    await response.body?.cancel().catch(() => {}); throw new Error('SMM_READ_TOO_LARGE');
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('SMM_READ_UNAVAILABLE');
+  const chunks: Uint8Array[] = []; let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      size += value.length; if (size > maxBytes) throw new Error('SMM_READ_TOO_LARGE');
+      chunks.push(value);
+    }
+  } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+  finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(size); let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  try { return JSON.parse(new TextDecoder().decode(bytes)); }
+  catch { throw new Error('SMM_READ_INVALID'); }
+}
+
 export interface SmmService {
   service: number;
   name: string;
@@ -71,7 +96,7 @@ export class SmmPanelClient {
       formData.append(key, String(value));
     }
 
-    const response = await fetch(SMM_API_URL, {
+    const data = await readSmmJson(SMM_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -79,16 +104,7 @@ export class SmmPanelClient {
       body: formData.toString(),
     });
 
-    if (!response.ok) {
-      throw new Error(`SMM API HTTP error: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    
-    // Check for API-level errors
-    if (data.error) {
-      throw new Error(`SMM API error: ${data.error}`);
-    }
+    if (!data || typeof data !== 'object' || data.error) throw new Error('SMM_READ_UNAVAILABLE');
 
     return data as T;
   }
@@ -260,8 +276,8 @@ export async function getNgnUsdRate(supabaseAdmin: any): Promise<{ rate: number;
       .single();
 
     if (!error && data?.value) {
-      const parsed = parseFloat(data.value);
-      if (!isNaN(parsed) && parsed > 0) {
+      const parsed = Number(data.value);
+      if (Number.isFinite(parsed) && parsed > 0) {
         return { rate: parsed, source: 'override' };
       }
     }
@@ -270,10 +286,9 @@ export async function getNgnUsdRate(supabaseAdmin: any): Promise<{ rate: number;
   }
 
   try {
-    const res = await fetch(LIVE_RATE_URL);
-    const json = await res.json();
+    const json = await readSmmJson(LIVE_RATE_URL, {}, 5_000, 65_536);
     const liveRate = json?.rates?.NGN;
-    if (liveRate && typeof liveRate === 'number' && liveRate > 0) {
+    if (typeof liveRate === 'number' && Number.isFinite(liveRate) && liveRate > 0) {
       return { rate: liveRate, source: 'live' };
     }
   } catch (_err) {
@@ -290,6 +305,67 @@ export async function convertToNgn(amount: number, currency: string, supabaseAdm
   }
   const { rate } = await getNgnUsdRate(supabaseAdmin);
   return amount * rate;
+}
+
+const MAX_SERVICES = 20_000;
+const INT4_MAX = 2_147_483_647;
+function supplierNumber(value: unknown, integer = false): number {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value))) throw new Error('SMM_CATALOGUE_INVALID');
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || (integer && (!Number.isSafeInteger(number) || number > INT4_MAX))) throw new Error('SMM_CATALOGUE_INVALID');
+  return number;
+}
+
+/**
+ * Digest contract: SHA256(UTF8(JSON.stringify(rows))), rows sorted by numeric
+ * external_id, keys in the insertion order below. No timestamps/is_active.
+ * rate_usd has the database's six-decimal precision; prices retain ceil(raw
+ * supplier rate * configured USD/NGN rate * 2), the existing pricing rule.
+ */
+export async function normalizeSmmCatalogue(services: unknown, usdNgnRate: number) {
+  if (!Array.isArray(services) || services.length < 1 || services.length > MAX_SERVICES || !Number.isFinite(usdNgnRate) || usdNgnRate <= 0) throw new Error('SMM_CATALOGUE_INVALID');
+  const ids = new Set<number>();
+  let maxSupplierRate = 0;
+  const rows = services.map((service: any) => {
+    if (!service || typeof service !== 'object' || Array.isArray(service)) throw new Error('SMM_CATALOGUE_INVALID');
+    const externalId = supplierNumber(service.service, true);
+    if (externalId < 1 || ids.has(externalId)) throw new Error('SMM_CATALOGUE_INVALID');
+    ids.add(externalId);
+    for (const field of ['name', 'category', 'type']) {
+      if (typeof service[field] !== 'string' || !service[field].trim() || service[field].length > 20_000 || /\0/.test(service[field])) throw new Error('SMM_CATALOGUE_INVALID');
+    }
+    const rawRate = supplierNumber(service.rate);
+    const min = supplierNumber(service.min, true), max = supplierNumber(service.max, true);
+    const priceNgn = Math.ceil(rawRate * usdNgnRate * 2);
+    if (max < min || !Number.isSafeInteger(priceNgn) || priceNgn > 9_999_999_999_999) throw new Error('SMM_CATALOGUE_INVALID');
+    maxSupplierRate = Math.max(maxSupplierRate, rawRate);
+    return {
+      external_id: externalId,
+      name: service.name,
+      category: service.category,
+      platform: normalizePlatform(service.category),
+      service_type: service.type,
+      rate_usd: Number(rawRate.toFixed(6)),
+      price_ngn: priceNgn,
+      min_quantity: min,
+      max_quantity: max,
+      has_refill: service.refill === true,
+      has_cancel: service.cancel === true,
+    };
+  }).sort((a, b) => a.external_id - b.external_id);
+  const encoded = new TextEncoder().encode(JSON.stringify(rows));
+  if (encoded.length > 8_388_608) throw new Error('SMM_CATALOGUE_INVALID');
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', encoded));
+  const sha256 = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+  return { rows, total: rows.length, sha256, max_supplier_rate_usd: maxSupplierRate,
+    max_quantity: Math.max(...rows.map(row => row.max_quantity)) };
+}
+
+export function normalizeSmmBalance(value: any) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.currency !== 'USD') throw new Error('SMM_BALANCE_UNAVAILABLE');
+  let balance: number;
+  try { balance = supplierNumber(value.balance); } catch { throw new Error('SMM_BALANCE_UNAVAILABLE'); }
+  return { balance: String(value.balance), currency: 'USD', available: balance > 0 };
 }
 
 
@@ -345,6 +421,19 @@ serve(async (req) => {
       throw new Error('Admin access required');
     }
 
+    // Existing empty-body dashboard calls still sync. Health is strictly a
+    // provider read and performs no catalogue, wallet, order or flag writes.
+    let action = 'sync';
+    const rawBody = await req.text();
+    if (rawBody.length > 1_024) throw new Error('SMM_ACTION_INVALID');
+    if (rawBody.trim()) {
+      let body: any;
+      try { body = JSON.parse(rawBody); } catch { throw new Error('SMM_ACTION_INVALID'); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('SMM_ACTION_INVALID');
+      action = body.action ?? 'sync';
+    }
+    if (!['sync', 'health'].includes(action)) throw new Error('SMM_ACTION_INVALID');
+
     // Initialize admin client for database operations
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
@@ -353,53 +442,40 @@ serve(async (req) => {
 
     // Use the same admin/live NGN/USD rate as the rest of the storefront.
     const { rate: usdNgnRate, source: rateSource } = await getNgnUsdRate(supabaseAdmin);
-    const markup = 2; // 2x markup as specified
-
-    console.log(`Using USD/NGN rate: ${usdNgnRate} (${rateSource}), markup: ${markup}x`);
-
-    // Fetch services from SMM Panel
+    const markup = 2;
     const smmClient = createSmmPanelClient();
     const services = await smmClient.getServices();
+    // Validate the entire snapshot before the first database write. One bad
+    // provider row must not leave an apparently successful partial catalogue.
+    const catalogue = await normalizeSmmCatalogue(services, usdNgnRate);
+    const balance = normalizeSmmBalance(await smmClient.getBalance());
+    const baseStats = {
+      total: catalogue.total,
+      usd_ngn_rate: usdNgnRate,
+      usd_ngn_rate_source: rateSource,
+      markup: `${markup}x`,
+      panel_balance_usd: balance.balance,
+      panel_currency: balance.currency,
+      max_supplier_rate_usd: catalogue.max_supplier_rate_usd,
+      max_quantity: catalogue.max_quantity,
+      catalogue_sha256: catalogue.sha256,
+    };
+    if (action === 'health') {
+      return new Response(JSON.stringify({ success: true, read_only: true,
+        ready_for_ordering: balance.available, stats: baseStats, balance, catalogue }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
 
-    console.log(`Fetched ${services.length} services from panel`);
-
-    // Transform services into batch-ready data
     const batchSize = 500;
     let processed = 0;
     let errors = 0;
-
-    // Transform all services first
-    const allServiceData = services.map((service) => {
-      const rateUsd = parseFloat(service.rate);
-      const priceNgn = rateUsd * usdNgnRate * markup;
-      const platform = normalizePlatform(service.category);
-
-      return {
-        external_id: service.service,
-        name: service.name,
-        category: service.category,
-        platform: platform,
-        service_type: service.type,
-        rate_usd: rateUsd,
-        price_ngn: Math.ceil(priceNgn), // Round up to nearest Naira
-        min_quantity: parseInt(service.min),
-        max_quantity: parseInt(service.max),
-        has_refill: service.refill === true,
-        has_cancel: service.cancel === true,
-        // NOTE: is_active is intentionally omitted here. On INSERT the DB column
-        // default (true) applies, so new services start visible. On UPDATE
-        // (conflict on external_id) the existing value is preserved, meaning
-        // services an admin has hidden via the dashboard stay hidden after a sync.
-        last_synced_at: new Date().toISOString(),
-      };
-    });
-
-    console.log(`Transformed ${allServiceData.length} services, upserting in batches of ${batchSize}...`);
-
-    // Upsert in batches
+    const failedBatches: Array<{ offset: number; count: number; code: string }> = [];
+    const syncedAt = new Date().toISOString();
+    // Omit is_active on every upsert: existing admin-hidden items stay hidden.
+    // Removed supplier IDs are not deleted or disabled by an incomplete sync.
+    const allServiceData = catalogue.rows.map(row => ({ ...row, last_synced_at: syncedAt }));
     for (let i = 0; i < allServiceData.length; i += batchSize) {
       const batch = allServiceData.slice(i, i + batchSize);
-      
       try {
         const { error: upsertError } = await supabaseAdmin
           .from('smm_services')
@@ -409,57 +485,49 @@ serve(async (req) => {
           });
 
         if (upsertError) {
-          console.error(`Error upserting batch ${i / batchSize + 1}:`, upsertError);
           errors += batch.length;
+          failedBatches.push({ offset: i, count: batch.length,
+            code: typeof upsertError.code === 'string' && /^[A-Z0-9]{5}$/.test(upsertError.code) ? upsertError.code : 'DATABASE_WRITE_UNCONFIRMED' });
         } else {
           processed += batch.length;
-          console.log(`Batch ${Math.floor(i / batchSize) + 1}: Upserted ${batch.length} services (total: ${processed})`);
         }
-      } catch (err) {
-        console.error(`Error processing batch ${i / batchSize + 1}:`, err);
+      } catch {
         errors += batch.length;
+        failedBatches.push({ offset: i, count: batch.length, code: 'DATABASE_WRITE_UNCONFIRMED' });
       }
     }
-
-    // Get panel balance for info
-    let panelBalance = null;
-    try {
-      const balanceResponse = await smmClient.getBalance();
-      panelBalance = balanceResponse.balance;
-    } catch (err) {
-      console.error('Failed to fetch panel balance:', err);
-    }
-
     return new Response(
       JSON.stringify({
-        success: true,
-        message: `Synced ${services.length} services`,
+        success: errors === 0,
+        code: errors ? 'SMM_CATALOGUE_SYNC_INCOMPLETE' : 'SMM_CATALOGUE_SYNCED',
+        message: errors ? 'The catalogue refresh was incomplete. Ordering should remain paused until the failed batches are reviewed.' : `Synced ${catalogue.total} services`,
+        ready_for_ordering: errors === 0 && balance.available,
         stats: {
-          total: services.length,
+          ...baseStats,
           processed: processed,
           errors: errors,
-          usd_ngn_rate: usdNgnRate,
-          usd_ngn_rate_source: rateSource,
-          markup: `${markup}x`,
-          panel_balance_usd: panelBalance,
+          synced_at: syncedAt,
         },
+        failed_batches: failedBatches,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 200,
+        status: errors ? 502 : 200,
       }
     );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
-    console.error('SMM Sync Services Error:', error);
+    const knownErrors = new Set(['Unauthorized', 'Missing authorization header', 'Admin access required', 'SMM_ACTION_INVALID', 'SMM_CATALOGUE_INVALID', 'SMM_BALANCE_UNAVAILABLE']);
+    const publicError = knownErrors.has(errorMessage) ? errorMessage : 'SMM_READ_UNAVAILABLE';
     return new Response(
       JSON.stringify({
         success: false,
-        error: errorMessage,
+        error: publicError,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: errorMessage === 'Unauthorized' || errorMessage === 'Admin access required' ? 401 : 500,
+        status: ['Unauthorized', 'Missing authorization header', 'Admin access required'].includes(publicError) ? 401
+          : ['SMM_ACTION_INVALID', 'SMM_CATALOGUE_INVALID'].includes(publicError) ? 422 : 502,
       }
     );
   }
