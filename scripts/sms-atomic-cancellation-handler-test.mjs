@@ -224,6 +224,7 @@ function customerScenario(initial, controls = {}) {
     },
     daisyCancelNumber: async () => ({ cancelled: true, response: 'ACCESS_CANCEL' }),
     cancelSmsOrderAndRefund: async (_admin, row) => { calls.push(row.id) },
+    savedSmsCancellation: () => null,
     json: (body, status = 200) => ({ body, status }),
   }
   const { handleAdminAutoCancelStale } = actual(
@@ -233,7 +234,11 @@ function customerScenario(initial, controls = {}) {
   const admin = { from: () => ({
     select: () => ({
       not() { return this },
-      async lt() { return { data: rows, error: null } },
+      async lt(key, cutoff) {
+        assert.equal(key, 'created_at')
+        assert.ok(Math.abs(Date.now() - Date.parse(cutoff) - 30 * 60_000) < 1000, 'manual batch must wait 30 minutes')
+        return { data: rows, error: null }
+      },
     }),
   }) }
   const result = await handleAdminAutoCancelStale(admin, 'staff-fixture')

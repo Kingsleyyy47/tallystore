@@ -28,14 +28,17 @@ function fixture(rows, options = {}) {
       assert.equal(table, 'sms_orders')
       return {
         select() {
+          const filters = []
+          const field = (row, key) => key.split(/->>?/).reduce((value, part) => value?.[part], row) ?? null
           return {
-            eq(key, value) { state.query.push(['eq', key, value]); this.id = key === 'id' ? value : this.id; return this },
-            in(key, values) { state.query.push(['in', key, Array.from(values)]); return this },
-            is(key, value) { state.query.push(['is', key, value]); return this },
-            not(key, operator, value) { state.query.push(['not', key, operator, value]); return this },
-            lt(key, value) { state.query.push(['lt', key, value]); return this },
+            eq(key, value) { state.query.push(['eq', key, value]); this.id = key === 'id' ? value : this.id; filters.push(row => field(row, key) === value); return this },
+            neq(key, value) { state.query.push(['neq', key, value]); filters.push(row => field(row, key) !== value); return this },
+            in(key, values) { state.query.push(['in', key, Array.from(values)]); filters.push(row => values.includes(field(row, key))); return this },
+            is(key, value) { state.query.push(['is', key, value]); filters.push(row => field(row, key) === value); return this },
+            not(key, operator, value) { state.query.push(['not', key, operator, value]); assert.equal(operator, 'is'); filters.push(row => field(row, key) !== value); return this },
+            lt(key, value) { state.query.push(['lt', key, value]); filters.push(row => field(row, key) < value); return this },
             order(key, value) { state.query.push(['order', key, value.ascending]); return this },
-            async limit(n) { state.query.push(['limit', n]); return { data: rows.slice(0, n), error: null } },
+            async limit(n) { state.query.push(['limit', n]); return { data: [...state.rows.values()].filter(row => filters.every(filter => filter(row))).slice(0, n).map(row => structuredClone(row)), error: null } },
             async single() { return { data: structuredClone(state.rows.get(this.id)), error: null } },
           }
         },
@@ -68,10 +71,12 @@ function fixture(rows, options = {}) {
   }
   const globals = {
     Date: options.clock || Date, DaisySmsError,
-    getDaisyKey: () => 'synthetic-key',
-    daisyGetStatus: async () => {
-      state.calls.push(['status'])
+    getDaisyKey: () => options.noKey ? '' : 'synthetic-key',
+    daisyGetStatus: async (_key, _id, timeoutMs) => {
+      state.calls.push(['status', timeoutMs])
+      assert.equal(timeoutMs, 3000, 'scheduled supplier reads must use the bounded read timeout')
       if (options.noActivation) throw new DaisySmsError('NO_ACTIVATION', 'synthetic')
+      if (options.rateLimited) throw new DaisySmsError('RATE_LIMIT_EXCEEDED', 'synthetic')
       return { status: options.status || 'waiting' }
     },
     daisyCancelNumber: async () => { state.calls.push(['provider-cancel']); return { cancelled: options.cancelled !== false, response: 'ACCESS_CANCEL' } },
@@ -149,10 +154,10 @@ function fixture(rows, options = {}) {
   groups++
 }
 {
-  // The query is limited to ten and an elapsed 18 seconds stops further work.
+  // The query is limited to ten and an elapsed eight seconds stops further work.
   let ticks = 0
   class DeadlineDate extends Date {
-    static now() { return ++ticks <= 2 ? 0 : 18001 }
+    static now() { return ++ticks <= 2 ? Date.parse('2026-10-24T00:00:00Z') : Date.parse('2026-10-24T00:00:08.001Z') }
   }
   const f = fixture(Array.from({ length: 12 }, (_, i) => row(`queued-${i}`)), { clock: DeadlineDate })
   const result = await f.sweep()
@@ -160,6 +165,74 @@ function fixture(rows, options = {}) {
   assert.equal(f.state.refunds, 0)
   assert.deepEqual(f.state.calls, [])
   assert.ok(f.state.query.some(x => x[0] === 'limit' && x[1] === 10))
+  groups++
+}
+
+const fixedNow = Date.parse('2026-10-24T00:00:00Z')
+class FixedDate extends Date { static now() { return fixedNow } }
+const createdAgo = milliseconds => new Date(fixedNow - milliseconds).toISOString()
+// The server observes status before 30 minutes, but must not force cancellation
+// of a waiting activation before the exact 30-minute boundary.
+for (const ageMs of [3 * 60_000 + 1, 29 * 60_000 + 59_999, 30 * 60_000]) {
+  const f = fixture([row(`boundary-${ageMs}`, { created_at: createdAgo(ageMs) })], { clock: FixedDate })
+  const result = await f.sweep()
+  assert.equal(result.body.processed_count, 1)
+  assert.equal(f.state.calls.filter(call => call[0] === 'status').length, 1)
+  assert.equal(f.state.calls.filter(call => call[0] === 'provider-cancel').length, ageMs >= 30 * 60_000 ? 1 : 0)
+  assert.equal(f.state.refunds, ageMs >= 30 * 60_000 ? 1 : 0)
+  groups++
+}
+for (const status of ['cancelled', 'ok']) {
+  const f = fixture([row(`early-${status}`, { created_at: createdAgo(4 * 60_000) })], { clock: FixedDate, status })
+  const result = await f.sweep()
+  assert.equal(result.body.cancelled_count, status === 'cancelled' ? 1 : 0)
+  assert.equal(result.body.completed_count, status === 'ok' ? 1 : 0)
+  assert.equal(f.state.calls.filter(call => call[0] === 'provider-cancel').length, 0)
+  groups++
+}
+// Durable acknowledgement recovery does not depend on the age, active status,
+// provider key or absence of an error from the original failed refund.
+{
+  const f = fixture([row('recovery-error', {
+    status: 'cancelled', error_code: 'REFUND_REVIEW_REQUIRED', created_at: createdAgo(60_000),
+    last_provider_response: { sms_cancellation: { provider: 'daisysms', activation_id: 'activation-recovery-error', response: 'ACCESS_CANCEL' } },
+  })], { clock: FixedDate, noKey: true })
+  const result = await f.sweep()
+  assert.equal(result.body.cancelled_count, 1)
+  assert.equal(f.state.refunds, 1)
+  assert.deepEqual(f.state.calls.map(call => call[0]), ['update', 'atomic-rpc'])
+  groups++
+}
+{
+  const f = fixture([
+    row('unknown-allocation', { provider_request_id: null, error_code: 'PARSE_ERROR' }),
+    row('old-review', { error_code: 'SMS_OUTCOME_REVIEW_REQUIRED' }),
+    row('already-delivered', { status: 'completed', messages: [{ code: '123456' }] }),
+  ], { clock: FixedDate })
+  const result = await f.sweep()
+  assert.equal(result.body.processed_count, 0)
+  assert.deepEqual(f.state.calls, [])
+  assert.equal(f.state.refunds, 0)
+  groups++
+}
+{
+  const f = fixture([row('throttle-one'), row('throttle-two')], { clock: FixedDate, rateLimited: true })
+  const result = await f.sweep()
+  assert.equal(result.body.failed_count, 1)
+  assert.equal(result.body.processed_count, 1)
+  assert.deepEqual(f.state.calls.map(call => call[0]), ['status'])
+  assert.equal(f.state.refunds, 0)
+  groups++
+}
+{
+  const f = fixture([row('bad-proof', {
+    created_at: createdAgo(60_000),
+    last_provider_response: { sms_cancellation: { provider: 'daisysms', activation_id: 'different-activation', response: 'ACCESS_CANCEL' } },
+  })], { clock: FixedDate })
+  const result = await f.sweep()
+  assert.equal(result.body.processed_count, 0)
+  assert.deepEqual(f.state.calls, [])
+  assert.equal(f.state.refunds, 0)
   groups++
 }
 

@@ -2157,11 +2157,11 @@ async function handleAdminCancelSmsOrder(admin: SupabaseAdmin, userId: string, b
   return json({ success: true, data: adminSmsOrderSummary(cancelled) })
 }
 
-// ── Admin: auto-cancel all orders pending 5+ minutes with no code ─────────────
+// ── Admin: cancel undelivered orders pending more than 30 minutes ─────────────
 async function handleAdminAutoCancelStale(admin: SupabaseAdmin, userId: string) {
   await requireStaffPermission(admin, userId, 'tab_sms_orders', true)
   const key = getDaisyKey()
-  const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+  const cutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString()
 
   const { data: staleOrders } = await admin
     .from('sms_orders')
@@ -2177,6 +2177,12 @@ async function handleAdminAutoCancelStale(admin: SupabaseAdmin, userId: string) 
   // Keep supplier cancellation bounded rather than dispatching an unbounded batch.
   for (const order of orders.slice(0, 50)) {
     try {
+      const saved = savedSmsCancellation(order)
+      if (saved) {
+        await cancelSmsOrderAndRefund(admin, order, saved, 'admin_auto_refund_recovery', `Auto-refund for cancelled SMS order: ${order.reference}`, 'sms_admin', userId)
+        cancelled.push(order.reference)
+        continue
+      }
       if (!key || !order.provider_request_id) { reviewCount++; continue }
       const status = await daisyGetStatus(key, order.provider_request_id).catch(error => {
         if (error instanceof DaisySmsError && error.code === 'NO_ACTIVATION') return null
@@ -2223,18 +2229,41 @@ async function handleSyncCancelled(admin: SupabaseAdmin, userId: string) {
 // Server-side expiry recovery must continue when a customer closes the page.
 // It cannot approve unknown outcomes or bypass the wallet refund evidence gate.
 async function handleSweepStaleSms(admin: SupabaseAdmin) {
+  let cancelled = 0, completed = 0, review = 0, failed = 0, processed = 0
+  const started = Date.now()
+  const recoveredIds = new Set<string>()
+  // A cancellation acknowledgement can outlive a failed refund attempt. Resume
+  // the atomic refund even when the order has an error, is already cancelled,
+  // is younger than the poll threshold, or the provider key is unavailable.
+  const { data: recoveryOrders, error: recoveryError } = await admin.from('sms_orders').select('*')
+    .eq('order_type', 'otp').neq('status', 'completed').is('refunded_at', null)
+    .not('provider_request_id', 'is', null)
+    .eq('last_provider_response->sms_cancellation->>provider', 'daisysms')
+    .in('last_provider_response->sms_cancellation->>response', ['ACCESS_CANCEL', 'STATUS_CANCEL'])
+    .order('created_at', { ascending: true }).limit(10)
+  if (recoveryError) throw new Error('Could not load SMS refund recovery queue')
+  for (const order of recoveryOrders || []) {
+    if (Date.now() - started > 8000) break
+    const saved = savedSmsCancellation(order)
+    if (!saved) continue
+    recoveredIds.add(order.id)
+    processed++
+    try {
+      await cancelSmsOrderAndRefund(admin, order, saved, 'scheduled_refund_recovery', `Refund for cancelled SMS order: ${order.reference}`)
+      cancelled++
+    } catch { failed++ }
+  }
   const key = getDaisyKey()
-  if (!key) return json({ success: false, error: 'SMS provider is not configured' }, 503)
+  if (!key) return json({ success: false, error: 'SMS provider is not configured', processed_count: processed, cancelled_count: cancelled, completed_count: completed, review_count: review, failed_count: failed }, 503)
   const { data: orders, error } = await admin.from('sms_orders').select('*')
     .eq('order_type', 'otp').in('status', ['pending', 'processing', 'active', 'waiting'])
     .is('refunded_at', null).is('error_code', null).not('provider_request_id', 'is', null)
     .lt('created_at', new Date(Date.now() - 3 * 60 * 1000).toISOString())
     .order('created_at', { ascending: true }).limit(10)
   if (error) throw new Error('Could not load SMS cancellation recovery queue')
-  let cancelled = 0, completed = 0, review = 0, failed = 0, processed = 0
-  const started = Date.now()
   for (const order of orders || []) {
-    if (Date.now() - started > 18000) break
+    if (Date.now() - started > 8000) break
+    if (recoveredIds.has(order.id)) continue
     processed++
     if (Array.isArray(order.messages) && order.messages.length > 0) { review++; continue }
     try {
@@ -2243,7 +2272,7 @@ async function handleSweepStaleSms(admin: SupabaseAdmin) {
         await cancelSmsOrderAndRefund(admin, order, saved, 'scheduled_refund_recovery', `Refund for cancelled SMS order: ${order.reference}`)
         cancelled++; continue
       }
-      const status = await daisyGetStatus(key, order.provider_request_id).catch(error => {
+      const status = await daisyGetStatus(key, order.provider_request_id, 3_000).catch(error => {
         if (error instanceof DaisySmsError && error.code === 'NO_ACTIVATION') return null
         throw error
       })
@@ -2253,19 +2282,25 @@ async function handleSweepStaleSms(admin: SupabaseAdmin) {
         review++; continue
       }
       if (status.status === 'ok') {
-        await reconcileOtpOrderStatus(admin, key, order)
+        await reconcileOtpOrderStatus(admin, key, order, 3_000)
         completed++; continue
       }
       if (status.status === 'cancelled') {
         await cancelSmsOrderAndRefund(admin, order, 'STATUS_CANCEL', 'scheduled_provider_cancelled', `Refund for cancelled SMS order: ${order.reference}`)
         cancelled++; continue
       }
+      // Keep early status checks so a provider expiry/cancellation or a code
+      // is captured promptly. Only force-cancel a still-waiting activation
+      // after the customer's full 30-minute window has elapsed.
+      const ageMs = Date.now() - new Date(order.created_at).getTime()
+      if (!Number.isFinite(ageMs) || ageMs < 30 * 60 * 1000) continue
       const cancellation = await daisyCancelNumber(key, order.provider_request_id)
       if (!cancellation.cancelled) { review++; continue }
       await cancelSmsOrderAndRefund(admin, order, 'ACCESS_CANCEL', 'scheduled_no_code_cancelled', `Refund for cancelled SMS order: ${order.reference}`)
       cancelled++
-    } catch {
+    } catch (error) {
       failed++
+      if (error instanceof DaisySmsError && error.code === 'RATE_LIMIT_EXCEEDED') break
       // Keep financial uncertainty visible; the staff page can safely resume a
       // persisted provider acknowledgement using the same atomic refund key.
     }

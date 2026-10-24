@@ -1133,7 +1133,11 @@ export default function AdminPage() {
       const { data, error } = await supabase.functions.invoke('smsbus', { body: { action: 'admin_auto_cancel_stale' } })
       if (error) throw error
       if (!data?.success) throw new Error(data?.error || 'Failed to auto-cancel')
-      toast({ title: `Auto-cancelled ${data.cancelled_count ?? 0} stale order(s)` })
+      toast({
+        title: `${data.cancelled_count ?? 0} cancelled; ${data.review_count ?? 0} need review; ${data.failed_count ?? 0} failed`,
+        description: Number(data.review_count || 0) + Number(data.failed_count || 0) > 0
+          ? 'Unconfirmed supplier outcomes remain under review; no refund is assumed.' : undefined,
+      })
       await loadSmsOrders()
     } catch (err: any) {
       toast({ title: 'Auto-cancel failed', description: err.message, variant: 'destructive' })
@@ -11503,7 +11507,7 @@ export default function AdminPage() {
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <CardTitle>SMS Orders</CardTitle>
-                      <p className="mt-1 text-sm text-muted-foreground">All customer SMS purchases. Auto-cancel cancels pending orders older than 5 minutes with no code.</p>
+                      <p className="mt-1 text-sm text-muted-foreground">Orders without a code are checked automatically for cancellation after 30 minutes. Refunds require supplier confirmation. Missing allocations remain under review.</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button variant="outline" size="sm" onClick={loadSmsOrders} disabled={smsOrdersLoading}>
@@ -11512,7 +11516,7 @@ export default function AdminPage() {
                       </Button>
                       <Button variant="destructive" size="sm" onClick={adminAutoCancelStale} disabled={smsOrdersAutoCancelling || smsOrdersLoading}>
                         {smsOrdersAutoCancelling ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <XCircle className="mr-2 h-4 w-4" />}
-                        Auto-cancel stale (5 min+)
+                        Check cancellation (30 min+)
                       </Button>
                     </div>
                   </div>
@@ -11568,7 +11572,7 @@ export default function AdminPage() {
                             {filtered.map(order => {
                               const pending = isPending(order)
                               const minsPending = Math.floor((now - new Date(order.created_at).getTime()) / 60000)
-                              const isStale = pending && minsPending >= 5
+                              const isStale = pending && minsPending >= 30
                               const hasCode = order.has_code
                               return (
                                 <tr key={order.id} className={`text-sm ${isStale && !hasCode ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>

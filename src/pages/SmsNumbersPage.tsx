@@ -394,7 +394,7 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   )
 }
 
-const OTP_TIMEOUT_SECONDS = 180 // 3 minutes
+const OTP_TIMEOUT_SECONDS = 30 * 60 // 30 minutes
 
 function useOtpCountdown(order: SmsOrder, onExpire: (order: SmsOrder) => void) {
   const [secsLeft, setSecsLeft] = useState<number | null>(null)
@@ -554,7 +554,7 @@ function SmsOrderCard({
                     : `Cancellation attempt in ${timerMins}:${timerSecs}`}
                 </span>
               </div>
-              <span className="text-xs font-normal opacity-75">Cancellation is checked after 3 minutes; refund follows provider confirmation</span>
+              <span className="text-xs font-normal opacity-75">Auto-cancel after 30 minutes without a code; refund follows provider confirmation</span>
             </div>
             {/* Progress bar */}
             <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-muted">

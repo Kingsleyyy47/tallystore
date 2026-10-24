@@ -2502,7 +2502,7 @@ export default function StaffAdminPage() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <CardTitle>SMS Orders</CardTitle>
-                    <p className="mt-1 text-sm text-muted-foreground">All customer SMS purchases. Cancellation is checked after 3 minutes; refund follows provider confirmation. Staff can also review stale orders.</p>
+                    <p className="mt-1 text-sm text-muted-foreground">Orders without a code are checked automatically for cancellation after 30 minutes. Refunds require supplier confirmation. Missing allocations remain under review.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" onClick={loadSmsOrders} disabled={smsOrdersLoading}>
@@ -2511,7 +2511,7 @@ export default function StaffAdminPage() {
                     </Button>
                     <Button variant="destructive" size="sm" onClick={staffAutoCancelStale} disabled={smsOrdersAutoCancelling || smsOrdersLoading}>
                       {smsOrdersAutoCancelling ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <XCircle className="mr-2 h-4 w-4" />}
-                      Auto-cancel stale (5 min+)
+                      Check cancellation (30 min+)
                     </Button>
                   </div>
                 </div>
@@ -2564,7 +2564,7 @@ export default function StaffAdminPage() {
                             const pending = isPending(order)
                             const allocationNeedsReview = order.status === 'processing' && !order.phone_number
                             const minsPending = Math.floor((now - new Date(order.created_at).getTime()) / 60000)
-                            const isStale = pending && minsPending >= 5
+                            const isStale = pending && minsPending >= 30
                             const hasCode = order.has_code
                             return (
                               <tr key={order.id} className={`text-sm ${isStale && !hasCode ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>
