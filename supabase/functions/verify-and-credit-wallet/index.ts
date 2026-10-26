@@ -236,7 +236,18 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const ERCASPAY_BASE_URL = 'https://api.ercaspay.com/api/v1';
+const ERCASPAY_BASE_URL = 'https://api.phoenix-wallet.ercaspay.com/api/v1';
+
+function hasPaymentRecoveryCronSecret(req: Request) {
+  const expected = Deno.env.get('PAYMENT_RECOVERY_CRON_SECRET') || Deno.env.get('REVENUE_OS_CRON_SECRET') || '';
+  const provided = req.headers.get('x-cron-secret') || '';
+  if (!expected || provided.length !== expected.length) return false;
+  let difference = 0;
+  for (let index = 0; index < expected.length; index++) {
+    difference |= expected.charCodeAt(index) ^ provided.charCodeAt(index);
+  }
+  return difference === 0;
+}
 
 function cleanProviderIdentity(value: unknown) {
   return typeof value === 'string' || typeof value === 'number'
@@ -367,7 +378,7 @@ serve(async (req) => {
       // Called by cron/admin with service role key — user_id passed in body
       // Verify caller is using service role key by checking if authHeader contains service role
       const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-      if (authHeader !== `Bearer ${serviceRoleKey}`) {
+      if ((!serviceRoleKey || authHeader !== `Bearer ${serviceRoleKey}`) && !hasPaymentRecoveryCronSecret(req)) {
         throw new Error('Unauthorized');
       }
       userId = body_user_id;
@@ -507,10 +518,11 @@ serve(async (req) => {
     let verifyResult: any;
     try {
       const verifyResponse = await fetch(
-        `${ERCASPAY_BASE_URL}/payment/transaction/verify/${transaction_reference}`,
+        `${ERCASPAY_BASE_URL}/payment/transaction/verify/${encodeURIComponent(transaction_reference)}`,
         {
           method: 'GET',
           signal: verifyController.signal,
+          redirect: 'error',
           headers: {
             'Accept': 'application/json',
             'Authorization': `Bearer ${ercasSecretKey}`,

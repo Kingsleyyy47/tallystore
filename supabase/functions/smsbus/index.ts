@@ -337,7 +337,12 @@ async function daisyGet(apiKey: string, params: Record<string, string>, timeoutM
   return text
 }
 
-async function daisyRequest(apiKey: string, params: Record<string, string>, timeoutMs = 12_000): Promise<{ text: string; headers: Headers }> {
+async function daisyRequest(
+  apiKey: string,
+  params: Record<string, string>,
+  timeoutMs = 12_000,
+  onReply?: (reply: { text: string; headers: Headers; status: number; bodyComplete: boolean }) => Promise<void>,
+): Promise<{ text: string; headers: Headers }> {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 12_000) throw new DaisySmsError('INVALID_RESPONSE', 'SMS service deadline is invalid')
   const url = new URL(Deno.env.get('DAISYSMS_BASE_URL') || DEFAULT_DAISY_BASE)
   url.searchParams.set('api_key', apiKey)
@@ -345,6 +350,8 @@ async function daisyRequest(apiKey: string, params: Record<string, string>, time
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  let response: Response | undefined
+  let replyReported = false
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       controller.abort()
@@ -355,8 +362,11 @@ async function daisyRequest(apiKey: string, params: Record<string, string>, time
     const res = await Promise.race([fetch(url.toString(), {
       signal: controller.signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
     }), timeout])
+    response = res
     if (res.status === 429) {
       void res.body?.cancel().catch(() => undefined)
+      replyReported = true
+      if (onReply) await onReply({ text: '', headers: res.headers, status: res.status, bodyComplete: false })
       throw new DaisySmsError('RATE_LIMIT_EXCEEDED', 'SMS requests are temporarily limited')
     }
     if (res.redirected || !res.body) throw new DaisySmsError('INVALID_RESPONSE', 'SMS service response was invalid')
@@ -379,8 +389,18 @@ async function daisyRequest(apiKey: string, params: Record<string, string>, time
     let offset = 0
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim()
+    replyReported = true
+    if (onReply) await onReply({ text, headers: res.headers, status: res.status, bodyComplete: true })
     if (!res.ok) throw new DaisySmsError('HTTP_ERROR', `SMS service request failed with HTTP ${res.status}`)
     return { text, headers: res.headers }
+  } catch (error) {
+    // If headers arrived but the bounded body could not be read, retain only
+    // the response status. Never guess or retain a partial allocation reply.
+    if (onReply && response && !replyReported) {
+      replyReported = true
+      await onReply({ text: '', headers: response.headers, status: response.status, bodyComplete: false })
+    }
+    throw error
   } finally {
     if (timer) clearTimeout(timer)
     controller.abort()
@@ -610,10 +630,15 @@ async function daisyGetServicesWithDiagnostics(apiKey: string): Promise<{ servic
   return { services: [], diagnostics }
 }
 
-async function daisyGetNumber(apiKey: string, serviceCode: string, maxPriceUsd?: number): Promise<{ activationId: string; phoneNumber: string; priceUsd?: number }> {
+async function daisyGetNumber(
+  apiKey: string,
+  serviceCode: string,
+  maxPriceUsd?: number,
+  onReply?: (reply: { text: string; headers: Headers; status: number; bodyComplete: boolean }) => Promise<void>,
+): Promise<{ activationId: string; phoneNumber: string; priceUsd?: number }> {
   const params: Record<string, string> = { action: 'getNumber', service: serviceCode }
   if (maxPriceUsd !== undefined) params.max_price = maxPriceUsd.toFixed(4)
-  const { text, headers } = await daisyRequest(apiKey, params)
+  const { text, headers } = await daisyRequest(apiKey, params, 12_000, onReply)
   if (text === 'RATE_LIMIT_EXCEEDED') throw new DaisySmsError('RATE_LIMIT_EXCEEDED', 'SMS allocation outcome needs review after rate limiting')
   if (text === 'NO_NUMBERS') throw new DaisySmsError('NO_NUMBERS', 'No numbers available for this service right now.')
   if (text === 'MAX_PRICE_EXCEEDED') throw new DaisySmsError('MAX_PRICE_EXCEEDED', 'Service price has changed. Please try again.')
@@ -623,7 +648,7 @@ async function daisyGetNumber(apiKey: string, serviceCode: string, maxPriceUsd?:
   if (text === 'BAD_SERVICE') throw new DaisySmsError('BAD_SERVICE', 'This SMS service is unavailable. Please choose another service.')
   // Provider-compatible proxies may return opaque activation IDs and +E.164 phones.
   const match = text.match(/^ACCESS_NUMBER:([A-Za-z0-9_-]{1,128}):(\+?\d{7,15})$/)
-  if (!match) throw new DaisySmsError('PARSE_ERROR', `Unexpected rent response: ${text}`)
+  if (!match) throw new DaisySmsError('PARSE_ERROR', 'SMS allocation response requires review')
   const rawHeaderPrice = headers.get('x-price') || headers.get('X-Price')
   const headerPrice = rawHeaderPrice?.trim() ? Number(rawHeaderPrice) : NaN
   return {
@@ -1683,6 +1708,22 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     return json({ success: true, data: publicSmsOrder(existing), idempotency_hit: true })
   }
 
+  // A new key must not charge this customer again while their earlier purchase
+  // for this service has an unknown allocation or refund outcome. Existing-key
+  // reads above keep their original response and never dispatch another number.
+  const { data: unresolvedOrders, error: unresolvedError } = await admin.from('sms_orders')
+    .select('id,reference')
+    .eq('user_id', userId).eq('service_id', serviceCode).eq('order_type', 'otp')
+    .in('status', ['pending', 'processing', 'active', 'waiting']).is('refunded_at', null)
+    .or('provider_request_id.is.null,error_code.in.(PARSE_ERROR,TIMEOUT,RATE_LIMIT_EXCEEDED,HTTP_ERROR,INVALID_RESPONSE,SMS_TRANSPORT_OR_PERSISTENCE_FAILURE,SMS_OUTCOME_REVIEW_REQUIRED,SMS_REFUND_REVIEW_REQUIRED,REFUND_REVIEW_REQUIRED)')
+    .order('created_at', { ascending: true }).limit(1)
+  if (unresolvedError) throw new Error('Could not verify previous SMS purchase outcomes')
+  if (unresolvedOrders?.length) return json({
+    success: false, code: 'SMS_PREVIOUS_ALLOCATION_REVIEW_REQUIRED',
+    error: 'Your previous SMS purchase for this service needs review. Check your orders or contact support before buying again.',
+    order_id: unresolvedOrders[0].id, reference: unresolvedOrders[0].reference,
+  }, 409)
+
   await recordRevenueEvent(admin, {
     eventType: 'PAYMENT_STARTED',
     eventId: `sms:PAYMENT_STARTED:${idempotencyKey}`,
@@ -1719,6 +1760,7 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
   let number: { activationId: string; phoneNumber: string; priceUsd?: number } | null = null
   let providerRequestStarted = false
   let providerCancellationConfirmed = false
+  let allocationReply: Record<string, unknown> | null = null
 
   try {
     debit = await debitWallet(
@@ -1771,7 +1813,24 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
       estimatedPriceNgn / exchangeRate,
     )
     providerRequestStarted = true
-    number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd)
+    number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd, async (reply) => {
+      // This column is server-only. Persist the bounded response before parsing
+      // so an unfamiliar reply cannot erase the only allocation evidence. Never
+      // retain the API key, request URL or arbitrary response headers.
+      allocationReply = {
+        provider: 'daisysms', action: 'getNumber', http_status: reply.status,
+        body_complete: reply.bodyComplete,
+        body: reply.text.replaceAll(key, '[redacted-api-key]'),
+        price_header: reply.headers.get('x-price')?.slice(0, 128).replaceAll(key, '[redacted-api-key]') || null,
+        observed_at: new Date().toISOString(),
+      }
+      const { data: recordedOrder, error: recordError } = await admin.from('sms_orders').update({
+        last_provider_response: { ...(order.last_provider_response || {}), allocation_reply: allocationReply },
+      }).eq('id', order.id).eq('user_id', userId).eq('status', 'processing')
+        .is('refunded_at', null).select('*').maybeSingle()
+      if (recordError || !recordedOrder) throw new Error('SMS allocation evidence could not be recorded')
+      order = recordedOrder
+    })
     const effectiveProviderUsd = number.priceUsd ?? svc.provider_cost_usd
     const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true, svc.owner_markup_rule)
     if (effectivePricing.providerCostNgn > estimatedPriceNgn) {
@@ -1864,6 +1923,7 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
         error_message: safeToRefund ? friendlyError(err) : 'Provider outcome requires review.',
         last_provider_response: {
           ...(order.last_provider_response || {}), allocation_failure: allocationEvidence,
+          ...(allocationReply ? { allocation_reply: allocationReply } : {}),
           ...(providerCancellationConfirmed ? { sms_cancellation: providerEvidence } : {}),
         },
         updated_at: new Date().toISOString(),

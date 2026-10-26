@@ -19,7 +19,8 @@ function fixture({ expectedPriceNgn, walletAllowed, debitAllowed = true }) {
   const exports = {}
   const admin = { from(table) {
     assert.ok(['sms_orders', 'transactions'].includes(table))
-    return { select() { return this }, eq() { return this }, async maybeSingle() { return { data: null, error: null } } }
+    return { select() { return this }, eq() { return this }, in() { return this }, is() { return this }, or() { return this }, order() { return this },
+      async limit() { return { data: [], error: null } }, async maybeSingle() { return { data: null, error: null } } }
   } }
   const context = {
     exports, Date, Math, Number, String,
