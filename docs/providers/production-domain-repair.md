@@ -10,10 +10,10 @@ This release starts from the actual production commit and brings in the provider
 integrations, dashboard controls, current SMM catalogue and SMS catalogue surface.
 The original working directory's unrelated changes are preserved separately.
 
-Admins can now browse customer routes instead of being redirected from every
-`requireRole="user"` route to `/admin`. Login and current-role checks remain in
-place. Admin/staff management routes retain their permissions, staff-only account
-restrictions are unchanged, and server purchase authorization is unchanged.
+Admins and staff can now browse customer routes instead of being redirected from
+every `requireRole="user"` route to their management dashboard. Login and
+current-role checks remain in place. Admin/staff management routes retain their
+permissions, and server purchase authorization is unchanged.
 
 TextVerify has no fixed place in the fallback order. Its current availability,
 delivery history and speed determine its position. Supplier catalogue failures

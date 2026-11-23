@@ -34,9 +34,8 @@ export function ProtectedRoute({ children, redirectTo = '/login', requireRole }:
     return <RoleLookupUnavailable message={roleLookupError} retry={retryRoleLookup} />
   }
 
-  // Admins may browse the storefront. Purchases still enforce their own server
-  // authorization; staff-only accounts retain their existing restrictions.
-  if (requireRole === 'user' && isStaff && !isAdmin) return <Navigate to="/staff-admin" replace />
+  // Signed-in customers, admins and staff may browse the storefront.
+  // Management routes and purchases enforce their own role permissions.
 
   if (requireRole === 'admin' && !isAdmin) {
     // Staff members trying to hit /admin get sent to their own page

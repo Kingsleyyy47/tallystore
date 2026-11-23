@@ -21,8 +21,9 @@ const render=(props={})=>renderToStaticMarkup(React.createElement(ProtectedRoute
 auth={user:{id:'admin'},loading:false,isAdmin:true,isStaff:false};assert.match(render(),/Storefront/);assert.doesNotMatch(render(),/data-redirect/);
 auth={...auth,isStaff:true};assert.match(render(),/Storefront/);assert.doesNotMatch(render(),/data-redirect/);auth={...auth,isStaff:false};
 auth={...auth,isAdmin:false};assert.match(render(),/Storefront/);assert.match(render({requireRole:'admin'}),/data-redirect="\/dashboard"/);
-auth={...auth,isStaff:true};assert.match(render(),/data-redirect="\/staff-admin"/);assert.match(render({requireRole:'admin'}),/data-redirect="\/staff-admin"/);
+auth={...auth,isStaff:true};assert.match(render(),/Storefront/);assert.doesNotMatch(render(),/data-redirect/);assert.match(render({requireRole:'admin'}),/data-redirect="\/staff-admin"/);assert.match(render({requireRole:'staff'}),/Storefront/);
 auth={...auth,user:null};assert.match(render(),/data-redirect="\/login"/);
 auth={user:{id:'admin'},loading:false,isAdmin:true,isStaff:false,roleLookupError:'Role lookup failed',retryRoleLookup:async()=>{}};assert.match(render(),/Role lookup failed/);assert.doesNotMatch(render(),/Storefront/);
 auth={...auth,roleLookupError:null};assert.match(renderToStaticMarkup(React.createElement(PublicRoute,{children:'Login'})),/data-redirect="\/admin"/);
-console.log('Actual route guard: admins can browse customer pages; login, role lookup and staff/admin authorization restrictions remain enforced.');
+auth={user:{id:'staff'},loading:false,isAdmin:false,isStaff:true};assert.match(renderToStaticMarkup(React.createElement(PublicRoute,{children:'Login'})),/data-redirect="\/staff-admin"/);
+console.log('Actual route guard: admins and staff can browse customer pages; login, role lookup and management authorization remain enforced.');
