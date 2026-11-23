@@ -7,33 +7,33 @@ const equal=(a:unknown,b:unknown)=>assert(JSON.stringify(a)===JSON.stringify(b),
 const rejects=async(task:()=>Promise<unknown>)=>{let failed=false;try{await task()}catch{failed=true}assert(failed)};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'Content-Type':'application/json'}});
 const health=(provider:string,product_key:string,delivered:number,failed:number,mean_delivery_ms=30000)=>({provider,product_key,accepted:delivered+failed,delivered,failed,mean_delivery_ms,no_stock:0,declined:0,unknown:0});
-Deno.test('SMS routing prioritizes actual reliability and speed for each product and falls back to price while learning',()=>{
+Deno.test('SMS routing selects cheapest eligible offers before delivery-score tie breakers',()=>{
   const offers=[{provider:'getatext',price:0.4},{provider:'daisysms_io',price:0.6}];
   const state={controls:{},metrics:[health('getatext','wa',20,0),health('daisysms_io','wa',5,10),health('getatext','go',2,10),health('daisysms_io','go',25,0)]};
-  equal(rankedSmsOffers(offers,state,'wa')[0].provider,'getatext');equal(rankedSmsOffers(offers,state,'go')[0].provider,'daisysms_io');
+  equal(rankedSmsOffers(offers,state,'wa')[0].provider,'getatext');equal(rankedSmsOffers(offers,state,'go')[0].provider,'getatext');
   equal(rankedSmsOffers(offers,{controls:{},metrics:[]},'wa')[0].provider,'getatext');
   equal(rankedSmsOffers(offers,{controls:{getatext:false},metrics:state.metrics},'wa')[0].provider,'daisysms_io');
   const circuit={...health('getatext','wa',25,0),circuit_until:new Date(Date.now()+60000).toISOString()};
   equal(rankedSmsOffers(offers,{controls:{},metrics:[circuit]},'wa')[0].provider,'daisysms_io');
   const speed={controls:{},metrics:[health('getatext','wa',25,0,240000),health('daisysms_io','wa',25,0,15000)]};
-  equal(rankedSmsOffers(offers,speed,'wa')[0].provider,'daisysms_io');
+  equal(rankedSmsOffers(offers,speed,'wa')[0].provider,'getatext');
 });
 const keyNames=['GETATEXT_API_KEY','DAISYSMS_API_KEY','DAISYSMS_IO_API_KEY','DAISYSMS_COM_API_KEY','DAISYSMS_BASE_URL','DAISYSIM_API_KEY','HEROSMS_API_KEY','SMSACTIVATE_API_KEY','TEXTVERIFY_API_KEY','SMSBUS_API_KEY','LORDOFPANELS_API_KEY','SMM_PANEL_API_KEY','BULKFOLLOWS_API_KEY','BITREFILL_API_KEY','ISTAR_API_KEY','FRAGMENTAPI_API_KEY','KORAPAY_SECRET_KEY','NOWPAYMENTS_API_KEY','POCKETFI_SECRET_KEY','POCKETFI_PUBLIC_KEY','ERCASPAY_SECRET_KEY','SAGECLOUD_SECRET_KEY','MUABANVIA_API_KEY','SHOPCLONE_API_KEY','SHOPVIACLONE_API_KEY','ANTHROPIC_API_KEY'];
-Deno.test('TextVerify drops after poor delivery and automatically recovers its ranking with healthy results',()=>{
+Deno.test('TextVerify can rejoin cheapest-first routing after a temporary availability circuit clears',()=>{
   const offers=[{provider:'textverify',price:0.4},{provider:'daisysms_io',price:0.6},{provider:'getatext',price:0.7}];
-  const degraded={controls:{},metrics:[health('textverify','wa',2,30,240000)]};
-  equal(rankedSmsOffers(offers,degraded,'wa').at(-1)?.provider,'textverify');
+  const degraded={controls:{},metrics:[{...health('textverify','wa',2,30,240000),circuit_until:new Date(Date.now()+60000).toISOString()}]};
+  equal(rankedSmsOffers(offers,degraded,'wa').some(offer=>offer.provider==='textverify'),false);
   const recovered={controls:{},metrics:[health('textverify','wa',300,0,1000)]};
   equal(rankedSmsOffers(offers,recovered,'wa')[0].provider,'textverify');
   equal(rankedSmsOffers(offers,{controls:{textverify:false},metrics:recovered.metrics},'wa').some(offer=>offer.provider==='textverify'),false);
 });
-Deno.test('international provider selection is country-specific, enforces fresh choices, and does not alter US automatic ranking',()=>{
+Deno.test('US and international both automatically consider all matching active suppliers',()=>{
   const offers=[{provider:'herosms',price:0.4},{provider:'smsbus',price:0.6}];
   const state={controls:{},international_provider:'smsbus',metrics:[]};
-  equal(rankedSmsOffers(offers,state,'c-CA~wa').map(offer=>offer.provider),['smsbus']);
+  equal(rankedSmsOffers(offers,state,'c-CA~wa').map(offer=>offer.provider),['herosms','smsbus']);
   equal(rankedSmsOffers(offers,state,'wa').map(offer=>offer.provider),['herosms','smsbus']);
-  equal(rankedSmsOffers(offers,{...state,international_provider:'herosms'},'c-CA~wa').map(offer=>offer.provider),['herosms']);
-  equal(rankedSmsOffers(offers,{...state,controls:{smsbus:false}},'c-CA~wa'),[]);
+  equal(rankedSmsOffers(offers,{...state,international_provider:'herosms'},'c-CA~wa').map(offer=>offer.provider),['herosms','smsbus']);
+  equal(rankedSmsOffers(offers,{...state,controls:{smsbus:false}},'c-CA~wa').map(offer=>offer.provider),['herosms']);
 });
 async function mock(keys:Record<string,string>,fetcher:typeof fetch,task:()=>Promise<void>){
   const saved=keyNames.map(key=>Deno.env.get(key)),original=globalThis.fetch;invalidateProviderRead('');
@@ -41,8 +41,8 @@ async function mock(keys:Record<string,string>,fetcher:typeof fetch,task:()=>Pro
   try{await task()}finally{globalThis.fetch=original;keyNames.forEach((key,i)=>saved[i]===undefined?Deno.env.delete(key):Deno.env.set(key,saved[i]!));invalidateProviderRead('')}
 }
 Deno.test('country/service cards group matching offers without combining variants, countries or supplier stock pools',async()=>{
-  let selected='smsbus',paid=0;
-  const admin={rpc:async(name:string)=>({data:name==='get_sms_provider_routing_state'?{controls:{},international_provider:selected,metrics:[]}:true,error:null})};
+  let disabled=false,paid=0;
+  const admin={rpc:async(name:string)=>({data:name==='get_sms_provider_routing_state'?{controls:{smsbus:!disabled},metrics:[]}:true,error:null})};
   await mock({GETATEXT_API_KEY:'synthetic-getatext',SMSBUS_API_KEY:'synthetic-smsbus'},async(input)=>{
     const url=new URL(String(input));
     if(url.hostname==='getatext.com')return json({prices:[{api_name:'whatsapp',service_name:'WhatsApp',price:0.5,stock:3,multiple_sms:true},{api_name:'igthreads',service_name:'Instagram / Threads',price:0.7,stock:7,multiple_sms:true},{api_name:'instagram',service_name:'Instagram',price:0.6,stock:5,multiple_sms:false}]});
@@ -55,7 +55,7 @@ Deno.test('country/service cards group matching offers without combining variant
     equal(wa.offers.length,2);equal(wa.count,2);equal(wa.priceUsd,0.3);
     assert(us.products.some(product=>product.name==='Instagram / Threads'));assert(us.products.some(product=>product.name==='Instagram'));
     const canada=await smsCatalogue(true,admin,'CA');equal(canada.products.length,1);equal(canada.products[0].code,'c-CA~wa');equal(canada.products[0].offers.map(offer=>offer.provider),['smsbus']);
-    selected='herosms';await rejects(()=>smsBuy('c-CA~wa',1,admin));equal(paid,0);
+    disabled=true;await rejects(()=>smsBuy('c-CA~wa',1,admin));equal(paid,0);
   });
 });
 Deno.test('disabled SMS provider is excluded at purchase even with a warm catalogue; accepted status remains pinned',async()=>{
@@ -123,5 +123,35 @@ Deno.test('store DaisySim account is one SMSBus connection without a duplicate a
     assert(!accounts.some(account=>account.id==='daisysim'));
     const account=accounts.find(account=>account.id==='smsbus')!;
     equal(account.name,'DaisySim / SMSBus');equal(account.status,'ready');equal(requests,['sms-bus.com']);
+  });
+});
+Deno.test('PocketFi, ErcasPay and Anthropic are absent from the balance panel and cause no balance calls',async()=>{
+  let calls=0;
+  await mock({POCKETFI_PUBLIC_KEY:'synthetic-pocket',ERCASPAY_SECRET_KEY:'synthetic-ercas',ANTHROPIC_API_KEY:'synthetic-anthropic'},async()=>{calls++;throw new Error('No hidden provider read expected')},async()=>{
+    const accounts=await providerBalances();assert(!accounts.some(account=>['pocketfi','ercaspay','anthropic'].includes(account.id)));equal(calls,0);
+  });
+});
+Deno.test('each card selects the cheapest affordable provider, skips depleted accounts, refreshes before allocation and never retries an unknown purchase',async()=>{
+  let getFunds=0,daisyFunds=1,unknown=false;const paid:string[]=[];
+  const admin={rpc:async(name:string)=>({data:name==='get_sms_provider_routing_state'?{controls:{},routing_strategy:'cheapest_funded',metrics:[]}:true,error:null})};
+  await mock({GETATEXT_API_KEY:'synthetic-getatext',DAISYSMS_IO_API_KEY:'synthetic-daisy'},async(input)=>{
+    const url=new URL(String(input));
+    if(url.hostname==='daisysms.io'){
+      const action=url.searchParams.get('action');
+      if(action==='getBalance')return new Response(`ACCESS_BALANCE:${daisyFunds}`);
+      if(action==='getPricesVerification')return json({wa:{187:{price:0.4,count:10}}});
+      paid.push('daisysms_io');return new Response('ACCESS_NUMBER:1:15550000001',{headers:{'X-Price':'0.4'}});
+    }
+    if(url.pathname.endsWith('/balance'))return json({status:'success',balance:String(getFunds)});
+    if(url.pathname.endsWith('/prices-info'))return json({prices:[{api_name:'whatsapp',service_name:'WhatsApp',price:0.2,stock:2,multiple_sms:true}]});
+    paid.push('getatext');return unknown?new Response('UNRECOGNIZED_PAID_OUTCOME'):json({id:2,number:'15550000002',price:'0.2'},201);
+  },async()=>{
+    let product=(await smsCatalogue(true,admin)).products.find(product=>product.code==='wa')!;equal(product.priceUsd,0.4);equal(product.count,10);equal(product.routing?.selected_provider,'daisysms_io');
+    await smsBuy('wa',0.4,admin);equal(paid,['daisysms_io']);
+    daisyFunds=0;await rejects(()=>smsBuy('wa',0.4,admin));equal(paid,['daisysms_io']);
+    getFunds=1;daisyFunds=1;invalidateProviderRead('provider-balance:');
+    product=(await smsCatalogue(false,admin)).products.find(product=>product.code==='wa')!;equal(product.priceUsd,0.2);equal(product.count,2);equal(product.routing?.selected_provider,'getatext');
+    await smsBuy('wa',0.2,admin);equal(paid,['daisysms_io','getatext']);
+    unknown=true;await rejects(()=>smsBuy('wa',0.4,admin));equal(paid,['daisysms_io','getatext','getatext']);
   });
 });

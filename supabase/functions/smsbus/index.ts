@@ -7,7 +7,7 @@ import { smsCatalogue, smsBuy, smsStatus, smsCancel, smsDone, parseSmsReference,
 import { ProviderDeclined } from '../_shared/provider-contract.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts'
-import { customerMarkupPrice, loadSmsMarkupRules, loadSmsProductSettings, type CustomerMarkupRule } from '../_shared/customer-service-pricing.ts'
+import { customerMarkupPrice, loadSmsMarkupRules, loadSmsProductSettings, fixedSmsPricing, smsCountryMarkup, type CustomerMarkupRule } from '../_shared/customer-service-pricing.ts'
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -867,7 +867,8 @@ type SmsCatalogItem = {
   is_favorite: boolean
   price_override_ngn: number | null
   auto_markup_enabled: boolean
-  pricing_mode: 'auto_markup' | 'manual_margin' | 'override' | 'owner_markup'
+  pricing_mode: 'auto_markup' | 'manual_margin' | 'override' | 'owner_markup' | 'country_markup'
+  routing?: {strategy:string;selected_provider:string|null;candidate_count:number;funded_count:number}
   owner_markup_rule?: CustomerMarkupRule
 }
 
@@ -967,40 +968,8 @@ function roundUpToNearestTen(value: number) {
   return Math.ceil(value / 10) * 10
 }
 
-function priceSmsService(
-  providerCostUsd: number,
-  exchangeRate: number,
-  setting: Partial<SmsProductSetting>,
-  globalMarginNgn: number,
-  roundAutoPricesToNearestTen: boolean,
-  ownerRule?: CustomerMarkupRule,
-) {
-  const providerCostNgn = Math.ceil(providerCostUsd * exchangeRate)
-  if (ownerRule && !ownerRule.legacy_pricing) {
-    const priceNgn = customerMarkupPrice(providerCostNgn, ownerRule)
-    const marginNgn = priceNgn - providerCostNgn
-    return {
-      providerCostNgn, marginNgn, marginUsd: marginNgn / exchangeRate,
-      priceNgn, totalUsd: priceNgn / exchangeRate, pricingMode: 'owner_markup' as const,
-    }
-  }
-  const overrideNgn = optionalNaira(setting.price_override_ngn)
-  const marginNgn = optionalNaira(setting.margin_ngn) ?? Math.round(globalMarginNgn)
-  const autoPriceNgn = Math.max(0, providerCostNgn + marginNgn)
-  const priceNgn = overrideNgn !== null
-    ? overrideNgn
-    : roundAutoPricesToNearestTen ? roundUpToNearestTen(autoPriceNgn) : autoPriceNgn
-  const marginUsd = Math.max(0, (priceNgn - providerCostNgn) / exchangeRate)
-  return {
-    providerCostNgn,
-    marginNgn,
-    marginUsd,
-    priceNgn,
-    totalUsd: priceNgn / exchangeRate,
-    pricingMode: overrideNgn !== null
-      ? 'override'
-      : setting.auto_markup_enabled === false ? 'manual_margin' : 'auto_markup',
-  } as const
+function priceSmsService(providerCostUsd:number,exchangeRate:number,_setting:Partial<SmsProductSetting>,_globalMarginNgn:number,_roundAutoPricesToNearestTen:boolean,_ownerRule?:CustomerMarkupRule,countryCode='US') {
+  return fixedSmsPricing(providerCostUsd,exchangeRate,countryCode)
 }
 
 async function syncSmsProductSettings(admin: SupabaseAdmin, services: DaisyService[], exchangeRate: number) {
@@ -1076,8 +1045,8 @@ async function loadSmsCatalog(admin: SupabaseAdmin, userId?: string | null, coun
   if (!key) return { products: [] as SmsCatalogItem[], diagnostics: null, exchangeRate: 0, globalMarginNgn: DEFAULT_SMS_MARGIN_NGN }
 
   const { rate: exchangeRate, source: exchangeRateSource } = await getSmsExchangeRate(admin)
-  const globalMarginNgn = await getNumericAppSetting(admin, 'sms_default_margin_ngn', DEFAULT_SMS_MARGIN_NGN)
-  const roundAutoPricesToNearestTen = await getBooleanAppSetting(admin, 'sms_round_markup_to_nearest_10', false)
+  const globalMarginNgn = smsCountryMarkup(countryCode)
+  const roundAutoPricesToNearestTen = false
   const routed = await smsCatalogue(false, admin, countryCode)
   const services = routed.products
   const diagnostics = { configured_providers: routed.diagnostics }
@@ -1089,16 +1058,14 @@ async function loadSmsCatalog(admin: SupabaseAdmin, userId?: string | null, coun
   const settingsRows = await loadSmsProductSettings(admin, services.map(svc=>svc.code))
 
   const settings = new Map<string, SmsProductSetting>((settingsRows || []).map((row: SmsProductSetting) => [row.service_code, row]))
-  const ownerRules = await loadSmsMarkupRules(admin, services.map(service => service.code))
   const [buyCounts, personalBuyCounts] = await Promise.all([
     getSmsServiceBuyCounts(admin),
     userId ? getSmsServiceBuyCounts(admin, userId) : Promise.resolve(new Map<string, number>()),
   ])
   const products = services.map((svc, index) => {
     const setting = settings.get(svc.code) || { service_code: svc.code }
-    const ownerRule = ownerRules.get(svc.code)
-    if (!ownerRule) throw new Error('SMS pricing is temporarily unavailable')
-    const pricing = priceSmsService(svc.priceUsd, exchangeRate, setting, globalMarginNgn, roundAutoPricesToNearestTen, ownerRule)
+    const ownerRule:CustomerMarkupRule={mode:'amount',value:globalMarginNgn,source:'global',legacy_pricing:false}
+    const pricing = priceSmsService(svc.priceUsd, exchangeRate, setting, globalMarginNgn, roundAutoPricesToNearestTen, ownerRule,countryCode)
     const isFavorite = setting.is_favorite === true
     const buyCount = buyCounts.get(svc.code) || 0
     const personalBuyCount = personalBuyCounts.get(svc.code) || 0
@@ -1123,10 +1090,11 @@ async function loadSmsCatalog(admin: SupabaseAdmin, userId?: string | null, coun
       recommended_score: getRecommendedScore(isFavorite, buyCount, personalBuyCount, svc.count, pricing.priceNgn),
       is_enabled: setting.is_enabled !== false,
       is_favorite: isFavorite,
-      price_override_ngn: optionalNaira(setting.price_override_ngn),
-      auto_markup_enabled: setting.auto_markup_enabled !== false,
+      price_override_ngn: null,
+      auto_markup_enabled: true,
       pricing_mode: pricing.pricingMode,
       owner_markup_rule: ownerRule,
+      routing: svc.routing,
     }
   })
 
@@ -1466,7 +1434,7 @@ async function handleHealth() {
 async function handleServices(admin: SupabaseAdmin, userId: string, body: Record<string,unknown> = {}) {
   const { products, diagnostics } = await buildSmsCatalog(admin, userId, String(body.country_code || 'US').toUpperCase())
   const customerProducts = products
-    .filter((service) => service.is_enabled && service.available_count > 0 && service.price_ngn > 0)
+    .filter((service) => service.is_enabled && service.price_ngn > 0)
     .map((service) => ({
       service_id: service.service_id,
       service_code: service.service_code,
@@ -1497,6 +1465,8 @@ async function handleAdminSmsProducts(admin: SupabaseAdmin, userId: string) {
     exchange_rate: Number(exchangeRate.toFixed(4)),
     exchange_rate_source: exchangeRateSource || 'unknown',
     global_margin_ngn: Math.round(globalMarginNgn),
+    markup_by_country:{US:700,CA:600,default:500},
+    routing_strategy:'cheapest_funded',
     round_to_nearest_10: roundAutoPricesToNearestTen === true,
   })
 }
@@ -1816,7 +1786,7 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     }
     order = pendingOrder
 
-    const maxProviderPriceUsd = estimatedPriceNgn / exchangeRate
+    const maxProviderPriceUsd = (estimatedPriceNgn-smsCountryMarkup(smsCountryFromCode(serviceCode))) / exchangeRate
     const providerAttemptStartedAt = new Date().toISOString()
     providerRequestStarted = true
     number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd, admin, async (reply) => {
@@ -1838,8 +1808,8 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
       order = recordedOrder
     })
     const effectiveProviderUsd = number.priceUsd ?? svc.provider_cost_usd
-    const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true, svc.owner_markup_rule)
-    if (effectivePricing.providerCostNgn > estimatedPriceNgn) {
+    const effectivePricing = priceSmsService(effectiveProviderUsd, exchangeRate, svc, globalMarginNgn, roundAutoPricesToNearestTen === true, svc.owner_markup_rule,smsCountryFromCode(serviceCode))
+    if (effectivePricing.priceNgn > estimatedPriceNgn) {
       throw new Error('Service price changed before purchase. Please refresh and try again.')
     }
     const marginUsd = Math.max(0, (priceNgn - effectivePricing.providerCostNgn) / exchangeRate)
@@ -2456,7 +2426,7 @@ serve(async (req) => {
       const admin=createClient(Deno.env.get('SUPABASE_URL')||'',service,{auth:{persistSession:false}});
       try {
         const result=await buildSmsCatalog(admin,null,String(body.country_code||'US').toUpperCase(),true,false);
-        return json({success:true,products:result.products.length,visible_products:result.products.filter(product=>product.is_enabled&&product.available_count>0&&product.price_ngn>0).length,sample_cards:result.products.filter(product=>/whatsapp|telegram|instagram|threads/i.test(product.service_name)).slice(0,12).map(product=>({service_id:product.service_id,service_name:product.service_name,country_code:product.country_code,multiple_sms:product.multiple_sms,available_count:product.available_count,price_ngn:product.price_ngn})),diagnostics:result.diagnostics,paid_calls:0,database_writes:0});
+        return json({success:true,products:result.products.length,visible_products:result.products.filter(product=>product.is_enabled&&product.available_count>0&&product.price_ngn>0).length,sample_cards:result.products.filter(product=>/whatsapp|telegram|instagram|threads/i.test(product.service_name)).slice(0,12).map(product=>({service_id:product.service_id,service_name:product.service_name,country_code:product.country_code,multiple_sms:product.multiple_sms,available_count:product.available_count,price_ngn:product.price_ngn,provider_cost_ngn:product.provider_cost_ngn,markup_ngn:product.margin_ngn,routing:product.routing})),diagnostics:result.diagnostics,paid_calls:0,database_writes:0});
       }catch(error){
         let diagnostic=error instanceof Error?error.message:'SMS_CATALOG_FAILED';
         for(const value of Object.values(Deno.env.toObject()))if(value.length>12)diagnostic=diagnostic.replaceAll(value,'[redacted]');
@@ -2504,9 +2474,9 @@ serve(async (req) => {
       case 'admin_bulk_sms_products':
         return await handleAdminBulkSmsProducts(admin, user.id, body)
       case 'admin_apply_sms_markup':
-        return await handleAdminApplySmsMarkup(admin, user.id, body)
+        await requireSmsProductAccess(admin,user.id,true);return json({success:false,error:'SMS markups are fixed: US ₦700, Canada ₦600, other countries ₦500.'},400)
       case 'admin_set_sms_rounding':
-        return await handleAdminSetSmsRounding(admin, user.id, body)
+        await requireSmsProductAccess(admin,user.id,true);return json({success:false,error:'SMS country markups use exact naira pricing.'},400)
       case 'countries':    return json({ success: true, data: await smsCountries() })
       case 'rental_areas': return json({ success: true, data: await rentalAreas(admin) })
       case 'orders':       return await handleOrders(admin, user.id)

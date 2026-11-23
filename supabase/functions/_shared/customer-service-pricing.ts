@@ -4,6 +4,17 @@ export type CustomerMarkupRule = {
   source: 'global' | 'product' | 'denomination'
   legacy_pricing: boolean
 }
+export function smsCountryMarkup(countryOrCode='US') {
+  const country=/^c-([A-Z]{2})~/i.exec(countryOrCode)?.[1].toUpperCase()||(/^[A-Z]{2}$/.test(countryOrCode)?countryOrCode.toUpperCase():'US');
+  return country==='US'?700:country==='CA'?600:500;
+}
+export function fixedSmsPricing(costUsd:number,exchangeRate:number,countryOrCode='US') {
+  if(!Number.isFinite(costUsd)||costUsd<=0||costUsd>1000000||!Number.isFinite(exchangeRate)||exchangeRate<=0||exchangeRate>1000000)throw new Error('Invalid SMS pricing');
+  const cost=BigInt(costUsd.toFixed(12).replace('.','')),rate=BigInt(exchangeRate.toFixed(8).replace('.','')),scale=10n**20n;
+  const providerCostNgn=Number((cost*rate+scale-1n)/scale),marginNgn=smsCountryMarkup(countryOrCode),priceNgn=providerCostNgn+marginNgn;
+  if(!Number.isSafeInteger(priceNgn)||priceNgn>100000000)throw new Error('Invalid SMS pricing');
+  return {providerCostNgn,marginNgn,marginUsd:marginNgn/exchangeRate,priceNgn,totalUsd:priceNgn/exchangeRate,pricingMode:'country_markup' as const};
+}
 
 export async function loadSmsProductSettings(admin: any, serviceCodes: string[]): Promise<Array<{ service_code: string; [key: string]: any }>> {
   const codes=[...new Set(serviceCodes)];

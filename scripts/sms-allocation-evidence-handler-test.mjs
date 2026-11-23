@@ -84,6 +84,7 @@ function fixture(options = {}) {
     },
     console: { error: (...values) => state.logs.push(values), warn: (...values) => state.logs.push(values) },
     smsCountryFromCode: () => 'US',
+    smsCountryMarkup:()=>700,
     parseSmsReference: () => null,
     getDaisyKey: () => key,
     assertPurchasingCustomer: async () => {},

@@ -1,4 +1,5 @@
 import { invalidateProviderRead, providerRead } from "./provider-read-cache.ts";
+import {smsOfferFunded,type SmsFunding} from './sms-provider-funding.ts';
 export const SMS_PROVIDER_IDS = [
   "getatext",
   "daisysms_io",
@@ -11,6 +12,8 @@ export const SMS_PROVIDER_IDS = [
 export type SmsRoutingState = {
   controls: Record<string, boolean>;
   international_provider?: string;
+  routing_strategy?:string;
+  funding?:SmsFunding;
   metrics: Array<
     {
       provider: string;
@@ -60,7 +63,7 @@ export function invalidateSmsPolicy() {
   invalidateProviderRead("sms-priced-catalog:");
 }
 export function smsProviderAllowed(provider:string,state:SmsRoutingState,country:string) {
-  return state.controls[provider]!==false && (country==='US' || !state.international_provider || state.international_provider===provider);
+  return state.controls[provider]!==false;
 }
 export function rankedSmsOffers<T extends { provider: string; price: number }>(
   offers: T[],
@@ -69,7 +72,7 @@ export function rankedSmsOffers<T extends { provider: string; price: number }>(
   now = Date.now(),
 ): T[] {
   const country=/^c-([A-Z]{2})~/.exec(product)?.[1]||'US';
-  const available = offers.filter((offer) => smsProviderAllowed(offer.provider,state,country));
+  const available = offers.filter((offer) => smsProviderAllowed(offer.provider,state,country)&&(!state.funding||smsOfferFunded(offer.provider,offer.price,state.funding))&&!state.metrics.some(metric=>metric.provider===offer.provider&&metric.product_key===product&&metric.circuit_until&&Date.parse(metric.circuit_until)>now));
   const cheapest = Math.min(...available.map((offer) => offer.price));
   const score = (offer: T) => {
     const metrics = state.metrics.find((row) =>
@@ -95,7 +98,7 @@ export function rankedSmsOffers<T extends { provider: string; price: number }>(
       0.02 * Math.log1p(offer.price / cheapest) - circuit;
   };
   return [...available].sort((a, b) =>
-    score(b) - score(a) || a.price - b.price ||
+    a.price - b.price || score(b) - score(a) ||
     a.provider.localeCompare(b.provider)
   );
 }

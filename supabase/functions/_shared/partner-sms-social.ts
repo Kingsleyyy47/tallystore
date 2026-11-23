@@ -118,7 +118,7 @@ export async function preparePartnerSmsPlan(admin: Admin, partner: Partner, body
       if (item.supplier_routing === true) {
         try {
           await savePartnerSupplierJournal(admin,_orderId,'sms',{outcome:'sending'});
-          const receipt=await smsBuy(serviceCode,price/rate,admin);
+          const receipt=await smsBuy(serviceCode,providerCostUsd,admin);
           await savePartnerSupplierJournal(admin,_orderId,'sms',{outcome:'accepted',...receipt});
           const reference=`smsr_${_orderId}`;
           return {kind:'accepted',source:'daisy',id:reference,status:'active',payload:{service_name:name,phone_number:`+${receipt.phoneNumber}`,raw_phone_number:receipt.phoneNumber,provider_order_id:reference}};

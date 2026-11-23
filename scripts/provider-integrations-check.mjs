@@ -1,5 +1,6 @@
 import {spawnSync} from 'node:child_process';
 const checks=[
+ ['Fixed SMS country markups','node',['scripts/customer-sms-markup-test.mjs']],
  ['Country/service SMS cards','node',['scripts/sms-country-cards-test.mjs']],
  ['International SMS admin selection','node',['scripts/sms-international-selection-pglite-test.mjs']],
  ['Storefront navigation authorization','node',['scripts/storefront-route-access-test.mjs']],

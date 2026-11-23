@@ -1,8 +1,8 @@
 import { providerHttp } from "./provider-http.ts";
-import { providerRead } from "./provider-read-cache.ts";
+import { providerRead, invalidateProviderRead } from "./provider-read-cache.ts";
 import { IStarProvider } from "./istar-provider.ts";
 import { isVisibleProvider, SMSBUS_DISPLAY_NAME } from "./provider-display.ts";
-const env = (name: string) => Deno.env.get(name)?.trim() || "";
+const env = (name: string) => typeof Deno==='undefined'?"":Deno.env.get(name)?.trim() || "";
 export type AccountBalance = {
   currency: string;
   available: string;
@@ -371,8 +371,9 @@ const definitions: Definition[] = [
     keys: ["ANTHROPIC_API_KEY"],
   },
 ];
-export async function providerBalances(): Promise<ProviderBalance[]> {
-  const visible=definitions.filter(definition => isVisibleProvider(definition.id,definition.keys.some(name=>!!env(name))));
+export async function providerBalances(options:{kind?:string;ids?:string[];fresh?:boolean}={}): Promise<ProviderBalance[]> {
+  const hidden=new Set(['pocketfi','ercaspay','anthropic']);
+  const visible=definitions.filter(definition => !hidden.has(definition.id)&&(!options.kind||definition.kind===options.kind)&&(!options.ids||options.ids.includes(definition.id))&&isVisibleProvider(definition.id,definition.keys.some(name=>!!env(name))));
   return Promise.all(visible.map(async (definition) => {
     const key = definition.keys.map(env).find(Boolean),
       base = {
@@ -400,6 +401,7 @@ export async function providerBalances(): Promise<ProviderBalance[]> {
           "A verified balance endpoint is not available for this integration.",
       };
     }
+    if(options.fresh)invalidateProviderRead(`provider-balance:${definition.id}`);
     return providerRead(
       `provider-balance:${definition.id}`,
       60_000,

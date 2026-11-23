@@ -18,5 +18,6 @@ try{
  assert.equal((await db.query('SELECT count(*)::int n FROM public.sms_international_selection_audit')).rows[0].n,1);
  await assert.rejects(db.query('SELECT public.set_sms_international_provider($1,$2)',['getatext',admin]),/invalid_international_provider/);
  for(const role of ['anon','authenticated'])for(const signature of ['get_sms_provider_routing_state(text)','get_sms_provider_delivery_state(text)','set_sms_international_provider(text,uuid)'])assert.equal((await db.query('SELECT has_function_privilege($1,$2,$3) AS allowed',[role,'public.'+signature,'EXECUTE'])).rows[0].allowed,false);
+ await db.exec(readFileSync('supabase/migrations/20261123002000_sms_cheapest_funded_routing.sql','utf8'));assert.equal((await state()).international_provider,'auto');assert.equal((await state()).routing_strategy,'cheapest_funded');assert.deepEqual((await state()).markup_by_country,{US:700,CA:600,default:500});
  console.log('International selection SQL: admin-only choice/audit, intact telemetry, safe default, invalid-provider denial and browser denial passed.');
 }finally{await db.close()}

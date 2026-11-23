@@ -21,18 +21,31 @@ only when every available fallback explicitly confirms that capability; otherwis
 the card promises a single SMS. No supplier name, account balance, API key or
 technical response is projected into customer cards.
 
-US offers continue ranking automatically by product delivery reliability, speed
-and availability. Only exact matching names and countries share a card. An
-unresolved supplier-local ID is excluded from customer cards, rather than exposed
-as a supplier-prefixed name or guessed into another country. Paid outcomes remain
-pinned: only a confirmed no-charge rejection can advance to another supplier.
+All US and international offers use the same per-card automatic selection: exact
+service/country matches only, with enabled provider, stock, verified USD balance
+sufficient for that specific offer, and the cheapest eligible price first.
+Delivery history breaks equal-price ties; recent stock/unknown failures impose a
+short availability circuit. Unresolved supplier-local IDs remain excluded.
+The former manual international supplier choice is retained only in audit history
+and does not restrict automatic matching.
 
-International Numbers uses the admin's selected HeroSMS or DaisySim / SMSBus
-connection. The initial selection is HeroSMS, whose account currency was confirmed
-as USD. Admin > Provider balances & SMS routing contains the selector. Staff can
-read the selection; only an active admin can change it. The server records the
-actor and checks the current selection again before allocating a number. An
-international selection never changes the US automatic ranking policy.
+Selling price is the supplier cost converted to NGN (rounded up to one naira) plus
+exactly ₦700 for US, ₦600 for Canada, or ₦500 for another country. Old per-product
+price overrides, percentage rules and nearest-₦10 rounding cannot override these
+SMS fees. Existing visibility/favorite controls remain available. Admin and staff
+product rows show the selected automatic provider and the exact markup.
+
+Balance reads share the existing one-minute cache and call only SMS suppliers for
+routing. Each allocation refreshes its selected provider's balance before sending.
+An account with unknown/denied balance or insufficient funds is excluded. A card
+with no funded route stays visible but unavailable; supplier stock alone must not
+be advertised as purchasable availability. The approved supplier cost cap preserves
+the markup; a more expensive new quote must be confirmed rather than silently
+spending the fee. Accepted or uncertain paid results never initiate another paid
+request.
+
+PocketFi, ErcasPay and Anthropic do not appear in the provider balance panel, and
+that panel does not call their balance endpoints.
 
 Supplier balance warnings load only on admin/staff management routes. They are
 not displayed over customer shopping, even when an admin or staff member browses.

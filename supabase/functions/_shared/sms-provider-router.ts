@@ -8,6 +8,7 @@ import {
   tryProductFallback,
 } from "./provider-contract.ts";
 import { SERVICE_NAMES } from "./daisysms-client.ts";
+import {smsProviderFunding,smsOfferFunded} from './sms-provider-funding.ts';
 
 type Provider =
   | "daisysms_io"
@@ -35,6 +36,7 @@ export type SmsProduct = {
   priceUsd: number;
   multipleMessages: boolean;
   offers: SmsOffer[];
+  routing?:{strategy:string;selected_provider:string|null;candidate_count:number;funded_count:number};
 };
 export type SmsReceipt = {
   activationId: string;
@@ -497,15 +499,15 @@ async function fetchSmsCatalogue(
   }
   const products = [...groups.values()].map((offers) => {
     const productCode=(countryCode==='US'?'':`c-${countryCode}~`)+(canonicalCodes.get(smsProductName(offers[0].name))||`u-${encodeURIComponent(smsProductName(offers[0].name))}`);
-    offers=rankedSmsOffers(offers,policy,productCode);
-    const available = offers.filter((row) => row.count > 0);
-    const primary = available[0] || offers[0];
+    const available = rankedSmsOffers(offers.filter(row=>row.count>0),policy,productCode);
+    const primary = available[0] || [...offers].sort((a,b)=>a.price-b.price)[0];
+    offers=[...offers].sort((a,b)=>a.price-b.price);
     const name = smsProductName(primary.name);
     return {
       code: (countryCode === "US" ? "" : `c-${countryCode}~`) +
         (canonicalCodes.get(name) || `u-${encodeURIComponent(name)}`),
       name: primary.name,
-      count: primary.count,
+      count: available.length?primary.count:0,
       priceUsd: primary.price,
       multipleMessages: available.length>0 && available.every((row) => row.multipleMessages === true),
       offers,
@@ -728,6 +730,7 @@ export async function smsBuy(code: string, maxPrice: number, admin?: any, onRepl
   const catalog = await smsCatalogue(false, admin, countryCode);
   const product = catalog.products.find((row) => row.code === code);
   if (!product) throw new ProviderDeclined("NO_NUMBERS");
+  if(policy.routing_strategy==='cheapest_funded')policy.funding=await smsProviderFunding(product.offers.map(offer=>offer.provider));
   let offers = product.offers.filter((row) =>
     row.count > 0 && row.price <= maxPrice
   );
@@ -776,7 +779,7 @@ export async function smsBuy(code: string, maxPrice: number, admin?: any, onRepl
   return tryProductFallback(
     rankedSmsOffers(offers,policy,code),
     async(offer)=>{
-      try{const result=await buyOffer(offer,maxPrice,onReply);await recordSmsProviderEvent(admin,offer.provider,code,'accepted',result.activationId);return result}
+      try{if(policy.routing_strategy==='cheapest_funded'&&!smsOfferFunded(offer.provider,offer.price,await smsProviderFunding([offer.provider],true)))throw new ProviderDeclined('NO_MONEY');const result=await buyOffer(offer,maxPrice,onReply);await recordSmsProviderEvent(admin,offer.provider,code,'accepted',result.activationId);return result}
       catch(error){await recordSmsProviderEvent(admin,offer.provider,code,error instanceof ProviderDeclined?(error.code==='NO_NUMBERS'?'no_stock':'declined'):'unknown');throw error}
     },
   );
@@ -905,7 +908,19 @@ export async function smsDone(reference: string) {
 
 export async function smsCountries() { return providerRead("sms-countries",300_000,fetchSmsCountries) }
 
-export async function smsCatalogue(force=false,admin?:any,countryCode="US") { const state=await smsRoutingState(admin); const active=smsProvidersConfigured().filter(provider=>state.controls[provider]!==false).sort().join(','); const key=`sms-catalogue:${countryCode}:${active}:${state.international_provider||'auto'}`; if(force)invalidateProviderRead(key); return providerRead(key,60_000,()=>fetchSmsCatalogue(true,admin,countryCode)) }
+export async function smsCatalogue(force=false,admin?:any,countryCode="US") {
+  const state=await smsRoutingState(admin);
+  const providers=smsProvidersConfigured().filter(provider=>state.controls[provider]!==false);
+  const key=`sms-catalogue:${countryCode}:${providers.sort().join(',')}`;
+  if(force)invalidateProviderRead(key);
+  const catalogue=await providerRead(key,60_000,()=>fetchSmsCatalogue(true,admin,countryCode));
+  if(state.routing_strategy==='cheapest_funded')state.funding=await smsProviderFunding(providers);
+  return {...catalogue,products:catalogue.products.map(product=>{
+    const eligible=rankedSmsOffers(product.offers.filter(offer=>offer.count>0),state,product.code);
+    const primary=eligible[0]||product.offers[0];
+    return {...product,priceUsd:primary.price,count:eligible.length?primary.count:0,multipleMessages:eligible.length>0&&eligible.every(offer=>offer.multipleMessages===true),routing:{strategy:'cheapest_funded',selected_provider:eligible[0]?.provider||null,candidate_count:product.offers.length,funded_count:eligible.length}};
+  })};
+}
 
 export async function smsStatus(reference:string,timeoutMs=12_000,admin?:any):Promise<SmsStatus> {
   const result=await providerRead(`sms-status:${reference}:${timeoutMs}`,3000,()=>fetchSmsStatus(reference,timeoutMs));

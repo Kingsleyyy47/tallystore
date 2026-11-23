@@ -139,7 +139,7 @@ export function SmsServiceCard(
         </p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
           {smsMessageMode(service)} ·{" "}
-          {service.available_count.toLocaleString("en-NG")} available
+          {service.available_count>0?`${service.available_count.toLocaleString("en-NG")} available`:"Currently unavailable"}
         </p>
       </div>
       <span className="shrink-0 rounded-full bg-[#7566f5] px-3 py-2 text-sm font-bold text-white">
@@ -211,7 +211,7 @@ export function SmsPurchasePanel({
                 {smsCardPrice(service.price_ngn)}
               </p>
             </div>
-            {insufficient && !busy
+            {insufficient && ready && service.available_count>0 && !busy
               ? (
                 <Link
                   to="/wallet"
@@ -233,6 +233,8 @@ export function SmsPurchasePanel({
                     ? "Checking…"
                     : walletUnavailable
                     ? "Check wallet"
+                    : !ready||service.available_count<=0
+                    ? "Unavailable"
                     : "Continue"}
                   {canContinue && <span aria-hidden="true">→</span>}
                 </button>
@@ -253,7 +255,9 @@ export function SmsPurchasePanel({
                 : smsCardPrice(walletBalance)}
             </span>
             <span>
-              {insufficient
+              {!ready||service.available_count<=0
+                ? "No number available right now"
+                : insufficient
                 ? `${smsCardPrice(shortfall)} left to add`
                 : walletUnavailable
                 ? "Refresh your balance to continue"

@@ -1,3 +1,4 @@
+import {fixedSmsPricing} from '../_shared/customer-service-pricing.ts'
 import { liveSmmCatalogue, refreshSmmService } from '../_shared/smm-live-catalog.ts'
 import { IStarProvider } from "../_shared/istar-provider.ts"
 import { providerRead } from "../_shared/provider-read-cache.ts"
@@ -663,10 +664,7 @@ async function smsCatalogue(admin: SupabaseAdmin, partner: any, purchaseQuote = 
       const liveService = live.get(row.service_code)
       const providerCostUsd = Number(liveService?.priceUsd ?? row.provider_cost_usd ?? 0)
       const count = Number(liveService?.count ?? row.available_count ?? 0)
-      const margin = Number(row.margin_ngn ?? DEFAULT_SMS_MARGIN_NGN)
-      const basePrice = Number(row.price_override_ngn || 0) > 0
-        ? Number(row.price_override_ngn)
-        : rate > 0 && providerCostUsd >= 0 ? Math.ceil(providerCostUsd * rate + margin) : 0
+      const basePrice=liveService&&rate>0&&providerCostUsd>0?fixedSmsPricing(providerCostUsd,rate,row.service_code).priceNgn:0
       return {
         ...(purchaseQuote ? { supplier_routing: true, live_verified: live.has(row.service_code), provider_cost_usd: providerCostUsd } : {}),
         type: 'sms',

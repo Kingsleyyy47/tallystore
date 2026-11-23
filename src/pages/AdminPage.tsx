@@ -1,3 +1,4 @@
+import SmsRoutingSummary,{type SmsAdminRoute} from '@/components/sms/SmsRoutingSummary'
 import ProviderAccounts from '@/components/ProviderAccounts'
 import ProviderIntegrations from '@/components/ProviderIntegrations'
 import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from 'react'
@@ -297,6 +298,7 @@ import { Switch } from '@/components/ui/switch'
 import { Checkbox } from '@/components/ui/checkbox'
 
 type AdminSmsProduct = {
+  routing?:SmsAdminRoute
   service_id: string
   service_code: string
   service_name: string
@@ -2321,82 +2323,8 @@ export default function AdminPage() {
   )
 
   const renderSmsProductRow = (product: AdminSmsProduct) => {
-    const rowSaving = smsSavingKey?.startsWith(product.service_code)
-    return (
-      <div key={product.service_code} className="grid gap-4 border-b py-4 last:border-b-0 lg:grid-cols-[minmax(180px,1.3fr)_220px_minmax(240px,1fr)_90px] lg:items-center">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 shrink-0"
-              title={product.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
-              disabled={rowSaving}
-              onClick={() => updateSmsProduct(product.service_code, { is_favorite: !product.is_favorite })}
-            >
-              <Star className={`h-4 w-4 ${product.is_favorite ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground'}`} />
-            </Button>
-            <div className="min-w-0">
-              <p className="truncate font-semibold">{product.service_name}</p>
-              <p className="text-xs text-muted-foreground">
-                {product.available_count.toLocaleString()} available · {Number(product.customer_buy_count || 0).toLocaleString()} buys · {product.service_code}
-              </p>
-            </div>
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2 pl-10">
-            <Switch
-              checked={product.auto_markup_enabled}
-              disabled={rowSaving}
-              onCheckedChange={(checked) => updateSmsProduct(product.service_code, { auto_markup_enabled: checked }, true)}
-            />
-            <span className="text-sm text-muted-foreground">Auto-markup</span>
-            <Input
-              type="number"
-              min="0"
-              className="h-9 w-28"
-              value={smsMarginInputs[product.service_code] ?? ''}
-              onChange={(event) => setSmsMarginInputs(prev => ({ ...prev, [product.service_code]: event.target.value }))}
-            />
-            <Button type="button" variant="outline" size="sm" disabled={rowSaving} onClick={() => saveSmsMargin(product)}>
-              Save margin
-            </Button>
-          </div>
-        </div>
-
-        <div>
-          <p className="text-xs font-semibold uppercase text-muted-foreground">Provider cost</p>
-          <p className="font-bold">${Number(product.provider_cost_usd || 0).toFixed(2)}</p>
-          <p className="text-xs text-muted-foreground">
-            NGN {Number(product.provider_cost_ngn || 0).toLocaleString()} at {Number(product.exchange_rate || 0).toLocaleString()} / USD
-          </p>
-        </div>
-
-        <div className="flex min-w-0 items-center gap-2">
-          <Input
-            type="number"
-            min="0"
-            placeholder={`Auto NGN ${Number(product.price_ngn || 0).toLocaleString()}`}
-            value={smsPriceInputs[product.service_code] ?? ''}
-            onChange={(event) => setSmsPriceInputs(prev => ({ ...prev, [product.service_code]: event.target.value }))}
-          />
-          <Button type="button" variant="outline" disabled={rowSaving} onClick={() => saveSmsPriceOverride(product)}>
-            {rowSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
-          </Button>
-        </div>
-
-        <div className="flex items-center justify-between gap-2 lg:justify-end">
-          <Badge variant={product.pricing_mode === 'override' ? 'default' : 'secondary'} className="whitespace-nowrap">
-            NGN {Number(product.price_ngn || 0).toLocaleString()}
-          </Badge>
-          <Switch
-            checked={product.is_enabled}
-            disabled={rowSaving}
-            onCheckedChange={(checked) => updateSmsProduct(product.service_code, { is_enabled: checked })}
-          />
-        </div>
-      </div>
-    )
+    const rowSaving=smsSavingKey?.startsWith(product.service_code)
+    return <div key={product.service_code} className="flex flex-wrap items-center justify-between gap-4 border-b py-4 last:border-b-0"><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><Button type="button" variant="ghost" size="icon" disabled={rowSaving} title={product.is_favorite?'Remove favorite':'Add favorite'} onClick={()=>updateSmsProduct(product.service_code,{is_favorite:!product.is_favorite})}><Star className={`h-4 w-4 ${product.is_favorite?'fill-yellow-400 text-yellow-500':''}`}/></Button><div><p className="font-semibold">{product.service_name}</p><p className="text-xs text-muted-foreground">{product.available_count.toLocaleString()} available · cost ₦{Number(product.provider_cost_ngn).toLocaleString()} · {product.service_code}</p></div></div></div><SmsRoutingSummary price={product.price_ngn} markup={product.margin_ngn} routing={product.routing}/><Switch checked={product.is_enabled} disabled={rowSaving} onCheckedChange={checked=>updateSmsProduct(product.service_code,{is_enabled:checked})}/></div>
   }
 
   // ==================== BITREFILL GIFT CARD SETTINGS ====================
@@ -7809,15 +7737,7 @@ export default function AdminPage() {
 
             {/* SMS Product Curation */}
             <TabsContent value="sms-products" className="space-y-6">
-              <BitrefillPricingAdmin kind="sms" active={adminTab === 'sms-products'} />
-              <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 text-sm">
-                <p className="font-semibold">Which SMS price applies?</p>
-                <p className="mt-1 text-muted-foreground">
-                  Saved markup rules above take priority and always round each number up to the next ₦10.
-                  The legacy controls below apply only to services without an active markup rule.
-                  Changing a legacy price does not replace a saved markup rule.
-                </p>
-              </div>
+              <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 text-sm"><p className="font-semibold">Automatic routing and fixed SMS markups</p><p className="mt-1 text-muted-foreground">Each service and country uses its cheapest funded matching supplier with stock. US markup ₦700, Canada ₦600 and all other countries ₦500. These amounts replace previous SMS pricing overrides.</p></div>
               <Card>
                 <CardHeader>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -7827,7 +7747,7 @@ export default function AdminPage() {
                         SMS Products
                       </CardTitle>
                       <p className="text-muted-foreground">
-                        Enable what customers can buy, set favorites, and manage legacy prices for services without a saved markup rule.
+                        Enable customer services, choose favorites, and inspect each card’s automatic supplier and price.
                       </p>
                     </div>
                     <Button type="button" variant="outline" onClick={loadSmsProducts} disabled={smsProductsLoading}>
@@ -7850,35 +7770,6 @@ export default function AdminPage() {
                         className="pl-9"
                       />
                     </div>
-                    <Input
-                      type="number"
-                      min="0"
-                      value={smsGlobalMargin}
-                      onChange={(event) => setSmsGlobalMargin(event.target.value)}
-                      placeholder="NGN e.g. 1000"
-                      className="w-40"
-                    />
-                    <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Checkbox
-                        checked={smsKeepAutoApply}
-                        onCheckedChange={(checked) => setSmsKeepAutoApply(checked === true)}
-                      />
-                      Keep auto-applying on future syncs
-                    </label>
-                    <Button type="button" variant="outline" disabled={smsSavingKey === 'global-markup'} onClick={applySmsGlobalMarkup}>
-                      {smsSavingKey === 'global-markup' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      Apply legacy markup
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={smsRoundToNearestTen ? 'default' : 'outline'}
-                      disabled={smsSavingKey === 'round-to-10'}
-                      onClick={toggleSmsRounding}
-                      title="Round legacy auto-markup prices up to the next ₦10. Saved markup rules above already include this rounding."
-                    >
-                      {smsSavingKey === 'round-to-10' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      Legacy rounding
-                    </Button>
                     <Button type="button" variant="outline" disabled={smsSavingKey === 'enable-all'} onClick={() => bulkToggleSmsProducts(true)}>
                       Enable all ({smsProducts.length})
                     </Button>

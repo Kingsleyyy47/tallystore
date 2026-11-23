@@ -782,6 +782,7 @@ export function SmsNumbersSurface() {
     })
 
     return [...matches].sort((a, b) => {
+      const inStock=Number(b.available_count>0)-Number(a.available_count>0);if(inStock)return inStock;
       if (serviceSort === 'recommended') {
         const favoriteRank = Number(b.is_favorite === true) - Number(a.is_favorite === true)
         if (favoriteRank !== 0) return favoriteRank

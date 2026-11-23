@@ -1,3 +1,4 @@
+import SmsRoutingSummary,{type SmsAdminRoute} from '@/components/sms/SmsRoutingSummary'
 import ProviderAccounts from '@/components/ProviderAccounts'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -47,6 +48,7 @@ type StaffSmsProduct = {
   provider_cost_usd: number
   provider_cost_ngn: number
   margin_ngn: number
+  routing?:SmsAdminRoute
   exchange_rate: number
   price_ngn: number
   available_count: number
@@ -2010,113 +2012,7 @@ export default function StaffAdminPage() {
 
           {/* ── Categories ────────────────────────────────────── */}
           {can(perms, 'tab_sms_products') && (
-            <TabsContent value="sms-products" className="space-y-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <PhoneCall className="h-5 w-5" />
-                    SMS Products
-                  </CardTitle>
-                  {!autoApproves(perms, 'tab_sms_products') && (
-                    <Badge variant="outline" className="w-fit flex items-center gap-1">
-                      <Clock className="h-3 w-3" /> Requires approval
-                    </Badge>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-                    <Input value={smsSearchQuery} onChange={e => setSmsSearchQuery(e.target.value)} placeholder="Search SMS products..." className="lg:max-w-xs" />
-                    <Input type="number" min="0" value={smsGlobalMargin} onChange={e => setSmsGlobalMargin(e.target.value)} placeholder="Default markup" className="lg:max-w-[160px]" />
-                    <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <input type="checkbox" checked={smsKeepAutoApply} onChange={e => setSmsKeepAutoApply(e.target.checked)} />
-                      Keep auto-applying
-                    </label>
-                    <Button onClick={applySmsGlobalMarkup} disabled={smsSavingKey === 'global-markup'} variant="outline">
-                      {smsSavingKey === 'global-markup' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      {autoApproves(perms, 'tab_sms_products') ? 'Apply markup' : 'Submit markup'}
-                    </Button>
-                    <Button onClick={toggleSmsRounding} disabled={smsSavingKey === 'round-to-10'} variant={smsRoundToNearestTen ? 'default' : 'outline'}>
-                      {smsSavingKey === 'round-to-10' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      Round up to 10
-                    </Button>
-                    <Button onClick={() => bulkToggleSmsProducts(true)} disabled={smsSavingKey === 'enable-all'} variant="outline">Enable all</Button>
-                    <Button onClick={() => bulkToggleSmsProducts(false)} disabled={smsSavingKey === 'disable-all'} variant="outline">Disable all</Button>
-                    <Button onClick={loadSmsProducts} disabled={smsProductsLoading} variant="outline" size="sm">
-                      <RefreshCw className={`h-4 w-4 ${smsProductsLoading ? 'animate-spin' : ''}`} />
-                    </Button>
-                  </div>
-
-                  {smsCatalogNotice && (
-                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                      {smsCatalogNotice}
-                    </div>
-                  )}
-
-                  <div className="rounded-lg border">
-                    <div className="grid grid-cols-[1fr_140px_220px_90px] gap-3 border-b px-4 py-3 text-xs font-semibold uppercase text-muted-foreground max-lg:hidden">
-                      <span>Product</span>
-                      <span>Cost</span>
-                      <span>Customer price override</span>
-                      <span className="text-right">Enabled</span>
-                    </div>
-                    {smsProductsLoading ? (
-                      <div className="flex items-center justify-center p-8"><Loader2 className="h-5 w-5 animate-spin" /></div>
-                    ) : filteredSmsProducts.length === 0 ? (
-                      <p className="p-6 text-center text-sm text-muted-foreground">No SMS products found.</p>
-                    ) : (
-                      <div className="divide-y">
-                        {filteredSmsProducts.map(product => {
-                          const rowSaving = smsSavingKey?.startsWith(product.service_code)
-                          return (
-                            <div key={product.service_code} className="grid gap-4 p-4 lg:grid-cols-[1fr_140px_220px_90px] lg:items-center">
-                              <div className="min-w-0">
-                                <div className="flex items-start gap-2">
-                                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0" disabled={rowSaving} onClick={() => updateSmsProduct(product.service_code, { is_favorite: !product.is_favorite })}>
-                                    <Star className={`h-4 w-4 ${product.is_favorite ? 'fill-yellow-400 text-yellow-500' : 'text-muted-foreground'}`} />
-                                  </Button>
-                                  <div className="min-w-0">
-                                    <p className="truncate font-semibold">{product.service_name}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {product.available_count.toLocaleString()} available - {Number(product.customer_buy_count || 0).toLocaleString()} buys - {product.service_code}
-                                    </p>
-                                  </div>
-                                </div>
-                                <div className="mt-3 flex flex-wrap items-center gap-2 pl-10">
-                                  <Switch checked={product.auto_markup_enabled} disabled={rowSaving} onCheckedChange={(checked) => updateSmsProduct(product.service_code, { auto_markup_enabled: checked }, true)} />
-                                  <span className="text-sm text-muted-foreground">Auto-markup</span>
-                                  <Input type="number" min="0" className="h-9 w-28" value={smsMarginInputs[product.service_code] ?? ''} onChange={e => setSmsMarginInputs(prev => ({ ...prev, [product.service_code]: e.target.value }))} />
-                                  <Button type="button" variant="outline" size="sm" disabled={rowSaving} onClick={() => saveSmsMargin(product)}>Save margin</Button>
-                                </div>
-                              </div>
-
-                              <div>
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">Cost</p>
-                                <p className="font-bold">${Number(product.provider_cost_usd || 0).toFixed(2)}</p>
-                                <p className="text-xs text-muted-foreground">NGN {Number(product.provider_cost_ngn || 0).toLocaleString()}</p>
-                              </div>
-
-                              <div className="flex min-w-0 items-center gap-2">
-                                <Input type="number" min="0" placeholder={`Auto NGN ${Number(product.price_ngn || 0).toLocaleString()}`} value={smsPriceInputs[product.service_code] ?? ''} onChange={e => setSmsPriceInputs(prev => ({ ...prev, [product.service_code]: e.target.value }))} />
-                                <Button type="button" variant="outline" disabled={rowSaving} onClick={() => saveSmsPriceOverride(product)}>
-                                  {rowSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : autoApproves(perms, 'tab_sms_products') ? 'Save' : 'Submit'}
-                                </Button>
-                              </div>
-
-                              <div className="flex items-center justify-between gap-2 lg:justify-end">
-                                <Badge variant={product.pricing_mode === 'override' ? 'default' : 'secondary'} className="whitespace-nowrap">
-                                  NGN {Number(product.price_ngn || 0).toLocaleString()}
-                                </Badge>
-                                <Switch checked={product.is_enabled} disabled={rowSaving} onCheckedChange={(checked) => updateSmsProduct(product.service_code, { is_enabled: checked })} />
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
+            <TabsContent value="sms-products" className="space-y-4"><Card><CardHeader><CardTitle>SMS Products</CardTitle></CardHeader><CardContent className="space-y-4"><p className="text-sm text-muted-foreground">Automatic cheapest funded route for each service/country. Fixed markup: US ₦700 · Canada ₦600 · other countries ₦500.</p><div className="flex gap-2"><Input value={smsSearchQuery} onChange={event=>setSmsSearchQuery(event.target.value)} placeholder="Search SMS products…"/><Button variant="outline" onClick={()=>bulkToggleSmsProducts(true)} disabled={smsSavingKey==='enable-all'}>Enable all</Button><Button variant="outline" onClick={()=>bulkToggleSmsProducts(false)} disabled={smsSavingKey==='disable-all'}>Disable all</Button><Button variant="outline" onClick={loadSmsProducts} disabled={smsProductsLoading}>Refresh</Button></div>{smsCatalogNotice&&<p role="status" className="text-sm text-muted-foreground">{smsCatalogNotice}</p>}{filteredSmsProducts.map(product=><div key={product.service_code} className="flex flex-wrap items-center justify-between gap-4 border-b py-3"><Button variant="ghost" size="icon" title={product.is_favorite?'Remove favorite':'Add favorite'} disabled={smsSavingKey?.startsWith(product.service_code)} onClick={()=>updateSmsProduct(product.service_code,{is_favorite:!product.is_favorite})}><Star className={`h-4 w-4 ${product.is_favorite?'fill-yellow-400 text-yellow-500':''}`}/></Button><div className="min-w-0 flex-1"><p className="font-semibold">{product.service_name}</p><p className="text-xs text-muted-foreground">{product.available_count.toLocaleString()} available</p></div><SmsRoutingSummary price={product.price_ngn} markup={product.margin_ngn} routing={product.routing}/><Switch checked={product.is_enabled} disabled={smsSavingKey?.startsWith(product.service_code)} onCheckedChange={enabled=>updateSmsProduct(product.service_code,{is_enabled:enabled})}/></div>)}</CardContent></Card></TabsContent>
           )}
 
           {can(perms, 'tab_categories') && (
