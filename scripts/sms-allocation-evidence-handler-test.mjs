@@ -2,12 +2,15 @@
 // adapters only. No project, supplier, customer wallet or credential is used.
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
+import { readFileSync } from 'node:fs'
 import { transformSync } from 'esbuild'
 import { smsTestSource, actualSmsFunctions } from './sms-candidate-test-input.mjs'
 
 const source = await smsTestSource('SMS_REPAIR_SMS_PREFIX', new URL('../supabase/functions/smsbus/index.ts', import.meta.url), 'smsbus')
 const names = ['daisyRequest', 'daisyGetNumber', 'handleCreateOtp', 'publicSmsOrder', 'friendlyError']
 const code = transformSync(actualSmsFunctions(source, names), { loader: 'ts', format: 'cjs' }).code
+const contract = { exports: {} }
+vm.runInNewContext(transformSync(readFileSync(new URL('../supabase/functions/_shared/provider-contract.ts', import.meta.url), 'utf8'), {loader:'ts',format:'cjs'}).code, {module:contract,exports:contract.exports})
 const key = 'synthetic-secret-never-expose'
 const customer = 'synthetic-customer'
 const service = 'synthetic-service'
@@ -65,7 +68,14 @@ function fixture(options = {}) {
       }
       return query
     },
-    async rpc() { state.refunds++; throw new Error('Unknown allocations must not be refunded by this handler') },
+    async rpc(name, args) {
+      assert.equal(name,'cancel_sms_order_and_refund')
+      assert.equal(args.p_evidence.response,'NO_MONEY')
+      assert.equal(options.knownDecline,true,'Unknown allocations must not be refunded')
+      const row=state.rows.find(row=>row.id===args.p_order_id)
+      if (!row.refunded_at) { state.refunds++; row.refunded_at=new Date().toISOString(); row.status='cancelled' }
+      return {data:{success:true},error:null}
+    },
   }
   const globals = {
     URL, Headers, Response, AbortController, TextDecoder, Uint8Array, setTimeout, clearTimeout, DaisySmsError,
@@ -83,6 +93,8 @@ function fixture(options = {}) {
       })
     },
     console: { error: (...values) => state.logs.push(values), warn: (...values) => state.logs.push(values) },
+    smsNoBalanceReply:contract.exports.smsNoBalanceReply,
+    smsPurchasePreflight:async()=>{if(options.preflightFails)throw new Error('No funded stock')},
     smsCountryFromCode: () => 'US',
     smsCountryMarkup:()=>700,
     parseSmsReference: () => null,
@@ -107,7 +119,7 @@ function fixture(options = {}) {
     json: (body, status = 200) => ({ body, status }),
   }
   globals.providerFetch=globals.fetch
-  globals.smsProvidersConfigured=()=>[]
+  globals.smsProvidersConfigured=()=>options.preflightFails?['daisysms_io']:[]
   const actual = vm.runInNewContext(`${code}\n({ handleCreateOtp })`, globals)
   return {
     state,
@@ -199,4 +211,20 @@ for (const httpStatus of [500, 429]) {
   assert.deepEqual([f.state.paid, f.state.refunds], [1, 0]); assertPrivate(result, f); groups++
 }
 
+{
+  const f=fixture({preflightFails:true});const result=await f.invoke()
+  assert.equal(result.body.code,'SMS_PURCHASE_UNAVAILABLE');assert.equal(result.body.charged,false)
+  assert.deepEqual([f.state.debits,f.state.paid,f.state.refunds],[0,0,0]);groups++
+}
+{
+  const f=fixture({knownDecline:true,httpStatus:402,reply:JSON.stringify({title:'NO_BALANCE',details:'Payment Required'})})
+  const result=await f.invoke();assert.equal(result.body.code,'SMS_PURCHASE_REFUNDED')
+  assert.deepEqual([f.state.debits,f.state.paid,f.state.refunds],[1,1,1])
+  const replay=await f.invoke();assert.equal(replay.body.code,'SMS_PURCHASE_REFUNDED')
+  assert.deepEqual([f.state.debits,f.state.paid,f.state.refunds],[1,1,1]);groups++
+}
+for(const [httpStatus,body] of [[500,{title:'NO_BALANCE',details:'Payment Required'}],[402,{title:'NO_BALANCE',details:'Payment Required',activation_id:'possible-allocation'}],[402,{title:'UNRECOGNIZED',details:'Payment Required'}]]) {
+  const f=fixture({httpStatus,reply:JSON.stringify(body)});const result=await f.invoke()
+  assert.equal(result.status,202);assert.equal(f.state.refunds,0);assert.equal(f.state.paid,1);groups++
+}
 console.log(`Actual SMS allocation evidence/customer guard: ${groups} synthetic scenario groups passed`)

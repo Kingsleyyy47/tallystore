@@ -1,5 +1,17 @@
 // A provider response must explicitly prove rejection before another paid send.
-// HTTP failures, malformed replies and timeouts are always outcome-unknown.
+// Unclassified HTTP failures, malformed replies and timeouts are outcome-unknown.
+// This exact, complete payment rejection has been observed on the compatible
+// allocation endpoint. Extra fields (including any receipt) defeat the match.
+export function smsNoBalanceReply(status: number, text: string): boolean {
+  if (status !== 402 || text.length > 512) return false;
+  try {
+    const body = JSON.parse(text);
+    return body !== null && !Array.isArray(body) &&
+      Object.keys(body).length === 2 && body.title === 'NO_BALANCE' &&
+      body.details === 'Payment Required';
+  } catch { return false; }
+}
+
 export class ProviderDeclined extends Error {
   constructor(
     public readonly code:

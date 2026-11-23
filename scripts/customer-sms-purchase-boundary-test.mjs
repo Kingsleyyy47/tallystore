@@ -28,6 +28,7 @@ function fixture({ expectedPriceNgn, walletAllowed, debitAllowed = true }) {
       authorizationChecks++
       if (amount != null && !walletAllowed) throw new Error('Insufficient verified wallet funds')
     },
+    smsProvidersConfigured: () => [],
     smsCountryFromCode: () => 'US',
     parseSmsReference: () => null,
     getDaisyKey: () => 'synthetic-key',

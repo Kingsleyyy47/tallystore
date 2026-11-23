@@ -4,6 +4,7 @@ import { countryInfo, isoCountry } from "./provider-countries.ts";
 import { providerHttp } from "./provider-http.ts";
 import {
   ProviderDeclined,
+  smsNoBalanceReply,
   smsProductName,
   tryProductFallback,
 } from "./provider-contract.ts";
@@ -580,6 +581,7 @@ async function buyOffer(
         : { max_price: maxPrice }),
     });
     if (onReply) await onReply({text:result.text.replaceAll(credential(provider),"[redacted-api-key]").slice(0,32768),headers:new Headers({"x-price":result.headers.get("x-price")||""}),status:result.status,bodyComplete:true});
+    if (smsNoBalanceReply(result.status, result.text)) throw new ProviderDeclined('NO_MONEY');
     if (!result.ok) throw new Error("SUPPLIER_OUTCOME_UNKNOWN");
     declineText(result.text);
     if (provider === "herosms" && result.data?.activationId) {
@@ -723,6 +725,19 @@ async function buyOffer(
     fresh.price,
   );
 }
+// Read-only check before the wallet debit. Refresh only the selected country's
+// stock and the accounts offering this exact product within its approved cap.
+export async function smsPurchasePreflight(code: string, maxPrice: number, admin: any) {
+  if (!Number.isFinite(maxPrice) || maxPrice <= 0) throw new ProviderDeclined('MAX_PRICE_EXCEEDED');
+  const policy = await smsRoutingState(admin, code, true);
+  const catalogue = await smsCatalogue(true, admin, smsCountryFromCode(code));
+  const product = catalogue.products.find(row => row.code === code);
+  const offers = product?.offers.filter(offer => offer.count > 0 && offer.price <= maxPrice && policy.controls[offer.provider] !== false) || [];
+  if (!offers.length) throw new ProviderDeclined('NO_NUMBERS');
+  policy.funding = await smsProviderFunding([...new Set(offers.map(offer => offer.provider))], true);
+  if (!rankedSmsOffers(offers, policy, code).length) throw new ProviderDeclined('NO_NUMBERS');
+}
+
 export async function smsBuy(code: string, maxPrice: number, admin?: any, onReply?: (reply: {text:string;headers:Headers;status:number;bodyComplete:boolean})=>Promise<void>) {
   let policy;
   try{policy=await smsRoutingState(admin,code,true)}catch{throw new ProviderDeclined("NO_NUMBERS")}

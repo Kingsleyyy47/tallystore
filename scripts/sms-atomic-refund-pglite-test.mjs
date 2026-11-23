@@ -100,6 +100,7 @@ try {
   `)
   stage = 'migration'
   await db.exec(migration)
+  await db.exec(readFileSync(new URL('supabase/migrations/20261123003000_sms_saved_no_balance_recovery.sql',root),'utf8'))
   stage = 'fixtures'
   const grants = await db.query(`SELECT
     has_function_privilege('anon','public.cancel_sms_order_and_refund(uuid,text,jsonb,uuid,boolean)','EXECUTE') a,
@@ -231,6 +232,41 @@ try {
         source_order_id:oid(18),original_reference:'SMS-FIXTURE-18',source_debit_transaction_id:oid(101)})])
   assert.equal((await call(18,{})).code,'REFUND_LEDGER_REVIEW_REQUIRED')
   assert.equal((await rows(18)).refunded_at,null); checks++
+
+
+  const recover = async n => (await db.query('SELECT public.recover_sms_saved_no_balance($1) result',[oid(n)])).rows[0].result
+  const savedReply = async (n,change={}) => {
+    await seed(n,{status:'processing',activation:null,phone:null})
+    const created=(await db.query('SELECT created_at FROM public.sms_orders WHERE id=$1',[oid(n)])).rows[0].created_at
+    const reply={provider:'daisysms',action:'getNumber',http_status:402,body_complete:true,
+      body:JSON.stringify({title:'NO_BALANCE',details:'Payment Required'}),observed_at:new Date(new Date(created).getTime()+1000).toISOString(),...change}
+    await db.query('UPDATE public.sms_orders SET last_provider_response=$2::jsonb WHERE id=$1',[oid(n),JSON.stringify({allocation_reply:reply})])
+  }
+  const recoveryGrants=(await db.query(`SELECT has_function_privilege('anon','public.recover_sms_saved_no_balance(uuid)','EXECUTE') a,
+    has_function_privilege('authenticated','public.recover_sms_saved_no_balance(uuid)','EXECUTE') u,
+    has_function_privilege('service_role','public.recover_sms_saved_no_balance(uuid)','EXECUTE') s`)).rows[0]
+  assert.deepEqual(recoveryGrants,{a:false,u:false,s:true});checks++
+  await savedReply(30)
+  const beforeRecovery=Number((await rows(30)).wallet_balance)
+  assert.equal((await recover(30)).success,true)
+  assert.equal(Number((await rows(30)).wallet_balance),beforeRecovery+100)
+  assert.equal((await recover(30)).idempotent_replay,true)
+  assert.equal(Number((await rows(30)).wallet_balance),beforeRecovery+100);checks++
+  let number=31
+  for(const change of [{http_status:500},{body_complete:false},{body:'{"title":"NO_BALANCE"}'},
+    {body:'{"title":"NO_BALANCE","details":"Payment Required","id":123}'},{observed_at:'invalid'},
+    {observed_at:'2099-01-01T00:00:00Z'},{action:'getStatus'},{provider:'unverified'}]) {
+    await savedReply(number,change)
+    assert.equal((await recover(number)).success,false);assert.equal((await rows(number)).refunded_at,null);number++;checks++
+  }
+  await savedReply(40)
+  await db.query('UPDATE public.sms_orders SET provider_request_id=$2 WHERE id=$1',[oid(40),'possible-allocation'])
+  assert.equal((await recover(40)).success,false);checks++
+  await savedReply(41)
+  await db.query("SET test.wallet_failure='true'")
+  await assert.rejects(()=>recover(41),/sms_wallet_refund_rejected/)
+  assert.equal((await rows(41)).status,'processing');assert.equal((await rows(41)).refunded_at,null)
+  await db.query("SET test.wallet_failure='false'");checks++
 
   console.log(`sms atomic refund PGlite: ${checks} focused assertions passed`)
 } catch (error) {

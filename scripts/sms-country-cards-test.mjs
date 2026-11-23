@@ -12,11 +12,13 @@ const us={service_id:'wa',service_name:'WhatsApp',country_code:'us',country_id:1
 const canada={...us,service_id:'c-CA~wa',country_code:'ca',country_id:1001,multiple_sms:false};
 const card=service=>renderToStaticMarkup(React.createElement(SmsServiceCard,{service,selected:false,onSelect(){}}));
 assert.equal(smsCardTitle(us),'US WhatsApp');assert.equal(smsCardTitle(canada),'Canada WhatsApp');
-assert.match(card(us),/Multi SMS/);assert.match(card(us),/1,899 available/);assert.match(card(us),/₦2,653/);assert.match(card(canada),/Single SMS/);
+assert.match(card(us),/Multi SMS/);assert.doesNotMatch(card(us),/1,899 available/);assert.match(card(us),/₦2,653/);assert.match(card(canada),/Single SMS/);
 const variants=['Instagram / Threads','Instagram'].map((service_name,i)=>({...us,service_id:'variant-'+i,service_name}));assert.notEqual(smsCardTitle(variants[0]),smsCardTitle(variants[1]));
 const panel=renderToStaticMarkup(React.createElement(SmsPurchasePanel,{service:us,ready:true,busy:false,walletBalance:0,walletLoading:false,walletUnavailable:false,onBuy(){}}));
 assert.match(panel,/₦2,653 left to add/);assert.match(panel,/Add Funds/);assert.doesNotMatch(panel,/Continue|Insufficient funds/);assert.match(panel,/US WhatsApp/);
 const funded=renderToStaticMarkup(React.createElement(SmsPurchasePanel,{service:us,ready:true,busy:false,walletBalance:5000,walletLoading:false,walletUnavailable:false,onBuy(){}}));assert.match(funded,/Continue/);assert.doesNotMatch(funded,/Add Funds/);
-const unavailable=renderToStaticMarkup(React.createElement(SmsPurchasePanel,{service:{...us,available_count:0},ready:true,busy:false,walletBalance:0,walletLoading:false,walletUnavailable:false,onBuy(){}}));assert.match(unavailable,/Unavailable/);assert.match(unavailable,/disabled/);assert.doesNotMatch(unavailable,/Add Funds/);
+const unavailable=renderToStaticMarkup(React.createElement(SmsPurchasePanel,{service:{...us,available_count:0},ready:true,busy:false,walletBalance:0,walletLoading:false,walletUnavailable:false,onBuy(){}}));assert.doesNotMatch(unavailable,/Unavailable|No number available/);assert.match(unavailable,/Add Funds/);
+assert.doesNotMatch(card({...us,available_count:0}),/ disabled=""|unavailable/i);
+const emptyFunded=renderToStaticMarkup(React.createElement(SmsPurchasePanel,{service:{...us,available_count:0},ready:true,busy:false,walletBalance:5000,walletLoading:false,walletUnavailable:false,onBuy(){}}));assert.match(emptyFunded,/Continue/);assert.doesNotMatch(emptyFunded,/ disabled=""|Unavailable/);
 assert.doesNotMatch(card({...us,provider:'getatext',api_key:'private-supplier-token',offers:[{provider:'herosms'}]}),/getatext|herosms|private-supplier-token/);
 console.log('SMS cards: US/Canada identities, distinct variants, verified message-mode labels, one price/stock value, private supplier fields and insufficient-funds panel passed.');

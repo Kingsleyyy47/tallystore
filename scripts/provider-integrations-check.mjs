@@ -17,6 +17,7 @@ const checks=[
  ['SMS purchase authorization','node',['scripts/customer-sms-purchase-boundary-test.mjs']],
  ['SMS allocation evidence','node',['scripts/sms-allocation-evidence-handler-test.mjs']],
  ['SMS status throttle and budget','node',['scripts/sms-status-refresh-throttle-test.mjs']],
+ ['SMS exact-once refund and saved rejection recovery','node',['scripts/sms-atomic-refund-pglite-test.mjs']],
  ['SMS atomic cancellation','node',['scripts/sms-atomic-cancellation-handler-test.mjs']],
  ['SMS sweeper','node',['scripts/sms-sweeper-handler-test.mjs']],
  ['Partner SMS/SMM adapters','node',['--experimental-transform-types','scripts/partner-sms-social-adapter-test.mjs']],

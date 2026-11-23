@@ -1168,6 +1168,9 @@ export function SmsNumbersSurface() {
         setActiveTab('orders')
         await refreshOrders()
       }
+      setPurchaseOpen(false)
+      await refreshWalletBalance()
+      window.dispatchEvent(new Event('transactionAdded'))
       throw error
     }
 
@@ -1413,15 +1416,11 @@ export function SmsNumbersSurface() {
                 <span className="text-slate-500 dark:text-muted-foreground">Price per number</span>
                 <strong>{selectedService ? formatNaira(selectedService.price_ngn) : '-'}</strong>
               </div>
-              <div className="mt-2 flex items-center justify-between gap-3 text-sm">
-                <span className="text-slate-500 dark:text-muted-foreground">Available now</span>
-                <strong>{selectedService ? selectedService.available_count.toLocaleString() : '-'}</strong>
-              </div>
             </div>
             <Button
               type="button"
               className="h-12 w-full rounded-xl bg-[#8075ff] text-white hover:bg-[#6c5ff2]"
-              disabled={!numbersReady || !selectedService || selectedService.available_count <= 0 || busyAction !== null}
+              disabled={!numbersReady || !selectedService || busyAction !== null}
               onClick={buyOtp}
             >
               {busyAction === 'buy-otp' ? <Loader2 className="h-4 w-4 animate-spin" /> : <PhoneCall className="h-4 w-4" />}

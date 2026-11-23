@@ -119,7 +119,6 @@ export function SmsServiceCard(
       data-sms-service={service.service_id}
       data-sms-country={service.country_code || "us"}
       onClick={onSelect}
-      disabled={service.available_count <= 0}
       className={`flex w-full min-w-0 items-center gap-3 rounded-2xl border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
         selected
           ? "border-violet-500 bg-violet-50 dark:bg-violet-400/20"
@@ -138,8 +137,7 @@ export function SmsServiceCard(
           {smsCardTitle(service)}
         </p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          {smsMessageMode(service)} ·{" "}
-          {service.available_count>0?`${service.available_count.toLocaleString("en-NG")} available`:"Currently unavailable"}
+          {smsMessageMode(service)}
         </p>
       </div>
       <span className="shrink-0 rounded-full bg-[#7566f5] px-3 py-2 text-sm font-bold text-white">
@@ -170,7 +168,7 @@ export function SmsPurchasePanel({
   const shortfall = Math.max(0, service.price_ngn - walletBalance);
   const insufficient = !walletUnavailable && !walletLoading && shortfall > 0;
   const pending = busy || walletLoading || walletUnavailable;
-  const canContinue = ready && service.available_count > 0 && !pending &&
+  const canContinue = ready && !pending &&
     !insufficient;
   return (
     <section
@@ -211,7 +209,7 @@ export function SmsPurchasePanel({
                 {smsCardPrice(service.price_ngn)}
               </p>
             </div>
-            {insufficient && ready && service.available_count>0 && !busy
+            {insufficient && ready && !busy
               ? (
                 <Link
                   to="/wallet"
@@ -233,8 +231,8 @@ export function SmsPurchasePanel({
                     ? "Checking…"
                     : walletUnavailable
                     ? "Check wallet"
-                    : !ready||service.available_count<=0
-                    ? "Unavailable"
+                    : !ready
+                    ? "Checking…"
                     : "Continue"}
                   {canContinue && <span aria-hidden="true">→</span>}
                 </button>
@@ -255,8 +253,8 @@ export function SmsPurchasePanel({
                 : smsCardPrice(walletBalance)}
             </span>
             <span>
-              {!ready||service.available_count<=0
-                ? "No number available right now"
+              {!ready
+                ? "Checking connection"
                 : insufficient
                 ? `${smsCardPrice(shortfall)} left to add`
                 : walletUnavailable

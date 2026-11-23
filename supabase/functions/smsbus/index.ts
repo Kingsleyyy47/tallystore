@@ -4,7 +4,8 @@ import { rentalAreas, rentalAction } from '../_shared/sms-rental-actions.ts'
 import { countryInfo } from '../_shared/provider-countries.ts'
 import { providerFetch } from '../_shared/provider-budget-fetch.ts'
 import { smsCatalogue, smsBuy, smsStatus, smsCancel, smsDone, parseSmsReference, smsReference, smsProvidersConfigured, smsCountries, smsCountryFromCode } from '../_shared/sms-provider-router.ts'
-import { ProviderDeclined } from '../_shared/provider-contract.ts'
+import { ProviderDeclined, smsNoBalanceReply } from '../_shared/provider-contract.ts'
+import { smsPurchasePreflight } from '../_shared/sms-provider-router.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts'
 import { customerMarkupPrice, loadSmsMarkupRules, loadSmsProductSettings, fixedSmsPricing, smsCountryMarkup, type CustomerMarkupRule } from '../_shared/customer-service-pricing.ts'
@@ -397,6 +398,7 @@ async function daisyRequest(
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim()
     replyReported = true
     if (onReply) await onReply({ text, headers: res.headers, status: res.status, bodyComplete: true })
+    if (params.action === 'getNumber' && smsNoBalanceReply(res.status, text)) throw new DaisySmsError('NO_MONEY', 'SMS purchases are temporarily unavailable.')
     if (!res.ok) throw new DaisySmsError('HTTP_ERROR', `SMS service request failed with HTTP ${res.status}`)
     return { text, headers: res.headers }
   } catch (error) {
@@ -1648,25 +1650,10 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     }, 409)
   }
 
-  const { products, exchangeRate, globalMarginNgn, roundAutoPricesToNearestTen } = await buildSmsCatalog(admin, null, smsCountryFromCode(serviceCode), true)
-  const svc = products.find(s => s.service_code === serviceCode)
-  if (!svc || !svc.is_enabled || svc.available_count <= 0) throw new Error('Service not available')
-
-  const estimatedPriceNgn = svc.price_ngn
-  const expectedPriceNgn = Math.round(Number(body.expected_price_ngn))
-  if (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0) {
-    throw new Error('Current displayed price is required. Please refresh and try again.')
-  }
-  if (expectedPriceNgn !== estimatedPriceNgn) {
-    throw new Error(`Price changed from NGN ${expectedPriceNgn.toLocaleString()} to NGN ${estimatedPriceNgn.toLocaleString()}. Please refresh and try again.`)
-  }
-
-  await assertPurchasingCustomer(admin, userId, req, estimatedPriceNgn)
-
   if (existing) {
     const sameRequest =
       String(existing.service_id || '') === serviceCode &&
-      Number(existing.price_ngn || 0) === estimatedPriceNgn &&
+      Number(existing.price_ngn || 0) === Math.round(Number(body.expected_price_ngn)) &&
       String(existing.order_type || '') === 'otp'
 
     if (!sameRequest) {
@@ -1684,8 +1671,25 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
         code: 'SMS_OUTCOME_REVIEW_REQUIRED',
       }, 202)
     }
+    if (existing.refunded_at) return json({ success: false, code: 'SMS_PURCHASE_REFUNDED', error: 'Purchase did not complete. Your wallet was refunded.', idempotency_hit: true })
     return json({ success: true, data: publicSmsOrder(existing), idempotency_hit: true })
   }
+
+  const { products, exchangeRate, globalMarginNgn, roundAutoPricesToNearestTen } = await buildSmsCatalog(admin, null, smsCountryFromCode(serviceCode), true)
+  const svc = products.find(s => s.service_code === serviceCode)
+  if (!svc || !svc.is_enabled) return json({ success: false, code: 'SMS_PURCHASE_UNAVAILABLE', charged: false, error: 'No number could be reserved right now. Your wallet was not charged. Please try again later.' }, 409)
+
+  const estimatedPriceNgn = svc.price_ngn
+  const expectedPriceNgn = Math.round(Number(body.expected_price_ngn))
+  if (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0) {
+    throw new Error('Current displayed price is required. Please refresh and try again.')
+  }
+  if (expectedPriceNgn !== estimatedPriceNgn) {
+    throw new Error(`Price changed from NGN ${expectedPriceNgn.toLocaleString()} to NGN ${estimatedPriceNgn.toLocaleString()}. Please refresh and try again.`)
+  }
+
+  await assertPurchasingCustomer(admin, userId, req, estimatedPriceNgn)
+
 
   // A new key must not charge this customer again while their earlier purchase
   // for this service has an unknown allocation or refund outcome. Existing-key
@@ -1702,6 +1706,17 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     error: 'Your previous SMS purchase for this service needs review. Check your orders or contact support before buying again.',
     order_id: unresolvedOrders[0].id, reference: unresolvedOrders[0].reference,
   }, 409)
+
+  // An unavailable card remains browsable. The server decides at confirmation,
+  // before any wallet write or paid supplier request. Unknown reads fail closed.
+  try {
+    if (smsProvidersConfigured().length) await smsPurchasePreflight(serviceCode,
+      (estimatedPriceNgn - smsCountryMarkup(smsCountryFromCode(serviceCode))) / exchangeRate, admin)
+    else if (svc.available_count <= 0) throw new ProviderDeclined('NO_NUMBERS')
+  } catch {
+    return json({ success: false, code: 'SMS_PURCHASE_UNAVAILABLE', charged: false,
+      error: 'No number could be reserved right now. Your wallet was not charged. Please try again later.' }, 409)
+  }
 
   await recordRevenueEvent(admin, {
     eventType: 'PAYMENT_STARTED',

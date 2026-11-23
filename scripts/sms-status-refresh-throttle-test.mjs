@@ -9,8 +9,10 @@ const source = await smsTestSource('SMS_REPAIR_SMS_PREFIX', new URL('../supabase
 class DaisySmsError extends Error { constructor(code, message) { super(message); this.code = code } }
 const terminal = ['completed', 'cancelled', 'expired', 'failed']
 const row = (id, changes = {}) => ({ id, user_id: 'owned-customer', reference: `SMS-${id}`, order_type: 'otp', status: 'waiting', provider_request_id: `activation-${id}`, messages: [], refunded_at: null, ...changes })
+const smsNoBalanceReply=vm.runInNewContext(transformSync(actualSmsFunctions(readFileSync(new URL('../supabase/functions/_shared/provider-contract.ts',import.meta.url),'utf8'),['smsNoBalanceReply']).replace('export function','function'),{loader:'ts',format:'cjs'}).code+'\nsmsNoBalanceReply')
 let groups = 0
 function actual(names, globals) {
+  globals.smsNoBalanceReply ??= smsNoBalanceReply
   const code = transformSync(actualSmsFunctions(source, names), { loader: 'ts', format: 'cjs' }).code
   return vm.runInNewContext(`${code}\n({${names.join(',')}})`, globals)
 }

@@ -1,5 +1,5 @@
 import {rankedSmsOffers,smsRoutingState} from '../supabase/functions/_shared/sms-provider-policy.ts';
-import {smsBuy,smsCatalogue,smsStatus,smsProvidersConfigured} from '../supabase/functions/_shared/sms-provider-router.ts';
+import {smsBuy,smsPurchasePreflight,smsCatalogue,smsStatus,smsProvidersConfigured} from '../supabase/functions/_shared/sms-provider-router.ts';
 import {providerBalances,parseAccountBalances} from '../supabase/functions/_shared/provider-balances.ts';
 import {invalidateProviderRead} from '../supabase/functions/_shared/provider-read-cache.ts';
 const assert=(value:unknown,message='Assertion failed')=>{if(!value)throw new Error(message)};
@@ -153,5 +153,37 @@ Deno.test('each card selects the cheapest affordable provider, skips depleted ac
     product=(await smsCatalogue(false,admin)).products.find(product=>product.code==='wa')!;equal(product.priceUsd,0.2);equal(product.count,2);equal(product.routing?.selected_provider,'getatext');
     await smsBuy('wa',0.2,admin);equal(paid,['daisysms_io','getatext']);
     unknown=true;await rejects(()=>smsBuy('wa',0.4,admin));equal(paid,['daisysms_io','getatext','getatext']);
+  });
+});
+
+Deno.test('purchase preflight refreshes depleted balances and stock before any paid request',async()=>{
+  let balance=1,stock=2,paid=0;
+  const admin={rpc:async(name:string)=>({data:name==='get_sms_provider_routing_state'?{controls:{},routing_strategy:'cheapest_funded',metrics:[]}:true,error:null})};
+  await mock({GETATEXT_API_KEY:'synthetic-getatext'},async(input)=>{
+    const url=new URL(String(input));
+    if(url.pathname.endsWith('/balance'))return json({status:'success',balance:String(balance)});
+    if(url.pathname.endsWith('/prices-info'))return json({prices:[{api_name:'whatsapp',service_name:'WhatsApp',price:0.2,stock}]});
+    paid++;throw new Error('Preflight must never purchase');
+  },async()=>{
+    await smsCatalogue(true,admin);balance=0;
+    await rejects(()=>smsPurchasePreflight('wa',0.2,admin));equal(paid,0);
+    balance=1;await smsPurchasePreflight('wa',0.2,admin);equal(paid,0);
+    stock=0;await rejects(()=>smsPurchasePreflight('wa',0.2,admin));equal(paid,0);
+    stock=2;await rejects(()=>smsPurchasePreflight('wa',0.1,admin));equal(paid,0);
+  });
+});
+Deno.test('exact HTTP402 no-balance rejection permits matching fallback; ambiguous payment errors do not',async()=>{
+  let ambiguous=false;const paid:string[]=[];
+  await mock({DAISYSMS_IO_API_KEY:'synthetic-daisy',GETATEXT_API_KEY:'synthetic-getatext'},async(input)=>{
+    const url=new URL(String(input));
+    if(url.hostname==='daisysms.io'){
+      if(url.searchParams.get('action')==='getPricesVerification')return json({wa:{187:{price:0.2,count:2}}});
+      paid.push('daisy');return json({title:'NO_BALANCE',details:'Payment Required',...(ambiguous?{activation_id:'possibly-paid'}:{})},402);
+    }
+    if(url.pathname.endsWith('/prices-info'))return json({prices:[{api_name:'whatsapp',service_name:'WhatsApp',price:0.3,stock:2}]});
+    paid.push('getatext');return json({id:2,number:'15550000002',price:'0.3'},201);
+  },async()=>{
+    await smsBuy('wa',0.3);equal(paid,['daisy','getatext']);
+    ambiguous=true;await rejects(()=>smsBuy('wa',0.3));equal(paid,['daisy','getatext','daisy']);
   });
 });
