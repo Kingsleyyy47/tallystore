@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/SimpleAuth';
 import { supabase } from '@/lib/supabase';
@@ -240,7 +240,7 @@ const URL_PATTERNS: Record<string, RegExp> = {
 };
 
 interface SmmService {
-  id: number;
+  id: string;
   name: string;
   category: string;
   platform: string;
@@ -328,11 +328,11 @@ export default function SocialBoostPage() {
   const [groups, setGroups] = useState('');
 
   const personalServiceCounts = useMemo(() => {
-    const counts = new Map<number, number>();
+    const counts = new Map<string, number>();
     for (const order of orders) {
       if (!isRevenueRelevantSmmOrder(order)) continue;
-      const serviceId = Number(order.service_id);
-      if (Number.isFinite(serviceId)) counts.set(serviceId, (counts.get(serviceId) || 0) + 1);
+      const serviceId = String(order.service_id);
+      if (serviceId) counts.set(serviceId, (counts.get(serviceId) || 0) + 1);
     }
     return counts;
   }, [orders]);
@@ -347,38 +347,17 @@ export default function SocialBoostPage() {
     return counts;
   }, [orders]);
 
+  const catalogueRequest=useRef(0);
   const searchServices = useCallback(async (query: string, platform: string) => {
+    const request=++catalogueRequest.current;
     setLoadingServices(true);
     try {
-      let dbQuery = supabase
-        .from('smm_services')
-        .select(`
-          id, name, category, platform, service_type,
-          price_ngn, min_quantity, max_quantity,
-          has_refill, has_cancel, is_active
-        `)
-        .eq('is_active', true)
-        .gt('price_ngn', 0)
-        .order('name')
-        .limit(50);
-
-      if (platform !== 'all') dbQuery = dbQuery.eq('platform', platform);
-      
-      // Intelligent search: split query into words and search each
-      if (query.trim()) {
-        const words = query.toLowerCase().trim().split(/\s+/).filter(w => w.length > 1);
-        if (words.length > 0) {
-          // Build OR conditions for each word across name, category, and platform
-          const conditions = words.map(word => 
-            `name.ilike.%${word}%,category.ilike.%${word}%,platform.ilike.%${word}%`
-          ).join(',');
-          dbQuery = dbQuery.or(conditions);
-        }
-      }
-
-      const { data, error } = await dbQuery;
-      if (error) throw error;
-
+      const {data:catalogue,error}=await supabase.functions.invoke<{success:boolean;data:SmmService[];error?:string}>('smm-catalog',{
+        body:{query,platform,limit:50},
+      });
+      if(request!==catalogueRequest.current)return;
+      if(error||catalogue?.success!==true||!Array.isArray(catalogue.data))throw new Error(catalogue?.error||'Live catalogue unavailable');
+      const data=catalogue.data;
       const words = query.toLowerCase().trim().split(/\s+/).filter(w => w.length > 1);
       const eligibleServices = (data || []).filter(service => {
         const price = Number(service.price_ngn);
@@ -389,7 +368,7 @@ export default function SocialBoostPage() {
       const scored = eligibleServices.map(service => {
         const searchText = `${service.name} ${service.category} ${service.platform}`.toLowerCase();
         const searchScore = words.filter(word => searchText.includes(word)).length;
-        const serviceCount = personalServiceCounts.get(Number(service.id)) || 0;
+        const serviceCount = personalServiceCounts.get(String(service.id)) || 0;
         const platformCount = personalPlatformCounts.get(String(service.platform || '').toLowerCase()) || 0;
         const qualityScore = Number(service.has_refill === true) * 40 + Number(service.has_cancel === true) * 20;
         const pricePenalty = Math.min(Math.floor(Number(service.price_ngn || 0) / 1000), 80);
@@ -410,10 +389,12 @@ export default function SocialBoostPage() {
       );
       setServices(scored);
     } catch (err) {
+      if(request!==catalogueRequest.current)return;
+      setServices([]);
       console.error('Error searching services:', err);
       toast({ variant: 'destructive', title: 'Search Error', description: 'Failed to search services.' });
     } finally {
-      setLoadingServices(false);
+      if(request===catalogueRequest.current)setLoadingServices(false);
     }
   }, [personalPlatformCounts, personalServiceCounts, toast]);
 

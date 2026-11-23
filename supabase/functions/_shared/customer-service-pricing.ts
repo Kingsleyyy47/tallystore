@@ -5,6 +5,19 @@ export type CustomerMarkupRule = {
   legacy_pricing: boolean
 }
 
+export async function loadSmsProductSettings(admin: any, serviceCodes: string[]): Promise<Array<{ service_code: string; [key: string]: any }>> {
+  const codes=[...new Set(serviceCodes)];
+  if(!codes.length) return [];
+  const {data,error}=await admin.rpc('get_sms_catalog_settings',{p_service_codes:codes});
+  if(error || !Array.isArray(data)) throw new Error('SMS product settings are temporarily unavailable');
+  const requested=new Set(codes), seen=new Set<string>();
+  for(const row of data) {
+    if(!row || typeof row.service_code!=='string' || !requested.has(row.service_code) || seen.has(row.service_code)) throw new Error('SMS product settings are temporarily unavailable');
+    seen.add(row.service_code);
+  }
+  return data;
+}
+
 // This rule is loaded by the server. Browser-supplied prices and markups are never used.
 export function customerMarkupPrice(costNgn: number, rule: CustomerMarkupRule): number {
   if (!Number.isFinite(costNgn) || costNgn < 0 || !Number.isFinite(rule.value) || rule.value < 0

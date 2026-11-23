@@ -81,7 +81,7 @@ for (const [options, expected] of [[{ throttle: true }, 0], [{ status: { status:
 // a throttle response; no cancellation or allocation function is available.
 {
   let reads = 0
-  const globals = { Date, DaisySmsError, TERMINAL_STATUSES: terminal,
+  const globals = { Date, DaisySmsError, parseSmsReference:()=>null, TERMINAL_STATUSES: terminal,
     savedSmsCancellation: () => null,
     daisyGet: async (_key, params, timeout) => { assert.equal(params.action, 'getStatus'); assert.ok(timeout <= 3000); reads++; return 'RATE_LIMIT_EXCEEDED' },
     setTimeout,
@@ -96,11 +96,12 @@ for (const [options, expected] of [[{ throttle: true }, 0], [{ status: { status:
 // attempted exactly once when an explicit throttle response is returned.
 {
   const delays = [], calls = []; let responseText = 'STATUS_WAIT_CODE', responseStatus = 200
-  const globals = { URL, Headers, Response, AbortController, TextDecoder, Uint8Array, DaisySmsError,
+  const globals = { URL, Headers, Response, AbortController, TextDecoder, Uint8Array, DaisySmsError, parseSmsReference:()=>null,
     DEFAULT_DAISY_BASE: 'https://supplier.fixture.invalid/handler_api.php', Deno: { env: { get: () => undefined } },
     setTimeout: (_callback, ms) => { delays.push(ms); return 1 }, clearTimeout() {},
     fetch: async (url, options) => { calls.push({ action: new URL(url).searchParams.get('action'), options }); return new Response(responseText, { status: responseStatus }) },
   }
+  globals.providerFetch=globals.fetch;globals.smsProvidersConfigured=()=>[]
   const f = actual(['daisyRequest', 'daisyGet', 'daisyGetStatus', 'daisyGetNumber'], globals)
   await f.daisyGetStatus('synthetic-key', 'saved-activation', 1750)
   assert.equal(delays.at(-1), 1750)

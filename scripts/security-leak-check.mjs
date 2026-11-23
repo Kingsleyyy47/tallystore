@@ -212,7 +212,7 @@ if (!salesAggregateMigration.includes('REVOKE ALL ON FUNCTION public.get_custome
     !browserClient.includes("supabase.rpc('get_public_top_product_group_ids'")) {
   errors.push('public storefront still exposes exact sales revenue or product units')
 }
-const dbSecurityPack = readFileSync(join(root, 'docs/security/wallet-db-security-test-pack.sql'), 'utf8')
+const dbSecurityPack = readFileSync(join(root, 'docs/security/wallet-db-security-test-pack.sql'), 'utf8').replace(/\r\n/g, '\n')
 const ownerQueryPack = readFileSync(join(root, 'docs/security/wallet-readonly-query-pack.sql'), 'utf8')
 if (!dbSecurityPack.includes("has_function_privilege('anon', 'public.get_recent_activity_feed(integer)', 'EXECUTE')") ||
     !dbSecurityPack.includes("has_function_privilege('authenticated', 'public.get_recent_activity_feed(integer)', 'EXECUTE')") ||

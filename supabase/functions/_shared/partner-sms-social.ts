@@ -1,3 +1,8 @@
+import { refreshSmmService } from './smm-live-catalog.ts'
+import { planSmmRoutes, dispatchSmmRoutes } from './smm-provider-router.ts'
+import { smsBuy } from './sms-provider-router.ts'
+import { ProviderDeclined } from './provider-contract.ts'
+import { savePartnerSupplierJournal } from './partner-supplier-routing.ts'
 /** Paid partner adapters. The caller must reserve an external-order journal entry
  * and claim its one dispatch before calling plan.dispatch(). No adapter retries. */
 
@@ -29,6 +34,7 @@ type SocialDeps = Transport & {
   // here because the legacy helper omits required fields for some types.
   smmOrderParams: (service: any, body: Body, qty: number) => Record<string, string | number>
   SMM_TYPES_WITH_QUANTITY: readonly string[]
+  refreshService?: typeof refreshSmmService
 }
 
 const DAISY_URL = 'https://daisysms.com/stubs/handler_api.php'
@@ -90,8 +96,8 @@ function markedAmount(partner: Partner, base: number): number | null {
 function fail(message: string): never { throw new Error(message) }
 
 export async function preparePartnerSmsPlan(admin: Admin, partner: Partner, body: Body, deps: SmsDeps): Promise<PartnerPurchasePlan> {
-  const serviceCode = text(body.item_id ?? body.service_id, 40)
-  if (!/^[a-zA-Z0-9_-]{1,40}$/.test(serviceCode)) fail('Invalid SMS service')
+  const serviceCode = text(body.item_id ?? body.service_id, 160)
+  if (!/^[a-zA-Z0-9_%~.-]{1,160}$/.test(serviceCode)) fail('Invalid SMS service')
   if (body.quantity !== undefined && positiveInteger(body.quantity) !== 1) fail('SMS quantity must be 1')
   const catalogue = await deps.smsCatalogue(admin, partner)
   const item = catalogue.find((entry) => entry.id === serviceCode)
@@ -109,6 +115,18 @@ export async function preparePartnerSmsPlan(admin: Admin, partner: Partner, body
     section: 'sms', itemId: serviceCode, itemName: name, quantity: 1, amountNgn: price,
     requestPayload: { item_id: serviceCode, quantity: 1 },
     async dispatch(_orderId: string): Promise<PartnerExternalOutcome> {
+      if (item.supplier_routing === true) {
+        try {
+          await savePartnerSupplierJournal(admin,_orderId,'sms',{outcome:'sending'});
+          const receipt=await smsBuy(serviceCode,price/rate,admin);
+          await savePartnerSupplierJournal(admin,_orderId,'sms',{outcome:'accepted',...receipt});
+          const reference=`smsr_${_orderId}`;
+          return {kind:'accepted',source:'daisy',id:reference,status:'active',payload:{service_name:name,phone_number:`+${receipt.phoneNumber}`,raw_phone_number:receipt.phoneNumber,provider_order_id:reference}};
+        } catch(error) {
+          if(error instanceof ProviderDeclined) return {kind:'rejected',reason:error.code==='NO_MONEY'?'INSUFFICIENT_BALANCE':error.code==='MAX_PRICE_EXCEEDED'?'PRICE_CHANGED':'NO_STOCK'};
+          return {kind:'unknown'};
+        }
+      }
       const key = env(deps, 'DAISYSMS_API_KEY')
       if (!key) return { kind: 'unknown' }
       const url = new URL(DAISY_URL)
@@ -141,8 +159,9 @@ export async function preparePartnerSmsPlan(admin: Admin, partner: Partner, body
 export async function preparePartnerSocialPlan(admin: Admin, partner: Partner, body: Body, deps: SocialDeps): Promise<PartnerPurchasePlan> {
   const serviceId = text(body.item_id ?? body.service_id, 80)
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(serviceId)) fail('Invalid Social Boost service')
-  const { data: service, error } = await admin.from('smm_services').select('id, external_id, name, service_type, price_ngn, rate_usd, min_quantity, max_quantity, is_active').eq('id', serviceId).eq('is_active', true).maybeSingle()
-  if (error || !service || service.is_active === false) fail('Social Boost service is unavailable')
+  const { data: storedService, error } = await admin.from('smm_services').select('id, external_id, name, category, has_refill, has_cancel, supplier_routing, service_type, price_ngn, rate_usd, min_quantity, max_quantity, is_active').eq('id', serviceId).eq('is_active', true).maybeSingle()
+  if (error || !storedService || storedService.is_active === false) fail('Social Boost service is unavailable')
+  const service=await (deps.refreshService||refreshSmmService)(admin,storedService,{fresh:true})
   const serviceType = text(service.service_type, 100)
   const required = SMM_REQUIRED[serviceType]
   if (!required) fail('Unsupported Social Boost service type')
@@ -199,9 +218,17 @@ export async function preparePartnerSocialPlan(admin: Admin, partner: Partner, b
     else params[field] = String(selected[field])
   }
   const name = text(service.name, 180) || 'Social Boost'
+  const supplierRoutes=service.supplier_routing===true?await planSmmRoutes(admin,service,quantity,providerRate):null
   return {
     section: 'social_boost', itemId: serviceId, itemName: name, quantity, amountNgn: price, requestPayload,
     async dispatch(_orderId: string): Promise<PartnerExternalOutcome> {
+      if(supplierRoutes) {
+        try {
+          await dispatchSmmRoutes(admin,_orderId,supplierRoutes,params,data=>savePartnerSupplierJournal(admin,_orderId,'smm',data));
+          const reference=`smmr_${_orderId}`;
+          return {kind:'accepted',source:'smm',id:reference,status:'processing',payload:{provider_order_id:reference}};
+        } catch {return {kind:'unknown'}}
+      }
       const key = env(deps, 'SMM_PANEL_API_KEY')
       if (!key) return { kind: 'unknown' }
       const form = new URLSearchParams({ key })

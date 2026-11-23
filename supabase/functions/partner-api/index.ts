@@ -1,3 +1,8 @@
+import { liveSmmCatalogue, refreshSmmService } from '../_shared/smm-live-catalog.ts'
+import { IStarProvider } from "../_shared/istar-provider.ts"
+import { providerRead } from "../_shared/provider-read-cache.ts"
+import { smsCatalogue as unifiedSmsCatalogue } from '../_shared/sms-provider-router.ts'
+import { partnerRoutedSmmStatus, partnerRoutedSmsStatus } from '../_shared/partner-supplier-routing.ts'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { partnerMarkup } from '../_shared/partner-pricing.ts'
@@ -26,7 +31,7 @@ const DEFAULT_SMS_MARGIN_NGN = 700
 const SMM_API_URL = 'https://thelordofthepanels.com/api/v2'
 const BITREFILL_API_URL = 'https://api.bitrefill.com/v2'
 const SAGECLOUD_API_URL = 'https://api.sagecloud.ng/api'
-const ISTAR_BASE = Deno.env.get('ISTAR_BASE_URL') || 'https://v1.fragmentapi.com/api/v1/partner'
+const ISTAR_BASE = Deno.env.get('FRAGMENTAPI_BASE_URL') || Deno.env.get('ISTAR_BASE_URL') || 'https://v1.fragmentapi.app/api/v1/partner'
 const NOWPAYMENTS_API_URL = 'https://api.nowpayments.io/v1'
 const NIGERIAN_NETWORKS = ['MTN', 'GLO', 'AIRTEL', '9MOBILE'] as const
 // Hard pause partner-facing API traffic during the wallet security review.
@@ -427,28 +432,17 @@ function normalizeNigerianPhone(value: unknown) {
 }
 
 function istarHeaders() {
-  const apiKey = Deno.env.get('ISTAR_API_KEY') || ''
+  const apiKey = Deno.env.get('FRAGMENTAPI_API_KEY') || Deno.env.get('ISTAR_API_KEY') || ''
   if (!apiKey) throw new Error('Telegram provider is not configured')
   return { 'API-Key': apiKey, 'Content-Type': 'application/json' }
 }
 
-async function istarGet(path: string) {
-  const response = await fetch(`${ISTAR_BASE}${path}`, { headers: istarHeaders() })
-  const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(data?.message || data?.error || `iStar API error ${response.status}`)
-  return data
+function fragmentClient() {return new IStarProvider({apiKey:Deno.env.get('FRAGMENTAPI_API_KEY')||Deno.env.get('ISTAR_API_KEY')||'',baseURL:ISTAR_BASE})}
+async function istarGet(path:string):Promise<any> {
+  if(path==='/premium/packages')return providerRead('fragment-premium-packages',60_000,()=>fragmentClient().get(path))
+  return fragmentClient().get(path)
 }
-
-async function istarPost(path: string, body: unknown, idempotencyKey: string) {
-  const response = await fetch(`${ISTAR_BASE}${path}`, {
-    method: 'POST',
-    headers: { ...istarHeaders(), 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify(body),
-  })
-  const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(data?.message || data?.error || `iStar API error ${response.status}`)
-  return data
-}
+async function istarPost(path:string,body:unknown,idempotencyKey:string):Promise<any>{return fragmentClient().post(path,body,idempotencyKey)}
 
 async function getTelegramStarPricing(admin: SupabaseAdmin) {
   const [costRow, tiersRow, walletRow, rate] = await Promise.all([
@@ -590,6 +584,7 @@ async function productCatalogue(admin: SupabaseAdmin, partner: any, quoteQuantit
 type DaisyService = { code: string; name: string; count: number; priceUsd: number }
 
 async function daisyGet(apiKey: string, params: Record<string, string>) {
+  if (params.action === 'getStatus' && params.id?.startsWith('smsr_')) return partnerRoutedSmsStatus(createClient(Deno.env.get('SUPABASE_URL')||'',Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')||''),params.id)
   const url = new URL(Deno.env.get('DAISYSMS_BASE_URL') || DEFAULT_DAISY_BASE)
   url.searchParams.set('api_key', apiKey)
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
@@ -651,7 +646,8 @@ async function getDaisyServices() {
 
 async function smsCatalogue(admin: SupabaseAdmin, partner: any, purchaseQuote = false) {
   if (!hasSection(partner, 'sms')) return []
-  const [rate, live] = await Promise.all([getNgnUsdRate(admin), getDaisyServices()])
+  const [rate, routed] = await Promise.all([getNgnUsdRate(admin), unifiedSmsCatalogue(false,admin)])
+  const live = new Map(routed.products.map(service => [service.code,service]))
   const { data: settings } = await admin
     .from('sms_product_settings')
     .select('service_code, service_name, is_enabled, price_override_ngn, margin_ngn, provider_cost_usd, available_count')
@@ -672,7 +668,7 @@ async function smsCatalogue(admin: SupabaseAdmin, partner: any, purchaseQuote = 
         ? Number(row.price_override_ngn)
         : rate > 0 && providerCostUsd >= 0 ? Math.ceil(providerCostUsd * rate + margin) : 0
       return {
-        ...(purchaseQuote ? { live_verified: live.has(row.service_code), provider_cost_usd: providerCostUsd } : {}),
+        ...(purchaseQuote ? { supplier_routing: true, live_verified: live.has(row.service_code), provider_cost_usd: providerCostUsd } : {}),
         type: 'sms',
         section: 'sms',
         id: row.service_code,
@@ -722,6 +718,7 @@ function smmOrderParams(service: any, body: Record<string, unknown>, actualQuant
 }
 
 async function smmRequest(params: Record<string, string | number>) {
+  if (params.action === 'status' && String(params.order).startsWith('smmr_')) return partnerRoutedSmmStatus(createClient(Deno.env.get('SUPABASE_URL')||'',Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')||''),String(params.order))
   const apiKey = Deno.env.get('SMM_PANEL_API_KEY') || ''
   if (!apiKey) throw new Error('Social Boost provider is not configured')
   const form = new URLSearchParams()
@@ -740,13 +737,7 @@ async function smmRequest(params: Record<string, string | number>) {
 
 async function socialCatalogue(admin: SupabaseAdmin, partner: any) {
   if (!hasSection(partner, 'social_boost')) return []
-  const { data, error } = await admin
-    .from('smm_services')
-    .select('id, external_id, name, category, platform, service_type, price_ngn, min_quantity, max_quantity, has_refill, has_cancel, is_active')
-    .eq('is_active', true)
-    .order('platform')
-    .order('category')
-  if (error) throw new Error(`Failed to load Social Boost services: ${error.message}`)
+  const data=await liveSmmCatalogue(admin,{internal:true});
   return (data || []).map((service: any) => ({
     type: 'social_boost',
     section: 'social_boost',
@@ -1313,8 +1304,9 @@ async function handleSocialOrder(admin: SupabaseAdmin, auth: PartnerAuth, body: 
   if (!hasSection(auth.partner, 'social_boost')) throw new Error('Social Boost is not enabled for this API key')
   const serviceId = cleanText(body.item_id || body.service_id, 80)
   if (!serviceId) throw new Error('item_id is required')
-  const { data: service, error } = await admin.from('smm_services').select('*').eq('id', serviceId).eq('is_active', true).single()
-  if (error || !service) throw new Error('Social Boost service not found')
+  const { data: storedService, error } = await admin.from('smm_services').select('*').eq('id', serviceId).eq('is_active', true).single()
+  if (error || !storedService) throw new Error('Social Boost service not found')
+    const service=await refreshSmmService(admin,storedService,{fresh:true})
   const actualQuantity = String(service.service_type) === 'Package' ? 1 : Math.round(Number(body.quantity || service.min_quantity || 1))
   if (String(service.service_type) !== 'Package') {
     if (actualQuantity < Number(service.min_quantity || 1)) throw new Error(`Minimum quantity is ${service.min_quantity}`)
@@ -1738,8 +1730,9 @@ async function resolveCheckoutSeed(admin: SupabaseAdmin, auth: PartnerAuth, body
     if (!hasSection(auth.partner, 'social_boost')) throw new Error('Social Boost is not enabled for this API key')
     const serviceId = cleanText(body.item_id || body.service_id, 80)
     if (!serviceId) throw new Error('item_id is required')
-    const { data: service, error } = await admin.from('smm_services').select('*').eq('id', serviceId).eq('is_active', true).single()
-    if (error || !service) throw new Error('Social Boost service not found')
+    const { data: storedService, error } = await admin.from('smm_services').select('*').eq('id', serviceId).eq('is_active', true).single()
+    if (error || !storedService) throw new Error('Social Boost service not found')
+    const service=await refreshSmmService(admin,storedService,{fresh:true})
     const actualQuantity = String(service.service_type) === 'Package' ? 1 : Math.round(Number(body.quantity || service.min_quantity || 1))
     if (String(service.service_type) !== 'Package') {
       if (actualQuantity < Number(service.min_quantity || 1)) throw new Error(`Minimum quantity is ${service.min_quantity}`)

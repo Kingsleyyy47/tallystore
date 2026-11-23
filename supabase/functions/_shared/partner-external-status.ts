@@ -170,7 +170,7 @@ async function pollVendor(order: any, journal: any, deps: PartnerExternalStatusD
   if (!id) return { completed: false, review: true }
   if (source === 'daisy' && order.item_type === 'sms' && journal.section === 'sms') {
     const apiKey = Deno.env.get('DAISYSMS_API_KEY') || ''
-    if (!apiKey) return { completed: false, review: true }
+    if (!apiKey && !id.startsWith('smsr_')) return { completed: false, review: true }
     const response = await deps.daisyGet(apiKey, { action: 'getStatus', id })
     if (typeof response !== 'string') return { completed: false, review: true }
     if (response.startsWith('STATUS_OK:')) {

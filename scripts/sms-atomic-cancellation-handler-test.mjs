@@ -12,6 +12,8 @@ const own = (value) => structuredClone(value)
 let checks = 0
 
 function actual(source, start, end, exports, globals) {
+  globals.smsProvidersConfigured??=()=>[]
+  globals.parseSmsReference??=()=>null
   const compiled = transformSync(actualSmsFunctions(source, exports), { loader: 'ts', format: 'cjs' }).code
   return vm.runInNewContext(`${compiled}\n({ ${exports.join(', ')} })`, globals)
 }

@@ -1,4 +1,8 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+import { refreshSmmService } from '../_shared/smm-live-catalog.ts'
+import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { planSmmRoutes, dispatchSmmRoutes, fundedSmmRoutes } from '../_shared/smm-provider-router.ts'
+import { getNgnUsdRate as getProviderExchangeRate } from '../_shared/exchange-rate.ts'
+import { ProviderDeclined } from '../_shared/provider-contract.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts';
 import { smmPanelRequest } from '../_shared/smm-panel-transport.ts';
@@ -104,7 +108,7 @@ export function sanitizeRevenueEventType(source: string, eventType: string): Rev
   return eventType
 }
 
-const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
+const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(provider|supplier|cost|margin|wholesale|external|password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
 
 async function sha256Hex(value: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
@@ -400,7 +404,7 @@ export class SmmPanelClient {
  * Create SMM Panel client using environment variable
  */
 export function createSmmPanelClient(): SmmPanelClient {
-  const apiKey = Deno.env.get('SMM_PANEL_API_KEY');
+  const apiKey = Deno.env.get('LORDOFPANELS_API_KEY') || Deno.env.get('SMM_PANEL_API_KEY');
   if (!apiKey) {
     throw new Error('SMM_PANEL_API_KEY environment variable is not set');
   }
@@ -689,16 +693,17 @@ serve(async (req) => {
     }
 
     // Get service details
-    const { data: service, error: serviceError } = await supabaseAdmin
+    const { data: storedService, error: serviceError } = await supabaseAdmin
       .from('smm_services')
       .select('*')
       .eq('id', service_id)
       .eq('is_active', true)
       .single();
 
-    if (serviceError || !service) {
+    if (serviceError || !storedService) {
       throw new Error('Service not found or inactive');
     }
+    const service=existingOrder?storedService:await refreshSmmService(supabaseAdmin,storedService,{fresh:true});
     if (!Number.isFinite(Number(service.price_ngn)) || Number(service.price_ngn) <= 0) {
       throw new Error('Service has an invalid customer price');
     }
@@ -711,7 +716,7 @@ serve(async (req) => {
     const quote = quoteSmmOrder(service, { ...normalizedFields, quantity });
     const actualQuantity = quote.quantity;
     const totalAmount = quote.amountNgn;
-    const totalCost = Number(service.rate_usd) * (quote.package ? 1 : actualQuantity / 1000);
+    let totalCost = Number(service.rate_usd) * (quote.package ? 1 : actualQuantity / 1000);
     const expectedPriceNgn = Math.round(Number(expected_price_ngn));
     if (!Number.isFinite(expectedPriceNgn) || expectedPriceNgn <= 0) {
       throw new Error('Current displayed price is required. Please refresh and try again.');
@@ -721,6 +726,9 @@ serve(async (req) => {
     }
 
     await assertPurchasingCustomer(supabaseAdmin, user.id, req, totalAmount);
+    const supplierRoutes = !existingOrder && service.supplier_routing === true
+      ? await planSmmRoutes(supabaseAdmin, service, actualQuantity, totalAmount / (service._live_exchange_rate || (await getProviderExchangeRate(supabaseAdmin)).rate) / (quote.package ? 1 : actualQuantity / 1000))
+      : null;
     const orderParams = buildPanelOrderParams(service, { ...normalizedFields, actualQuantity });
     // This is the exact public, credential-free paid action sent by createOrder.
     const payloadHash = await panelPayloadHash({ action: 'add', ...orderParams });
@@ -836,6 +844,9 @@ serve(async (req) => {
     // Existing/review-held intents above never reach this preflight. A positive
     // panel balance alone is insufficient: it must cover this exact quote.
     try {
+      if(supplierRoutes&&Array.isArray(service._live_smm_routes)){
+        if(!await fundedSmmRoutes(supplierRoutes,actualQuantity,quote.package))throw new Error('SMM_SUPPLIER_UNAVAILABLE');
+      }else{
       const supplierBalance = await createSmmPanelClient().getBalance();
       const rawBalance = supplierBalance?.balance;
       const balanceText = typeof rawBalance === 'string' || typeof rawBalance === 'number' ? String(rawBalance) : '';
@@ -852,6 +863,7 @@ serve(async (req) => {
       const quotedCostNanos = rateMicros * BigInt(quote.package ? 1000 : actualQuantity);
       if (balanceNanos < quotedCostNanos) {
         throw new Error('SMM_SUPPLIER_UNAVAILABLE');
+      }
       }
     } catch {
       return new Response(JSON.stringify({
@@ -1037,20 +1049,26 @@ serve(async (req) => {
     // Place order with SMM Panel. No response outcome permits a second add.
     let panelOrderId: number | null = null;
     let panelError: string | null = null;
+    let panelDefinitivelyDeclined = false;
 
     try {
-      const smmClient = createSmmPanelClient();
       
-      const panelResponse = await smmClient.createOrder(orderParams);
+      const panelResponse = supplierRoutes
+        ? await dispatchSmmRoutes(supabaseAdmin, order.id, supplierRoutes, orderParams)
+        : await createSmmPanelClient().createOrder(orderParams);
 
       if (typeof panelResponse.order === 'number' && Number.isSafeInteger(panelResponse.order) && panelResponse.order > 0) {
         panelOrderId = panelResponse.order;
+        if ('supplier_rate_usd' in panelResponse && Number.isFinite(Number(panelResponse.supplier_rate_usd))) {
+          totalCost = Number(panelResponse.supplier_rate_usd) * (quote.package ? 1 : actualQuantity / 1000);
+        }
 
         // Update order with panel order ID
         const { error: panelOrderSaveError } = await supabaseAdmin
           .from('smm_orders')
           .update({
             external_order_id: panelOrderId,
+            cost_usd: totalCost,
             status: 'processing',
             panel_response: panelResponse,
             updated_at: new Date().toISOString(),
@@ -1065,9 +1083,35 @@ serve(async (req) => {
         panelError = 'SMM_PANEL_RESPONSE_UNRECOGNIZED';
       }
     } catch (err) {
+      panelDefinitivelyDeclined = err instanceof ProviderDeclined;
       const errorMessage = err instanceof Error ? err.message : String(err);
       console.error('Panel API error while creating SMM order.');
       panelError = errorMessage || 'Failed to place order with panel';
+    }
+
+    if (panelDefinitivelyDeclined && panelOrderId === null) {
+      // Every route either failed its read-only preflight or explicitly refused
+      // allocation. No supplier accepted a paid order, so release this debit.
+      const saved = await supabaseAdmin.from('smm_orders').update({ status: 'failed', updated_at: new Date().toISOString() }).eq('id', order.id);
+      if (!saved.error) {
+        try {
+          const refunded = await applyWalletTransaction(supabaseAdmin, {
+            userId: user.id, type: 'refund', amount: totalAmount, reference: `REFUND-${reference}`,
+            description: `Social Boost allocation declined: ${reference}`, idempotencyKey: `smm:refund:${order.id}:declined`,
+            metadata: { source: 'smm-create-order', source_order_id: order.id, source_order_table: 'smm_orders',
+              order_id: order.id, original_reference: reference, source_debit_transaction_id: debitTransactionId,
+              supplier_allocation_declined: true },
+          });
+          return new Response(JSON.stringify({ success: false, code: 'SMM_PURCHASE_REFUNDED',
+            error: 'Matching suppliers could not accept the order. Your wallet was refunded.', new_balance: refunded.balance_after,
+            data: { order_id: order.id, reference, status: 'failed' } }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 });
+        } catch { /* Preserve the failed order and its debit for refund review. */ }
+      }
+      return new Response(JSON.stringify({ success: false, code: 'SMM_REFUND_REVIEW_REQUIRED',
+        error: 'No supplier accepted this order. Its refund needs review; contact support with the order reference.',
+        data: { order_id: order.id, reference, status: 'failed' } }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 });
     }
 
     // A missing order ID or provider error does not prove non-delivery. Keep
@@ -1078,7 +1122,7 @@ serve(async (req) => {
         .update({
           status: 'outcome_unknown',
           external_order_id: panelOrderId,
-          panel_response: { outcome: 'unknown' },
+          // Preserve the pre-send supplier routing journal for reconciliation.
           updated_at: new Date().toISOString(),
         })
         .eq('id', order.id);

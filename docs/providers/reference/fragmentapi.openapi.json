@@ -1,0 +1,702 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Fragment API",
+    "version": "1.0.0",
+    "description": "Production REST API for Telegram Stars purchases and Telegram Premium gifts. Authenticate with an API key, validate the recipient, create an idempotent asynchronous order, and confirm the final state by webhook or polling.",
+    "termsOfService": "https://www.fragmentapi.app/docs",
+    "contact": {
+      "name": "Fragment API Support",
+      "url": "https://t.me/istar_supports"
+    }
+  },
+  "externalDocs": {
+    "description": "Fragment API documentation",
+    "url": "https://www.fragmentapi.app/docs"
+  },
+  "servers": [
+    {
+      "url": "https://v1.fragmentapi.app/api/v1/partner",
+      "description": "Production"
+    },
+    {
+      "url": "https://sandbox.fragmentapi.app/api/v1/partner",
+      "description": "Sandbox"
+    }
+  ],
+  "security": [
+    {
+      "ApiKey": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Stars",
+      "description": "Telegram Stars recipient validation and purchase orders."
+    },
+    {
+      "name": "Premium",
+      "description": "Telegram Premium packages, recipient validation, and gift orders."
+    },
+    {
+      "name": "Orders",
+      "description": "Asynchronous order status."
+    },
+    {
+      "name": "Wallet",
+      "description": "Developer wallet balance."
+    }
+  ],
+  "paths": {
+    "/star/recipient/search": {
+      "get": {
+        "operationId": "searchStarsRecipient",
+        "summary": "Validate a Telegram Stars recipient",
+        "description": "Search immediately before creating an order. The response returns the recipient hash required by the Stars order endpoint.",
+        "tags": [
+          "Stars"
+        ],
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": true,
+            "description": "Telegram username without @.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "quantity",
+            "in": "query",
+            "required": true,
+            "description": "Number of Stars to purchase.",
+            "schema": {
+              "type": "integer",
+              "minimum": 50,
+              "maximum": 1000000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recipient resolved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipientSearchResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/orders/star": {
+      "post": {
+        "operationId": "createStarsOrder",
+        "summary": "Create a Telegram Stars order",
+        "description": "Creates an asynchronous Stars order and reserves the returned amount from the selected developer balance. A 202 response is accepted, not delivered.",
+        "tags": [
+          "Stars",
+          "Orders"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateStarsOrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Order accepted for asynchronous processing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "402": {
+            "description": "Insufficient developer balance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency key was already used with different request data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/premium/packages": {
+      "get": {
+        "operationId": "listPremiumPackages",
+        "summary": "List current Telegram Premium packages",
+        "description": "Returns display values for the available Premium gift durations. The amount on the created order is the authoritative charge.",
+        "tags": [
+          "Premium"
+        ],
+        "responses": {
+          "200": {
+            "description": "Available Premium packages.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PremiumPackage"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/premium/recipient/search": {
+      "get": {
+        "operationId": "searchPremiumRecipient",
+        "summary": "Validate a Telegram Premium recipient",
+        "description": "Checks eligibility for the selected duration and returns the recipient hash required by the Premium order endpoint.",
+        "tags": [
+          "Premium"
+        ],
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": true,
+            "description": "Telegram username without @.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "months",
+            "in": "query",
+            "required": true,
+            "description": "Premium gift duration.",
+            "schema": {
+              "type": "integer",
+              "enum": [
+                3,
+                6,
+                12
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recipient resolved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipientSearchResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/orders/premium": {
+      "post": {
+        "operationId": "createPremiumOrder",
+        "summary": "Create a Telegram Premium gift order",
+        "description": "Creates an asynchronous Premium gift order and reserves the returned amount from the selected developer balance.",
+        "tags": [
+          "Premium",
+          "Orders"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePremiumOrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Order accepted for asynchronous processing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "402": {
+            "description": "Insufficient developer balance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency key was already used with different request data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/orders/{order_id}": {
+      "get": {
+        "operationId": "getOrder",
+        "summary": "Get an order by ID",
+        "description": "Returns the current order state. Use this endpoint as the source of truth when webhook delivery is delayed.",
+        "tags": [
+          "Orders"
+        ],
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "description": "Order UUID returned by a create call.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current order state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Order not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/wallet/balance": {
+      "get": {
+        "operationId": "getWalletBalance",
+        "summary": "Get the developer wallet balance",
+        "tags": [
+          "Wallet"
+        ],
+        "responses": {
+          "200": {
+            "description": "Current wallet balance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletBalance"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "API-Key",
+        "description": "Create and revoke API keys in the Fragment API dashboard. Keep keys in server-side code."
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "A unique UUID for one logical order. Reuse it only when retrying the same payload.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request or unsupported recipient.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "The API key is missing, expired, revoked, or inactive.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "The API key exceeded its request rate.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "WalletType": {
+        "type": "string",
+        "enum": [
+          "TON",
+          "USDT"
+        ]
+      },
+      "OrderStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "processing",
+          "completed",
+          "failed"
+        ]
+      },
+      "RecipientSearchResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "recipient",
+          "name"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "myself": {
+            "type": "boolean"
+          },
+          "recipient": {
+            "type": "string",
+            "description": "Provider recipient hash used to create the order."
+          },
+          "name": {
+            "type": "string",
+            "description": "Telegram display name."
+          },
+          "photo": {
+            "type": "string",
+            "description": "Recipient photo URL or provider image markup."
+          }
+        }
+      },
+      "CreateStarsOrderRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "username",
+          "recipient_hash",
+          "quantity",
+          "wallet_type"
+        ],
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 1
+          },
+          "recipient_hash": {
+            "type": "string",
+            "minLength": 1
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 1000000
+          },
+          "wallet_type": {
+            "$ref": "#/components/schemas/WalletType"
+          }
+        }
+      },
+      "CreatePremiumOrderRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "username",
+          "recipient_hash",
+          "months",
+          "wallet_type"
+        ],
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 1
+          },
+          "recipient_hash": {
+            "type": "string",
+            "minLength": 1
+          },
+          "months": {
+            "type": "integer",
+            "enum": [
+              3,
+              6,
+              12
+            ]
+          },
+          "wallet_type": {
+            "$ref": "#/components/schemas/WalletType"
+          }
+        }
+      },
+      "Order": {
+        "type": "object",
+        "required": [
+          "order_id",
+          "status",
+          "username",
+          "amount",
+          "created_at"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OrderStatus"
+          },
+          "order_type": {
+            "type": "string",
+            "enum": [
+              "star",
+              "premium"
+            ]
+          },
+          "username": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "months": {
+            "type": "integer",
+            "enum": [
+              3,
+              6,
+              12
+            ]
+          },
+          "amount": {
+            "type": "number",
+            "description": "Authoritative amount reserved from the selected balance, including the service margin."
+          },
+          "wallet_type": {
+            "$ref": "#/components/schemas/WalletType"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refunded": {
+            "type": "boolean"
+          },
+          "refund_amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      },
+      "PremiumPackage": {
+        "type": "object",
+        "required": [
+          "months",
+          "usd_value",
+          "ton_value"
+        ],
+        "properties": {
+          "months": {
+            "type": "integer",
+            "enum": [
+              3,
+              6,
+              12
+            ]
+          },
+          "usd_value": {
+            "type": "number"
+          },
+          "ton_value": {
+            "type": "number"
+          }
+        }
+      },
+      "WalletBalance": {
+        "type": "object",
+        "required": [
+          "wallet_id",
+          "balance",
+          "currency",
+          "updated_at"
+        ],
+        "properties": {
+          "wallet_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "balance": {
+            "type": "number"
+          },
+          "currency": {
+            "$ref": "#/components/schemas/WalletType"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

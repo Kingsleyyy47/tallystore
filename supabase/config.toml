@@ -36,3 +36,9 @@ verify_jwt = false
 
 [functions.webhook-pocketfi]
 verify_jwt = false
+
+[functions.korapay-webhook]
+verify_jwt = false
+
+[functions.provider-catalog-sync]
+verify_jwt = false

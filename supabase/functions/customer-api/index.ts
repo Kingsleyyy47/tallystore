@@ -1,3 +1,4 @@
+import { liveSmmCatalogue } from '../_shared/smm-live-catalog.ts'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { sha256Hex, signCustomerCapability } from '../_shared/customer-api-delegation.ts'
@@ -338,10 +339,7 @@ async function read(req: Request, path: string, admin: any) {
       })) })
     }
     if (requested === 'social_boost') {
-      const { data, error } = await admin.from('smm_services')
-        .select('id, name, category, platform, service_type, price_ngn, min_quantity, max_quantity')
-        .eq('is_active', true).order('platform').limit(500)
-      if (error) return fail('unavailable', 503)
+      const data=await liveSmmCatalogue(admin,{limit:500});
       return json({ success: true, data: (data || []).map((item: any) => ({
         ...item,
         price_basis: item.service_type === 'Package' || !smmQuantityTypes.has(item.service_type)

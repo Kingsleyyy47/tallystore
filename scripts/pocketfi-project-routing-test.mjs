@@ -17,7 +17,7 @@ try{
   assert.equal(call.url,`https://${ref}.supabase.co/functions/v1/webhook-pocketfi`);
   assert.equal(call.options.body,payload);assert.equal(call.options.headers['pocketfi-signature'],'TEST_SIGNATURE');assert.equal(call.options.redirect,'error');
  }
- for(const origin of ['', 'https://example.invalid','https://ktmlojvchkmzcdbjdyjx.supabase.co@attacker.invalid','https://ktmlojvchkmzcdbjdyjx.supabase.co/path']){
+ for(const origin of ['', 'https://example.invalid','https://ktmlojvchkmzcdbjdyjx.supabase.co@example.invalid','https://ktmlojvchkmzcdbjdyjx.supabase.co/path']){
   process.env.VITE_SUPABASE_URL=origin;const before=calls.length,res=response();await handler({method:'POST',url:'/api/webhook-pocketfi',headers:{},body:payload},res);
   assert.equal(res.statusCode,503);assert.equal(calls.length,before);
  }

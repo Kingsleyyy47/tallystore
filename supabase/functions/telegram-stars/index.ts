@@ -1,10 +1,12 @@
+import { IStarProvider } from "../_shared/istar-provider.ts"
+import { providerRead } from "../_shared/provider-read-cache.ts"
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 
 type SupabaseAdmin = any
 
-const ISTAR_BASE = Deno.env.get('ISTAR_BASE_URL') || 'https://v1.fragmentapi.com/api/v1/partner'
-const ISTAR_API_KEY = Deno.env.get('ISTAR_API_KEY') || ''
+const ISTAR_BASE = Deno.env.get('FRAGMENTAPI_BASE_URL') || Deno.env.get('ISTAR_BASE_URL') || 'https://v1.fragmentapi.app/api/v1/partner'
+const ISTAR_API_KEY = Deno.env.get('FRAGMENTAPI_API_KEY') || Deno.env.get('ISTAR_API_KEY') || ''
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -53,23 +55,12 @@ function istarHeaders() {
   return { 'API-Key': ISTAR_API_KEY, 'Content-Type': 'application/json' }
 }
 
-async function istarGet(path: string) {
-  const res = await fetch(`${ISTAR_BASE}${path}`, { headers: istarHeaders() })
-  const data = await res.json()
-  if (!res.ok) throw new Error('Supplier request failed')
-  return data
+function fragmentClient() {return new IStarProvider({apiKey:Deno.env.get('FRAGMENTAPI_API_KEY')||Deno.env.get('ISTAR_API_KEY')||'',baseURL:ISTAR_BASE})}
+async function istarGet(path:string):Promise<any> {
+  if(path==='/premium/packages')return providerRead('fragment-premium-packages',60_000,()=>fragmentClient().get(path))
+  return fragmentClient().get(path)
 }
-
-async function istarPost(path: string, body: unknown, idempotencyKey: string) {
-  const res = await fetch(`${ISTAR_BASE}${path}`, {
-    method: 'POST',
-    headers: { ...istarHeaders(), 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify(body),
-  })
-  const data = await res.json()
-  if (!res.ok) throw new Error('Supplier request failed')
-  return data
-}
+async function istarPost(path:string,body:unknown,idempotencyKey:string):Promise<any>{return fragmentClient().post(path,body,idempotencyKey)}
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
 async function getAdminClient() {

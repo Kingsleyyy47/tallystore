@@ -193,7 +193,7 @@ export class SmmPanelClient {
  * Create SMM Panel client using environment variable
  */
 export function createSmmPanelClient(): SmmPanelClient {
-  const apiKey = Deno.env.get('SMM_PANEL_API_KEY');
+  const apiKey = Deno.env.get('LORDOFPANELS_API_KEY') || Deno.env.get('SMM_PANEL_API_KEY');
   if (!apiKey) {
     throw new Error('SMM_PANEL_API_KEY environment variable is not set');
   }

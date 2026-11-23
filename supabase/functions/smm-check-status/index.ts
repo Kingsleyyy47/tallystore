@@ -1,4 +1,6 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { routedSmmStatus } from '../_shared/smm-provider-router.ts'
+import { providerFetch } from '../_shared/provider-budget-fetch.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
 async function applyRefundTransaction(
@@ -102,7 +104,7 @@ export class SmmPanelClient {
       formData.append(key, String(value));
     }
 
-    const response = await fetch(SMM_API_URL, {
+    const response = await providerFetch(SMM_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -230,7 +232,7 @@ export class SmmPanelClient {
  * Create SMM Panel client using environment variable
  */
 export function createSmmPanelClient(): SmmPanelClient {
-  const apiKey = Deno.env.get('SMM_PANEL_API_KEY');
+  const apiKey = Deno.env.get('LORDOFPANELS_API_KEY') || Deno.env.get('SMM_PANEL_API_KEY');
   if (!apiKey) {
     throw new Error('SMM_PANEL_API_KEY environment variable is not set');
   }
@@ -337,7 +339,7 @@ export function sanitizeRevenueEventType(source: string, eventType: string): Rev
   return eventType
 }
 
-const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
+const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(provider|supplier|cost|margin|wholesale|external|password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
 
 async function sha256Hex(value: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
@@ -594,8 +596,9 @@ serve(async (req) => {
     }
 
     // Check status from panel
-    const smmClient = createSmmPanelClient();
-    const panelStatus = await smmClient.getOrderStatus(order.external_order_id);
+    const panelStatus = order.panel_response?.routing
+      ? await routedSmmStatus(order)
+      : await createSmmPanelClient().getOrderStatus(order.external_order_id);
 
     console.log(`Panel status for order ${order.external_order_id}:`, panelStatus);
 

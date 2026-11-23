@@ -28,6 +28,7 @@ const admin = {
   },
 }
 const socialDeps = {
+  refreshService: async (_admin,service) => service,
   SMM_TYPES_WITH_QUANTITY: ['Default'], fetchImpl, env, timeoutMs: 50,
   smmOrderParams(service, body, qty) {
     return { action: 'add', service: Number(service.external_id), link: String(body.link), quantity: qty }

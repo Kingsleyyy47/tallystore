@@ -58,7 +58,8 @@
     "security:wallet:suppliers": "node scripts/wallet-supplier-outcome-test.mjs",
     "security:wallet:trusted-principal": "node scripts/wallet-trusted-principal-test.mjs",
     "security:wallet:source-mutations": "node scripts/wallet-source-mutation-audit.mjs",
-    "security:wallet:reconcile": "node scripts/wallet-reconcile-readonly.mjs"
+    "security:wallet:reconcile": "node scripts/wallet-reconcile-readonly.mjs",
+    "providers:check": "node scripts/provider-integrations-check.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

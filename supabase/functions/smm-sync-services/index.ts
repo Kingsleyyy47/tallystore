@@ -1,4 +1,6 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { syncSmmProviders, configuredSmmProviders } from '../_shared/smm-provider-router.ts'
+import { providerFetch } from '../_shared/provider-budget-fetch.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
 // ── Inlined shared modules (dashboard deploy cannot resolve _shared/) ──────────
@@ -215,7 +217,7 @@ export class SmmPanelClient {
  * Create SMM Panel client using environment variable
  */
 export function createSmmPanelClient(): SmmPanelClient {
-  const apiKey = Deno.env.get('SMM_PANEL_API_KEY');
+  const apiKey = Deno.env.get('LORDOFPANELS_API_KEY') || Deno.env.get('SMM_PANEL_API_KEY');
   if (!apiKey) {
     throw new Error('SMM_PANEL_API_KEY environment variable is not set');
   }
@@ -442,7 +444,18 @@ serve(async (req) => {
 
     // Use the same admin/live NGN/USD rate as the rest of the storefront.
     const { rate: usdNgnRate, source: rateSource } = await getNgnUsdRate(supabaseAdmin);
-    const markup = 2;
+    const markup = 2; // 2x markup as specified
+
+    console.log(`Using USD/NGN rate: ${usdNgnRate} (${rateSource}), markup: ${markup}x`);
+
+    if (configuredSmmProviders().length) {
+      const result = await syncSmmProviders(supabaseAdmin, usdNgnRate);
+      return new Response(JSON.stringify({ success: Object.values(result.diagnostics).some(value => value === 'ready'),
+        message: `Synced ${result.processed} matched services`, stats: { ...result, usd_ngn_rate: usdNgnRate } }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 });
+    }
+
+    // Fetch services from SMM Panel
     const smmClient = createSmmPanelClient();
     const services = await smmClient.getServices();
     // Validate the entire snapshot before the first database write. One bad

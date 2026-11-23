@@ -1,7 +1,13 @@
+import { providerRead } from '../_shared/provider-read-cache.ts'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { rentalAreas, rentalAction } from '../_shared/sms-rental-actions.ts'
+import { countryInfo } from '../_shared/provider-countries.ts'
+import { providerFetch } from '../_shared/provider-budget-fetch.ts'
+import { smsCatalogue, smsBuy, smsStatus, smsCancel, smsDone, parseSmsReference, smsReference, smsProvidersConfigured, smsCountries, smsCountryFromCode } from '../_shared/sms-provider-router.ts'
+import { ProviderDeclined } from '../_shared/provider-contract.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3'
 import { authenticateCustomerRequest } from '../_shared/customer-api-delegation.ts'
-import { customerMarkupPrice, loadSmsMarkupRules, type CustomerMarkupRule } from '../_shared/customer-service-pricing.ts'
+import { customerMarkupPrice, loadSmsMarkupRules, loadSmsProductSettings, type CustomerMarkupRule } from '../_shared/customer-service-pricing.ts'
 
 // ── revenue-events.ts (inlined) ──
 export const REVENUE_EVENT_TYPES = [
@@ -69,7 +75,7 @@ export function sanitizeRevenueEventType(source: string, eventType: string): Rev
   return eventType
 }
 
-const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
+const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(provider|supplier|cost|margin|wholesale|external|password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
 
 async function sha256Hex(value: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
@@ -359,7 +365,7 @@ async function daisyRequest(
     }, timeoutMs)
   })
   try {
-    const res = await Promise.race([fetch(url.toString(), {
+    const res = await Promise.race([providerFetch(url.toString(), {
       signal: controller.signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
     }), timeout])
     response = res
@@ -634,8 +640,13 @@ async function daisyGetNumber(
   apiKey: string,
   serviceCode: string,
   maxPriceUsd?: number,
+  admin?: SupabaseAdmin,
   onReply?: (reply: { text: string; headers: Headers; status: number; bodyComplete: boolean }) => Promise<void>,
 ): Promise<{ activationId: string; phoneNumber: string; priceUsd?: number }> {
+  if (smsProvidersConfigured().length) {
+    try { return await smsBuy(serviceCode, maxPriceUsd ?? 0, admin, onReply) }
+    catch (error) { if (error instanceof ProviderDeclined) throw new DaisySmsError(error.code, 'SMS service is temporarily unavailable. Please refresh and try again.'); throw error }
+  }
   const params: Record<string, string> = { action: 'getNumber', service: serviceCode }
   if (maxPriceUsd !== undefined) params.max_price = maxPriceUsd.toFixed(4)
   const { text, headers } = await daisyRequest(apiKey, params, 12_000, onReply)
@@ -660,7 +671,11 @@ async function daisyGetNumber(
 
 type DaisyStatus = { status: 'ok'; code: string } | { status: 'waiting' } | { status: 'cancelled' }
 
-async function daisyGetStatus(apiKey: string, activationId: string, timeoutMs = 12_000): Promise<DaisyStatus> {
+async function daisyGetStatus(apiKey: string, activationId: string, timeoutMs = 12_000, admin?:SupabaseAdmin): Promise<DaisyStatus> {
+  if (parseSmsReference(activationId)) {
+    try { return await smsStatus(activationId, timeoutMs,admin) }
+    catch(error) { if(error instanceof Error && error.message==='SUPPLIER_RATE_LIMITED') throw new DaisySmsError('RATE_LIMIT_EXCEEDED','SMS status checks are temporarily limited'); throw error }
+  }
   const text = await daisyGet(apiKey, { action: 'getStatus', id: activationId }, timeoutMs)
   if (text === 'RATE_LIMIT_EXCEEDED') throw new DaisySmsError('RATE_LIMIT_EXCEEDED', 'SMS status checks are temporarily limited')
   if (text === 'STATUS_WAIT_CODE' || text === 'STATUS_WAITING') return { status: 'waiting' }
@@ -672,10 +687,12 @@ async function daisyGetStatus(apiKey: string, activationId: string, timeoutMs = 
 }
 
 async function daisyMarkDone(apiKey: string, activationId: string) {
+  if (parseSmsReference(activationId)) return smsDone(activationId)
   await daisyGet(apiKey, { action: 'setStatus', id: activationId, status: '6' })
 }
 
 async function daisyCancelNumber(apiKey: string, activationId: string) {
+  if (parseSmsReference(activationId)) return smsCancel(activationId)
   const text = await daisyGet(apiKey, { action: 'setStatus', id: activationId, status: '8' })
   return { cancelled: text === 'ACCESS_CANCEL', response: text }
 }
@@ -705,7 +722,10 @@ function generateReference(prefix = 'SMS') {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`
 }
 
-function getDaisyKey() { return Deno.env.get('DAISYSMS_API_KEY') || '' }
+function getDaisyKey() {
+  const domainKey = String(Deno.env.get('DAISYSMS_BASE_URL') || '').includes('daisysms.com/') ? 'DAISYSMS_COM_API_KEY' : 'DAISYSMS_IO_API_KEY'
+  return Deno.env.get('DAISYSMS_API_KEY') || Deno.env.get(domainKey) || (smsProvidersConfigured().length ? 'routed-provider' : '')
+}
 
 function constantTimeEquals(a: string, b: string) {
   const encoder = new TextEncoder()
@@ -998,7 +1018,7 @@ async function syncSmsProductSettings(admin: SupabaseAdmin, services: DaisyServi
   if (error) throw new Error(`Failed to sync SMS products: ${error.message}`)
 }
 
-async function getSmsServiceBuyCounts(admin: SupabaseAdmin, userId?: string | null) {
+async function loadSmsServiceBuyCounts(admin: SupabaseAdmin, userId?: string | null) {
   const counts = new Map<string, number>()
   let query = admin
     .from('sms_orders')
@@ -1050,24 +1070,22 @@ function getRecommendedScore(isFavorite: boolean, buyCount: number, personalBuyC
   return favoriteBoost + personalBoost + buyBoost + stockBoost - pricePenalty
 }
 
-async function buildSmsCatalog(admin: SupabaseAdmin, userId?: string | null) {
+async function loadSmsCatalog(admin: SupabaseAdmin, userId?: string | null, countryCode = 'US', sync = false) {
   const key = getDaisyKey()
   if (!key) return { products: [] as SmsCatalogItem[], diagnostics: null, exchangeRate: 0, globalMarginNgn: DEFAULT_SMS_MARGIN_NGN }
 
   const { rate: exchangeRate, source: exchangeRateSource } = await getSmsExchangeRate(admin)
   const globalMarginNgn = await getNumericAppSetting(admin, 'sms_default_margin_ngn', DEFAULT_SMS_MARGIN_NGN)
   const roundAutoPricesToNearestTen = await getBooleanAppSetting(admin, 'sms_round_markup_to_nearest_10', false)
-  const { services, diagnostics } = await daisyGetServicesWithDiagnostics(key)
-  await syncSmsProductSettings(admin, services, exchangeRate)
+  const routed = await smsCatalogue(false, admin, countryCode)
+  const services = routed.products
+  const diagnostics = { configured_providers: routed.diagnostics }
+  if (sync) await syncSmsProductSettings(admin, services, exchangeRate)
   if (services.length === 0) {
     return { products: [] as SmsCatalogItem[], diagnostics, exchangeRate, exchangeRateSource, globalMarginNgn, roundAutoPricesToNearestTen }
   }
 
-  const { data: settingsRows, error } = await admin
-    .from('sms_product_settings')
-    .select('service_code, service_name, is_enabled, is_favorite, price_override_ngn, auto_markup_enabled, margin_ngn')
-    .in('service_code', services.map((svc) => svc.code))
-  if (error) throw new Error(`Failed to load SMS product settings: ${error.message}`)
+  const settingsRows = await loadSmsProductSettings(admin, services.map(svc=>svc.code))
 
   const settings = new Map<string, SmsProductSetting>((settingsRows || []).map((row: SmsProductSetting) => [row.service_code, row]))
   const ownerRules = await loadSmsMarkupRules(admin, services.map(service => service.code))
@@ -1088,8 +1106,8 @@ async function buildSmsCatalog(admin: SupabaseAdmin, userId?: string | null) {
       service_code: svc.code,
       service_name: setting.service_name || svc.name,
       project_id: index + 1,
-      country_id: DAISY_COUNTRY,
-      country_code: 'us',
+      country_id: countryInfo(countryCode).id,
+      country_code: countryCode.toLowerCase(),
       provider_cost_usd: Number(svc.priceUsd.toFixed(4)),
       provider_cost_ngn: pricing.providerCostNgn,
       margin_usd: Number(pricing.marginUsd.toFixed(4)),
@@ -1317,7 +1335,7 @@ async function reconcileOtpOrderStatus(admin: SupabaseAdmin, apiKey: string, ord
 
   let result: DaisyStatus
   try {
-    result = await daisyGetStatus(apiKey, activationId, readTimeoutMs)
+    result = await daisyGetStatus(apiKey, activationId, readTimeoutMs,admin)
   } catch (e: any) {
     if (e?.code === 'NO_ACTIVATION') return order
     throw e
@@ -1443,8 +1461,8 @@ async function handleHealth() {
   }
 }
 
-async function handleServices(admin: SupabaseAdmin, userId: string) {
-  const { products, diagnostics } = await buildSmsCatalog(admin, userId)
+async function handleServices(admin: SupabaseAdmin, userId: string, body: Record<string,unknown> = {}) {
+  const { products, diagnostics } = await buildSmsCatalog(admin, userId, String(body.country_code || 'US').toUpperCase())
   const customerProducts = products
     .filter((service) => service.is_enabled && service.available_count > 0 && service.price_ngn > 0)
     .map((service) => ({
@@ -1460,26 +1478,14 @@ async function handleServices(admin: SupabaseAdmin, userId: string) {
       customer_buy_count: service.customer_buy_count,
       personal_buy_count: service.personal_buy_count,
       recommended_score: service.recommended_score,
-      pricing_mode: service.pricing_mode,
+
     }))
-  const customerDiagnostics = diagnostics ? {
-    configured: diagnostics.configured,
-    country_id: diagnostics.country_id,
-    verification_ok: diagnostics.verification_ok,
-    verification_services: diagnostics.verification_services,
-    prices_ok: diagnostics.prices_ok,
-    prices_services: diagnostics.prices_services,
-  } : null
-  return json({
-    success: true,
-    data: customerProducts,
-    diagnostics: customerDiagnostics,
-  })
+  return json({ success: true, data: customerProducts })
 }
 
 async function handleAdminSmsProducts(admin: SupabaseAdmin, userId: string) {
   await requireSmsProductAccess(admin, userId)
-  const { products, diagnostics, exchangeRate, exchangeRateSource, globalMarginNgn, roundAutoPricesToNearestTen } = await buildSmsCatalog(admin)
+  const { products, diagnostics, exchangeRate, exchangeRateSource, globalMarginNgn, roundAutoPricesToNearestTen } = await buildSmsCatalog(admin, null, 'US', true, true)
   return json({
     success: true,
     configured: !!getDaisyKey(),
@@ -1599,7 +1605,7 @@ async function reconcileSmsOrdersBounded(admin: SupabaseAdmin, apiKey: string, o
     checked++
     try {
       if (cancelOnly) {
-        const status = await daisyGetStatus(apiKey, order.provider_request_id, readTimeoutMs)
+        const status = await daisyGetStatus(apiKey, order.provider_request_id, readTimeoutMs,admin)
         if (status.status === 'cancelled') updated.set(order.id, await cancelSmsOrderAndRefund(admin, order, 'STATUS_CANCEL', 'sync_cancelled', `Refund for cancelled SMS order: ${order.reference}`))
       } else {
         updated.set(order.id, await reconcileOtpOrderStatus(admin, apiKey, order, readTimeoutMs))
@@ -1669,7 +1675,7 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     }, 409)
   }
 
-  const { products, exchangeRate, globalMarginNgn, roundAutoPricesToNearestTen } = await buildSmsCatalog(admin)
+  const { products, exchangeRate, globalMarginNgn, roundAutoPricesToNearestTen } = await buildSmsCatalog(admin, null, smsCountryFromCode(serviceCode), true)
   const svc = products.find(s => s.service_code === serviceCode)
   if (!svc || !svc.is_enabled || svc.available_count <= 0) throw new Error('Service not available')
 
@@ -1784,7 +1790,7 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     const { data: pendingOrder, error: pendingOrderErr } = await admin.from('sms_orders').insert({
       user_id: userId, reference, idempotency_key: idempotencyKey, order_type: 'otp',
       service_id: serviceCode, service_name: svc.service_name,
-      country_id: DAISY_COUNTRY, country_code: 'us',
+      country_id: svc.country_id, country_code: svc.country_code,
       provider_cost_usd: svc.provider_cost_usd,
       margin_usd: Math.max(0, (priceNgn - initialProviderCostNgn) / exchangeRate),
       total_cost_usd: priceNgn / exchangeRate,
@@ -1807,13 +1813,10 @@ async function handleCreateOtp(admin: SupabaseAdmin, userId: string, body: Recor
     }
     order = pendingOrder
 
-    const maxProviderPriceUsd = Math.max(
-      svc.provider_cost_usd * 1.25,
-      svc.provider_cost_usd + 0.05,
-      estimatedPriceNgn / exchangeRate,
-    )
+    const maxProviderPriceUsd = estimatedPriceNgn / exchangeRate
+    const providerAttemptStartedAt = new Date().toISOString()
     providerRequestStarted = true
-    number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd, async (reply) => {
+    number = await daisyGetNumber(key, serviceCode, maxProviderPriceUsd, admin, async (reply) => {
       // This column is server-only. Persist the bounded response before parsing
       // so an unfamiliar reply cannot erase the only allocation evidence. Never
       // retain the API key, request URL or arbitrary response headers.
@@ -2008,7 +2011,7 @@ async function handleCheckOtp(admin: SupabaseAdmin, userId: string, body: Record
 
   let result: DaisyStatus
   try {
-    result = await daisyGetStatus(key, activationId)
+    result = await daisyGetStatus(key, activationId,12000,admin)
   } catch (error: any) {
     if (error?.code === 'NO_ACTIVATION') {
       return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED', data: publicSmsOrder(order) }, 202)
@@ -2072,7 +2075,7 @@ async function handleCancelOtp(admin: SupabaseAdmin, userId: string, body: Recor
   }
   if (!order.provider_request_id) return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED', error: 'Number allocation needs review. Do not buy again; contact support with this order reference.', data: publicSmsOrder(order) }, 202)
 
-  const providerStatus = await daisyGetStatus(key, order.provider_request_id).catch(error => {
+  const providerStatus = await daisyGetStatus(key, order.provider_request_id,12000,admin).catch(error => {
     if (error instanceof DaisySmsError && error.code === 'NO_ACTIVATION') return null
     throw error
   })
@@ -2168,7 +2171,7 @@ async function handleAdminCheckSmsOrder(admin: SupabaseAdmin, userId: string, bo
   if (!key) return json({ success: true, data: { ...local, provider_state: 'unavailable', reason_code: 'SMS_PROVIDER_UNAVAILABLE' } })
   try {
     // The activation comes exclusively from the saved order, never the request.
-    const status = await daisyGetStatus(key, order.provider_request_id)
+    const status = await daisyGetStatus(key, order.provider_request_id,12000,admin)
     return json({ success: true, data: { ...local,
       provider_state: status.status === 'ok' ? 'code_received' : status.status,
       reason_code: status.status === 'cancelled' ? 'SMS_PROVIDER_CANCELLED' : status.status === 'ok' ? 'SMS_PROVIDER_CODE_RECEIVED' : 'SMS_PROVIDER_WAITING',
@@ -2202,7 +2205,7 @@ async function handleAdminCancelSmsOrder(admin: SupabaseAdmin, userId: string, b
   if (!order.provider_request_id || (Array.isArray(order.messages) && order.messages.length > 0)) {
     return json({ success: false, code: 'SMS_OUTCOME_REVIEW_REQUIRED' }, 202)
   }
-  const status = await daisyGetStatus(key, order.provider_request_id).catch(error => {
+  const status = await daisyGetStatus(key, order.provider_request_id,12000,admin).catch(error => {
     if (error instanceof DaisySmsError && error.code === 'NO_ACTIVATION') return null
     throw error
   })
@@ -2244,7 +2247,7 @@ async function handleAdminAutoCancelStale(admin: SupabaseAdmin, userId: string) 
         continue
       }
       if (!key || !order.provider_request_id) { reviewCount++; continue }
-      const status = await daisyGetStatus(key, order.provider_request_id).catch(error => {
+      const status = await daisyGetStatus(key, order.provider_request_id,12000,admin).catch(error => {
         if (error instanceof DaisySmsError && error.code === 'NO_ACTIVATION') return null
         throw error
       })
@@ -2332,7 +2335,7 @@ async function handleSweepStaleSms(admin: SupabaseAdmin) {
         await cancelSmsOrderAndRefund(admin, order, saved, 'scheduled_refund_recovery', `Refund for cancelled SMS order: ${order.reference}`)
         cancelled++; continue
       }
-      const status = await daisyGetStatus(key, order.provider_request_id, 3_000).catch(error => {
+      const status = await daisyGetStatus(key, order.provider_request_id, 3_000,admin).catch(error => {
         if (error instanceof DaisySmsError && error.code === 'NO_ACTIVATION') return null
         throw error
       })
@@ -2383,10 +2386,17 @@ async function handleDaisyWebhook(req: Request) {
   if (!payload?.activationId) return new Response('ok', { status: 200 })
 
   const activationId = String(payload.activationId)
-  const { data: order } = await admin.from('sms_orders').select('*').eq('provider_request_id', activationId).maybeSingle()
+  const requestedProvider = new URL(req.url).searchParams.get('provider')
+  const provider = requestedProvider === 'daisysms_com' || requestedProvider === 'daisysms_io' ? requestedProvider
+    : String(Deno.env.get('DAISYSMS_BASE_URL') || '').includes('daisysms.com/') ? 'daisysms_com' : 'daisysms_io'
+  const { data: order, error: orderError } = await admin.from('sms_orders').select('*')
+    .in('provider_request_id', [activationId, smsReference(provider, activationId)]).maybeSingle()
+  if (orderError) return new Response('Order confirmation unavailable', { status: 503 })
   if (!order || TERMINAL_STATUSES.includes(order.status)) return new Response('ok', { status: 200 })
 
-  const code = payload.code || extractCode(payload.text) || payload.text
+  const confirmed = await daisyGetStatus(getDaisyKey(), String(order.provider_request_id),12000,admin)
+  if (confirmed.status !== 'ok') return new Response('Code confirmation pending', { status: 503 })
+  const code = confirmed.code
   const messages = Array.isArray(order.messages) ? order.messages : []
   const newMsg = { content: payload.text, code, received_at: payload.receivedAt || new Date().toISOString() }
   const nextMessages = messages.some((m: any) => m.code === code) ? messages : [...messages, newMsg]
@@ -2428,6 +2438,28 @@ serve(async (req) => {
     const authRequest = req.clone()
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
     const action = String(body.action || '')
+    // Internal, read-only end-to-end catalogue probe. Never allocates a number,
+    // syncs owner settings, or returns customer/order data.
+    if(action==='catalog_smoke') {
+      const service=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')||'';
+      const authorization=req.headers.get('Authorization')||'';
+      const token=authorization.replace(/^Bearer\s+/i,'');
+      let internal=!!service && token===service;
+      if(!internal && token) {
+        const probe=await fetch(`${Deno.env.get('SUPABASE_URL')}/rest/v1/sms_provider_controls?select=provider&limit=0`,{headers:{apikey:token,Authorization:authorization},redirect:'error',signal:AbortSignal.timeout(3000)});
+        internal=probe.status===200;await probe.body?.cancel();
+      }
+      if(!internal)return json({success:false,error:'Unauthorized'},401);
+      const admin=createClient(Deno.env.get('SUPABASE_URL')||'',service,{auth:{persistSession:false}});
+      try {
+        const result=await buildSmsCatalog(admin,null,String(body.country_code||'US').toUpperCase(),true,false);
+        return json({success:true,products:result.products.length,visible_products:result.products.filter(product=>product.is_enabled&&product.available_count>0&&product.price_ngn>0).length,diagnostics:result.diagnostics,paid_calls:0,database_writes:0});
+      }catch(error){
+        let diagnostic=error instanceof Error?error.message:'SMS_CATALOG_FAILED';
+        for(const value of Object.values(Deno.env.toObject()))if(value.length>12)diagnostic=diagnostic.replaceAll(value,'[redacted]');
+        return json({success:false,diagnostic:diagnostic.slice(0,400),paid_calls:0,database_writes:0},503);
+      }
+    }
     if (action === 'sweep_stale_sms') {
       const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
       const cronKey = Deno.env.get('PAYMENT_RECOVERY_CRON_SECRET') || Deno.env.get('REVENUE_OS_CRON_SECRET') || ''
@@ -2447,8 +2479,21 @@ serve(async (req) => {
     const { user, admin } = await requireAuth(authRequest, action)
 
     switch (action) {
-      case 'health':       return await handleHealth()
-      case 'services':     return await handleServices(admin, user.id)
+      case 'health':       return json({ success: true, configured: smsProvidersConfigured().length > 0, available: smsOtpOrdersEnabled() })
+      case 'admin_health':
+        await requireAdminUser(admin, user.id)
+        return await handleHealth()
+      case 'catalog': {
+        const configured=smsProvidersConfigured().length>0
+        const [services,areas,countries]=await Promise.allSettled([
+          configured?handleServices(admin,user.id,body).then(response=>response.json()):Promise.resolve({data:[]}),
+          rentalAreas(admin),smsCountries(),
+        ])
+        return json({success:true,configured,available:smsOtpOrdersEnabled(),
+          services_loaded:services.status==='fulfilled',rental_areas_loaded:areas.status==='fulfilled',
+          data:{services:services.status==='fulfilled'?services.value.data:[],rental_areas:areas.status==='fulfilled'?areas.value:[],countries:countries.status==='fulfilled'?countries.value:[]}})
+      }
+      case 'services':     return await handleServices(admin, user.id, body)
       case 'admin_sms_products':
         return await handleAdminSmsProducts(admin, user.id)
       case 'admin_update_sms_product':
@@ -2459,8 +2504,8 @@ serve(async (req) => {
         return await handleAdminApplySmsMarkup(admin, user.id, body)
       case 'admin_set_sms_rounding':
         return await handleAdminSetSmsRounding(admin, user.id, body)
-      case 'countries':    return json({ success: true, data: [{ id: DAISY_COUNTRY, name: 'United States', code: 'us' }] })
-      case 'rental_areas': return json({ success: true, data: [] })
+      case 'countries':    return json({ success: true, data: await smsCountries() })
+      case 'rental_areas': return json({ success: true, data: await rentalAreas(admin) })
       case 'orders':       return await handleOrders(admin, user.id)
       case 'create_otp':   return await handleCreateOtp(admin, user.id, body, req)
       case 'check_otp':    return await handleCheckOtp(admin, user.id, body)
@@ -2474,7 +2519,7 @@ serve(async (req) => {
       case 'rental_sms':
       case 'renew_rental':
       case 'cancel_rental':
-        return json({ success: false, error: 'Long-term rentals are not available with the current SMS provider.' })
+        return json(await rentalAction(admin, user.id, action, body, req, { assertCustomer: assertPurchasingCustomer, publicOrder: publicSmsOrder }))
       default:
         throw new Error('Unknown SMS action')
     }
@@ -2487,7 +2532,17 @@ serve(async (req) => {
     }, 202)
     const message = friendlyError(err)
     const isAuth = err instanceof Error && (err.message === 'Unauthorized' || err.message === 'Missing authorization header')
+    const isForbidden = err instanceof Error && ['Admin access required','Staff permission required','SMS product permission required'].includes(err.message)
     console.error('SMS function error:', message)
-    return json({ success: false, error: message }, isAuth ? 401 : 200)
+    return json({ success: false, error: message }, isAuth ? 401 : isForbidden ? 403 : 200)
   }
 })
+
+async function getSmsServiceBuyCounts(admin:SupabaseAdmin,userId?:string|null){return providerRead(`sms-buy-counts:${userId||"global"}`,userId?60_000:120_000,()=>loadSmsServiceBuyCounts(admin,userId))}
+
+// Browsing may reuse a short-lived quote. Paid dispatch always bypasses it and
+// requotes supplier costs; wallet authorization and claims are never cached.
+async function buildSmsCatalog(admin: SupabaseAdmin, userId?: string | null, countryCode='US', fresh=false, sync=false) {
+  if(fresh)return loadSmsCatalog(admin,userId,countryCode,sync)
+  return providerRead(`sms-priced-catalog:${countryCode}:${userId||'global'}`,20_000,()=>loadSmsCatalog(admin,userId,countryCode))
+}

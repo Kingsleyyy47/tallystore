@@ -1,0 +1,991 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Documentation",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v2/profile": {
+      "get": {
+        "tags": [
+          "General"
+        ],
+        "summary": "Get user profile",
+        "description": "Returns the authenticated user's profile info.",
+        "operationId": "getUserProfile",
+        "responses": {
+          "200": {
+            "description": "Authenticated user's profile info"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/account-details": {
+      "get": {
+        "tags": [
+          "General"
+        ],
+        "summary": "Get user balance",
+        "description": "Returns the authenticated user's username and current wallet balance.",
+        "operationId": "getUserBalance",
+        "responses": {
+          "200": {
+            "description": "Authenticated user's balance info"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn101/get-services": {
+      "get": {
+        "tags": [
+          "USA-Server-1"
+        ],
+        "summary": "Service List",
+        "description": "Returns a list of active services grouped under 'United States'.",
+        "operationId": "getServicesByCountry",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Services"
+                    },
+                    "data": {
+                      "properties": {
+                        "temporary": {
+                          "properties": {
+                            "United States": {
+                              "type": "array",
+                              "items": {
+                                "properties": {
+                                  "service": {
+                                    "type": "string",
+                                    "example": "Zoosk"
+                                  },
+                                  "price": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "example": 0.4
+                                  },
+                                  "has_premium": {
+                                    "type": "string",
+                                    "example": "1"
+                                  }
+                                },
+                                "type": "object"
+                              }
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn101/request-number": {
+      "post": {
+        "tags": [
+          "USA-Server-1"
+        ],
+        "summary": "Request a temporary number",
+        "description": "Authenticated users can request a temporary number for a specific service.",
+        "operationId": "requestTemporaryNumber",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "service_key"
+                ],
+                "properties": {
+                  "service_key": {
+                    "type": "string",
+                    "example": "8jb222"
+                  },
+                  "request_premium": {
+                    "type": "number",
+                    "format": "float",
+                    "example": 20,
+                    "nullable": true
+                  },
+                  "state": {
+                    "type": "string",
+                    "example": "AK",
+                    "nullable": true
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "summery": {
+                      "type": "string",
+                      "example": "Requested"
+                    },
+                    "data": {
+                      "properties": {
+                        "order_id": {
+                          "type": "integer",
+                          "example": 356555
+                        },
+                        "number": {
+                          "type": "string",
+                          "example": "+12102511186"
+                        },
+                        "service": {
+                          "type": "string",
+                          "example": "Youtube"
+                        },
+                        "status": {
+                          "type": "string",
+                          "example": "Reserved"
+                        },
+                        "state": {
+                          "type": "string",
+                          "example": ""
+                        },
+                        "markup": {
+                          "type": "number",
+                          "example": 10
+                        },
+                        "price": {
+                          "type": "number",
+                          "format": "float",
+                          "example": 0.5
+                        },
+                        "till_expiration": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "summery": {
+                      "type": "string",
+                      "example": "Error"
+                    },
+                    "data": {
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn101/reuse-number": {
+      "post": {
+        "tags": [
+          "USA-Server-1"
+        ],
+        "summary": "Reuse a previously purchased temporary number",
+        "description": "Authenticated users can reuse a previously purchased number from a successful order. Reuse pricing is based on configured percentage and current balance is checked.",
+        "operationId": "reUseTemporaryNumber",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "order_id"
+                ],
+                "properties": {
+                  "order_id": {
+                    "description": "Order ID of the previous successful number order",
+                    "type": "integer",
+                    "example": 345
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Temporary number successfully reused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Awaiting"
+                    },
+                    "data": {
+                      "properties": {
+                        "order_id": {
+                          "type": "integer",
+                          "example": 345
+                        },
+                        "number": {
+                          "type": "string",
+                          "example": "+15551234567"
+                        },
+                        "service": {
+                          "type": "string",
+                          "example": "Phone Verification"
+                        },
+                        "status": {
+                          "type": "string",
+                          "example": "Awaiting"
+                        },
+                        "state": {
+                          "type": "string",
+                          "example": "California"
+                        },
+                        "price": {
+                          "type": "number",
+                          "example": 0.99
+                        },
+                        "reuse": {
+                          "type": "boolean",
+                          "example": true
+                        },
+                        "till_expiration": {
+                          "type": "string",
+                          "format": "date-time",
+                          "example": "2025-07-05T14:35:00Z"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "Error"
+                    },
+                    "data": {
+                      "type": "object",
+                      "example": {
+                        "order_id": [
+                          "The selected order_id is invalid."
+                        ]
+                      }
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not allowed or insufficient balance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "message": {
+                      "type": "string",
+                      "example": "You have no enough balance"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn101/get-number-details": {
+      "get": {
+        "tags": [
+          "USA-Server-1"
+        ],
+        "summary": "Get temporary number order details",
+        "description": "Returns full details of a temporary number order including status, pin, message and expiration.",
+        "operationId": "getTemporaryNumberDetails",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "query",
+            "description": "Order ID to retrieve details for",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 356555
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successfully fetched order details"
+          },
+          "422": {
+            "description": "Validation failed"
+          },
+          "403": {
+            "description": "Not allowed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn101/get-reserved-list": {
+      "get": {
+        "tags": [
+          "USA-Server-1"
+        ],
+        "summary": "Get list of reserved or awaiting numbers",
+        "description": "Returns up to 20 reserved/awaiting temporary numbers for the authenticated user. Expired entries are automatically excluded.",
+        "operationId": "getReservedList",
+        "responses": {
+          "200": {
+            "description": "List of reserved/awaiting temporary numbers"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn101/get-order-histories": {
+      "get": {
+        "tags": [
+          "USA-Server-1"
+        ],
+        "summary": "Get Order Histories",
+        "description": "Retrieve paginated order history for temporary numbers (S1) for the authenticated user.",
+        "operationId": "getOrderHistories",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number for pagination",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order histories retrieved successfully"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn101/reject-number": {
+      "post": {
+        "tags": [
+          "USA-Server-1"
+        ],
+        "summary": "Reject a temporary number",
+        "description": "Authenticated users can reject an active number (not yet successful). Balance will be reversed if rejection is accepted by the provider.",
+        "operationId": "rejectTemporaryNumber",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "order_id"
+                ],
+                "properties": {
+                  "order_id": {
+                    "description": "ID of the order to reject",
+                    "type": "integer",
+                    "example": 789
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Number rejected and balance reversed"
+          },
+          "422": {
+            "description": "Validation failed or already rejected"
+          },
+          "400": {
+            "description": "Invalid status or not allowed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn101/us-states": {
+      "get": {
+        "tags": [
+          "USA-Server-1"
+        ],
+        "summary": "Get list of US states",
+        "description": "Returns a key-value list of all U.S. states where both the key and value are state abbreviations.",
+        "operationId": "getStatesList",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/api/v2/rv202/get-services": {
+      "get": {
+        "tags": [
+          "USA-Rental (Virtual)"
+        ],
+        "summary": "Service List S3",
+        "description": "Fetches service list from S3 server.",
+        "operationId": "getServicesS3",
+        "responses": {
+          "200": {
+            "description": "S3 services"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/rv202/request-number": {
+      "post": {
+        "tags": [
+          "USA-Rental (Virtual)"
+        ],
+        "summary": "Request Number S3",
+        "description": "Reserves a temporary number from S3 service.",
+        "operationId": "getTemporaryNumberS3",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "name",
+                  "quantity",
+                  "validityType"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "example": "10050"
+                  },
+                  "quantity": {
+                    "type": "integer",
+                    "example": 1
+                  },
+                  "validityType": {
+                    "description": "Four values in total: 1:1-10 days, 2:11-30 days, 3:31-60 days, 4:61-92 days",
+                    "type": "integer",
+                    "example": 1
+                  },
+                  "area_code": {
+                    "type": "string",
+                    "example": "1208,1507"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/rv202/get-number-details": {
+      "get": {
+        "tags": [
+          "USA-Rental (Virtual)"
+        ],
+        "summary": "Get S3 Number Details",
+        "description": "Returns details of a reserved number (S3).",
+        "operationId": "getTemporaryNumberDetailsS3",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/rv202/get-order-histories": {
+      "get": {
+        "tags": [
+          "USA-Rental (Virtual)"
+        ],
+        "summary": "Get Order Histories S3",
+        "description": "Retrieve paginated order history for S3 numbers.",
+        "operationId": "getOrderHistoriesS3",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/rv202/renew-number": {
+      "post": {
+        "tags": [
+          "USA-Rental (Virtual)"
+        ],
+        "summary": "Renew Number S3",
+        "description": "Renews an existing S3  number by extending its expiry date.",
+        "operationId": "renewNumberS3",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "order_id"
+                ],
+                "properties": {
+                  "order_id": {
+                    "type": "integer",
+                    "example": 1
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn102/get-services": {
+      "get": {
+        "tags": [
+          "USA-Server-2"
+        ],
+        "summary": "Service List",
+        "description": "Fetches active services with computed selling price.",
+        "operationId": "servicesS5",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn102/request-number": {
+      "post": {
+        "tags": [
+          "USA-Server-2"
+        ],
+        "summary": "Request Number S5",
+        "description": "Reserves a temporary number from the S5  service.",
+        "operationId": "getTemporaryNumberS5",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "service_id"
+                ],
+                "properties": {
+                  "service_id": {
+                    "type": "integer",
+                    "example": 1
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn102/get-number-details": {
+      "get": {
+        "tags": [
+          "USA-Server-2"
+        ],
+        "summary": "Get S5 Number Details",
+        "description": "Checks status and fetches SMS/pin for a reserved S5 number.",
+        "operationId": "getTemporaryNumberDetailsS5",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn102/get-order-histories": {
+      "get": {
+        "tags": [
+          "USA-Server-2"
+        ],
+        "summary": "Get Order Histories S5",
+        "description": "Retrieve paginated order history for S5  numbers.",
+        "operationId": "getOrderHistoriesS5",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn102/reuse-number": {
+      "post": {
+        "tags": [
+          "USA-Server-2"
+        ],
+        "summary": "Reuse Number S5",
+        "description": "Re-reserves the same MDN from a previous S5 order at the service's reuse price, if eligible.",
+        "operationId": "reuseNumberS5",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "order_id"
+                ],
+                "properties": {
+                  "order_id": {
+                    "type": "integer",
+                    "example": 1
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn102/reject-number": {
+      "post": {
+        "tags": [
+          "USA-Server-2"
+        ],
+        "summary": "Reject Number S5",
+        "description": "Rejects a reserved S5  number and refunds the balance.",
+        "operationId": "rejectNumberS5",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "order_id"
+                ],
+                "properties": {
+                  "order_id": {
+                    "type": "integer",
+                    "example": 1
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn102/check-favourite/{service_id}": {
+      "get": {
+        "tags": [
+          "USA-Server-2"
+        ],
+        "summary": "Check S5 Favourite",
+        "description": "Checks whether an S5  service is marked as favourite by the authenticated user.",
+        "operationId": "checkFavouriteS5",
+        "parameters": [
+          {
+            "name": "service_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v2/tn102/toggle-favourite": {
+      "post": {
+        "tags": [
+          "USA-Server-2"
+        ],
+        "summary": "Toggle S5 Favourite",
+        "description": "Adds or removes an S5  service from the authenticated user's favourites.",
+        "operationId": "toggleFavouriteS5",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "service_id"
+                ],
+                "properties": {
+                  "service_id": {
+                    "type": "integer",
+                    "example": 1
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "General",
+      "description": "General"
+    },
+    {
+      "name": "USA-Server-1",
+      "description": "USA-Server-1"
+    },
+    {
+      "name": "USA-Rental (Virtual)",
+      "description": "USA-Rental (Virtual)"
+    },
+    {
+      "name": "USA-Server-2",
+      "description": "USA-Server-2"
+    }
+  ]
+}

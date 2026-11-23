@@ -62,6 +62,7 @@ type SmsApiResponse<T> = {
   error?: string
   code?: string
   configured?: boolean
+  available?: boolean
   valid?: boolean
   balance?: SmsProviderBalance | null
   waiting?: boolean
@@ -316,7 +317,7 @@ function statusClass(status: string) {
 
 function safeSmsError(error: unknown, fallback = 'SMS request failed') {
   const message = error instanceof Error ? error.message : fallback
-  if (/smsbus|daisy|daisysms|provider|api key|token|secret|backend|ngn_usd_rate|app settings/i.test(message)) {
+  if (/provider|api key|token|secret|backend|ngn_usd_rate|app settings/i.test(message)) {
     return 'SMS numbers are temporarily unavailable. Please try again later.'
   }
   return message || fallback
@@ -712,6 +713,8 @@ function SmsNumbersSurface() {
   const [activeTab, setActiveTab] = useState<SmsTab>('otp')
   const [health, setHealth] = useState<SmsApiResponse<never> | null>(null)
   const [services, setServices] = useState<SmsService[]>([])
+  const [smsCountry, setSmsCountry] = useState('us')
+  const [smsCountryOptions, setSmsCountryOptions] = useState<Array<{code:string;name:string}>>([{code:'us',name:'United States'}])
   const [areas, setAreas] = useState<SmsRentalArea[]>([])
   const [orders, setOrders] = useState<SmsOrder[]>([])
   const [selectedServiceId, setSelectedServiceId] = useState('')
@@ -907,31 +910,21 @@ function SmsNumbersSurface() {
     // History loading already reconciles supplier cancellations and confirmed
     // refunds. Do not start a second concurrent supplier status batch here.
     try {
-      const healthResult = await invokeSmsRead<never>('health', {}, 10000)
-      if (!mountedRef.current) return
-      setHealth(healthResult)
-      if (healthResult.configured && healthResult.valid !== false) {
-        const [serviceResult, areaResult] = await Promise.allSettled([
-          invokeSmsRead<SmsService[]>('services', { country_code: 'us' }),
-          invokeSmsRead<SmsRentalArea[]>('rental_areas'),
-        ])
-        if (!mountedRef.current) return
-        const serviceLoaded = serviceResult.status === 'fulfilled' && Array.isArray(serviceResult.value.data)
-        const areaLoaded = areaResult.status === 'fulfilled' && Array.isArray(areaResult.value.data)
-        if (serviceLoaded) setServices(serviceResult.value.data as SmsService[])
-        if (areaLoaded) setAreas(areaResult.value.data as SmsRentalArea[])
-        if (!serviceLoaded || !areaLoaded) setCatalogError('Some live SMS stock could not be loaded. Try refreshing the catalog.')
-      } else {
-        setServices([])
-        setAreas([])
-      }
+      const bundle=await invokeSmsRead<{services:SmsService[];rental_areas:SmsRentalArea[];countries:Array<{code:string;name:string}>}>('catalog',{country_code:smsCountry},20000)
+      if(!mountedRef.current)return
+      setHealth({ success: bundle.success, configured: bundle.configured, valid: bundle.available })
+      if(bundle.data?.countries?.length)setSmsCountryOptions(bundle.data.countries)
+      const payload=bundle as typeof bundle & {services_loaded?:boolean;rental_areas_loaded?:boolean}
+      if(payload.services_loaded!==false&&Array.isArray(bundle.data?.services))setServices(bundle.data.services)
+      if(payload.rental_areas_loaded!==false&&Array.isArray(bundle.data?.rental_areas))setAreas(bundle.data.rental_areas)
+      if(payload.services_loaded===false||payload.rental_areas_loaded===false)setCatalogError('Some live SMS stock could not be loaded. Try refreshing the catalog.')
     } catch (error) {
       if (mountedRef.current) setCatalogError(safeSmsError(error, 'Failed to load SMS numbers'))
     } finally {
       catalogLoadActiveRef.current = false
       if (mountedRef.current) setLoading(false)
     }
-  }, [])
+  }, [smsCountry])
 
   useEffect(() => {
     loadSmsNumbers()
@@ -1231,6 +1224,7 @@ function SmsNumbersSurface() {
     const result = await invokeSms<SmsOrder>('rent_number', {
       area_code: selectedArea.area_code,
       months: rentalMonths,
+      expected_price_ngn: expectedPriceNgn,
       idempotency_key: idempotencyKey,
       revenue_context: getRevenueRequestContext(),
     })
@@ -1278,7 +1272,9 @@ function SmsNumbersSurface() {
   })
 
   const renewRental = (order: SmsOrder) => runAction(`renew-${order.id}`, async () => {
-    const result = await invokeSms<SmsOrder>('renew_rental', { order_id: order.id, months: 1 })
+    const area = areas.find(area => area.area_code === order.area_code)
+    if (!area) throw new Error('Refresh rental prices before renewing.')
+    const result = await invokeSms<SmsOrder>('renew_rental', { order_id: order.id, months: 1, expected_price_ngn: area.price_ngn_monthly, idempotency_key: `sms-renew-${crypto.randomUUID()}` })
     toast.success('Rental renewed for one month')
     if (typeof result.new_balance === 'number') {
       window.dispatchEvent(new Event('transactionAdded'))
@@ -1359,8 +1355,8 @@ function SmsNumbersSurface() {
         </Button>
         <div className="min-w-0 flex-1">
           <h1 className="flex items-center gap-2 text-xl font-bold">
-            <ReactCountryFlag countryCode="US" svg className="shrink-0 text-2xl" aria-label="United States" />
-            US &amp; Canada Numbers
+            <ReactCountryFlag countryCode={smsCountry.toUpperCase()} svg className="shrink-0 text-2xl" aria-label="Selected country" />
+            SMS Numbers
           </h1>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-muted-foreground">Choose a service and get a number for your code.</p>
         </div>
@@ -1370,6 +1366,11 @@ function SmsNumbersSurface() {
         </Button>
       </div>
 
+      {smsCountryOptions.length > 1 && <label className="flex items-center gap-3 text-sm">Country
+        <select className="rounded-lg border bg-background p-2" value={smsCountry} onChange={event => { setSelectedServiceId(''); setSmsCountry(event.target.value) }} disabled={loading}>
+          {smsCountryOptions.map(country => <option key={country.code} value={country.code}>{country.name}</option>)}
+        </select>
+      </label>}
       {unavailable && (
         <Card className="rounded-[1.75rem] border border-amber-200 bg-amber-50 shadow-card dark:border-amber-500/20 dark:bg-amber-500/10">
           <CardContent className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">

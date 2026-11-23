@@ -83,6 +83,8 @@ function fixture(options = {}) {
       })
     },
     console: { error: (...values) => state.logs.push(values), warn: (...values) => state.logs.push(values) },
+    smsCountryFromCode: () => 'US',
+    parseSmsReference: () => null,
     getDaisyKey: () => key,
     assertPurchasingCustomer: async () => {},
     sanitizeRevenueRequestContext: () => null,
@@ -103,6 +105,8 @@ function fixture(options = {}) {
     refundWallet: async () => { state.refunds++; throw new Error('Unknown allocation refund forbidden') },
     json: (body, status = 200) => ({ body, status }),
   }
+  globals.providerFetch=globals.fetch
+  globals.smsProvidersConfigured=()=>[]
   const actual = vm.runInNewContext(`${code}\n({ handleCreateOtp })`, globals)
   return {
     state,

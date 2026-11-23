@@ -1,4 +1,6 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { routedSmmStatus, routedSmmStatuses } from '../_shared/smm-provider-router.ts'
+import { providerFetch } from '../_shared/provider-budget-fetch.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 
 async function applyRefundTransaction(
@@ -102,7 +104,7 @@ export class SmmPanelClient {
       formData.append(key, String(value));
     }
 
-    const response = await fetch(SMM_API_URL, {
+    const response = await providerFetch(SMM_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -230,7 +232,7 @@ export class SmmPanelClient {
  * Create SMM Panel client using environment variable
  */
 export function createSmmPanelClient(): SmmPanelClient {
-  const apiKey = Deno.env.get('SMM_PANEL_API_KEY');
+  const apiKey = Deno.env.get('LORDOFPANELS_API_KEY') || Deno.env.get('SMM_PANEL_API_KEY');
   if (!apiKey) {
     throw new Error('SMM_PANEL_API_KEY environment variable is not set');
   }
@@ -337,7 +339,7 @@ export function sanitizeRevenueEventType(source: string, eventType: string): Rev
   return eventType
 }
 
-const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
+const SENSITIVE_REVENUE_METADATA_KEY = /(^|_|\b)(provider|supplier|cost|margin|wholesale|external|password|passcode|otp|pin|token|secret|api[_-]?key|authorization|cookie|session|email|phone|account[_-]?number|accountnumber|account[_-]?name|bank[_-]?name|wallet[_-]?address|pay[_-]?address|address|memo|tag|hash|reference|payment[_-]?reference|transaction[_-]?reference|transaction[_-]?id|payment[_-]?id|purchase[_-]?id|provider[_-]?request[_-]?id|provider[_-]?response|api[_-]?response|raw[_-]?response|response[_-]?body|activation[_-]?id|external[_-]?order[_-]?id|order[_-]?id|idempotency[_-]?key|recipient|username|login|profile[_-]?url|url|link|comment|comments|group|groups)(\b|_)?/i
 
 async function sha256Hex(value: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
@@ -553,7 +555,7 @@ serve(async (req) => {
     // Get all active orders (pending, processing, in_progress) that have external_order_ids
     const { data: activeOrders, error: fetchError } = await supabaseAdmin
       .from('smm_orders')
-      .select('id, user_id, reference, external_order_id, status, quantity, amount_ngn, link, service_id, created_at')
+      .select('id, user_id, reference, external_order_id, status, quantity, amount_ngn, link, service_id, created_at, panel_response')
       .in('status', ['pending', 'processing', 'in_progress'])
       .not('external_order_id', 'is', null)
       .order('created_at', { ascending: true });
@@ -572,7 +574,10 @@ serve(async (req) => {
 
     console.log(`Checking ${activeOrders.length} active SMM orders...`);
 
-    const smmClient = createSmmPanelClient();
+    const smmClient = {
+      getOrderStatus: (id: number) => createSmmPanelClient().getOrderStatus(id),
+      getMultipleOrderStatus: (ids: number[]) => createSmmPanelClient().getMultipleOrderStatus(ids),
+    };
 
     // Process orders in batches of 100 (panel API limit for multi-status)
     const BATCH_SIZE = 100;
@@ -592,7 +597,11 @@ serve(async (req) => {
         // Use multi-status API for efficiency
         let statusResults: Record<string, any>;
         
-        if (orderIds.length === 1) {
+        if (batch.some(order => order.panel_response?.routing)) {
+          statusResults=await routedSmmStatuses(batch.filter(order=>order.panel_response?.routing));
+          const legacy=batch.filter(order=>!order.panel_response?.routing);
+          if(legacy.length){const results=await smmClient.getMultipleOrderStatus(legacy.map(order=>order.external_order_id));for(const order of legacy){statusResults[order.id]=results[String(order.external_order_id)]}}
+        } else if (orderIds.length === 1) {
           // Single order — use single status endpoint
           const singleResult = await smmClient.getOrderStatus(orderIds[0]);
           statusResults = { [String(orderIds[0])]: singleResult };
@@ -604,7 +613,7 @@ serve(async (req) => {
         // Process each order's status
         for (const order of batch) {
           const externalId = String(order.external_order_id);
-          const panelData = statusResults[externalId];
+          const panelData = batch.some(item => item.panel_response?.routing) ? statusResults[order.id] : statusResults[externalId];
 
           if (!panelData || panelData.error) {
             console.warn(`No status data for SMM order: ${panelData?.error || 'missing'}`);

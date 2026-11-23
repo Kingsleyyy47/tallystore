@@ -1,0 +1,3 @@
+# Kora sends callbacks without a Supabase JWT. The handler verifies the HMAC
+# signature, then verifies the charge using the merchant's server credential.
+verify_jwt = false

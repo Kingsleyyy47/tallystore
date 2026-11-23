@@ -11,6 +11,7 @@ let handler
 let fixture
 globalThis.__smmRaceTest = {
   ...contract,
+  refreshSmmService: async (_admin,service) => {if(fixture.liveError)throw new Error('Service removed');return {...service,...fixture.liveOverride}},
   serve: callback => { handler = callback },
   createClient: () => fixture.client(++fixture.clients),
   authenticateCustomerRequest: async () => ({ id: fixture.user }),
@@ -30,7 +31,7 @@ globalThis.Deno = { env: { get: name => name === 'SMM_ORDERS_ENABLED' ? 'true' :
 const compiled = ts.transpileModule(source, { compilerOptions: {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
 } }).outputText.replace(/^import .*(?:\r?\n|$)/gm, '')
-const injection = `const { serve, createClient, authenticateCustomerRequest, smmPanelRequest, quoteSmmOrder, validateSmmOrderFields, SMM_QUANTITY_TYPES, SMM_UNAVAILABLE } = globalThis.__smmRaceTest;\nconst console = { error() {}, warn() {}, log() {} };\n${compiled}`
+const injection = `const { serve, createClient, refreshSmmService, authenticateCustomerRequest, smmPanelRequest, quoteSmmOrder, validateSmmOrderFields, SMM_QUANTITY_TYPES, SMM_UNAVAILABLE } = globalThis.__smmRaceTest;\nconst console = { error() {}, warn() {}, log() {} };\n${compiled}`
 await import(`data:text/javascript;base64,${Buffer.from(injection).toString('base64')}`)
 assert.equal(typeof handler, 'function')
 
@@ -273,6 +274,11 @@ try {
     assert.equal(fixture.paidAdds, 0)
   }
 
+  for(const live of [{liveError:true},{liveOverride:{price_ngn:700}},{liveOverride:{max_quantity:500}}]){
+    fixture=makeFixture({expectedOrphanReaders:1});Object.assign(fixture,live);
+    const response=await fixture.request();assert.equal(response.status,400);
+    assert.equal(fixture.debitAttempts,0);assert.equal(fixture.paidAdds,0);assert.equal(fixture.inserts,0);
+  }
   console.log(JSON.stringify({actualHandler:true,distinctReferenceConflict:true,reversedInsertWinner:true,
     oneDebitPerIntent:true,onePaidAddMaximum:true,lostInsertAckNoRefund:true,lateInsertCommitNoRefund:true,
     lostClaimAckNoSend:true,malformedSupplierOrderIdsHeld:true,derivedQuantityPricing:true,packagesFixed:true,

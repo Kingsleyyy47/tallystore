@@ -1,3 +1,4 @@
+import ProviderAccounts from '@/components/ProviderAccounts'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -178,7 +179,7 @@ function buildBulkImportReview(text: string, formatKey?: string): BulkImportRevi
 }
 
 export default function StaffAdminPage() {
-  const { user } = useAuth()
+  const { user, isStaff, isAdmin } = useAuth()
   const { toast } = useToast()
 
   const [perms, setPerms] = useState<PermissionMap>({} as PermissionMap)
@@ -1355,7 +1356,7 @@ export default function StaffAdminPage() {
     )
   }
 
-  const hasAnyTab =
+  const hasAnyTab = isStaff || isAdmin ||
     can(perms, 'view_stats') || can(perms, 'tab_templates') || can(perms, 'tab_products') ||
     can(perms, 'tab_add_product') || can(perms, 'tab_bulk_upload') || can(perms, 'tab_discount_codes') ||
     can(perms, 'tab_sms_products') || can(perms, 'tab_sms_orders') || can(perms, 'tab_transactions') || can(perms, 'tab_sales') ||
@@ -1378,6 +1379,7 @@ export default function StaffAdminPage() {
 
   // Build tab list
   const tabs: { key: string; label: string }[] = [
+    (isStaff||isAdmin)&&{key:'provider-accounts',label:'API Balances & SMS Providers'},
     can(perms, 'view_stats')           && { key: 'stats',    label: 'Overview' },
     can(perms, 'tab_templates')        && { key: 'templates', label: 'Templates' },
     can(perms, 'tab_products')         && { key: 'products',  label: 'Products' },
@@ -1489,6 +1491,7 @@ export default function StaffAdminPage() {
             </div>
           )}
 
+          <TabsContent value="provider-accounts" className="space-y-4"><ProviderAccounts /></TabsContent>
           {/* ── Overview / Stats ───────────────────────────────── */}
           {can(perms, 'view_stats') && (
             <TabsContent value="stats" className="space-y-4">
