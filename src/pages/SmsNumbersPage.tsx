@@ -36,6 +36,7 @@ import { getRevenueRequestContext, getRevenueVisitorId, trackRevenueEvent } from
 import { RecommendationStrip } from '@/components/RecommendationCard'
 import { useRecommendations } from '@/hooks/useRecommendations'
 import { TopUpWallet } from '@/components/TopUpWallet'
+import {SmsServiceCard,SmsPurchasePanel,smsCardTitle,smsMessageMode} from '@/components/sms/SmsServiceCard'
 
 function WhatsAppIcon({ className }: { className?: string }) {
   return (
@@ -96,6 +97,7 @@ type SmsService = {
   service_code?: string | null
   country_id: number
   country_code?: string | null
+  multiple_sms?: boolean
   exchange_rate?: number
   price_ngn: number
   available_count: number
@@ -145,37 +147,8 @@ type SmsOrder = {
   created_at: string
 }
 
-type SmsTab = 'otp' | 'rental' | 'orders'
+type SmsTab = 'otp' | 'international' | 'rental' | 'orders'
 type ServiceSort = 'recommended' | 'price_low' | 'stock'
-
-const SMS_SERVICE_ICONS: Record<string, string> = {
-  google: 'google', gmail: 'gmail', whatsapp: 'whatsapp', telegram: 'telegram',
-  facebook: 'facebook', instagram: 'instagram', signal: 'signal',
-  tiktok: 'tiktok', discord: 'discord', snapchat: 'snapchat',
-  netflix: 'netflix', spotify: 'spotify', paypal: 'paypal',
-  amazon: 'amazon', microsoft: 'microsoft', apple: 'apple',
-  twitter: 'x', outlook: 'microsoftoutlook', zoom: 'zoom',
-}
-const SMS_FALLBACK_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z'/%3E%3C/svg%3E"
-
-function SmsServiceIcon({ service, className = '' }: { service: SmsService; className?: string }) {
-  const name = service.service_name.toLowerCase()
-  const slug = Object.entries(SMS_SERVICE_ICONS).find(([term]) => name.includes(term))?.[1]
-  return (
-    <span className={cn('grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-slate-100 dark:bg-white/10', className)}>
-      <img
-        src={slug ? `https://cdn.simpleicons.org/${slug}` : SMS_FALLBACK_ICON}
-        alt=""
-        loading="lazy"
-        referrerPolicy="no-referrer"
-        className="h-6 w-6 object-contain"
-        onError={(event) => {
-          if (event.currentTarget.src !== SMS_FALLBACK_ICON) event.currentTarget.src = SMS_FALLBACK_ICON
-        }}
-      />
-    </span>
-  )
-}
 
 const SERVICE_SORT_LABELS: Record<ServiceSort, string> = {
   recommended: 'Recommended',
@@ -317,7 +290,7 @@ function statusClass(status: string) {
 
 function safeSmsError(error: unknown, fallback = 'SMS request failed') {
   const message = error instanceof Error ? error.message : fallback
-  if (/provider|api key|token|secret|backend|ngn_usd_rate|app settings/i.test(message)) {
+  if (/provider|supplier|smsbus|daisysms|getatext|textverify|herosms|api key|token|secret|backend|ngn_usd_rate|app settings|edge function|JWT/i.test(message)) {
     return 'SMS numbers are temporarily unavailable. Please try again later.'
   }
   return message || fallback
@@ -708,12 +681,14 @@ function SmsMessageSupportCard() {
   )
 }
 
-function SmsNumbersSurface() {
+export function SmsNumbersSurface() {
   const { user, isStaff, isAdmin, walletBalance, walletLoading, walletBalanceUnavailable, refreshWalletBalance, showBalances, toggleBalanceVisibility } = useAuth()
   const [activeTab, setActiveTab] = useState<SmsTab>('otp')
   const [health, setHealth] = useState<SmsApiResponse<never> | null>(null)
   const [services, setServices] = useState<SmsService[]>([])
-  const [smsCountry, setSmsCountry] = useState('us')
+  const [internationalCountry, setInternationalCountry] = useState('ca')
+  const isOtpTab=activeTab==='otp'||activeTab==='international'
+  const smsCountry=activeTab==='international'?internationalCountry:'us'
   const [smsCountryOptions, setSmsCountryOptions] = useState<Array<{code:string;name:string}>>([{code:'us',name:'United States'}])
   const [areas, setAreas] = useState<SmsRentalArea[]>([])
   const [orders, setOrders] = useState<SmsOrder[]>([])
@@ -731,7 +706,9 @@ function SmsNumbersSurface() {
   const [ordersError, setOrdersError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const mountedRef = useRef(true)
-  const catalogLoadActiveRef = useRef(false)
+  const catalogLoadActiveRef = useRef<string|null>(null)
+  const requestedCountryRef=useRef(smsCountry)
+  requestedCountryRef.current=smsCountry
   const ordersLoadActiveRef = useRef(false)
 
   useEffect(() => () => { mountedRef.current = false }, [])
@@ -903,32 +880,32 @@ function SmsNumbersSurface() {
   }
 
   const loadSmsNumbers = useCallback(async () => {
-    if (catalogLoadActiveRef.current) return
-    catalogLoadActiveRef.current = true
+    if (catalogLoadActiveRef.current===smsCountry) return
+    catalogLoadActiveRef.current = smsCountry
     setLoading(true)
     setCatalogError(null)
     // History loading already reconciles supplier cancellations and confirmed
     // refunds. Do not start a second concurrent supplier status batch here.
     try {
-      const bundle=await invokeSmsRead<{services:SmsService[];rental_areas:SmsRentalArea[];countries:Array<{code:string;name:string}>}>('catalog',{country_code:smsCountry},20000)
-      if(!mountedRef.current)return
+      const bundle=await invokeSmsRead<{services:SmsService[];rental_areas:SmsRentalArea[];countries:Array<{code:string;name:string}>}>('catalog',{country_code:smsCountry},30000)
+      if(!mountedRef.current||requestedCountryRef.current!==smsCountry)return
       setHealth({ success: bundle.success, configured: bundle.configured, valid: bundle.available })
-      if(bundle.data?.countries?.length)setSmsCountryOptions(bundle.data.countries)
+      if(bundle.data?.countries?.length){const countries=bundle.data.countries.map(country=>({...country,code:country.code.toLowerCase()}));setSmsCountryOptions(countries);if(!countries.some(country=>country.code===internationalCountry)){const next=countries.find(country=>country.code!=='us');if(next)setInternationalCountry(next.code)}}
       const payload=bundle as typeof bundle & {services_loaded?:boolean;rental_areas_loaded?:boolean}
       if(payload.services_loaded!==false&&Array.isArray(bundle.data?.services))setServices(bundle.data.services)
       if(payload.rental_areas_loaded!==false&&Array.isArray(bundle.data?.rental_areas))setAreas(bundle.data.rental_areas)
       if(payload.services_loaded===false||payload.rental_areas_loaded===false)setCatalogError('Some live SMS stock could not be loaded. Try refreshing the catalog.')
     } catch (error) {
-      if (mountedRef.current) setCatalogError(safeSmsError(error, 'Failed to load SMS numbers'))
+      if (mountedRef.current&&requestedCountryRef.current===smsCountry) setCatalogError(safeSmsError(error, 'SMS stock could not be loaded. Please refresh.'))
     } finally {
-      catalogLoadActiveRef.current = false
-      if (mountedRef.current) setLoading(false)
+      if(catalogLoadActiveRef.current===smsCountry)catalogLoadActiveRef.current=null
+      if (mountedRef.current&&requestedCountryRef.current===smsCountry) setLoading(false)
     }
   }, [smsCountry])
 
   useEffect(() => {
-    loadSmsNumbers()
-  }, [loadSmsNumbers])
+    if(isOtpTab)void loadSmsNumbers()
+  }, [loadSmsNumbers,isOtpTab])
 
   useEffect(() => {
     const day = new Date().toISOString().slice(0, 10)
@@ -954,7 +931,7 @@ function SmsNumbersSurface() {
   }, [activeTab, user?.id])
 
   useEffect(() => {
-    if (activeTab !== 'otp') return
+    if (!isOtpTab) return
     const day = new Date().toISOString().slice(0, 10)
     const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
     trackRevenueEvent({
@@ -968,7 +945,7 @@ function SmsNumbersSurface() {
 
   useEffect(() => {
     const query = serviceQuery.trim()
-    if (activeTab !== 'otp' || query.length < 2) return
+    if (!isOtpTab || query.length < 2) return
     const day = new Date().toISOString().slice(0, 10)
     const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
     const queryKey = normalize(query).replace(/[^a-z0-9]+/g, '_').slice(0, 60) || 'query'
@@ -987,7 +964,7 @@ function SmsNumbersSurface() {
   }, [activeTab, filteredServices.length, serviceQuery, serviceSort, services.length, user?.id])
 
   useEffect(() => {
-    if (activeTab !== 'otp' || !selectedService) return
+    if (!isOtpTab || !selectedService) return
     const day = new Date().toISOString().slice(0, 10)
     const actorKey = user?.id || getRevenueVisitorId() || 'anonymous'
     trackRevenueEvent({
@@ -1067,7 +1044,7 @@ function SmsNumbersSurface() {
 
   useEffect(() => {
     const day = new Date().toISOString().slice(0, 10)
-    if (activeTab === 'otp' && selectedService) {
+    if (isOtpTab && selectedService) {
       trackRevenueEvent({
         eventType: 'PAYMENT_PROVIDER_LOADED',
         userId: user?.id || null,
@@ -1286,14 +1263,15 @@ function SmsNumbersSurface() {
   const selectedAreaMeta = getAreaMeta(selectedArea)
   const rentalTotal = selectedArea ? selectedArea.price_ngn_monthly * rentalMonths : 0
   const smsTabs = [
-    { id: 'otp' as const, label: 'OTP numbers', icon: PhoneCall },
+    { id: 'otp' as const, label: 'US Numbers', icon: PhoneCall },
+    { id: 'international' as const, label: 'International Numbers', icon: PhoneCall },
     rentalsAvailable ? { id: 'rental' as const, label: 'Rentals', icon: CalendarDays } : null,
     { id: 'orders' as const, label: 'My numbers', icon: Inbox },
   ].filter((tab): tab is { id: SmsTab; label: string; icon: typeof PhoneCall } => tab !== null)
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-5">
-      {activeTab === 'otp' && (
+      {isOtpTab && (
         <div className="space-y-3">
           <article className="relative min-h-[170px] overflow-hidden rounded-xl border border-purple-200/70 bg-[radial-gradient(circle_at_82%_48%,rgba(216,180,254,0.22),transparent_15rem),linear-gradient(135deg,#2d145c_0%,#4c1d95_48%,#1b103d_100%)] p-4 text-white shadow-[0_24px_70px_rgba(126,51,231,0.28)] dark:border-purple-300/20 sm:min-h-[190px] sm:p-5">
             <div className="absolute -right-12 -top-12 h-48 w-48 rounded-full bg-purple-300/20 blur-2xl" />
@@ -1366,11 +1344,6 @@ function SmsNumbersSurface() {
         </Button>
       </div>
 
-      {smsCountryOptions.length > 1 && <label className="flex items-center gap-3 text-sm">Country
-        <select className="rounded-lg border bg-background p-2" value={smsCountry} onChange={event => { setSelectedServiceId(''); setSmsCountry(event.target.value) }} disabled={loading}>
-          {smsCountryOptions.map(country => <option key={country.code} value={country.code}>{country.name}</option>)}
-        </select>
-      </label>}
       {unavailable && (
         <Card className="rounded-[1.75rem] border border-amber-200 bg-amber-50 shadow-card dark:border-amber-500/20 dark:bg-amber-500/10">
           <CardContent className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
@@ -1396,7 +1369,7 @@ function SmsNumbersSurface() {
 
       <div className={cn(
         'grid gap-1 rounded-2xl bg-white p-1.5 shadow-card dark:bg-card sm:inline-grid sm:gap-2 sm:rounded-3xl sm:p-2',
-        rentalsAvailable ? 'grid-cols-3' : 'grid-cols-2',
+        rentalsAvailable ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2 sm:grid-cols-3',
       )}>
         {smsTabs.map((tab) => {
           const Icon = tab.icon
@@ -1407,11 +1380,12 @@ function SmsNumbersSurface() {
               variant="ghost"
               className={cn(
                 'h-10 min-w-0 justify-center rounded-xl px-2 text-[11px] font-black sm:h-11 sm:rounded-2xl sm:px-4 sm:text-sm',
+                tab.id==='orders'&&!rentalsAvailable&&'col-span-2 sm:col-span-1',
                 activeTab === tab.id
                   ? 'bg-[#8075ff] text-white shadow-sm hover:bg-[#6c5ff2] hover:text-white'
                   : 'text-slate-700 hover:bg-violet-50 hover:text-slate-950 dark:text-muted-foreground dark:hover:bg-white/10 dark:hover:text-foreground',
               )}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {if(tab.id!==activeTab){setSelectedServiceId('');setPurchaseOpen(false);setServiceQuery('');setVisibleServiceCount(SERVICE_BATCH_SIZE);if((tab.id==='otp'||tab.id==='international')&&services.some(service=>(service.country_code||'us').toLowerCase()!==(tab.id==='international'?internationalCountry:'us')))setServices([])}setActiveTab(tab.id)}}
             >
               <Icon className="h-4 w-4 shrink-0" />
               <span className="truncate">{tab.label}</span>
@@ -1420,8 +1394,9 @@ function SmsNumbersSurface() {
         })}
       </div>
 
-      {activeTab === 'otp' && (
+      {isOtpTab && (
         <>
+        {activeTab==='international'&&<label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm font-semibold dark:border-white/10 dark:bg-card">Country<ReactCountryFlag countryCode={smsCountry.toUpperCase()} svg aria-label="Selected country"/><select aria-label="International country" className="min-w-0 flex-1 rounded-lg border bg-background p-2" value={internationalCountry} onChange={event=>{setSelectedServiceId('');setPurchaseOpen(false);setServices([]);setInternationalCountry(event.target.value)}} disabled={loading}>{smsCountryOptions.filter(country=>country.code.toLowerCase()!=='us').length?smsCountryOptions.filter(country=>country.code.toLowerCase()!=='us').map(country=><option key={country.code} value={country.code}>{country.name}</option>):<option value="ca">Canada</option>}</select></label>}
         <Dialog open={purchaseOpen} onOpenChange={(open) => {
           if (busyAction !== 'buy-otp') setPurchaseOpen(open)
         }}>
@@ -1431,7 +1406,8 @@ function SmsNumbersSurface() {
               <DialogDescription>Confirm the service and price before your wallet is charged.</DialogDescription>
             </DialogHeader>
             <div className="rounded-xl bg-[#8075ff]/[0.08] p-4 dark:bg-[#8075ff]/15">
-              <p className="break-words text-lg font-black">{selectedService?.service_name || 'Choose a service'}</p>
+              <p className="break-words text-lg font-black">{selectedService?smsCardTitle(selectedService):'Choose a service'}</p>
+              {selectedService&&<p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{smsMessageMode(selectedService)}</p>}
               <div className="mt-3 flex items-center justify-between gap-3 text-sm">
                 <span className="text-slate-500 dark:text-muted-foreground">Price per number</span>
                 <strong>{selectedService ? formatNaira(selectedService.price_ngn) : '-'}</strong>
@@ -1457,10 +1433,8 @@ function SmsNumbersSurface() {
             <CardContent className="p-4 sm:p-5">
               <div className="flex items-end justify-between gap-3">
                 <div>
-                  <h2 className="text-xl font-bold tracking-tight">Choose a service</h2>
-                  <p className="mt-1 text-sm text-slate-500 dark:text-muted-foreground">
-                    {loading ? 'Loading available services...' : `${filteredServices.length.toLocaleString()} matches from ${services.length.toLocaleString()} services`}
-                  </p>
+                  <h2 className="text-xl font-bold tracking-tight">{activeTab==='international'?'International Numbers':'US Numbers'}</h2>
+                  {loading&&<p role="status" className="mt-1 text-sm text-slate-500 dark:text-muted-foreground">Updating numbers…</p>}
                 </div>
               </div>
 
@@ -1491,36 +1465,7 @@ function SmsNumbersSurface() {
                     title={services.length === 0 ? catalogError ? 'SMS stock could not be verified' : 'No OTP services available' : 'No service found'}
                     body={services.length === 0 ? catalogError ? 'Refresh the catalog to check live stock.' : 'No live SMS stock is available for this country right now. Please try again shortly.' : 'Try another app name or clear the search.'}
                   />
-                ) : visibleServices.map((service) => {
-                  const selected = selectedServiceId === service.service_id
-                  return (
-                    <button
-                      key={service.service_id}
-                      type="button"
-                      aria-pressed={selected}
-                      onClick={() => selectOtpService(service)}
-                      disabled={service.available_count <= 0}
-                      className={cn(
-                        'flex w-full min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition hover:border-[#8075ff] hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60 sm:p-3.5',
-                        selected
-                          ? 'border-[#8075ff] bg-[#8075ff]/[0.08] dark:bg-[#8075ff]/15'
-                          : 'border-slate-200 bg-white dark:border-white/10 dark:bg-background',
-                      )}
-                    >
-                      <SmsServiceIcon service={service} />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-bold sm:text-base">{service.service_name}</p>
-                        <p className="mt-0.5 text-xs text-slate-500 dark:text-muted-foreground">
-                          {service.available_count.toLocaleString()} available
-                        </p>
-                      </div>
-                      <span className="shrink-0 rounded-full bg-gradient-to-r from-[#8075ff] to-[#6366f1] px-3 py-1.5 text-sm font-bold text-white">
-                        {formatNaira(service.price_ngn)}
-                      </span>
-                      <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
-                    </button>
-                  )
-                })}
+                ) : visibleServices.map(service=><SmsServiceCard key={service.service_id} service={service} selected={selectedServiceId===service.service_id} onSelect={()=>selectOtpService(service)}/>)}
               </div>
 
               {filteredServices.length > visibleServiceCount && (
@@ -1538,23 +1483,7 @@ function SmsNumbersSurface() {
 
           <SmsMessageSupportCard />
         </div>
-        {selectedService && (
-          <>
-            <div className="h-24" aria-hidden="true" />
-            <div className="fixed inset-x-0 bottom-[calc(68px+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white/95 p-3 shadow-[0_-6px_24px_rgba(15,23,42,0.1)] backdrop-blur dark:border-white/10 dark:bg-card/95 md:bottom-0">
-              <div className="mx-auto flex max-w-2xl items-center gap-3">
-                <SmsServiceIcon service={selectedService} className="h-10 w-10" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-bold">{selectedService.service_name}</p>
-                  <p className="text-xs font-semibold text-[#6c5ff2]">{formatNaira(selectedService.price_ngn)}</p>
-                </div>
-                <Button type="button" className="h-11 shrink-0 rounded-xl bg-[#8075ff] px-5 font-bold text-white hover:bg-[#6c5ff2]" disabled={!numbersReady || selectedService.available_count <= 0 || busyAction !== null} onClick={() => setPurchaseOpen(true)}>
-                  Buy number
-                </Button>
-              </div>
-            </div>
-          </>
-        )}
+        {selectedService&&<><div className="h-48" aria-hidden="true"/><SmsPurchasePanel service={selectedService} ready={numbersReady} busy={busyAction!==null} walletBalance={walletBalance} walletLoading={walletLoading} walletUnavailable={walletBalanceUnavailable} onBuy={()=>setPurchaseOpen(true)} onDismiss={()=>{setSelectedServiceId('');setPurchaseOpen(false)}}/></>}
         </>
       )}
 

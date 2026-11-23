@@ -1,5 +1,7 @@
 import {spawnSync} from 'node:child_process';
 const checks=[
+ ['Country/service SMS cards','node',['scripts/sms-country-cards-test.mjs']],
+ ['International SMS admin selection','node',['scripts/sms-international-selection-pglite-test.mjs']],
  ['Storefront navigation authorization','node',['scripts/storefront-route-access-test.mjs']],
  ['Expanded SMS catalogue settings RPC','node',['scripts/sms-catalog-settings-pglite-test.mjs']],
  ['Provider balances, delivery ranking and switches','npx',['-y','deno','test','--allow-env','--node-modules-dir=none','scripts/provider-operations-policy-test.ts']],

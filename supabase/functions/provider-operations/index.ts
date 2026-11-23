@@ -26,7 +26,7 @@ Deno.serve(async (req) => {
     }
     const body = raw.trim() ? JSON.parse(raw) : {},
       action = body.action || "snapshot";
-    if (!["snapshot", "toggle_sms", "sync_now"].includes(action)) {
+    if (!["snapshot", "toggle_sms", "sync_now", "set_international_provider"].includes(action)) {
       return json({ success: false, error: "Invalid action" }, 400);
     }
     const admin = createClient(
@@ -100,6 +100,13 @@ Deno.serve(async (req) => {
       invalidateSmsPolicy();
       return json(result.data);
     }
+    if(action==='set_international_provider') {
+      if(!isAdmin||!actor)return json({success:false,error:'Admin access required'},403);
+      if(!['herosms','smsbus'].includes(body.provider)||!smsProvidersConfigured().includes(body.provider))return json({success:false,error:'Select a configured international provider.'},400);
+      const result=await admin.rpc('set_sms_international_provider',{p_provider:body.provider,p_actor:actor});
+      if(result.error||result.data?.success!==true)throw new Error('INTERNATIONAL_POLICY_UNCONFIRMED');
+      invalidateSmsPolicy();return json(result.data);
+    }
     if (action === "sync_now") {
       if (!isAdmin) {
         return json({
@@ -152,6 +159,8 @@ Deno.serve(async (req) => {
       balance_cache_seconds: 60,
       last_sync: lastSync.error ? null : lastSync.data,
       auto_sync_schedule: "Every 6 hours",
+      international_provider: state.international_provider||'herosms',
+      international_provider_options: ['herosms','smsbus'].map(id=>({id,name:accounts.find(account=>account.id===id)?.name||id,configured:smsProvidersConfigured().includes(id)})),
       routing:
         "Reliability, observed delivery speed and availability per product; price breaks close scores.",
     });

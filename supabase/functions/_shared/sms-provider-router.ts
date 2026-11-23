@@ -1,4 +1,4 @@
-import { smsRoutingState, rankedSmsOffers, recordSmsProviderEvent } from './sms-provider-policy.ts';
+import { smsRoutingState, rankedSmsOffers, recordSmsProviderEvent, smsProviderAllowed } from './sms-provider-policy.ts';
 import { providerRead, invalidateProviderRead } from "./provider-read-cache.ts";
 import { countryInfo, isoCountry } from "./provider-countries.ts";
 import { providerHttp } from "./provider-http.ts";
@@ -439,7 +439,7 @@ async function fetchSmsCatalogue(
 ) {
   countryInfo(countryCode);
   const policy=await smsRoutingState(admin);
-  const enabledProviders=smsProvidersConfigured().filter(provider=>policy.controls[provider]!==false);
+  const enabledProviders=smsProvidersConfigured().filter(provider=>smsProviderAllowed(provider,policy,countryCode));
   const cache = caches.get(countryCode);
   if (!force && cache && cache.until > Date.now()) return cache;
   const diagnostics: Record<string, string> = {};
@@ -468,11 +468,14 @@ async function fetchSmsCatalogue(
       return;
     }
     for (const offer of result.value) {
+      // A supplier-local ID is not a verified customer-facing service name.
+      // In particular, country-qualified slugs must not become US app cards.
+      if(offer.name.startsWith(`${offer.provider} `))continue;
       const key = `${offer.country}:${smsProductName(offer.name)}`;
       groups.set(key, [...(groups.get(key) || []), offer]);
     }
   });
-  if (admin && keys.daisysim() && policy.controls.daisysim!==false) {
+  if (admin && keys.daisysim() && smsProviderAllowed('daisysim',policy,countryCode)) {
     const saved = await admin.from("supplier_product_routes").select("routes")
       .eq("family", "sms").like("product_key", `daisysim:${countryCode}:%`);
     if (saved.error) throw new Error("SMS_CATALOG_CACHE_UNAVAILABLE");
@@ -502,9 +505,9 @@ async function fetchSmsCatalogue(
       code: (countryCode === "US" ? "" : `c-${countryCode}~`) +
         (canonicalCodes.get(name) || `u-${encodeURIComponent(name)}`),
       name: primary.name,
-      count: available.reduce((sum, row) => sum + row.count, 0),
+      count: primary.count,
       priceUsd: primary.price,
-      multipleMessages: offers.every((row) => row.multipleMessages === true),
+      multipleMessages: available.length>0 && available.every((row) => row.multipleMessages === true),
       offers,
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
@@ -730,7 +733,7 @@ export async function smsBuy(code: string, maxPrice: number, admin?: any, onRepl
   );
   // DaisySim's prices API is per service, so obtain its short-lived exact tier
   // only for a selected matching product, respecting its 30/min limit.
-  if (keys.daisysim() && policy.controls.daisysim!==false && !offers.some((row) => row.provider === "daisysim")) {
+  if (keys.daisysim() && smsProviderAllowed('daisysim',policy,countryCode) && !offers.some((row) => row.provider === "daisysim")) {
     try {
       const countries = await json("daisysim", "/countries");
       assertRead(countries);
@@ -902,7 +905,7 @@ export async function smsDone(reference: string) {
 
 export async function smsCountries() { return providerRead("sms-countries",300_000,fetchSmsCountries) }
 
-export async function smsCatalogue(force=false,admin?:any,countryCode="US") { const state=await smsRoutingState(admin); const active=smsProvidersConfigured().filter(provider=>state.controls[provider]!==false).sort().join(','); const key=`sms-catalogue:${countryCode}:${active}`; if(force)invalidateProviderRead(key); return providerRead(key,60_000,()=>fetchSmsCatalogue(true,admin,countryCode)) }
+export async function smsCatalogue(force=false,admin?:any,countryCode="US") { const state=await smsRoutingState(admin); const active=smsProvidersConfigured().filter(provider=>state.controls[provider]!==false).sort().join(','); const key=`sms-catalogue:${countryCode}:${active}:${state.international_provider||'auto'}`; if(force)invalidateProviderRead(key); return providerRead(key,60_000,()=>fetchSmsCatalogue(true,admin,countryCode)) }
 
 export async function smsStatus(reference:string,timeoutMs=12_000,admin?:any):Promise<SmsStatus> {
   const result=await providerRead(`sms-status:${reference}:${timeoutMs}`,3000,()=>fetchSmsStatus(reference,timeoutMs));

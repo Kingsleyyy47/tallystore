@@ -851,6 +851,7 @@ type SmsCatalogItem = {
   project_id: number
   country_id: number
   country_code: string
+  multiple_sms: boolean
   provider_cost_usd: number
   provider_cost_ngn: number
   margin_usd: number
@@ -1108,6 +1109,7 @@ async function loadSmsCatalog(admin: SupabaseAdmin, userId?: string | null, coun
       project_id: index + 1,
       country_id: countryInfo(countryCode).id,
       country_code: countryCode.toLowerCase(),
+      multiple_sms: svc.multipleMessages,
       provider_cost_usd: Number(svc.priceUsd.toFixed(4)),
       provider_cost_ngn: pricing.providerCostNgn,
       margin_usd: Number(pricing.marginUsd.toFixed(4)),
@@ -1471,6 +1473,7 @@ async function handleServices(admin: SupabaseAdmin, userId: string, body: Record
       service_name: service.service_name,
       country_id: service.country_id,
       country_code: service.country_code,
+      multiple_sms: service.multiple_sms===true,
       available_count: service.available_count,
       price_ngn: service.price_ngn,
       is_enabled: service.is_enabled,
@@ -2453,7 +2456,7 @@ serve(async (req) => {
       const admin=createClient(Deno.env.get('SUPABASE_URL')||'',service,{auth:{persistSession:false}});
       try {
         const result=await buildSmsCatalog(admin,null,String(body.country_code||'US').toUpperCase(),true,false);
-        return json({success:true,products:result.products.length,visible_products:result.products.filter(product=>product.is_enabled&&product.available_count>0&&product.price_ngn>0).length,diagnostics:result.diagnostics,paid_calls:0,database_writes:0});
+        return json({success:true,products:result.products.length,visible_products:result.products.filter(product=>product.is_enabled&&product.available_count>0&&product.price_ngn>0).length,sample_cards:result.products.filter(product=>/whatsapp|telegram|instagram|threads/i.test(product.service_name)).slice(0,12).map(product=>({service_id:product.service_id,service_name:product.service_name,country_code:product.country_code,multiple_sms:product.multiple_sms,available_count:product.available_count,price_ngn:product.price_ngn})),diagnostics:result.diagnostics,paid_calls:0,database_writes:0});
       }catch(error){
         let diagnostic=error instanceof Error?error.message:'SMS_CATALOG_FAILED';
         for(const value of Object.values(Deno.env.toObject()))if(value.length>12)diagnostic=diagnostic.replaceAll(value,'[redacted]');

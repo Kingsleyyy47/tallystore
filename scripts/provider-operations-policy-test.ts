@@ -27,11 +27,37 @@ Deno.test('TextVerify drops after poor delivery and automatically recovers its r
   equal(rankedSmsOffers(offers,recovered,'wa')[0].provider,'textverify');
   equal(rankedSmsOffers(offers,{controls:{textverify:false},metrics:recovered.metrics},'wa').some(offer=>offer.provider==='textverify'),false);
 });
+Deno.test('international provider selection is country-specific, enforces fresh choices, and does not alter US automatic ranking',()=>{
+  const offers=[{provider:'herosms',price:0.4},{provider:'smsbus',price:0.6}];
+  const state={controls:{},international_provider:'smsbus',metrics:[]};
+  equal(rankedSmsOffers(offers,state,'c-CA~wa').map(offer=>offer.provider),['smsbus']);
+  equal(rankedSmsOffers(offers,state,'wa').map(offer=>offer.provider),['herosms','smsbus']);
+  equal(rankedSmsOffers(offers,{...state,international_provider:'herosms'},'c-CA~wa').map(offer=>offer.provider),['herosms']);
+  equal(rankedSmsOffers(offers,{...state,controls:{smsbus:false}},'c-CA~wa'),[]);
+});
 async function mock(keys:Record<string,string>,fetcher:typeof fetch,task:()=>Promise<void>){
   const saved=keyNames.map(key=>Deno.env.get(key)),original=globalThis.fetch;invalidateProviderRead('');
   keyNames.forEach(key=>Deno.env.delete(key));Object.entries(keys).forEach(([key,value])=>Deno.env.set(key,value));globalThis.fetch=fetcher;
   try{await task()}finally{globalThis.fetch=original;keyNames.forEach((key,i)=>saved[i]===undefined?Deno.env.delete(key):Deno.env.set(key,saved[i]!));invalidateProviderRead('')}
 }
+Deno.test('country/service cards group matching offers without combining variants, countries or supplier stock pools',async()=>{
+  let selected='smsbus',paid=0;
+  const admin={rpc:async(name:string)=>({data:name==='get_sms_provider_routing_state'?{controls:{},international_provider:selected,metrics:[]}:true,error:null})};
+  await mock({GETATEXT_API_KEY:'synthetic-getatext',SMSBUS_API_KEY:'synthetic-smsbus'},async(input)=>{
+    const url=new URL(String(input));
+    if(url.hostname==='getatext.com')return json({prices:[{api_name:'whatsapp',service_name:'WhatsApp',price:0.5,stock:3,multiple_sms:true},{api_name:'igthreads',service_name:'Instagram / Threads',price:0.7,stock:7,multiple_sms:true},{api_name:'instagram',service_name:'Instagram',price:0.6,stock:5,multiple_sms:false}]});
+    if(url.pathname.endsWith('/list/countries'))return json({code:200,data:[{id:1,code:'us',title:'United States'},{id:7,code:'ca',title:'Canada'}]});
+    if(url.pathname.endsWith('/list/projects'))return json({code:200,data:[{id:55,title:'WhatsApp'}]});
+    if(url.pathname.endsWith('/list/prices'))return json({code:200,data:[{project_id:55,cost:0.3,total_count:2}]});
+    paid++;throw new Error('No paid request expected');
+  },async()=>{
+    const us=await smsCatalogue(true,admin,'US'),wa=us.products.find(product=>product.code==='wa')!;
+    equal(wa.offers.length,2);equal(wa.count,2);equal(wa.priceUsd,0.3);
+    assert(us.products.some(product=>product.name==='Instagram / Threads'));assert(us.products.some(product=>product.name==='Instagram'));
+    const canada=await smsCatalogue(true,admin,'CA');equal(canada.products.length,1);equal(canada.products[0].code,'c-CA~wa');equal(canada.products[0].offers.map(offer=>offer.provider),['smsbus']);
+    selected='herosms';await rejects(()=>smsBuy('c-CA~wa',1,admin));equal(paid,0);
+  });
+});
 Deno.test('disabled SMS provider is excluded at purchase even with a warm catalogue; accepted status remains pinned',async()=>{
   let enabled=true;const paid:string[]=[],events:any[]=[];
   const admin={rpc:async(name:string,args:any)=>{

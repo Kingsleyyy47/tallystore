@@ -10,6 +10,7 @@ export const SMS_PROVIDER_IDS = [
 ] as const;
 export type SmsRoutingState = {
   controls: Record<string, boolean>;
+  international_provider?: string;
   metrics: Array<
     {
       provider: string;
@@ -58,15 +59,17 @@ export function invalidateSmsPolicy() {
   invalidateProviderRead("sms-catalogue:");
   invalidateProviderRead("sms-priced-catalog:");
 }
+export function smsProviderAllowed(provider:string,state:SmsRoutingState,country:string) {
+  return state.controls[provider]!==false && (country==='US' || !state.international_provider || state.international_provider===provider);
+}
 export function rankedSmsOffers<T extends { provider: string; price: number }>(
   offers: T[],
   state: SmsRoutingState,
   product: string,
   now = Date.now(),
 ): T[] {
-  const available = offers.filter((offer) =>
-    state.controls[offer.provider] !== false
-  );
+  const country=/^c-([A-Z]{2})~/.exec(product)?.[1]||'US';
+  const available = offers.filter((offer) => smsProviderAllowed(offer.provider,state,country));
   const cheapest = Math.min(...available.map((offer) => offer.price));
   const score = (offer: T) => {
     const metrics = state.metrics.find((row) =>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { AlertTriangle } from 'lucide-react'
 import { useAuth } from '@/contexts/SimpleAuth'
 import { supabase } from '@/lib/supabase'
@@ -9,8 +10,10 @@ const supplierNames: Record<string, string> = { muabanvia: 'MuaBanVia', shopclon
 type SupplierAlert = { provider: string; last_seen_at: string }
 
 export default function SupplierWarningDialog() {
+  const {pathname}=useLocation()
   const { user, loading, isAdmin, isStaff, accountSuspended, roleLookupError } = useAuth()
-  const eligible = !!user?.id && !loading && !roleLookupError && !accountSuspended && (isAdmin || isStaff)
+  const management=pathname==='/admin'||pathname.startsWith('/admin/')||pathname==='/staff-admin'||pathname.startsWith('/staff-admin/')
+  const eligible = management && !!user?.id && !loading && !roleLookupError && !accountSuspended && (isAdmin || isStaff)
   const [alerts, setAlerts] = useState<SupplierAlert[]>([])
   const [open, setOpen] = useState(false)
   const [unavailable, setUnavailable] = useState(false)

@@ -289,7 +289,7 @@ Deno.test("SMS catalogue groups exact names and fallback stays bound to acceptin
       const catalog = await smsCatalogue(true);
       const whatsapp = catalog.products.find((row) => row.code === "wa")!;
       equal(whatsapp.offers.length, 2);
-      equal(whatsapp.count, 5);
+      equal(whatsapp.count, 3);
       assert(
         catalog.products.some((row) =>
           row.name === "Google Voice" && row.code !== "go"
@@ -322,12 +322,13 @@ Deno.test("SMS malformed purchase reply stops fallback and preserves review outc
     },
   );
 });
-Deno.test("live Daisy brand-slug catalogue matches verified names while numeric IDs stay isolated",async()=>{
-  await mock({DAISYSMS_IO_API_KEY:'io-fixture',DAISYSMS_COM_API_KEY:'com-fixture'},()=>json({whatsapp:{cost:0.6,count:3,multi:1},'12345':{cost:0.4,count:2}}),async()=>{
+Deno.test("live Daisy brand slugs match verified names while unlabelled IDs and country slugs stay off customer cards",async()=>{
+  await mock({DAISYSMS_IO_API_KEY:'io-fixture',DAISYSMS_COM_API_KEY:'com-fixture'},()=>json({whatsapp:{cost:0.6,count:3,multi:1},'12345':{cost:0.4,count:2},whatsapp_canada:{cost:0.5,count:10}}),async()=>{
     const catalog=await smsCatalogue(true);
     const whatsapp=catalog.products.find(product=>product.code==='wa');
     assert(whatsapp);equal(whatsapp.offers.length,2);equal(whatsapp.multipleMessages,true);
-    equal(catalog.products.filter(product=>product.name.includes('12345')).length,2);
+    equal(catalog.products.filter(product=>product.name.includes('12345')).length,0);
+    equal(catalog.products.filter(product=>product.name.includes('canada')||product.name.includes('daisysms')).length,0);
   });
 });
 Deno.test("DaisySim dead status explicitly cancels and confirms refund", async () => {
